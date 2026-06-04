@@ -266,11 +266,12 @@
 			<div class="drawer-content flex flex-col">
 				<div class="navbar bg-base-100 shadow-sm sticky top-0 z-50">
 					<div class="navbar-start w-auto">
-						<a href="/" class="btn btn-ghost" aria-label="Home">
-							<img src="/logo_wide.png" alt="Musicseerr" class="h-8" />
+						<a href="/" class="btn btn-ghost max-[400px]:hidden" aria-label="Home">
+							<img src="/logo_wide.png" alt="Musicseerr" class="h-8 hidden sm:block" />
+							<img src="/logo_icon.png" alt="Musicseerr" class="h-8 block sm:hidden" />
 						</a>
 					</div>
-					<div class="navbar-center grow px-4 justify-center">
+					<div class="navbar-center grow sm:px-4 justify-center">
 						<div class="w-full max-w-2xl">
 							<SearchSuggestions
 								bind:query
