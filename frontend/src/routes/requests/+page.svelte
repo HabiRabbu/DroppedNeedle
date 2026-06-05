@@ -6,7 +6,17 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import type { ActiveRequestItem, RequestHistoryItem } from '$lib/types';
-	import { TriangleAlert, CheckCircle, Clock, Download, History, Search, ShieldCheck, Check, X } from 'lucide-svelte';
+	import {
+		TriangleAlert,
+		CheckCircle,
+		Clock,
+		Download,
+		History,
+		Search,
+		ShieldCheck,
+		Check,
+		X
+	} from 'lucide-svelte';
 	import {
 		fetchActiveRequests,
 		fetchRequestHistory,

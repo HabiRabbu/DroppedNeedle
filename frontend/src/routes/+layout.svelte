@@ -541,15 +541,8 @@
 					</ul>
 					<div class="w-full p-2 flex flex-col gap-1" class:pb-24={playerStore.isPlayerVisible}>
 						{#if authStore.isAdmin}
-							<div
-								class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-								data-tip="Admin"
-							>
-								<a
-									href="/settings?tab=users"
-									class="btn btn-ghost btn-circle"
-									aria-label="Admin"
-								>
+							<div class="is-drawer-close:tooltip is-drawer-close:tooltip-right" data-tip="Admin">
+								<a href="/settings?tab=users" class="btn btn-ghost btn-circle" aria-label="Admin">
 									<ShieldCheck class="h-6 w-6 text-accent" />
 								</a>
 							</div>
@@ -573,10 +566,7 @@
 								{/if}
 							</a>
 						</div>
-						<div
-							class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-							data-tip="Log out"
-						>
+						<div class="is-drawer-close:tooltip is-drawer-close:tooltip-right" data-tip="Log out">
 							<button
 								onclick={() => void handleLogout()}
 								class="btn btn-ghost btn-circle"

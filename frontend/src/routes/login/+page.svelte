@@ -84,7 +84,7 @@
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ email, password }),
+				body: JSON.stringify({ email, password })
 			});
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));
@@ -107,7 +107,7 @@
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ username: jfUsername, password: jfPassword }),
+				body: JSON.stringify({ username: jfUsername, password: jfPassword })
 			});
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));
@@ -127,7 +127,10 @@
 		plexLoading = true;
 		if (plexPollInterval) clearInterval(plexPollInterval);
 		try {
-			const pinRes = await fetch('/api/v1/auth/plex/pin', { method: 'POST', credentials: 'include' });
+			const pinRes = await fetch('/api/v1/auth/plex/pin', {
+				method: 'POST',
+				credentials: 'include'
+			});
 			if (!pinRes.ok) {
 				plexError = 'Plex login unavailable';
 				plexLoading = false;
@@ -138,7 +141,9 @@
 
 			plexPollInterval = setInterval(async () => {
 				try {
-					const pollRes = await fetch(`/api/v1/auth/plex/poll?pin_id=${pin_id}`, { credentials: 'include' });
+					const pollRes = await fetch(`/api/v1/auth/plex/poll?pin_id=${pin_id}`, {
+						credentials: 'include'
+					});
 					if (!pollRes.ok) {
 						clearInterval(plexPollInterval!);
 						plexLoading = false;
@@ -166,7 +171,10 @@
 		oidcError = null;
 		oidcLoading = true;
 		try {
-			const res = await fetch('/api/v1/auth/oidc/authorize', { method: 'POST', credentials: 'include' });
+			const res = await fetch('/api/v1/auth/oidc/authorize', {
+			method: 'POST',
+			credentials: 'include'
+		});
 			if (!res.ok) {
 				oidcError = 'SSO is not configured';
 				oidcLoading = false;
@@ -211,7 +219,11 @@
 							{#if tab === 'plex'}<PlexIcon class="h-4 w-4" style="color: rgb(var(--brand-plex))" />
 							{:else if tab === 'jellyfin'}<JellyfinIcon class="h-4 w-4 text-info" />
 							{/if}
-							{tab === 'local' ? 'Email' : tab === 'oidc' ? 'SSO' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+							{tab === 'local'
+								? 'Email'
+								: tab === 'oidc'
+									? 'SSO'
+									: tab.charAt(0).toUpperCase() + tab.slice(1)}
 						</button>
 					{/each}
 				</div>
@@ -219,7 +231,13 @@
 
 			<div class="p-6">
 				{#if activeTab === 'local'}
-					<form onsubmit={(e) => { e.preventDefault(); void handleLocalLogin(); }} class="flex flex-col gap-4">
+					<form
+						onsubmit={(e) => {
+							e.preventDefault();
+							void handleLocalLogin();
+						}}
+						class="flex flex-col gap-4"
+					>
 						<fieldset class="fieldset">
 							<legend class="fieldset-legend">Email</legend>
 							<input
@@ -235,11 +253,30 @@
 							<legend class="fieldset-legend">Password</legend>
 							<label class="input input-bordered flex items-center gap-2 w-full">
 								{#if showPassword}
-									<input type="text" class="grow" placeholder="Password" bind:value={password} required autocomplete="current-password" />
+									<input
+										type="text"
+										class="grow"
+										placeholder="Password"
+										bind:value={password}
+										required
+										autocomplete="current-password"
+									/>
 								{:else}
-									<input type="password" class="grow" placeholder="Password" bind:value={password} required autocomplete="current-password" />
+									<input
+										type="password"
+										class="grow"
+										placeholder="Password"
+										bind:value={password}
+										required
+										autocomplete="current-password"
+									/>
 								{/if}
-								<button type="button" onclick={() => (showPassword = !showPassword)} class="opacity-50 hover:opacity-100 transition-opacity" aria-label="Toggle password visibility">
+								<button
+									type="button"
+									onclick={() => (showPassword = !showPassword)}
+									class="opacity-50 hover:opacity-100 transition-opacity"
+									aria-label="Toggle password visibility"
+								>
 									{#if showPassword}<EyeOff class="h-4 w-4" />{:else}<Eye class="h-4 w-4" />{/if}
 								</button>
 							</label>
@@ -254,7 +291,13 @@
 					</form>
 
 				{:else if activeTab === 'jellyfin'}
-					<form onsubmit={(e) => { e.preventDefault(); void handleJellyfinLogin(); }} class="flex flex-col gap-4">
+					<form
+						onsubmit={(e) => {
+							e.preventDefault();
+							void handleJellyfinLogin();
+						}}
+						class="flex flex-col gap-4"
+					>
 						<div class="flex items-center gap-2 mb-1">
 							<JellyfinIcon class="h-5 w-5 text-info" />
 							<span class="text-sm font-medium">Sign in with your Jellyfin account</span>
@@ -274,11 +317,30 @@
 							<legend class="fieldset-legend">Password</legend>
 							<label class="input input-bordered flex items-center gap-2 w-full">
 								{#if jfShowPassword}
-									<input type="text" class="grow" placeholder="Password" bind:value={jfPassword} required autocomplete="current-password" />
+									<input
+										type="text"
+										class="grow"
+										placeholder="Password"
+										bind:value={jfPassword}
+										required
+										autocomplete="current-password"
+									/>
 								{:else}
-									<input type="password" class="grow" placeholder="Password" bind:value={jfPassword} required autocomplete="current-password" />
+									<input
+										type="password"
+										class="grow"
+										placeholder="Password"
+										bind:value={jfPassword}
+										required
+										autocomplete="current-password"
+									/>
 								{/if}
-								<button type="button" onclick={() => (jfShowPassword = !jfShowPassword)} class="opacity-50 hover:opacity-100 transition-opacity" aria-label="Toggle password visibility">
+								<button
+									type="button"
+									onclick={() => (jfShowPassword = !jfShowPassword)}
+									class="opacity-50 hover:opacity-100 transition-opacity"
+									aria-label="Toggle password visibility"
+								>
 									{#if jfShowPassword}<EyeOff class="h-4 w-4" />{:else}<Eye class="h-4 w-4" />{/if}
 								</button>
 							</label>

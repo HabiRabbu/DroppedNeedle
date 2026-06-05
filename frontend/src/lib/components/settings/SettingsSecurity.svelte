@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { createSettingsForm } from '$lib/utils/settingsForm.svelte';
 	import { onDestroy } from 'svelte';
-	import { ShieldCheck, KeyRound, CircleCheck, CircleAlert, Save, RotateCcw, FolderSearch } from 'lucide-svelte';
+	import {
+		ShieldCheck,
+		KeyRound,
+		CircleCheck,
+		CircleAlert,
+		Save,
+		RotateCcw,
+		FolderSearch
+	} from 'lucide-svelte';
 	import { api } from '$lib/api/client';
 
 	interface SecuritySettingsForm {
@@ -23,7 +31,7 @@
 	const form = createSettingsForm<SecuritySettingsForm>({
 		loadEndpoint: '/api/v1/settings/security',
 		saveEndpoint: '/api/v1/settings/security',
-		defaultValue: DEFAULTS,
+		defaultValue: DEFAULTS
 	});
 
 	let verifying = $state(false);
@@ -39,7 +47,10 @@
 				form.data
 			);
 		} catch (e: unknown) {
-			verifyResult = { valid: false, message: (e as { message?: string })?.message ?? 'Verification failed' };
+			verifyResult = {
+				valid: false,
+				message: (e as { message?: string })?.message ?? 'Verification failed'
+			};
 		} finally {
 			verifying = false;
 		}

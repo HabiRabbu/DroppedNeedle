@@ -18,7 +18,7 @@
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ code }),
+				body: JSON.stringify({ code })
 			});
 			if (!res.ok) {
 				error = 'Authentication failed. The link may have expired, please try again.';

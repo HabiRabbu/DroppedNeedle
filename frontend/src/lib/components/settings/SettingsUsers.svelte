@@ -39,7 +39,9 @@
 		loading = true;
 		error = null;
 		try {
-			const data = await api.get<{ users: UserRecord[]; total: number }>('/api/v1/auth/admin/users');
+			const data = await api.get<{ users: UserRecord[]; total: number }>(
+				'/api/v1/auth/admin/users'
+			);
 			users = data.users;
 		} catch {
 			error = "Couldn't load users";
@@ -171,9 +173,21 @@
 					<legend class="fieldset-legend">Password</legend>
 					<label class="input input-bordered flex items-center gap-2 w-full input-sm">
 						{#if showNewPassword}
-							<input type="text" class="grow" bind:value={newPassword} required placeholder="Min. 12 chars" />
+							<input
+								type="text"
+								class="grow"
+								bind:value={newPassword}
+								required
+								placeholder="Min. 12 chars"
+							/>
 						{:else}
-							<input type="password" class="grow" bind:value={newPassword} required placeholder="Min. 12 chars" />
+							<input
+								type="password"
+								class="grow"
+								bind:value={newPassword}
+								required
+								placeholder="Min. 12 chars"
+							/>
 						{/if}
 						<button
 							type="button"
@@ -181,7 +195,11 @@
 							class="opacity-50 hover:opacity-100"
 							aria-label="Toggle"
 						>
-							{#if showNewPassword}<EyeOff class="h-3.5 w-3.5" />{:else}<Eye class="h-3.5 w-3.5" />{/if}
+							{#if showNewPassword}
+							<EyeOff class="h-3.5 w-3.5" />
+						{:else}
+							<Eye class="h-3.5 w-3.5" />
+						{/if}
 						</button>
 					</label>
 				</fieldset>
@@ -197,7 +215,11 @@
 					<div class="sm:col-span-2 alert alert-error py-2 text-sm">{createError}</div>
 				{/if}
 				<div class="sm:col-span-2 flex gap-2 justify-end">
-					<button type="button" class="btn btn-ghost btn-sm" onclick={() => (showCreateForm = false)}>
+					<button
+						type="button"
+						class="btn btn-ghost btn-sm"
+						onclick={() => (showCreateForm = false)}
+					>
 						Cancel
 					</button>
 					<button type="submit" class="btn btn-primary btn-sm" disabled={creating}>
@@ -234,7 +256,9 @@
 		<div class="space-y-1.5">
 			{#each users as user (user.id)}
 				{@const RoleIcon = roleIcon(user.role)}
-				<div class="flex items-center gap-3 p-3 bg-base-300/30 rounded-box hover:bg-base-300/50 transition-colors">
+				<div
+					class="flex items-center gap-3 p-3 bg-base-300/30 rounded-box hover:bg-base-300/50 transition-colors"
+				>
 					<div class="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
 						<UserRound class="h-5 w-5 text-primary/60" />
 					</div>
@@ -255,7 +279,11 @@
 							<select
 								class="select select-bordered select-xs"
 								value={user.role}
-								onchange={(e) => void setRole(user.id, (e.target as HTMLSelectElement).value as 'admin' | 'trusted' | 'user')}
+								onchange={(e) =>
+									void setRole(
+										user.id,
+										(e.target as HTMLSelectElement).value as 'admin' | 'trusted' | 'user'
+									)}
 								aria-label="Change role"
 							>
 								<option value="user">User</option>

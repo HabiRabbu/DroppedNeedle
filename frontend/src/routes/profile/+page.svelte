@@ -285,9 +285,13 @@
 								<span class="text-xs font-semibold uppercase tracking-widest text-base-content/40">Profile</span>
 								{#if authStore.user}
 									{#if authStore.user.role === 'admin'}
-										<span class="badge badge-accent badge-sm gap-1"><ShieldCheck class="h-3 w-3" />{roleLabel[authStore.user.role]}</span>
+										<span class="badge badge-accent badge-sm gap-1">
+											<ShieldCheck class="h-3 w-3" />{roleLabel[authStore.user.role]}
+										</span>
 									{:else if authStore.user.role === 'trusted'}
-										<span class="badge badge-info badge-sm gap-1"><UserCheck class="h-3 w-3" />{roleLabel[authStore.user.role]}</span>
+										<span class="badge badge-info badge-sm gap-1">
+											<UserCheck class="h-3 w-3" />{roleLabel[authStore.user.role]}
+										</span>
 									{:else}
 										<span class="badge badge-ghost badge-sm">{roleLabel[authStore.user.role]}</span>
 									{/if}

@@ -27,7 +27,7 @@
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ display_name: displayName, email, password }),
+				body: JSON.stringify({ display_name: displayName, email, password })
 			});
 			if (!res.ok) {
 				const data = await res.json().catch(() => ({}));
@@ -75,7 +75,13 @@
 				</span>
 			</div>
 
-			<form onsubmit={(e) => { e.preventDefault(); void handleSetup(); }} class="flex flex-col gap-4">
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					void handleSetup();
+				}}
+				class="flex flex-col gap-4"
+			>
 				<fieldset class="fieldset">
 					<legend class="fieldset-legend">Display Name</legend>
 					<input
@@ -104,11 +110,30 @@
 					<legend class="fieldset-legend">Password</legend>
 					<label class="input input-bordered flex items-center gap-2 w-full">
 						{#if showPassword}
-							<input type="text" class="grow" placeholder="Min. 12 characters" bind:value={password} required autocomplete="new-password" />
+							<input
+								type="text"
+								class="grow"
+								placeholder="Min. 12 characters"
+								bind:value={password}
+								required
+								autocomplete="new-password"
+							/>
 						{:else}
-							<input type="password" class="grow" placeholder="Min. 12 characters" bind:value={password} required autocomplete="new-password" />
+							<input
+								type="password"
+								class="grow"
+								placeholder="Min. 12 characters"
+								bind:value={password}
+								required
+								autocomplete="new-password"
+							/>
 						{/if}
-						<button type="button" onclick={() => (showPassword = !showPassword)} class="opacity-50 hover:opacity-100 transition-opacity" aria-label="Toggle password visibility">
+						<button
+							type="button"
+							onclick={() => (showPassword = !showPassword)}
+							class="opacity-50 hover:opacity-100 transition-opacity"
+							aria-label="Toggle password visibility"
+						>
 							{#if showPassword}<EyeOff class="h-4 w-4" />{:else}<Eye class="h-4 w-4" />{/if}
 						</button>
 					</label>
