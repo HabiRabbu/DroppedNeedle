@@ -253,6 +253,19 @@ def is_official_musicbrainz(url: str) -> bool:
         return False
 
 
+class SecuritySettings(AppStruct):
+    # Password security
+    hibp_check: bool = True
+    # Path to a local copy of the HIBP "Pwned Passwords" sorted-by-hash file.
+    # When set and the file exists, used instead of the API, no outbound calls.
+    hibp_local_path: str = ""
+
+    # HSTS: only enable when serving over HTTPS
+    hsts_max_age: int = 0            # seconds; 0 = disabled
+    hsts_include_subdomains: bool = False
+    hsts_preload: bool = False
+
+
 class MusicBrainzConnectionSettings(AppStruct):
     api_url: str = "https://musicbrainz.org/ws/2"
     rate_limit: float = 1.0

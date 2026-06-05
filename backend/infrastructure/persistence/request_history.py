@@ -23,10 +23,14 @@ class RequestHistoryRecord(msgspec.Struct):
     lidarr_album_id: int | None = None
     monitor_artist: bool = False
     auto_download_artist: bool = False
+    user_id: str | None = None
+    requested_by_name: str | None = None
 
 
 class RequestHistoryStore:
     _ACTIVE_STATUSES = ("pending", "downloading")
+    # Statuses a non-admin user sees in their "active" view (includes awaiting approval)
+    _USER_ACTIVE_STATUSES = ("pending", "downloading", "awaiting_approval", "queued")
 
     def __init__(self, db_path: Path, write_lock: threading.Lock | None = None):
         self.db_path = Path(db_path)
@@ -67,10 +71,14 @@ class RequestHistoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_request_history_status_requested_at ON request_history(status, requested_at DESC)"
             )
-            # Migrate existing tables missing the monitoring columns
-            for col in ("monitor_artist", "auto_download_artist"):
+            for col, definition in [
+                ("monitor_artist", "INTEGER NOT NULL DEFAULT 0"),
+                ("auto_download_artist", "INTEGER NOT NULL DEFAULT 0"),
+                ("user_id", "TEXT"),
+                ("requested_by_name", "TEXT"),
+            ]:
                 try:
-                    conn.execute(f"ALTER TABLE request_history ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+                    conn.execute(f"ALTER TABLE request_history ADD COLUMN {col} {definition}")
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e).lower():
                         logger.warning("Unexpected error adding column %s: %s", col, e)
@@ -105,6 +113,7 @@ class RequestHistoryStore:
     def _row_to_record(row: sqlite3.Row | None) -> RequestHistoryRecord | None:
         if row is None:
             return None
+        keys = row.keys()
         return RequestHistoryRecord(
             musicbrainz_id=row["musicbrainz_id"],
             artist_name=row["artist_name"],
@@ -118,6 +127,8 @@ class RequestHistoryStore:
             lidarr_album_id=row["lidarr_album_id"],
             monitor_artist=bool(row["monitor_artist"]) if row["monitor_artist"] is not None else False,
             auto_download_artist=bool(row["auto_download_artist"]) if row["auto_download_artist"] is not None else False,
+            user_id=row["user_id"] if "user_id" in keys else None,
+            requested_by_name=row["requested_by_name"] if "requested_by_name" in keys else None,
         )
 
     async def async_record_request(
@@ -131,6 +142,9 @@ class RequestHistoryStore:
         lidarr_album_id: int | None = None,
         monitor_artist: bool = False,
         auto_download_artist: bool = False,
+        user_id: str | None = None,
+        requested_by_name: str | None = None,
+        initial_status: str = "pending",
     ) -> None:
         requested_at = datetime.now(timezone.utc).isoformat()
         normalized_mbid = musicbrainz_id.lower()
@@ -141,8 +155,8 @@ class RequestHistoryStore:
                 INSERT INTO request_history (
                     musicbrainz_id_lower, musicbrainz_id, artist_name, album_title,
                     artist_mbid, year, cover_url, requested_at, completed_at, status, lidarr_album_id,
-                    monitor_artist, auto_download_artist
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)
+                    monitor_artist, auto_download_artist, user_id, requested_by_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(musicbrainz_id_lower) DO UPDATE SET
                     musicbrainz_id = excluded.musicbrainz_id,
                     artist_name = excluded.artist_name,
@@ -152,10 +166,12 @@ class RequestHistoryStore:
                     cover_url = COALESCE(excluded.cover_url, request_history.cover_url),
                     requested_at = excluded.requested_at,
                     completed_at = NULL,
-                    status = 'pending',
+                    status = excluded.status,
                     lidarr_album_id = COALESCE(excluded.lidarr_album_id, request_history.lidarr_album_id),
                     monitor_artist = excluded.monitor_artist,
-                    auto_download_artist = excluded.auto_download_artist
+                    auto_download_artist = excluded.auto_download_artist,
+                    user_id = COALESCE(excluded.user_id, request_history.user_id),
+                    requested_by_name = COALESCE(excluded.requested_by_name, request_history.requested_by_name)
                 """,
                 (
                     normalized_mbid,
@@ -166,9 +182,12 @@ class RequestHistoryStore:
                     year,
                     cover_url,
                     requested_at,
+                    initial_status,
                     lidarr_album_id,
                     int(monitor_artist),
                     int(auto_download_artist),
+                    user_id,
+                    requested_by_name,
                 ),
             )
 
@@ -179,6 +198,9 @@ class RequestHistoryStore:
         items: list[dict],
         monitor_artist: bool = False,
         auto_download_artist: bool = False,
+        user_id: str | None = None,
+        requested_by_name: str | None = None,
+        initial_status: str = "pending",
     ) -> int:
         """Bulk insert/upsert request history records in a single transaction. Returns count inserted."""
         requested_at = datetime.now(timezone.utc).isoformat()
@@ -195,9 +217,12 @@ class RequestHistoryStore:
                 item.get("year"),
                 item.get("cover_url"),
                 requested_at,
+                initial_status,
                 None,  # lidarr_album_id
                 monitor_int,
                 auto_download_int,
+                user_id,
+                requested_by_name,
             )
             for item in items
         ]
@@ -208,8 +233,8 @@ class RequestHistoryStore:
                 INSERT INTO request_history (
                     musicbrainz_id_lower, musicbrainz_id, artist_name, album_title,
                     artist_mbid, year, cover_url, requested_at, completed_at, status, lidarr_album_id,
-                    monitor_artist, auto_download_artist
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)
+                    monitor_artist, auto_download_artist, user_id, requested_by_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(musicbrainz_id_lower) DO UPDATE SET
                     musicbrainz_id = excluded.musicbrainz_id,
                     artist_name = excluded.artist_name,
@@ -219,10 +244,12 @@ class RequestHistoryStore:
                     cover_url = COALESCE(excluded.cover_url, request_history.cover_url),
                     requested_at = excluded.requested_at,
                     completed_at = NULL,
-                    status = 'pending',
+                    status = excluded.status,
                     lidarr_album_id = COALESCE(excluded.lidarr_album_id, request_history.lidarr_album_id),
                     monitor_artist = excluded.monitor_artist,
-                    auto_download_artist = excluded.auto_download_artist
+                    auto_download_artist = excluded.auto_download_artist,
+                    user_id = COALESCE(excluded.user_id, request_history.user_id),
+                    requested_by_name = COALESCE(excluded.requested_by_name, request_history.requested_by_name)
                 """,
                 rows,
             )
@@ -283,6 +310,82 @@ class RequestHistoryStore:
                 self._ACTIVE_STATUSES,
             ).fetchone()
             return int(row["count"] if row is not None else 0)
+
+        return await self._read(operation)
+
+    async def async_get_active_count_for_user(self, user_id: str) -> int:
+        placeholders = ",".join("?" for _ in self._USER_ACTIVE_STATUSES)
+
+        def operation(conn: sqlite3.Connection) -> int:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS count FROM request_history WHERE user_id = ? AND status IN ({placeholders})",
+                (user_id, *self._USER_ACTIVE_STATUSES),
+            ).fetchone()
+            return int(row["count"] if row is not None else 0)
+
+        return await self._read(operation)
+
+    async def async_get_active_requests_for_user(self, user_id: str) -> list[RequestHistoryRecord]:
+        """Active requests for a specific user, includes awaiting_approval items."""
+        placeholders = ",".join("?" for _ in self._USER_ACTIVE_STATUSES)
+
+        def operation(conn: sqlite3.Connection) -> list[RequestHistoryRecord]:
+            rows = conn.execute(
+                f"SELECT * FROM request_history WHERE user_id = ? AND status IN ({placeholders}) ORDER BY requested_at DESC",
+                (user_id, *self._USER_ACTIVE_STATUSES),
+            ).fetchall()
+            return [record for row in rows if (record := self._row_to_record(row)) is not None]
+
+        return await self._read(operation)
+
+    async def async_get_pending_approvals(self) -> list[RequestHistoryRecord]:
+        """All requests awaiting admin approval."""
+        def operation(conn: sqlite3.Connection) -> list[RequestHistoryRecord]:
+            rows = conn.execute(
+                "SELECT * FROM request_history WHERE status = 'awaiting_approval' ORDER BY requested_at ASC",
+            ).fetchall()
+            return [record for row in rows if (record := self._row_to_record(row)) is not None]
+
+        return await self._read(operation)
+
+    async def async_get_history_for_user(
+        self,
+        user_id: str,
+        page: int = 1,
+        page_size: int = 20,
+        status_filter: str | None = None,
+        sort: str | None = None,
+    ) -> tuple[list[RequestHistoryRecord], int]:
+        """Paginated history for a specific user."""
+        safe_page = max(page, 1)
+        safe_page_size = max(page_size, 1)
+        offset = (safe_page - 1) * safe_page_size
+
+        _SORT_MAP = {
+            "newest": "requested_at DESC",
+            "oldest": "requested_at ASC",
+            "status": "status ASC, requested_at DESC",
+        }
+        order_clause = _SORT_MAP.get(sort or "", "requested_at DESC")
+
+        def operation(conn: sqlite3.Connection) -> tuple[list[RequestHistoryRecord], int]:
+            if status_filter:
+                where = "WHERE user_id = ? AND status = ?"
+                params: tuple = (user_id, status_filter)
+            else:
+                where = "WHERE user_id = ?"
+                params = (user_id,)
+
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS count FROM request_history {where}", params
+            ).fetchone()
+            rows = conn.execute(
+                f"SELECT * FROM request_history {where} ORDER BY {order_clause} LIMIT ? OFFSET ?",
+                params + (safe_page_size, offset),
+            ).fetchall()
+            records = [record for row in rows if (record := self._row_to_record(row)) is not None]
+            total = int(total_row["count"] if total_row is not None else 0)
+            return records, total
 
         return await self._read(operation)
 
@@ -401,7 +504,7 @@ class RequestHistoryStore:
         import time as _time
         from datetime import timezone
         cutoff_iso = datetime.fromtimestamp(_time.time() - days * 86400, tz=timezone.utc).isoformat()
-        terminal_statuses = ("imported", "failed", "cancelled", "incomplete")
+        terminal_statuses = ("imported", "failed", "cancelled", "incomplete", "rejected")
 
         def operation(conn: sqlite3.Connection) -> int:
             cursor = conn.execute(

@@ -3,6 +3,7 @@
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { migratePageSourceKeys } from '$lib/stores/musicSource';
 	import { errorModal } from '$lib/stores/errorModal';
 	import { libraryStore } from '$lib/stores/library';
@@ -57,7 +58,9 @@
 		X,
 		UserRound,
 		ListMusic,
-		ArrowUpCircle
+		ArrowUpCircle,
+		LogOut,
+		ShieldCheck
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 	import QueryProvider from '$lib/queries/QueryProvider.svelte';
@@ -247,6 +250,16 @@
 
 	const integrations = fromStore(integrationStore);
 	const lidarrConfigured = $derived(integrations.current.lidarr || !integrations.current.loaded);
+
+	async function handleLogout() {
+		try {
+			await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' });
+		} catch {
+			// ignore
+		}
+		authStore.clear();
+		goto('/login');
+	}
 </script>
 
 <QueryProvider>
@@ -527,6 +540,20 @@
 						{/if}
 					</ul>
 					<div class="w-full p-2 flex flex-col gap-1" class:pb-24={playerStore.isPlayerVisible}>
+						{#if authStore.isAdmin}
+							<div
+								class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
+								data-tip="Admin"
+							>
+								<a
+									href="/settings?tab=users"
+									class="btn btn-ghost btn-circle"
+									aria-label="Admin"
+								>
+									<ShieldCheck class="h-6 w-6 text-accent" />
+								</a>
+							</div>
+						{/if}
 						<div
 							class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
 							data-tip={versionUpdateAvailable ? 'Settings - update available' : 'Settings'}
@@ -545,6 +572,18 @@
 									</span>
 								{/if}
 							</a>
+						</div>
+						<div
+							class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
+							data-tip="Log out"
+						>
+							<button
+								onclick={() => void handleLogout()}
+								class="btn btn-ghost btn-circle"
+								aria-label="Log out"
+							>
+								<LogOut class="h-6 w-6" />
+							</button>
 						</div>
 						<div class="is-drawer-close:tooltip is-drawer-close:tooltip-right" data-tip="Open">
 							<label

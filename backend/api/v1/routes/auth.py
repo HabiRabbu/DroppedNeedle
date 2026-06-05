@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, responses, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, responses, status
 
 from api.v1.schemas.auth import (
     AuthResponse,
@@ -23,6 +23,7 @@ from api.v1.schemas.auth import (
     user_to_response,
 )
 from core.dependencies.auth_providers import get_auth_service, get_plex_user_auth_service, get_jellyfin_user_auth_service, get_oidc_user_auth_service
+from core.dependencies.cache_providers import get_preferences_service
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError, RegistrationError
 from infrastructure.msgspec_fastapi import MsgSpecRoute
 from services.oidc_user_auth_service import OIDCUserAuthService
@@ -33,6 +34,31 @@ from services.plex_user_auth_service import PlexUserAuthService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class = MsgSpecRoute, prefix = "/auth", tags = ["auth"])
+
+_COOKIE_NAME = "musicseerr_session"
+_COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
+
+
+def _set_session_cookie(response: Response, request: Request, token: str) -> None:
+    """Attach an httpOnly session cookie. Marks Secure automatically when the
+    request arrived over HTTPS (direct or via X-Forwarded-Proto)."""
+    secure = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").lower() == "https"
+    )
+    response.set_cookie(
+        key = _COOKIE_NAME,
+        value = token,
+        httponly = True,
+        samesite = "lax",
+        secure = secure,
+        max_age = _COOKIE_MAX_AGE,
+        path = "/api",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(key = _COOKIE_NAME, path = "/api")
 
 
 def _bearer_token(request: Request) -> str | None:
@@ -69,10 +95,30 @@ async def setup_status(auth: AuthService = Depends(get_auth_service)) -> SetupSt
     return SetupStatusResponse(required = required)
 
 
+@router.get("/providers")
+async def list_auth_providers(
+    oidc_auth: OIDCUserAuthService = Depends(get_oidc_user_auth_service),
+):
+    """Return which login methods are currently configured."""
+    prefs = get_preferences_service()
+
+    jellyfin_cfg = prefs.get_jellyfin_connection()
+    plex_cfg = prefs.get_plex_connection()
+    oidc_cfg = oidc_auth.get_config()
+
+    return {
+        "local": True,
+        "plex": plex_cfg.enabled,
+        "jellyfin": jellyfin_cfg.enabled,
+        "oidc": oidc_cfg.enabled and bool(oidc_cfg.issuer) and bool(oidc_cfg.client_id),
+    }
+
+
 @router.post("/setup", response_model = AuthResponse, status_code = status.HTTP_201_CREATED)
 async def setup(
     body: SetupRequest,
     request: Request,
+    response: Response,
     auth: AuthService = Depends(get_auth_service),
 ) -> AuthResponse:
     if not await auth.is_setup_required():
@@ -91,6 +137,7 @@ async def setup(
         logger.debug(f"Setup registration error: {e}")
         raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "Invalid setup data")
 
+    _set_session_cookie(response, request, token)
     return AuthResponse(token = token, user = user_to_response(user))
 
 
@@ -98,6 +145,7 @@ async def setup(
 async def login(
     body: LoginRequest,
     request: Request,
+    response: Response,
     auth: AuthService = Depends(get_auth_service),
 ) -> AuthResponse:
     try:
@@ -107,24 +155,26 @@ async def login(
             user_agent = request.headers.get("User-Agent"),
         )
     except AuthenticationError:
-        # Always 401, never reveal which field was wrong
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid email or password",
             headers = {"WWW-Authenticate": "Bearer"},
         )
 
+    _set_session_cookie(response, request, token)
     return AuthResponse(token = token, user = user_to_response(user))
 
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
 async def logout(
     request: Request,
+    response: Response,
     auth: AuthService = Depends(get_auth_service),
 ) -> None:
-    token = _bearer_token(request)
+    token = _bearer_token(request) or request.cookies.get(_COOKIE_NAME)
     if token:
         await auth.logout(token)
+    _clear_session_cookie(response)
 
 
 @router.post("/logout-all", status_code = status.HTTP_204_NO_CONTENT)
@@ -257,6 +307,7 @@ async def plex_login_pin(plex_auth: PlexUserAuthService = Depends(get_plex_user_
 async def plex_login_poll(
     pin_id: int,
     request: Request,
+    response: Response,
     plex_auth: PlexUserAuthService = Depends(get_plex_user_auth_service),
 ):
     try:
@@ -269,6 +320,7 @@ async def plex_login_poll(
     if result is None:
         return {"completed": False}
     user, token = result
+    _set_session_cookie(response, request, token)
     return AuthResponse(token = token, user = user_to_response(user))
 
 
@@ -276,6 +328,7 @@ async def plex_login_poll(
 async def jellyfin_login(
     body: JellyfinLoginRequest,
     request: Request,
+    response: Response,
     jellyfin_auth: JellyfinUserAuthService = Depends(get_jellyfin_user_auth_service),
 ) -> AuthResponse:
     try:
@@ -295,6 +348,7 @@ async def jellyfin_login(
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
             detail = "Jellyfin unavailable",
         )
+    _set_session_cookie(response, request, token)
     return AuthResponse(token = token, user = user_to_response(user))
 
 
@@ -330,10 +384,13 @@ async def oidc_callback(
 @router.post("/oidc/exchange", response_model = AuthResponse)
 async def oidc_exchange(
     body: OIDCExchangeRequest,
+    request: Request,
+    response: Response,
     oidc_auth: OIDCUserAuthService = Depends(get_oidc_user_auth_service),
 ) -> AuthResponse:
     try:
         user, token = await oidc_auth.exchange_code(body.code)
     except AuthenticationError:
         raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = "Invalid or expired code")
+    _set_session_cookie(response, request, token)
     return AuthResponse(token = token, user = user_to_response(user))

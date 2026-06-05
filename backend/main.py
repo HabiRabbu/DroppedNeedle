@@ -34,7 +34,7 @@ from core.exception_handlers import (
 )
 from infrastructure.resilience.retry import CircuitOpenError
 from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
-from middleware import DegradationMiddleware, PerformanceMiddleware, RateLimitMiddleware, AuthMiddleware
+from middleware import DegradationMiddleware, HSTSMiddleware, PerformanceMiddleware, RateLimitMiddleware, AuthMiddleware
 from static_server import mount_frontend
 from api.v1.routes import (
     search, requests, library, status, queue, covers, artists, albums, settings, home, discover, profile, playlists
@@ -282,6 +282,7 @@ app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handl
 app.add_exception_handler(RequestValidationError, request_validation_error_handler)
 app.add_exception_handler(Exception, general_exception_handler)
 
+app.add_middleware(HSTSMiddleware)
 app.add_middleware(DegradationMiddleware)
 app.add_middleware(PerformanceMiddleware)
 app.add_middleware(

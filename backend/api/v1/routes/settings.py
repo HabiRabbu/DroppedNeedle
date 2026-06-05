@@ -1,4 +1,5 @@
 import logging
+import os
 import msgspec
 from fastapi import APIRouter, Depends, HTTPException
 from api.v1.schemas.settings import (
@@ -25,6 +26,7 @@ from api.v1.schemas.settings import (
     PlexConnectionSettings,
     PlexVerifyResponse,
     MusicBrainzConnectionSettings,
+    SecuritySettings,
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo
 from api.v1.schemas.common import VerifyConnectionResponse
@@ -552,3 +554,68 @@ async def verify_musicbrainz_connection(
 ):
     result = await settings_service.verify_musicbrainz(settings)
     return VerifyConnectionResponse(valid=result.valid, message=result.message)
+
+
+@router.get("/security", response_model=SecuritySettings)
+async def get_security_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> SecuritySettings:
+    return preferences_service.get_security_settings()
+
+
+@router.put("/security", response_model=SecuritySettings)
+async def update_security_settings(
+    settings: SecuritySettings = MsgSpecBody(SecuritySettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> SecuritySettings:
+    try:
+        preferences_service.save_security_settings(settings)
+        return settings
+    except ConfigurationError as e:
+        logger.warning(f"Configuration error updating security settings: {e}")
+        raise HTTPException(status_code=400, detail="Could not save security settings")
+
+
+@router.post("/security/verify-hibp", response_model=VerifyConnectionResponse)
+async def verify_hibp_local_file(
+    settings: SecuritySettings = MsgSpecBody(SecuritySettings),
+) -> VerifyConnectionResponse:
+    """Validate a user-supplied HIBP local database path."""
+    path = (settings.hibp_local_path or "").strip()
+    if not path:
+        return VerifyConnectionResponse(valid=False, message="No path provided.")
+
+    if not os.path.isfile(path):
+        return VerifyConnectionResponse(valid=False, message=f"File not found: {path}")
+
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            first_line = fh.readline().decode("ascii", errors="ignore").strip()
+
+        if not first_line or ":" not in first_line:
+            return VerifyConnectionResponse(
+                valid=False,
+                message="File does not appear to be a valid HIBP hash list (unexpected format).",
+            )
+
+        parts = first_line.split(":", 1)
+        if len(parts[0]) != 40 or not parts[0].isalnum():
+            return VerifyConnectionResponse(
+                valid=False,
+                message="File does not appear to be a valid HIBP hash list (expected 40-char SHA-1 hash).",
+            )
+
+        def _fmt_size(b: int) -> str:
+            for unit in ("B", "KB", "MB", "GB"):
+                if b < 1024:
+                    return f"{b:.1f} {unit}"
+                b //= 1024
+            return f"{b:.1f} TB"
+
+        return VerifyConnectionResponse(
+            valid=True,
+            message=f"File looks valid. Size: {_fmt_size(size)}.",
+        )
+    except OSError as e:
+        return VerifyConnectionResponse(valid=False, message=f"Could not read file: {e}")

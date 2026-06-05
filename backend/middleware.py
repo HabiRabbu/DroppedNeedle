@@ -18,14 +18,32 @@ logger = logging.getLogger(__name__)
 
 SLOW_REQUEST_THRESHOLD = 1.0
 
-_PUBLIC_PREFIXES: tuple[str, ...] = (
+# Exact paths that require no authentication.
+# Keep this list narrow, the old "/api/v1/auth/" prefix exempted admin routes too.
+_PUBLIC_PATHS: frozenset[str] = frozenset({
     "/health",
-    "/api/v1/auth/",
-    "/api/v1/docs",
-    "/api/v1/redoc",
-    "/api/v1/openapi.json",
+    # Auth bootstrap
+    "/api/v1/auth/setup/status",
+    "/api/v1/auth/setup",
+    "/api/v1/auth/providers",
+    "/api/v1/auth/login",
+    # Logout is public so an expired session can still clear the cookie
+    "/api/v1/auth/logout",
+    # Third-party login flows
+    "/api/v1/auth/plex/pin",
+    "/api/v1/auth/plex/poll",
+    "/api/v1/auth/jellyfin/login",
+    "/api/v1/auth/oidc/authorize",
     "/api/v1/auth/oidc/callback",
     "/api/v1/auth/oidc/exchange",
+    # OpenAPI spec (single file)
+    "/api/v1/openapi.json",
+})
+
+# Prefix matches for paths that have sub-routes (Swagger UI assets, etc.)
+_PUBLIC_PREFIXES: tuple[str, ...] = (
+    "/api/v1/docs",
+    "/api/v1/redoc",
 )
 
 
@@ -167,6 +185,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _is_public(path: str) -> bool:
+        if path in _PUBLIC_PATHS:
+            return True
         for prefix in _PUBLIC_PREFIXES:
             if path.startswith(prefix):
                 return True
@@ -174,10 +194,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _extract_bearer(request: Request) -> str | None:
+        # Bearer token (programmatic / API clients)
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip() or None
-        return None
+        # httpOnly session cookie (browser)
+        return request.cookies.get("musicseerr_session") or None
 
     @staticmethod
     def _unauthorized(detail: str) -> MsgSpecJSONResponse:
@@ -186,6 +208,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
             content = {"error": {"code": "UNAUTHORIZED", "message": detail, "details": None}},
             headers = {"WWW-Authenticate": "Bearer"},
         )
+
+
+class HSTSMiddleware(BaseHTTPMiddleware):
+    """Adds Strict-Transport-Security when hsts_max_age > 0 in security settings."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        from core.dependencies.cache_providers import get_preferences_service
+        sec = get_preferences_service().get_security_settings()
+        if sec.hsts_max_age > 0:
+            value = f"max-age={sec.hsts_max_age}"
+            if sec.hsts_include_subdomains:
+                value += "; includeSubDomains"
+            if sec.hsts_preload:
+                value += "; preload"
+            response.headers["Strict-Transport-Security"] = value
+        return response
 
 
 def _get_current_user(request: Request):

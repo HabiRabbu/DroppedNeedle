@@ -19,8 +19,13 @@
 		ExternalLink,
 		ImagePlus,
 		CircleAlert,
-		RefreshCw
+		RefreshCw,
+		LogOut,
+		ShieldCheck,
+		UserCheck
 	} from 'lucide-svelte';
+	import { goto } from '$app/navigation';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
 
@@ -208,13 +213,29 @@
 		return n.toString();
 	}
 
+	async function handleLogout() {
+		try {
+			await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' });
+		} catch {
+			// ignore
+		}
+		authStore.clear();
+		goto('/login');
+	}
+
+	const roleLabel: Record<string, string> = {
+		admin: 'Admin',
+		trusted: 'Trusted',
+		user: 'User',
+	};
+
 	onMount(() => {
 		void loadProfile();
 	});
 </script>
 
 <svelte:head>
-	<title>Profile — MusicSeerr</title>
+	<title>Profile - MusicSeerr</title>
 </svelte:head>
 
 <div class="min-h-screen">
@@ -260,9 +281,18 @@
 						</button>
 
 						<div class="flex flex-col items-center gap-1 pb-2">
-							<span class="text-xs font-semibold uppercase tracking-widest text-base-content/40"
-								>Profile</span
-							>
+							<div class="flex items-center gap-2">
+								<span class="text-xs font-semibold uppercase tracking-widest text-base-content/40">Profile</span>
+								{#if authStore.user}
+									{#if authStore.user.role === 'admin'}
+										<span class="badge badge-accent badge-sm gap-1"><ShieldCheck class="h-3 w-3" />{roleLabel[authStore.user.role]}</span>
+									{:else if authStore.user.role === 'trusted'}
+										<span class="badge badge-info badge-sm gap-1"><UserCheck class="h-3 w-3" />{roleLabel[authStore.user.role]}</span>
+									{:else}
+										<span class="badge badge-ghost badge-sm">{roleLabel[authStore.user.role]}</span>
+									{/if}
+								{/if}
+							</div>
 							{#if editingName}
 								<div class="flex items-center gap-2">
 									<input
@@ -450,7 +480,7 @@
 					</section>
 				{/if}
 
-				<section class="flex justify-center pt-2">
+				<section class="flex justify-center gap-3 pt-2">
 					<a
 						href="/settings"
 						class="btn btn-outline btn-sm gap-2 border-base-content/20 text-base-content/60 transition-all hover:border-primary hover:text-primary"
@@ -458,6 +488,13 @@
 						<Settings class="h-4 w-4" />
 						Open Settings
 					</a>
+					<button
+						class="btn btn-outline btn-sm gap-2 border-base-content/20 text-base-content/60 transition-all hover:border-error hover:text-error"
+						onclick={() => void handleLogout()}
+					>
+						<LogOut class="h-4 w-4" />
+						Sign Out
+					</button>
 				</section>
 			</div>
 		</div>
@@ -497,7 +534,7 @@
 			{:else}
 				<ImagePlus class="h-10 w-10 text-base-content/30" />
 				<p class="text-sm text-base-content/60">Drag & drop an image here, or click to browse</p>
-				<p class="text-xs text-base-content/40">JPEG, PNG, WebP, or GIF — max 5 MB</p>
+				<p class="text-xs text-base-content/40">JPEG, PNG, WebP, or GIF, max 5 MB</p>
 			{/if}
 		</div>
 		<div class="modal-action">

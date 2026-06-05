@@ -4,21 +4,26 @@
 	import RequestCard from '$lib/components/RequestCard.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import type { ActiveRequestItem, RequestHistoryItem } from '$lib/types';
-	import { TriangleAlert, CheckCircle, Clock, Download, History, Search } from 'lucide-svelte';
+	import { TriangleAlert, CheckCircle, Clock, Download, History, Search, ShieldCheck, Check, X } from 'lucide-svelte';
 	import {
 		fetchActiveRequests,
 		fetchRequestHistory,
 		cancelRequest,
 		retryRequest,
 		clearHistoryItem,
-		notifyRequestCountChanged
+		notifyRequestCountChanged,
+		fetchPendingApprovals,
+		approveRequest,
+		rejectRequest
 	} from '$lib/utils/requestsApi';
 	import { requestCountStore } from '$lib/stores/requestCountStore.svelte';
 	import { isAbortError } from '$lib/utils/errorHandling';
 	import { libraryStore } from '$lib/stores/library';
+	import { authStore } from '$lib/stores/authStore.svelte';
 
-	let activeTab = $state<'active' | 'history'>('active');
+	let activeTab = $state<'active' | 'history' | 'approvals'>('active');
 
 	let activeItems = $state<ActiveRequestItem[]>([]);
 	let activeCount = $state(0);
@@ -45,6 +50,13 @@
 	let toastMessage = $state('');
 	let toastType = $state<'success' | 'error' | 'info'>('success');
 	let isPolling = $state(false);
+
+	// Approvals tab (admin only)
+	let approvalItems = $state<ActiveRequestItem[]>([]);
+	let approvalCount = $state(0);
+	let approvalLoading = $state(true);
+	let approvalError = $state<string | null>(null);
+	let approvalAbortController: AbortController | null = null;
 
 	const downloadingCount = $derived(activeItems.filter((i) => i.status === 'downloading').length);
 	const pendingCount = $derived(
@@ -166,14 +178,78 @@
 		}
 	}
 
-	function switchTab(tab: 'active' | 'history') {
+	function abortApprovalsLoad() {
+		if (approvalAbortController) {
+			approvalAbortController.abort();
+			approvalAbortController = null;
+		}
+	}
+
+	async function loadApprovals() {
+		abortApprovalsLoad();
+		const controller = new AbortController();
+		approvalAbortController = controller;
+		approvalLoading = true;
+		try {
+			const data = await fetchPendingApprovals(controller.signal);
+			if (controller.signal.aborted) return;
+			approvalItems = data.items;
+			approvalCount = data.count;
+			approvalError = null;
+		} catch (e) {
+			if (isAbortError(e)) return;
+			approvalError = "Couldn't load pending approvals";
+		} finally {
+			if (!controller.signal.aborted) approvalLoading = false;
+			if (approvalAbortController === controller) approvalAbortController = null;
+		}
+	}
+
+	async function handleApprove(mbid: string) {
+		try {
+			const result = await approveRequest(mbid);
+			if (result.success) {
+				showToast(result.message);
+				approvalItems = approvalItems.filter((i) => i.musicbrainz_id !== mbid);
+				approvalCount = approvalItems.length;
+				notifyRequestCountChanged();
+			} else {
+				showToast(result.message, 'error');
+			}
+		} catch {
+			showToast('Could not approve that request', 'error');
+		}
+	}
+
+	async function handleReject(mbid: string) {
+		try {
+			const result = await rejectRequest(mbid);
+			if (result.success) {
+				showToast(result.message, 'info');
+				approvalItems = approvalItems.filter((i) => i.musicbrainz_id !== mbid);
+				approvalCount = approvalItems.length;
+			} else {
+				showToast(result.message, 'error');
+			}
+		} catch {
+			showToast('Could not reject that request', 'error');
+		}
+	}
+
+	function switchTab(tab: 'active' | 'history' | 'approvals') {
 		activeTab = tab;
 		if (tab === 'active') {
 			abortHistoryLoad();
+			abortApprovalsLoad();
 			startPolling();
+		} else if (tab === 'history') {
+			stopPolling();
+			abortApprovalsLoad();
+			void loadHistory();
 		} else {
 			stopPolling();
-			void loadHistory();
+			abortHistoryLoad();
+			void loadApprovals();
 		}
 	}
 
@@ -249,12 +325,14 @@
 		startPolling();
 		document.addEventListener('visibilitychange', handleVisibility);
 		requestCountStore.setPageActive(true);
+		if (authStore.isAdmin) void loadApprovals();
 	});
 
 	onDestroy(() => {
 		stopPolling();
 		abortActiveLoad();
 		abortHistoryLoad();
+		abortApprovalsLoad();
 		document.removeEventListener('visibilitychange', handleVisibility);
 		requestCountStore.setPageActive(false);
 	});
@@ -322,6 +400,25 @@
 				</span>
 			{/if}
 		</button>
+		{#if authStore.isAdmin}
+			<button
+				role="tab"
+				class="tab-btn"
+				class:tab-btn-active={activeTab === 'approvals'}
+				aria-selected={activeTab === 'approvals'}
+				onclick={() => switchTab('approvals')}
+			>
+				<ShieldCheck class="h-4 w-4" />
+				Approvals
+				{#if approvalCount > 0}
+					<span
+						class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-warning/15 text-warning text-xs font-medium tabular-nums"
+					>
+						{approvalCount}
+					</span>
+				{/if}
+			</button>
+		{/if}
 	</div>
 
 	{#if activeTab === 'active'}
@@ -374,7 +471,7 @@
 				</div>
 			{/if}
 		</div>
-	{:else}
+	{:else if activeTab === 'history'}
 		<div in:fade={{ duration: 150 }}>
 			<div class="flex flex-wrap items-center gap-2 mb-4">
 				<select
@@ -472,6 +569,87 @@
 						/>
 					</div>
 				{/if}
+			{/if}
+		</div>
+	{:else if activeTab === 'approvals' && authStore.isAdmin}
+		<div in:fade={{ duration: 150 }}>
+			{#if approvalError}
+				<div class="alert alert-warning mb-4">
+					<TriangleAlert class="h-5 w-5" />
+					<span>{approvalError}</span>
+					<button class="btn btn-sm" onclick={loadApprovals}>Retry</button>
+				</div>
+			{/if}
+
+			{#if approvalLoading && approvalItems.length === 0}
+				<div class="flex flex-col gap-2.5">
+					{#each Array(3) as _, i (`approval-loading-${i}`)}
+						<div
+							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
+							style="animation-delay: {i * 100}ms"
+						>
+							<div class="w-14 h-14 sm:w-18 sm:h-18 bg-base-300 rounded-lg"></div>
+							<div class="flex-1">
+								<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
+								<div class="h-3 bg-base-300 rounded w-28"></div>
+							</div>
+							<div class="flex gap-2">
+								<div class="h-8 bg-base-300 rounded-btn w-20"></div>
+								<div class="h-8 bg-base-300 rounded-btn w-20"></div>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{:else if approvalItems.length === 0}
+				<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
+					<div class="w-16 h-16 rounded-full bg-success/5 flex items-center justify-center mb-4">
+						<CheckCircle class="h-8 w-8 text-success/30" />
+					</div>
+					<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">No pending approvals</h2>
+					<p class="text-base-content/30 text-sm max-w-xs">
+						Requests from regular users will appear here for your review.
+					</p>
+				</div>
+			{:else}
+				<div class="flex flex-col gap-2.5">
+					{#each approvalItems as item, i (item.musicbrainz_id)}
+						<div
+							in:fly={{ y: 12, duration: 200, delay: i * 30 }}
+							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
+						>
+							<div class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300">
+								<AlbumImage
+									src={item.cover_url ?? null}
+									alt={item.album_title}
+									class="w-full h-full object-cover"
+								/>
+							</div>
+							<div class="flex-1 min-w-0">
+								<p class="font-semibold text-sm truncate">{item.album_title}</p>
+								<p class="text-base-content/60 text-xs truncate">{item.artist_name}</p>
+								{#if item.year}
+									<p class="text-base-content/40 text-xs">{item.year}</p>
+								{/if}
+							</div>
+							<div class="flex gap-2 shrink-0">
+								<button
+									class="btn btn-success btn-sm gap-1"
+									onclick={() => void handleApprove(item.musicbrainz_id)}
+								>
+									<Check class="h-3.5 w-3.5" />
+									Approve
+								</button>
+								<button
+									class="btn btn-error btn-sm btn-outline gap-1"
+									onclick={() => void handleReject(item.musicbrainz_id)}
+								>
+									<X class="h-3.5 w-3.5" />
+									Reject
+								</button>
+							</div>
+						</div>
+					{/each}
+				</div>
 			{/if}
 		</div>
 	{/if}

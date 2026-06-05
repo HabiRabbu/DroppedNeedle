@@ -21,6 +21,9 @@
 	import SettingsAbout from '$lib/components/settings/SettingsAbout.svelte';
 	import SettingsHome from '$lib/components/settings/SettingsHome.svelte';
 	import SettingsDiscover from '$lib/components/settings/SettingsDiscover.svelte';
+	import SettingsUsers from '$lib/components/settings/SettingsUsers.svelte';
+	import SettingsSecurity from '$lib/components/settings/SettingsSecurity.svelte';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { getUpdateCheckQuery } from '$lib/queries/VersionQuery.svelte';
 	import {
 		Settings2,
@@ -37,7 +40,9 @@
 		ArrowUpCircle,
 		Globe,
 		Home,
-		Compass
+		Compass,
+		Users,
+		ShieldCheck
 	} from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
@@ -94,7 +99,13 @@
 		{ id: 'cache', label: 'Cache', group: 'System', icon: Database },
 		{ id: 'musicbrainz', label: 'MusicBrainz', group: 'System', icon: Globe },
 		{ id: 'advanced', label: 'Advanced', group: 'System', icon: Settings },
-		{ id: 'about', label: 'About', group: 'System', icon: Info }
+		{ id: 'about', label: 'About', group: 'System', icon: Info },
+		...(authStore.isAdmin
+			? [
+					{ id: 'security', label: 'Security', group: 'System', icon: ShieldCheck },
+					{ id: 'users', label: 'Users', group: 'System', icon: Users },
+				]
+			: [])
 	];
 
 	const groups = [...new Set(tabs.map((t) => t.group))];
@@ -208,6 +219,10 @@
 					<SettingsAdvanced />
 				{:else if activeTab === 'about'}
 					<SettingsAbout />
+				{:else if activeTab === 'security' && authStore.isAdmin}
+					<SettingsSecurity />
+				{:else if activeTab === 'users' && authStore.isAdmin}
+					<SettingsUsers />
 				{/if}
 			</main>
 		</div>

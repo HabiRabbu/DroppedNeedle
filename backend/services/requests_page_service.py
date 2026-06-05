@@ -51,8 +51,11 @@ class RequestsPageService:
         self._library_mbids_cache: set[str] | None = None
         self._library_mbids_cache_time: float = 0
 
-    async def get_active_requests(self) -> ActiveRequestsResponse:
-        active_records = await self._request_history.async_get_active_requests()
+    async def get_active_requests(self, user_id: str | None = None) -> ActiveRequestsResponse:
+        if user_id is not None:
+            active_records = await self._request_history.async_get_active_requests_for_user(user_id)
+        else:
+            active_records = await self._request_history.async_get_active_requests()
         if not active_records:
             return ActiveRequestsResponse(items=[], count=0)
 
@@ -63,6 +66,11 @@ class RequestsPageService:
 
         items: list[ActiveRequestItem] = []
         for record in active_records:
+            # awaiting_approval records aren't in Lidarr, show them directly
+            if record.status == "awaiting_approval":
+                items.append(self._build_pending_item(record))
+                continue
+
             queue_item = queue_by_mbid.get(record.musicbrainz_id)
 
             if queue_item:
@@ -82,10 +90,16 @@ class RequestsPageService:
         page_size: int = 20,
         status_filter: Optional[str] = None,
         sort: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> RequestHistoryResponse:
-        records, total = await self._request_history.async_get_history(
-            page=page, page_size=page_size, status_filter=status_filter, sort=sort
-        )
+        if user_id is not None:
+            records, total = await self._request_history.async_get_history_for_user(
+                user_id=user_id, page=page, page_size=page_size, status_filter=status_filter, sort=sort
+            )
+        else:
+            records, total = await self._request_history.async_get_history(
+                page=page, page_size=page_size, status_filter=status_filter, sort=sort
+            )
 
         library_mbids = await self._fetch_library_mbids()
 
@@ -119,6 +133,39 @@ class RequestsPageService:
             total_pages=total_pages,
         )
 
+    async def get_pending_approvals(self) -> ActiveRequestsResponse:
+        records = await self._request_history.async_get_pending_approvals()
+        items = [self._build_pending_item(r) for r in records]
+        return ActiveRequestsResponse(items=items, count=len(items))
+
+    async def approve_request(self, musicbrainz_id: str) -> CancelRequestResponse:
+        record = await self._request_history.async_get_record(musicbrainz_id)
+        if not record:
+            return CancelRequestResponse(success=False, message="Request not found")
+        if record.status != "awaiting_approval":
+            return CancelRequestResponse(
+                success=False, message=f"Request is not awaiting approval (status: {record.status})"
+            )
+        await self._request_history.async_update_status(musicbrainz_id, "pending")
+        if self._request_queue:
+            try:
+                await self._request_queue.enqueue(musicbrainz_id)
+            except Exception as e:  # noqa: BLE001
+                logger.error("Failed to enqueue approved request %s: %s", musicbrainz_id, e)
+        return CancelRequestResponse(success=True, message=f"Approved: {record.album_title}")
+
+    async def reject_request(self, musicbrainz_id: str) -> CancelRequestResponse:
+        record = await self._request_history.async_get_record(musicbrainz_id)
+        if not record:
+            return CancelRequestResponse(success=False, message="Request not found")
+        if record.status != "awaiting_approval":
+            return CancelRequestResponse(
+                success=False, message=f"Request is not awaiting approval (status: {record.status})"
+            )
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await self._request_history.async_update_status(musicbrainz_id, "rejected", completed_at=now_iso)
+        return CancelRequestResponse(success=True, message=f"Rejected: {record.album_title}")
+
     async def cancel_request(
         self, musicbrainz_id: str
     ) -> CancelRequestResponse:
@@ -126,6 +173,17 @@ class RequestsPageService:
         if not record:
             return CancelRequestResponse(
                 success=False, message="Request not found"
+            )
+
+        # awaiting_approval requests haven't reached Lidarr, cancel directly
+        if record.status == "awaiting_approval":
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await self._request_history.async_update_status(
+                musicbrainz_id, "cancelled", completed_at=now_iso
+            )
+            return CancelRequestResponse(
+                success=True,
+                message=f"Cancelled request for {record.album_title}",
             )
 
         if record.status not in _CANCELLABLE_STATUSES:
@@ -254,7 +312,9 @@ class RequestsPageService:
             return False
         return await self._request_history.async_delete_record(musicbrainz_id)
 
-    async def get_active_count(self) -> int:
+    async def get_active_count(self, user_id: str | None = None) -> int:
+        if user_id is not None:
+            return await self._request_history.async_get_active_count_for_user(user_id)
         return await self._request_history.async_get_active_count()
 
     async def sync_request_statuses(self) -> None:

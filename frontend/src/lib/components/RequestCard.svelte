@@ -123,6 +123,10 @@
 				return { badgeClass: 'badge-error', label: 'Failed', icon: XCircle };
 			case 'cancelled':
 				return { badgeClass: 'badge-ghost', label: 'Cancelled', icon: Ban };
+			case 'awaiting_approval':
+				return { badgeClass: 'badge-warning', label: 'Awaiting Approval', icon: Clock };
+			case 'rejected':
+				return { badgeClass: 'badge-error', label: 'Rejected', icon: Ban };
 			default:
 				return { badgeClass: 'badge-ghost', label: item.status, icon: Music };
 		}

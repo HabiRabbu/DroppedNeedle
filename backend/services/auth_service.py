@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import logging, uuid, json
+import asyncio, hashlib, httpx, logging, os, uuid, json
 import bcrypt as _bcrypt
 
+from core.dependencies.cache_providers import get_preferences_service
 from core.exceptions import AuthenticationError, RegistrationError
 from infrastructure.persistence.auth_store import AuthStore, TokenRecord, UserRecord
 
@@ -28,11 +29,11 @@ class AuthService:
         password: str,
         user_agent: str | None = None,
     ) -> tuple[UserRecord, str]:
-        if not await self._store.has_any_users() is False:
-            if not await self.is_setup_required():
-                raise RegistrationError("Setup has already been completed")
+        if not await self.is_setup_required():
+            raise RegistrationError("Setup has already been completed")
 
         _validate_password(password)
+        await _check_hibp(password)
         email = email.lower().strip()
         _validate_email(email)
 
@@ -71,6 +72,7 @@ class AuthService:
         if role not in ("admin", "trusted", "user"):
             raise RegistrationError(f"Invalid role: {role}")
         _validate_password(password)
+        await _check_hibp(password)
         email = email.lower().strip()
         _validate_email(email)
 
@@ -230,12 +232,127 @@ def _dummy_verify() -> None:
 
 
 def _validate_password(password: str) -> None:
-    """Basic password validation. We rely on bcrypt for actual security, but this prevents some common mistakes.
-    Further validation (e.g. complexity requirements) can be added later if needed."""
-    if len(password) < 8:
-        raise RegistrationError("Password must be at least 8 characters")
+    if len(password) < 12:
+        raise RegistrationError("Password must be at least 12 characters")
 
 
 def _validate_email(email: str) -> None:
     if not email or "@" not in email or len(email) < 5:
         raise RegistrationError("Invalid email address")
+
+
+async def _check_hibp(password: str) -> None:
+    """Reject passwords found in the Have I Been Pwned breach corpus.
+
+    Priority:
+      1. Local file (if hibp_local_path is set and the file exists), no outbound calls.
+      2. api.pwnedpasswords.com range API, free, no key required, uses k-anonymity
+         so only the first 5 hex chars of the SHA-1 hash leave the server.
+         Note: this is separate from the paid haveibeenpwned.com notification API.
+    If hibp_check is False, the function returns immediately.
+    Both paths fail open on error so a missing file or unreachable service never
+    blocks account creation.
+    """
+    sec = get_preferences_service().get_security_settings()
+
+    if not sec.hibp_check:
+        return
+
+    sha1 = hashlib.sha1(password.encode("utf-8")).hexdigest().upper()
+
+    if sec.hibp_local_path:
+        path = sec.hibp_local_path.strip()
+        if os.path.isfile(path):
+            found = await asyncio.to_thread(_search_hibp_file, sha1, path)
+            if found:
+                raise RegistrationError(
+                    "This password has appeared in a known data breach. Please choose a different password."
+                )
+            return
+        else:
+            logger.warning("HIBP local path configured but file not found. Skipping breach check")
+            return  # user opted out of API calls; fail open
+
+    # --- api.pwnedpasswords.com range API (k-anonymity, free, no key required) ---
+    # Distinct from the paid haveibeenpwned.com notification/lookup API.
+    # Only the first 5 hex chars of the SHA-1 hash are transmitted.
+    prefix, suffix = sha1[:5], sha1[5:]
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"https://api.pwnedpasswords.com/range/{prefix}",
+                headers={"Add-Padding": "true"},
+            )
+        if resp.status_code != 200:
+            return  # fail open
+
+        for line in resp.text.splitlines():
+            if ":" not in line:
+                continue
+            line_suffix, _ = line.split(":", 1)
+            if line_suffix.upper() == suffix:
+                raise RegistrationError(
+                    "This password has appeared in a known data breach. Please choose a different password."
+                )
+    except RegistrationError:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.warning("pwnedpasswords.com range check failed (network error). Proceeding without breach check")
+
+
+def _search_hibp_file(sha1: str, path: str) -> bool:
+    """Binary-search a sorted HIBP 'Pwned Passwords (ordered by hash)' text file.
+
+    File format (official HIBP download, hash-ordered):
+        ABCDEF...40HEX:COUNT\\r\\n   (one entry per line, sorted ascending)
+
+    O(log N) disk seeks, typically ~30 seeks regardless of file size.
+    """
+    try:
+        file_size = os.path.getsize(path)
+        if file_size == 0:
+            return False
+
+        with open(path, "rb") as fh:
+            low: int = 0
+            high: int = file_size
+
+            while low < high:
+                mid = (low + high) // 2
+                fh.seek(mid)
+
+                # Skip the partial line we landed in the middle of.
+                if mid > 0:
+                    fh.readline()
+
+                line_start = fh.tell()
+                if line_start >= high:
+                    break
+
+                raw = fh.readline()
+                if not raw:
+                    break
+
+                text = raw.decode("ascii", errors="ignore").rstrip("\r\n")
+                if not text or ":" not in text:
+                    break
+
+                line_hash = text.split(":", 1)[0].upper()
+
+                if line_hash == sha1:
+                    return True
+                elif line_hash < sha1:
+                    # Target is after this line.
+                    new_low = fh.tell()
+                    if new_low <= low:
+                        break  # no progress, file may be malformed
+                    low = new_low
+                else:
+                    # Target (if present) is before this line's position.
+                    if mid <= low:
+                        break
+                    high = mid
+
+        return False
+    except OSError:
+        return False

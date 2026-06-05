@@ -72,3 +72,8 @@ class ClearHistoryResponse(AppStruct):
 
 class ActiveCountResponse(AppStruct):
     count: int
+
+
+class ApprovalActionResponse(AppStruct):
+    success: bool
+    message: str

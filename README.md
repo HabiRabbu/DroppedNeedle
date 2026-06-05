@@ -83,9 +83,9 @@ services:
 docker compose up -d
 ```
 
-### 3. Configure
+### 3. First-run setup
 
-Open [http://localhost:8688](http://localhost:8688) and head to Settings. Add your Lidarr URL and API key, then connect whichever streaming and discovery services you use.
+Open [http://localhost:8688](http://localhost:8688). On first launch you'll be prompted to create an admin account, this only happens once. After that, add your Lidarr URL and API key in Settings, then connect whichever streaming and discovery services you use.
 
 ---
 
@@ -103,11 +103,37 @@ Lidarr is the only requirement. slskd and Tubifarry are optional but between the
 
 ---
 
+## Authentication
+
+MusicSeerr is a multi-user application. Every user has a role that controls what they can do.
+
+### Roles
+
+| Role | Requests | Admin access |
+|------|----------|--------------|
+| **Admin** | Sent to Lidarr immediately | Full: manage users, approve/reject requests, change all settings |
+| **Trusted** | Sent to Lidarr immediately | None |
+| **User** | Held for admin approval before Lidarr sees them | None |
+
+The first account created is always an admin. Additional accounts can be created and managed at Settings > Users (admin only).
+
+### Login methods
+
+Local email/password accounts are always available. You can also configure sign-in through Jellyfin, Plex, or any OIDC-compatible provider (Authelia, Keycloak, Authentik, etc). See [Setting Up OIDC](#setting-up-oidc) below.
+
+All login methods are enabled or disabled in the web UI. No environment variables are needed.
+
+### Sessions
+
+Sessions last 30 days. Admins can revoke individual sessions or all sessions for any user from Settings > Users. Users can view and revoke their own sessions from the profile page.
+
+---
+
 ## Features
 
 ### Search and Request
 
-Search the full MusicBrainz catalogue for any artist or album. Request an album and Lidarr handles the download. A persistent queue tracks all requests, and you can browse pending and fulfilled requests on a dedicated page with retry and cancel support.
+Search the full MusicBrainz catalogue for any artist or album. Request an album and Lidarr handles the download. Admin and trusted users' requests are forwarded to Lidarr immediately; requests from standard users are held in an approval queue until an admin approves or rejects them. A persistent queue tracks all requests, and you can browse pending and fulfilled requests on a dedicated page with retry and cancel support.
 
 ### Built-in Player
 
@@ -202,6 +228,8 @@ Run `id` on your host to find your PUID and PGID values.
 | Scrobbling toggles per service | Settings > Scrobbling |
 | Home page layout preferences | Settings > Preferences |
 | AudioDB settings and cache TTLs | Settings > Advanced |
+| HSTS header and HIBP password breach checking | Settings > Security |
+| User accounts, roles, and session management | Settings > Users |
 
 ### Setting Up Last.fm
 
@@ -213,6 +241,24 @@ Run `id` on your host to find your PUID and PGID values.
 
 1. Copy your user token from [listenbrainz.org/profile](https://listenbrainz.org/profile/).
 2. Enter your username and token in Settings > ListenBrainz.
+
+### Setting Up OIDC
+
+Any OIDC provider that supports the authorization code flow works (Authelia, Keycloak, Authentik, etc.).
+
+1. In your provider, create a new OIDC client / application. Set the redirect URI to `https://your-musicseerr-url/api/v1/auth/oidc/callback`.
+2. In Settings > Security, enter your provider's **Issuer URL**, **Client ID**, and **Client Secret**.
+3. Save, an SSO button will appear on the login page.
+
+Users who sign in via OIDC are created automatically on first login and assigned the **User** role by default. An admin can promote them from Settings > Users.
+
+### Security Settings
+
+Settings > Security exposes two features (admin only):
+
+**Password breach checking (HIBP):** When enabled, new passwords are checked against the [Have I Been Pwned](https://haveibeenpwned.com/Passwords) breach database using the k-anonymity API (`api.pwnedpasswords.com`). Only the first 5 characters of the password's SHA-1 hash are transmitted, the full password never leaves the server. This is on by default. For air-gapped or offline installs, you can either disable it or supply the path to a local copy of the HIBP hash file (download the "ordered by hash" version from haveibeenpwned.com/Passwords, typically ~35 GB). When a local path is configured, no outbound network calls are made.
+
+**HSTS (Strict-Transport-Security):** Only relevant if you're serving MusicSeerr over HTTPS via a reverse proxy. Leave this disabled for plain HTTP installs. Enabling it on HTTP will cause browsers to refuse to connect until the HSTS entry expires. When behind HTTPS, set a `max-age` to instruct browsers to always use HTTPS. Starting with a shorter value (e.g. 30 days) and increasing it once you're confident everything works is recommended.
 
 ### TheAudioDB
 

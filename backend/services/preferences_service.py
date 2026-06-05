@@ -23,6 +23,7 @@ from api.v1.schemas.settings import (
     PlexConnectionSettings,
     PLEX_TOKEN_MASK,
     MusicBrainzConnectionSettings,
+    SecuritySettings,
 )
 from api.v1.schemas.profile import ProfileSettings
 from api.v1.schemas.advanced_settings import AdvancedSettings
@@ -494,3 +495,13 @@ class PreferencesService:
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to save OIDC settings: {e}")
             raise ConfigurationError(f"Failed to save OIDC settings")
+
+    def get_security_settings(self) -> SecuritySettings:
+        return self._get_section("security_settings", SecuritySettings)
+
+    def save_security_settings(self, settings: SecuritySettings) -> None:
+        try:
+            self._save_section("security_settings", settings)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save security settings: {e}")
+            raise ConfigurationError(f"Failed to save security settings")

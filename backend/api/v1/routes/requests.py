@@ -1,5 +1,5 @@
 import msgspec.structs
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from api.v1.schemas.request import (
     AlbumRequest,
     BatchAlbumRequest,
@@ -10,6 +10,7 @@ from api.v1.schemas.request import (
     RequestAcceptedResponse,
 )
 from core.dependencies import get_request_service
+from core.dependencies.type_aliases import CurrentUserDep
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from services.request_service import RequestService
 
@@ -20,6 +21,7 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/requests", tags=["requests
 async def request_album(
     album_request: AlbumRequest = MsgSpecBody(AlbumRequest),
     request_service: RequestService = Depends(get_request_service),
+    current_user: CurrentUserDep = None,
 ):
     return await request_service.request_album(
         album_request.musicbrainz_id,
@@ -29,6 +31,9 @@ async def request_album(
         artist_mbid=album_request.artist_mbid,
         monitor_artist=album_request.monitor_artist,
         auto_download_artist=album_request.auto_download_artist,
+        user_id=current_user.id,
+        user_role=current_user.role,
+        requested_by_name=current_user.display_name,
     )
 
 
@@ -36,11 +41,15 @@ async def request_album(
 async def request_batch(
     batch: BatchAlbumRequest = MsgSpecBody(BatchAlbumRequest),
     request_service: RequestService = Depends(get_request_service),
+    current_user: CurrentUserDep = None,
 ):
     return await request_service.request_batch(
         items=[msgspec.structs.asdict(item) for item in batch.items],
         monitor_artist=batch.monitor_artist,
         auto_download_artist=batch.auto_download_artist,
+        user_id=current_user.id,
+        user_role=current_user.role,
+        requested_by_name=current_user.display_name,
     )
 
 
