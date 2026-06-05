@@ -40,7 +40,7 @@
 				display_name: data.user.display_name,
 				role: data.user.role,
 				email: data.user.email,
-				avatar_url: data.user.avatar_url,
+				avatar_url: data.user.avatar_url
 			});
 			goto('/');
 		} catch {

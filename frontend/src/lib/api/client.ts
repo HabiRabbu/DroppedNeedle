@@ -90,17 +90,17 @@ function createClient(fetchFn: FetchFn): ApiClient {
 		// credentials: 'include' sends the httpOnly session cookie cross-origin (dev proxy)
 		const init: RequestInit = { method, credentials: 'include', ...fetchOpts };
 
-		const headers = new Headers(init.headers as HeadersInit | undefined);
-
 		if (body !== undefined && body !== null) {
 			if (body instanceof FormData) {
+				// Do not set Content-Type, the browser sets multipart/form-data with boundary automatically
 				init.body = body;
 			} else {
+				const headers = new Headers(init.headers as HeadersInit | undefined);
 				headers.set('Content-Type', 'application/json');
+				init.headers = headers;
 				init.body = JSON.stringify(body);
 			}
 		}
-		init.headers = headers;
 
 		const requestUrl = getApiUrl(url);
 

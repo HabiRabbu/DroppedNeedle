@@ -103,7 +103,7 @@
 		...(authStore.isAdmin
 			? [
 					{ id: 'security', label: 'Security', group: 'System', icon: ShieldCheck },
-					{ id: 'users', label: 'Users', group: 'System', icon: Users },
+					{ id: 'users', label: 'Users', group: 'System', icon: Users }
 				]
 			: [])
 	];

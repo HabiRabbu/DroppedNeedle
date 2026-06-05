@@ -37,7 +37,7 @@ function createAuthStore() {
 
 		markInitialized() {
 			initialized = true;
-		},
+		}
 	};
 }
 

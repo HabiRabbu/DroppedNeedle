@@ -57,13 +57,21 @@
 		if (plexPollInterval) clearInterval(plexPollInterval);
 	});
 
-	function storeSession(data: { user: { id: string; display_name: string; role: string; email: string | null; avatar_url: string | null } }) {
+	function storeSession(data: {
+		user: {
+			id: string;
+			display_name: string;
+			role: string;
+			email: string | null;
+			avatar_url: string | null;
+		};
+	}) {
 		authStore.setUser({
 			id: data.user.id,
 			display_name: data.user.display_name,
 			role: data.user.role as 'admin' | 'trusted' | 'user',
 			email: data.user.email,
-			avatar_url: data.user.avatar_url,
+			avatar_url: data.user.avatar_url
 		});
 		goto('/');
 	}

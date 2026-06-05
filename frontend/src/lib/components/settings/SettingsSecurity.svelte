@@ -17,7 +17,7 @@
 		hibp_local_path: '',
 		hsts_max_age: 0,
 		hsts_include_subdomains: false,
-		hsts_preload: false,
+		hsts_preload: false
 	};
 
 	const form = createSettingsForm<SecuritySettingsForm>({
@@ -52,7 +52,7 @@
 		{ label: 'Disabled', value: 0 },
 		{ label: '1 month', value: 30 * 24 * 3600 },
 		{ label: '6 months', value: 180 * 24 * 3600 },
-		{ label: '1 year', value: 365 * 24 * 3600 },
+		{ label: '1 year', value: 365 * 24 * 3600 }
 	];
 
 	function resetToDefaults() {

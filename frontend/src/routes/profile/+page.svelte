@@ -226,7 +226,7 @@
 	const roleLabel: Record<string, string> = {
 		admin: 'Admin',
 		trusted: 'Trusted',
-		user: 'User',
+		user: 'User'
 	};
 
 	onMount(() => {

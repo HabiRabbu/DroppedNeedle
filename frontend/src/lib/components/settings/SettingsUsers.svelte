@@ -73,7 +73,7 @@
 				display_name: newName,
 				email: newEmail,
 				password: newPassword,
-				role: newRole,
+				role: newRole
 			});
 			users = [...users, user];
 			createSuccess = `Created ${user.display_name}`;
@@ -93,7 +93,7 @@
 	const roleLabel: Record<string, string> = {
 		admin: 'Admin',
 		trusted: 'Trusted',
-		user: 'User',
+		user: 'User'
 	};
 
 	function roleIcon(role: string) {

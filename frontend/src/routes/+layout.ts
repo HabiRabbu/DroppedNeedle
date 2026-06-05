@@ -43,7 +43,7 @@ export const load: LayoutLoad = async ({ url }) => {
 				display_name: user.display_name,
 				role: user.role as 'admin' | 'trusted' | 'user',
 				email: user.email,
-				avatar_url: user.avatar_url,
+				avatar_url: user.avatar_url
 			});
 		} catch {
 			// No valid session, authStore.user remains null
