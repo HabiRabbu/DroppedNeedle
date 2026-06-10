@@ -38,13 +38,23 @@ from core.dependencies import (
 )
 from core.exceptions import ConfigurationError, ExternalServiceError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
+from middleware import CurrentAdminDep
 from services.local_files_service import LocalFilesService
 from services.preferences_service import PreferencesService
 from services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(route_class=MsgSpecRoute, prefix="/settings", tags=["settings"])
+
+async def _admin_guard(_: CurrentAdminDep) -> None: ...
+
+
+router = APIRouter(
+    route_class=MsgSpecRoute,
+    prefix="/settings",
+    tags=["settings"],
+    dependencies=[Depends(_admin_guard)],
+)
 
 
 @router.get("/preferences", response_model=UserPreferences)

@@ -19,10 +19,19 @@
 		email: string | null;
 	}
 
+	const PAGE_SIZE = 20;
+
 	let users = $state<UserRecord[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
-	let savingRole = $state<string | null>(null); // user_id being updated
+	let savingRole = $state<string | null>(null);
+	let roleError = $state<string | null>(null);
+	let page = $state(1);
+	let total = $state(0);
+
+	const totalPages = $derived(Math.max(1, Math.ceil(total / PAGE_SIZE)));
+	const rangeStart = $derived(total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1);
+	const rangeEnd = $derived(Math.min(page * PAGE_SIZE, total));
 
 	// Create user form
 	let showCreateForm = $state(false);
@@ -35,14 +44,17 @@
 	let createError = $state<string | null>(null);
 	let createSuccess = $state<string | null>(null);
 
-	async function loadUsers() {
+	async function loadUsers(targetPage = page) {
 		loading = true;
 		error = null;
 		try {
+			const offset = (targetPage - 1) * PAGE_SIZE;
 			const data = await api.get<{ users: UserRecord[]; total: number }>(
-				'/api/v1/auth/admin/users'
+				`/api/v1/auth/admin/users?limit=${PAGE_SIZE}&offset=${offset}`
 			);
 			users = data.users;
+			total = data.total;
+			page = targetPage;
 		} catch {
 			error = "Couldn't load users";
 		} finally {
@@ -52,11 +64,12 @@
 
 	async function setRole(userId: string, role: 'admin' | 'trusted' | 'user') {
 		savingRole = userId;
+		roleError = null;
 		try {
 			await api.patch(`/api/v1/auth/admin/users/${userId}/role`, { role });
 			users = users.map((u) => (u.id === userId ? { ...u, role } : u));
-		} catch {
-			// ignore, could show a toast but keeping it simple
+		} catch (e: unknown) {
+			roleError = (e as { message?: string })?.message ?? 'Could not update role';
 		} finally {
 			savingRole = null;
 		}
@@ -77,13 +90,15 @@
 				password: newPassword,
 				role: newRole
 			});
-			users = [...users, user];
 			createSuccess = `Created ${user.display_name}`;
 			newName = '';
 			newEmail = '';
 			newPassword = '';
 			newRole = 'user';
 			showCreateForm = false;
+			// Reload last page so the new user is visible (sorted by created_at ASC)
+			const newTotal = total + 1;
+			await loadUsers(Math.ceil(newTotal / PAGE_SIZE));
 		} catch (e: unknown) {
 			const msg = (e as { message?: string })?.message;
 			createError = msg ?? 'Could not create user';
@@ -124,7 +139,7 @@
 		<div class="flex gap-2">
 			<button
 				class="btn btn-ghost btn-sm btn-circle"
-				onclick={() => void loadUsers()}
+				onclick={() => void loadUsers(page)}
 				aria-label="Refresh"
 				disabled={loading}
 			>
@@ -235,6 +250,10 @@
 		<div class="alert alert-success py-2 text-sm">{createSuccess}</div>
 	{/if}
 
+	{#if roleError}
+		<div class="alert alert-error py-2 text-sm">{roleError}</div>
+	{/if}
+
 	{#if error}
 		<div class="alert alert-error py-2 text-sm">{error}</div>
 	{/if}
@@ -294,6 +313,24 @@
 					</div>
 				</div>
 			{/each}
+		</div>
+	{/if}
+
+	{#if total > PAGE_SIZE}
+		<div class="flex items-center justify-between">
+			<button
+				class="btn btn-sm btn-outline"
+				disabled={page === 1 || loading}
+				onclick={() => void loadUsers(page - 1)}>Previous</button
+			>
+			<span class="text-sm text-base-content/60">
+				Page {page} of {totalPages} ({total} users)
+			</span>
+			<button
+				class="btn btn-sm btn-outline"
+				disabled={page >= totalPages || loading}
+				onclick={() => void loadUsers(page + 1)}>Next</button
+			>
 		</div>
 	{/if}
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib, json, logging, os, uuid
+from urllib.parse import urlencode
 
 import httpx
 
@@ -12,6 +13,7 @@ from typing import Any
 from api.v1.schemas.settings import OIDCConnectionSettings
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError
 from infrastructure.cache.memory_cache import CacheInterface
+from infrastructure.crypto import encrypt
 from infrastructure.persistence.auth_store import AuthStore, UserRecord
 
 logger = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ class OIDCUserAuthService:
         return self._prefs.get_oidc_connection()
 
     def _require_config(self) -> OIDCConnectionSettings:
-        config = self.get_config()
+        config = self._prefs.get_oidc_connection_raw()
         if not config.enabled:
             raise ConfigurationError("OIDC login is not enabled")
         if not all([config.issuer, config.client_id, config.client_secret, config.redirect_uri]):
@@ -109,7 +111,7 @@ class OIDCUserAuthService:
             "scope": config.scopes,
             "state": state,
         }
-        query = "&".join(f"{k}={v}" for k, v in params.items())
+        query = urlencode(params)
         return f"{doc['authorization_endpoint']}?{query}"
 
     async def handle_callback(self, *, code: str, state: str, user_agent: str | None = None) -> str:
@@ -221,10 +223,10 @@ class OIDCUserAuthService:
         name = profile["name"]
         thumb = profile["thumb"]
 
-        provider_data = json.dumps({
+        provider_data = encrypt(json.dumps({
             "access_token": tokens.get("access_token", ""),
             "refresh_token": tokens.get("refresh_token", ""),
-        })
+        }))
 
         existing_provider = await self._store.get_auth_provider("oidc", oidc_uid)
         if existing_provider:

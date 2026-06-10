@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
     logging.getLogger().setLevel(configured_level)
 
     await init_app_state(app)
-    await get_auth_service.cleanup_expired_tokens()
+    await get_auth_service().cleanup_expired_tokens()
     
     preferences_service = get_preferences_service()
     settings.instance_id = preferences_service.get_instance_id()
@@ -285,6 +285,8 @@ app.add_exception_handler(Exception, general_exception_handler)
 app.add_middleware(HSTSMiddleware)
 app.add_middleware(DegradationMiddleware)
 app.add_middleware(PerformanceMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     RateLimitMiddleware,
     default_rate=30.0,
@@ -299,8 +301,6 @@ app.add_middleware(
         "/api/v1/auth/jellyfin/login": (2.0, 5),
     },
 )
-app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
-app.add_middleware(AuthMiddleware)
 
 app_settings = get_settings()
 if app_settings.debug:

@@ -215,6 +215,12 @@ class HSTSMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
+        is_https = (
+            request.url.scheme == "https"
+            or request.headers.get("x-forwarded-proto", "").lower() == "https"
+        )
+        if not is_https:
+            return response
         from core.dependencies.cache_providers import get_preferences_service
         sec = get_preferences_service().get_security_settings()
         if sec.hsts_max_age > 0:

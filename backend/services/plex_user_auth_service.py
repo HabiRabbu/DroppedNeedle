@@ -9,6 +9,7 @@ from plex_api_client.models.operations.get_server_resources import GetServerReso
 from plex_api_client.models.operations.gettokendetails import GetTokenDetailsRequest
 
 from core.exceptions import AuthenticationError, PlexApiError
+from infrastructure.crypto import encrypt
 from infrastructure.persistence.auth_store import AuthStore, UserRecord
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class PlexUserAuthService:
         name = profile["display_name"]
         thumb = profile["thumb"]
 
-        provider_data = json.dumps({"auth_token": auth_token})
+        provider_data = encrypt(json.dumps({"auth_token": auth_token}))
 
         existing_provider = await self._store.get_auth_provider("plex", plex_uid)
         if existing_provider:

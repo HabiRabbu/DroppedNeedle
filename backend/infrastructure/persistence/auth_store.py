@@ -285,6 +285,20 @@ class AuthStore:
             return [u for row in rows if (u := self._to_user(row)) is not None]
         return await self._read(operation)
 
+    async def count_users_by_role(self, role: str) -> int:
+        def operation(conn: sqlite3.Connection) -> int:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM auth_users WHERE role = ?", (role,)
+            ).fetchone()
+            return row["n"] if row else 0
+        return await self._read(operation)
+
+    async def count_users(self) -> int:
+        def operation(conn: sqlite3.Connection) -> int:
+            row = conn.execute("SELECT COUNT(*) AS n FROM auth_users").fetchone()
+            return row["n"] if row else 0
+        return await self._read(operation)
+
     async def create_auth_provider(
         self,
         *,

@@ -82,6 +82,16 @@ class RequestHistoryStore:
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e).lower():
                         logger.warning("Unexpected error adding column %s: %s", col, e)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS request_history_dismissals (
+                    user_id TEXT NOT NULL,
+                    musicbrainz_id_lower TEXT NOT NULL,
+                    dismissed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (user_id, musicbrainz_id_lower)
+                )
+                """
+            )
             conn.commit()
         finally:
             conn.close()
@@ -369,12 +379,16 @@ class RequestHistoryStore:
         order_clause = _SORT_MAP.get(sort or "", "requested_at DESC")
 
         def operation(conn: sqlite3.Connection) -> tuple[list[RequestHistoryRecord], int]:
+            dismiss_clause = (
+                "AND musicbrainz_id_lower NOT IN "
+                "(SELECT musicbrainz_id_lower FROM request_history_dismissals WHERE user_id = ?)"
+            )
             if status_filter:
-                where = "WHERE user_id = ? AND status = ?"
-                params: tuple = (user_id, status_filter)
+                where = f"WHERE user_id = ? AND status = ? {dismiss_clause}"
+                params: tuple = (user_id, status_filter, user_id)
             else:
-                where = "WHERE user_id = ?"
-                params = (user_id,)
+                where = f"WHERE user_id = ? {dismiss_clause}"
+                params = (user_id, user_id)
 
             total_row = conn.execute(
                 f"SELECT COUNT(*) AS count FROM request_history {where}", params
@@ -495,7 +509,33 @@ class RequestHistoryStore:
                 "DELETE FROM request_history WHERE musicbrainz_id_lower = ?",
                 (normalized_mbid,),
             )
+            conn.execute(
+                "DELETE FROM request_history_dismissals WHERE musicbrainz_id_lower = ?",
+                (normalized_mbid,),
+            )
             return cursor.rowcount > 0
+
+        return await self._write(operation)
+
+    async def async_dismiss_record(self, user_id: str, musicbrainz_id: str) -> bool:
+        normalized_mbid = musicbrainz_id.lower()
+
+        def operation(conn: sqlite3.Connection) -> bool:
+            record = conn.execute(
+                "SELECT musicbrainz_id_lower FROM request_history WHERE musicbrainz_id_lower = ?",
+                (normalized_mbid,),
+            ).fetchone()
+            if record is None:
+                return False
+            conn.execute(
+                """
+                INSERT INTO request_history_dismissals (user_id, musicbrainz_id_lower)
+                VALUES (?, ?)
+                ON CONFLICT (user_id, musicbrainz_id_lower) DO NOTHING
+                """,
+                (user_id, normalized_mbid),
+            )
+            return True
 
         return await self._write(operation)
 

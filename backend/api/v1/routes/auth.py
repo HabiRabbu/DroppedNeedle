@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
+import asyncio, logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, responses, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, responses, status
 
 from api.v1.schemas.auth import (
     AuthResponse,
@@ -25,7 +25,8 @@ from api.v1.schemas.auth import (
 from core.dependencies.auth_providers import get_auth_service, get_plex_user_auth_service, get_jellyfin_user_auth_service, get_oidc_user_auth_service
 from core.dependencies.cache_providers import get_preferences_service
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError, RegistrationError
-from infrastructure.msgspec_fastapi import MsgSpecRoute
+from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
+from middleware import CurrentAdminDep, CurrentTokenDep, CurrentUserDep
 from services.oidc_user_auth_service import OIDCUserAuthService
 from services.auth_service import AuthService
 from services.jellyfin_user_auth_service import JellyfinUserAuthService
@@ -68,27 +69,6 @@ def _bearer_token(request: Request) -> str | None:
     return None
 
 
-def _require_token(request: Request) -> str:
-    token = _bearer_token(request)
-    if not token:
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Not authenticated",
-            headers = {"WWW-Authenticate": "Bearer"},
-        )
-    return token
-
-
-async def _require_admin(request: Request, auth: AuthService) -> None:
-    raw_token = _require_token(request)
-    result = await auth.verify_token(raw_token)
-    if result is None:
-        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = "Not authenticated")
-    user, _ = result
-    if user.role != "admin":
-        raise HTTPException(status_code = status.HTTP_403_FORBIDDEN, detail = "Admin access required")
-
-
 @router.get("/setup/status", response_model = SetupStatusResponse)
 async def setup_status(auth: AuthService = Depends(get_auth_service)) -> SetupStatusResponse:
     required = await auth.is_setup_required()
@@ -116,9 +96,9 @@ async def list_auth_providers(
 
 @router.post("/setup", response_model = AuthResponse, status_code = status.HTTP_201_CREATED)
 async def setup(
-    body: SetupRequest,
     request: Request,
     response: Response,
+    body: SetupRequest = MsgSpecBody(SetupRequest),
     auth: AuthService = Depends(get_auth_service),
 ) -> AuthResponse:
     if not await auth.is_setup_required():
@@ -143,9 +123,9 @@ async def setup(
 
 @router.post("/login", response_model = AuthResponse)
 async def login(
-    body: LoginRequest,
     request: Request,
     response: Response,
+    body: LoginRequest = MsgSpecBody(LoginRequest),
     auth: AuthService = Depends(get_auth_service),
 ) -> AuthResponse:
     try:
@@ -179,86 +159,63 @@ async def logout(
 
 @router.post("/logout-all", status_code = status.HTTP_204_NO_CONTENT)
 async def logout_all(
-    request: Request,
+    current_user: CurrentUserDep,
+    current_token: CurrentTokenDep,
     auth: AuthService = Depends(get_auth_service),
 ) -> None:
-    raw_token = _require_token(request)
-    result = await auth.verify_token(raw_token)
-    if result is None:
-        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = "Not authenticated")
-    user, _ = result
-    await auth.logout_all(user.id, except_raw_token = raw_token)
+    await auth.logout_all(current_user.id, except_token_id = current_token.id)
 
 
 @router.get("/me")
-async def me(
-    request: Request,
-    auth: AuthService = Depends(get_auth_service),
-):
-    raw_token = _require_token(request)
-    result = await auth.verify_token(raw_token)
-    if result is None:
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Invalid or expired token",
-            headers = {"WWW-Authenticate": "Bearer"},
-        )
-    user, _ = result
-    return user_to_response(user)
+async def me(current_user: CurrentUserDep):
+    return user_to_response(current_user)
 
 
 @router.get("/sessions", response_model = SessionListResponse)
 async def list_sessions(
-    request: Request,
+    current_user: CurrentUserDep,
     auth: AuthService = Depends(get_auth_service),
 ) -> SessionListResponse:
-    raw_token = _require_token(request)
-    result = await auth.verify_token(raw_token)
-    if result is None:
-        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = "Not authenticated")
-    user, _ = result
-    tokens = await auth.list_sessions(user.id)
+    tokens = await auth.list_sessions(current_user.id)
     return SessionListResponse(sessions = [session_to_response(token) for token in tokens])
 
 
 @router.delete("/sessions/{session_id}", status_code = status.HTTP_204_NO_CONTENT)
 async def revoke_session(
     session_id: str,
-    request: Request,
+    current_user: CurrentUserDep,
     auth: AuthService = Depends(get_auth_service),
 ) -> None:
-    raw_token = _require_token(request)
-    result = await auth.verify_token(raw_token)
-    if result is None:
-        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = "Not authenticated")
-    user, _ = result
     try:
-        await auth.revoke_session(session_id, requesting_user_id = user.id)
+        await auth.revoke_session(session_id, requesting_user_id = current_user.id)
     except AuthenticationError as e:
-        logger.debug(f"Session revocation denied for user {user.id[:8]}: {e}")
+        logger.debug(f"Session revocation denied for user {current_user.id[:8]}: {e}")
         raise HTTPException(status_code = status.HTTP_403_FORBIDDEN, detail = "Forbidden")
 
 
 @router.get("/admin/users", response_model = UserListResponse)
 async def admin_list_users(
-    request: Request,
+    _admin: CurrentAdminDep,
     auth: AuthService = Depends(get_auth_service),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ) -> UserListResponse:
-    await _require_admin(request, auth)
-    users = await auth.list_users()
+    users, total = await asyncio.gather(
+        auth.list_users(limit=limit, offset=offset),
+        auth.count_users(),
+    )
     return UserListResponse(
         users = [user_to_response(user) for user in users],
-        total = len(users),
+        total = total,
     )
 
 
 @router.post("/admin/users", status_code = status.HTTP_201_CREATED)
 async def admin_create_user(
-    body: CreateUserRequest,
-    request: Request,
+    _admin: CurrentAdminDep,
+    body: CreateUserRequest = MsgSpecBody(CreateUserRequest),
     auth: AuthService = Depends(get_auth_service),
 ):
-    await _require_admin(request, auth)
     try:
         user = await auth.admin_create_user(
             display_name = body.display_name,
@@ -275,29 +232,27 @@ async def admin_create_user(
 @router.patch("/admin/users/{user_id}/role", status_code = status.HTTP_204_NO_CONTENT)
 async def admin_set_role(
     user_id: str,
-    body: SetRoleRequest,
-    request: Request,
+    current_admin: CurrentAdminDep,
+    body: SetRoleRequest = MsgSpecBody(SetRoleRequest),
     auth: AuthService = Depends(get_auth_service),
 ) -> None:
-    await _require_admin(request, auth)
     try:
-        await auth.set_role(user_id, body.role)
+        await auth.set_role(user_id, body.role, requesting_user_id = current_admin.id)
     except AuthenticationError as e:
         logger.debug(f"Role update failed for user {user_id[:8]}: {e}")
-        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "Invalid role")
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "Could not update role")
 
 
 @router.delete("/admin/users/{user_id}/sessions", status_code = status.HTTP_204_NO_CONTENT)
 async def admin_revoke_user_sessions(
     user_id: str,
-    request: Request,
+    _admin: CurrentAdminDep,
     auth: AuthService = Depends(get_auth_service),
 ) -> None:
-    await _require_admin(request, auth)
     await auth.revoke_user_sessions(user_id)
 
 
-@router.post("/plex/pin")
+@router.post("/plex/pin", response_model = PlexPinResponse)
 async def plex_login_pin(plex_auth: PlexUserAuthService = Depends(get_plex_user_auth_service)) -> PlexPinResponse:
     pin_id, auth_url = await plex_auth.create_login_pin()
     return PlexPinResponse(pin_id = pin_id, auth_url = auth_url)
@@ -326,9 +281,9 @@ async def plex_login_poll(
 
 @router.post("/jellyfin/login", response_model = AuthResponse)
 async def jellyfin_login(
-    body: JellyfinLoginRequest,
     request: Request,
     response: Response,
+    body: JellyfinLoginRequest = MsgSpecBody(JellyfinLoginRequest),
     jellyfin_auth: JellyfinUserAuthService = Depends(get_jellyfin_user_auth_service),
 ) -> AuthResponse:
     try:
@@ -383,9 +338,9 @@ async def oidc_callback(
 
 @router.post("/oidc/exchange", response_model = AuthResponse)
 async def oidc_exchange(
-    body: OIDCExchangeRequest,
     request: Request,
     response: Response,
+    body: OIDCExchangeRequest = MsgSpecBody(OIDCExchangeRequest),
     oidc_auth: OIDCUserAuthService = Depends(get_oidc_user_auth_service),
 ) -> AuthResponse:
     try:

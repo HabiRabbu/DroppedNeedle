@@ -24,7 +24,7 @@ async def get_active_requests(
     service: RequestsPageService = Depends(get_requests_page_service),
     current_user: CurrentUserDep = None,
 ):
-    user_id = None if current_user.role in ("admin", "trusted") else current_user.id
+    user_id = None if current_user.role == "admin" else current_user.id
     return await service.get_active_requests(user_id=user_id)
 
 
@@ -33,7 +33,7 @@ async def get_active_request_count(
     service: RequestsPageService = Depends(get_requests_page_service),
     current_user: CurrentUserDep = None,
 ):
-    user_id = None if current_user.role in ("admin", "trusted") else current_user.id
+    user_id = None if current_user.role == "admin" else current_user.id
     count = await service.get_active_count(user_id=user_id)
     return ActiveCountResponse(count=count)
 
@@ -47,7 +47,7 @@ async def get_request_history(
     service: RequestsPageService = Depends(get_requests_page_service),
     current_user: CurrentUserDep = None,
 ):
-    user_id = None if current_user.role in ("admin", "trusted") else current_user.id
+    user_id = None if current_user.role == "admin" else current_user.id
     return await service.get_request_history(
         page=page, page_size=page_size, status_filter=status, sort=sort, user_id=user_id
     )
@@ -57,36 +57,42 @@ async def get_request_history(
 async def cancel_request(
     musicbrainz_id: str,
     service: RequestsPageService = Depends(get_requests_page_service),
+    current_user: CurrentUserDep = None,
 ):
     try:
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    return await service.cancel_request(musicbrainz_id)
+    user_id = None if current_user.role == "admin" else current_user.id
+    return await service.cancel_request(musicbrainz_id, user_id=user_id)
 
 
 @router.post("/retry/{musicbrainz_id}", response_model=RetryRequestResponse)
 async def retry_request(
     musicbrainz_id: str,
     service: RequestsPageService = Depends(get_requests_page_service),
+    current_user: CurrentUserDep = None,
 ):
     try:
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    return await service.retry_request(musicbrainz_id)
+    user_id = None if current_user.role == "admin" else current_user.id
+    return await service.retry_request(musicbrainz_id, user_id=user_id)
 
 
 @router.delete("/history/{musicbrainz_id}", response_model=ClearHistoryResponse)
 async def clear_history_item(
     musicbrainz_id: str,
     service: RequestsPageService = Depends(get_requests_page_service),
+    current_user: CurrentUserDep = None,
 ):
     try:
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    deleted = await service.clear_history_item(musicbrainz_id)
+    user_id = None if current_user.role == "admin" else current_user.id
+    deleted = await service.clear_history_item(musicbrainz_id, user_id=user_id)
     return ClearHistoryResponse(success=deleted)
 
 

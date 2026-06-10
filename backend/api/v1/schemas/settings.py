@@ -102,6 +102,7 @@ class OIDCConnectionSettings(msgspec.Struct):
     redirect_uri: str = ""
 
 
+OIDC_SECRET_MASK = "oidc****"
 NAVIDROME_PASSWORD_MASK = "********"
 PLEX_TOKEN_MASK = "plex****"
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from core.config import get_settings
+from infrastructure.crypto import init_crypto
 from infrastructure.http.client import close_http_clients
 
 from ._registry import clear_all_singletons
@@ -54,7 +56,8 @@ def clear_listenbrainz_dependent_caches() -> None:
 
 
 async def init_app_state(app) -> None:
-    pass
+    settings = get_settings()
+    init_crypto(settings.root_app_dir / "config")
 
 
 async def cleanup_app_state() -> None:

@@ -475,7 +475,13 @@
 				<div class="flex flex-col gap-2.5">
 					{#each activeItems as item, i (item.musicbrainz_id)}
 						<div in:fly={{ y: 12, duration: 200, delay: i * 30 }}>
-							<RequestCard {item} mode="active" oncancel={handleCancel} />
+							<RequestCard
+								{item}
+								mode="active"
+								oncancel={authStore.isAdmin || item.user_id === authStore.user?.id
+									? handleCancel
+									: undefined}
+							/>
 						</div>
 					{/each}
 				</div>
@@ -563,7 +569,9 @@
 						<RequestCard
 							{item}
 							mode="history"
-							onretry={handleRetry}
+							onretry={authStore.isAdmin || item.user_id === authStore.user?.id
+								? handleRetry
+								: undefined}
 							onclear={handleClear}
 							onremoved={handleRemoved}
 						/>

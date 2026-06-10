@@ -28,6 +28,7 @@ class ActiveRequestItem(AppStruct):
     quality: str | None = None
     protocol: str | None = None
     download_client: str | None = None
+    user_id: str | None = None
 
 
 class RequestHistoryItem(AppStruct):
@@ -41,6 +42,7 @@ class RequestHistoryItem(AppStruct):
     cover_url: str | None = None
     completed_at: datetime | None = None
     in_library: bool = False
+    user_id: str | None = None
 
 
 class ActiveRequestsResponse(AppStruct):

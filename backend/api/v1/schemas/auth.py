@@ -2,32 +2,32 @@
 
 from __future__ import annotations
 
-import msgspec
+from infrastructure.msgspec_fastapi import AppStruct
 
 
-class SetupStatusResponse(msgspec.Struct, frozen = True):
+class SetupStatusResponse(AppStruct):
     required: bool
 
 
-class SetupRequest(msgspec.Struct, frozen = True):
+class SetupRequest(AppStruct):
     display_name: str
     email: str
     password: str
 
 
-class CreateUserRequest(msgspec.Struct, frozen = True):
+class CreateUserRequest(AppStruct):
     display_name: str
     email: str
     password: str
     role: str = "user"
 
 
-class LoginRequest(msgspec.Struct, frozen = True):
+class LoginRequest(AppStruct):
     email: str
     password: str
 
 
-class UserResponse(msgspec.Struct, frozen = True):
+class UserResponse(AppStruct):
     id: str
     display_name: str
     role: str
@@ -35,12 +35,12 @@ class UserResponse(msgspec.Struct, frozen = True):
     avatar_url: str | None = None
 
 
-class AuthResponse(msgspec.Struct, frozen = True):
+class AuthResponse(AppStruct):
     token: str
     user: UserResponse
 
 
-class SessionResponse(msgspec.Struct, frozen = True):
+class SessionResponse(AppStruct):
     id: str
     issued_at: str
     expires_at: str
@@ -48,34 +48,34 @@ class SessionResponse(msgspec.Struct, frozen = True):
     user_agent: str | None = None
 
 
-class SessionListResponse(msgspec.Struct, frozen = True):
+class SessionListResponse(AppStruct):
     sessions: list[SessionResponse]
 
 
-class UserListResponse(msgspec.Struct, frozen = True):
+class UserListResponse(AppStruct):
     users: list[UserResponse]
     total: int
 
 
-class SetRoleRequest(msgspec.Struct, frozen = True):
+class SetRoleRequest(AppStruct):
     role: str
 
 
-class PlexPinResponse(msgspec.Struct, frozen = True):
+class PlexPinResponse(AppStruct):
     pin_id: int
     auth_url: str
 
 
-class JellyfinLoginRequest(msgspec.Struct, frozen = True):
+class JellyfinLoginRequest(AppStruct):
     username: str
     password: str
 
 
-class OIDCAuthorizeResponse(msgspec.Struct, frozen = True):
+class OIDCAuthorizeResponse(AppStruct):
     redirect_url: str
 
 
-class OIDCExchangeRequest(msgspec.Struct, frozen = True):
+class OIDCExchangeRequest(AppStruct):
     code: str
 
 

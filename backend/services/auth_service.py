@@ -78,7 +78,7 @@ class AuthService:
 
         existing = await self._store.get_user_by_email(email)
         if existing is not None:
-            raise RegistrationError("An account with that email already exists")
+            raise RegistrationError("Could not create user")
 
         user_id = _new_id()
         provider_id = _new_id()
@@ -150,21 +150,30 @@ class AuthService:
         if token is not None:
             await self._store.revoke_token(token.id)
 
-    async def logout_all(self, user_id: str, *, except_raw_token: str | None = None) -> None:
-        except_id: str | None = None
-        if except_raw_token:
+    async def logout_all(self, user_id: str, *, except_raw_token: str | None = None, except_token_id: str | None = None) -> None:
+        if except_token_id is None and except_raw_token:
             current = await self._store.verify_token(except_raw_token)
             if current:
-                except_id = current.id
+                except_token_id = current.id
 
-        await self._store.revoke_all_tokens_for_user(user_id, except_token_id = except_id)
+        await self._store.revoke_all_tokens_for_user(user_id, except_token_id = except_token_id)
 
     async def list_users(self, limit: int = 100, offset: int = 0) -> list[UserRecord]:
         return await self._store.list_users(limit = limit, offset = offset)
 
-    async def set_role(self, user_id: str, role: str) -> None:
+    async def count_users(self) -> int:
+        return await self._store.count_users()
+
+    async def set_role(self, user_id: str, role: str, *, requesting_user_id: str | None = None) -> None:
         if role not in ("admin", "trusted", "user"):
             raise AuthenticationError(f"Invalid role: {role}")
+        if requesting_user_id is not None and requesting_user_id == user_id and role != "admin":
+            raise AuthenticationError("Cannot remove your own admin privileges")
+        target = await self._store.get_user_by_id(user_id)
+        if target is not None and target.role == "admin" and role != "admin":
+            admin_count = await self._store.count_users_by_role("admin")
+            if admin_count <= 1:
+                raise AuthenticationError("Cannot remove the last admin account")
         await self._store.update_user_role(user_id, role)
 
     async def revoke_user_sessions(self, user_id: str) -> None:

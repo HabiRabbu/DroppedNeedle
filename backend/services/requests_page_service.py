@@ -119,6 +119,7 @@ class RequestsPageService:
                 ),
                 status=r.status,
                 in_library=r.musicbrainz_id.lower() in library_mbids,
+                user_id=r.user_id,
             )
             for r in records
         ]
@@ -167,13 +168,15 @@ class RequestsPageService:
         return CancelRequestResponse(success=True, message=f"Rejected: {record.album_title}")
 
     async def cancel_request(
-        self, musicbrainz_id: str
+        self, musicbrainz_id: str, user_id: str | None = None
     ) -> CancelRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
             return CancelRequestResponse(
                 success=False, message="Request not found"
             )
+        if user_id is not None and record.user_id != user_id:
+            return CancelRequestResponse(success=False, message="Request not found")
 
         # awaiting_approval requests haven't reached Lidarr, cancel directly
         if record.status == "awaiting_approval":
@@ -239,13 +242,15 @@ class RequestsPageService:
         )
 
     async def retry_request(
-        self, musicbrainz_id: str
+        self, musicbrainz_id: str, user_id: str | None = None
     ) -> RetryRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
             return RetryRequestResponse(
                 success=False, message="Request not found"
             )
+        if user_id is not None and record.user_id != user_id:
+            return RetryRequestResponse(success=False, message="Request not found")
 
         if record.status not in _RETRYABLE_STATUSES:
             return RetryRequestResponse(
@@ -306,10 +311,14 @@ class RequestsPageService:
                 success=False, message=f"Retry failed: {e}"
             )
 
-    async def clear_history_item(self, musicbrainz_id: str) -> bool:
+    async def clear_history_item(self, musicbrainz_id: str, user_id: str | None = None) -> bool:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record or record.status not in _CLEARABLE_STATUSES:
             return False
+        if user_id is not None:
+            if record.user_id != user_id:
+                return False
+            return await self._request_history.async_dismiss_record(user_id, musicbrainz_id)
         return await self._request_history.async_delete_record(musicbrainz_id)
 
     async def get_active_count(self, user_id: str | None = None) -> int:
@@ -475,6 +484,7 @@ class RequestsPageService:
             quality=quality_name,
             protocol=queue_item.get("protocol"),
             download_client=queue_item.get("downloadClient"),
+            user_id=record.user_id,
         )
 
     @staticmethod
@@ -500,6 +510,7 @@ class RequestsPageService:
             download_state=None,
             status_messages=None,
             lidarr_queue_id=None,
+            user_id=record.user_id,
         )
 
     async def _check_if_completed(

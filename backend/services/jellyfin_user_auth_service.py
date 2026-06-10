@@ -7,6 +7,7 @@ import json, logging, uuid
 import httpx
 
 from core.exceptions import AuthenticationError, ExternalServiceError
+from infrastructure.crypto import encrypt
 from infrastructure.persistence.auth_store import AuthStore, UserRecord
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ class JellyfinUserAuthService:
         thumb = profile["thumb"]
         access_token = profile["access_token"]
 
-        provider_data = json.dumps({"access_token": access_token})
+        provider_data = encrypt(json.dumps({"access_token": access_token}))
 
         existing_provider = await self._store.get_auth_provider("jellyfin", jellyfin_user_id)
         if existing_provider:

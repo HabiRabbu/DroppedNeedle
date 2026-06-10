@@ -778,6 +778,7 @@ export type ActiveRequestItem = {
 	quality?: string | null;
 	protocol?: string | null;
 	download_client?: string | null;
+	user_id?: string | null;
 };
 
 export type RequestHistoryItem = {
@@ -792,6 +793,7 @@ export type RequestHistoryItem = {
 	status: string;
 	in_library: boolean;
 	monitored?: boolean;
+	user_id?: string | null;
 };
 
 export type ActiveRequestsResponse = {
