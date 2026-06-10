@@ -77,6 +77,8 @@ services:
       retries: 3
 ```
 
+> A `:dev` tag (`ghcr.io/habirabbu/musicseerr:dev`) is also available. It's built automatically from `main` on every push and may be unstable. Pin to a specific commit with `:dev-<short-sha>` (e.g. `:dev-a1b2c3d`).
+
 ### 2. Start it
 
 ```bash
