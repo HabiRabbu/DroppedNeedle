@@ -1,0 +1,77 @@
+name: AI PR Review
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: AI Review
+    runs-on: ubuntu-latest
+
+    # ------------------------------------------------------------------
+    # Gate: only run for PR events, /ai-review comments, or ai-review labels.
+    # Never run for plain issue comments (non-PR) or unrelated labels.
+    # ------------------------------------------------------------------
+    if: |
+      vars.AI_REVIEW_ENABLED != 'false' &&
+      (
+        (
+          github.event_name == 'pull_request_target' &&
+          github.event.action != 'labeled'
+        ) ||
+        (
+          github.event_name == 'pull_request_target' &&
+          github.event.action == 'labeled' &&
+          github.event.label.name == 'ai-review'
+        ) ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null &&
+          startsWith(github.event.comment.body, '/ai-review')
+        )
+      )
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout base branch (guidelines + script only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || github.ref }}
+          sparse-checkout: |
+            .github/review_guidelines.md
+            .github/scripts/ai_review.py
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install httpx==0.28.1 openai>=1.0
+
+      - name: Run AI review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL || 'deepseek-v4-pro' }}
+          DEEPSEEK_REASONING_EFFORT: ${{ vars.DEEPSEEK_REASONING_EFFORT || 'max' }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          DEBUG: ${{ vars.AI_REVIEW_DEBUG || 'false' }}
+        run: python .github/scripts/ai_review.py
