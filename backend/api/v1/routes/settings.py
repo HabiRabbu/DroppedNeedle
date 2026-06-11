@@ -27,6 +27,7 @@ from api.v1.schemas.settings import (
     PlexVerifyResponse,
     MusicBrainzConnectionSettings,
     SecuritySettings,
+    OIDCConnectionSettings,
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo
 from api.v1.schemas.common import VerifyConnectionResponse
@@ -35,7 +36,9 @@ from core.dependencies import (
     get_preferences_service,
     get_settings_service,
     get_local_files_service,
+    get_oidc_user_auth_service,
 )
+from services.oidc_user_auth_service import OIDCUserAuthService
 from core.exceptions import ConfigurationError, ExternalServiceError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep
@@ -629,3 +632,32 @@ async def verify_hibp_local_file(
         )
     except OSError as e:
         return VerifyConnectionResponse(valid=False, message=f"Could not read file: {e}")
+
+
+@router.get("/oidc", response_model=OIDCConnectionSettings)
+async def get_oidc_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> OIDCConnectionSettings:
+    return preferences_service.get_oidc_connection()
+
+
+@router.put("/oidc", response_model=OIDCConnectionSettings)
+async def update_oidc_settings(
+    settings: OIDCConnectionSettings = MsgSpecBody(OIDCConnectionSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> OIDCConnectionSettings:
+    try:
+        preferences_service.save_oidc_connection(settings)
+        return preferences_service.get_oidc_connection()
+    except ConfigurationError as e:
+        logger.warning(f"Configuration error updating OIDC settings: {e}")
+        raise HTTPException(status_code=400, detail="OIDC settings are incomplete or invalid")
+
+
+@router.post("/oidc/verify", response_model=VerifyConnectionResponse)
+async def verify_oidc_connection(
+    settings: OIDCConnectionSettings = MsgSpecBody(OIDCConnectionSettings),
+    oidc_auth: OIDCUserAuthService = Depends(get_oidc_user_auth_service),
+) -> VerifyConnectionResponse:
+    valid, message = await oidc_auth.verify(settings)
+    return VerifyConnectionResponse(valid=valid, message=message)

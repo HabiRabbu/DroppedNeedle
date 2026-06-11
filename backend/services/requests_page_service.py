@@ -120,6 +120,13 @@ class RequestsPageService:
                 status=r.status,
                 in_library=r.musicbrainz_id.lower() in library_mbids,
                 user_id=r.user_id,
+                requested_by_name=r.requested_by_name,
+                reviewed_by_name=r.reviewed_by_name,
+                reviewed_at=(
+                    datetime.fromisoformat(r.reviewed_at)
+                    if r.reviewed_at
+                    else None
+                ),
             )
             for r in records
         ]
@@ -139,7 +146,12 @@ class RequestsPageService:
         items = [self._build_pending_item(r) for r in records]
         return ActiveRequestsResponse(items=items, count=len(items))
 
-    async def approve_request(self, musicbrainz_id: str) -> CancelRequestResponse:
+    async def get_pending_approval_count(self) -> int:
+        return await self._request_history.async_get_pending_approval_count()
+
+    async def approve_request(
+        self, musicbrainz_id: str, reviewer_id: str, reviewer_name: str | None = None
+    ) -> CancelRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
             return CancelRequestResponse(success=False, message="Request not found")
@@ -147,7 +159,7 @@ class RequestsPageService:
             return CancelRequestResponse(
                 success=False, message=f"Request is not awaiting approval (status: {record.status})"
             )
-        await self._request_history.async_update_status(musicbrainz_id, "pending")
+        await self._request_history.async_record_review(musicbrainz_id, "pending", reviewer_id, reviewer_name)
         if self._request_queue:
             try:
                 await self._request_queue.enqueue(musicbrainz_id)
@@ -155,7 +167,9 @@ class RequestsPageService:
                 logger.error("Failed to enqueue approved request %s: %s", musicbrainz_id, e)
         return CancelRequestResponse(success=True, message=f"Approved: {record.album_title}")
 
-    async def reject_request(self, musicbrainz_id: str) -> CancelRequestResponse:
+    async def reject_request(
+        self, musicbrainz_id: str, reviewer_id: str, reviewer_name: str | None = None
+    ) -> CancelRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
             return CancelRequestResponse(success=False, message="Request not found")
@@ -164,7 +178,9 @@ class RequestsPageService:
                 success=False, message=f"Request is not awaiting approval (status: {record.status})"
             )
         now_iso = datetime.now(timezone.utc).isoformat()
-        await self._request_history.async_update_status(musicbrainz_id, "rejected", completed_at=now_iso)
+        await self._request_history.async_record_review(
+            musicbrainz_id, "rejected", reviewer_id, reviewer_name, completed_at=now_iso
+        )
         return CancelRequestResponse(success=True, message=f"Rejected: {record.album_title}")
 
     async def cancel_request(
@@ -485,6 +501,7 @@ class RequestsPageService:
             protocol=queue_item.get("protocol"),
             download_client=queue_item.get("downloadClient"),
             user_id=record.user_id,
+            requested_by_name=record.requested_by_name,
         )
 
     @staticmethod
@@ -511,6 +528,7 @@ class RequestsPageService:
             status_messages=None,
             lidarr_queue_id=None,
             user_id=record.user_id,
+            requested_by_name=record.requested_by_name,
         )
 
     async def _check_if_completed(

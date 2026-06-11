@@ -258,6 +258,12 @@
 					<span class="text-base-content/20">•</span>
 					<span class="text-xs text-base-content/40 capitalize">{activeItem.protocol}</span>
 				{/if}
+				{#if !isActive && historyItem.reviewed_by_name}
+					<span class="text-base-content/20">•</span>
+					<span class="text-xs text-base-content/40">
+						{historyItem.status === 'rejected' ? 'Rejected' : 'Approved'} by {historyItem.reviewed_by_name}
+					</span>
+				{/if}
 			</div>
 		</div>
 

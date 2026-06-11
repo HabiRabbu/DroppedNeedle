@@ -196,6 +196,7 @@ class PreferencesService:
             api_key=api_key,
             user_id=jellyfin_data.get("user_id", ""),
             enabled=jellyfin_data.get("enabled", False),
+            login_enabled=jellyfin_data.get("login_enabled", False),
         )
 
     def save_jellyfin_connection(self, settings: JellyfinConnectionSettings) -> None:
@@ -207,6 +208,7 @@ class PreferencesService:
                 "api_key": encrypt(settings.api_key),
                 "user_id": settings.user_id,
                 "enabled": settings.enabled,
+                "login_enabled": settings.login_enabled,
             }
             self._save_config(config)
 
@@ -266,6 +268,7 @@ class PreferencesService:
             plex_url=plex_data.get("plex_url", ""),
             plex_token=plex_data.get("plex_token", ""),
             enabled=plex_data.get("enabled", False),
+            login_enabled=plex_data.get("login_enabled", False),
             music_library_ids=plex_data.get("music_library_ids", []),
             scrobble_to_plex=plex_data.get("scrobble_to_plex", True),
         )
@@ -281,6 +284,7 @@ class PreferencesService:
             plex_url=plex_data.get("plex_url", ""),
             plex_token=token,
             enabled=plex_data.get("enabled", False),
+            login_enabled=plex_data.get("login_enabled", False),
             music_library_ids=plex_data.get("music_library_ids", []),
             scrobble_to_plex=plex_data.get("scrobble_to_plex", True),
         )
@@ -300,6 +304,7 @@ class PreferencesService:
                 "plex_url": settings.plex_url,
                 "plex_token": token,
                 "enabled": settings.enabled,
+                "login_enabled": settings.login_enabled,
                 "music_library_ids": settings.music_library_ids,
                 "scrobble_to_plex": settings.scrobble_to_plex,
             }

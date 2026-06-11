@@ -25,6 +25,9 @@ class RequestHistoryRecord(msgspec.Struct):
     auto_download_artist: bool = False
     user_id: str | None = None
     requested_by_name: str | None = None
+    reviewed_by_id: str | None = None
+    reviewed_by_name: str | None = None
+    reviewed_at: str | None = None
 
 
 class RequestHistoryStore:
@@ -76,6 +79,9 @@ class RequestHistoryStore:
                 ("auto_download_artist", "INTEGER NOT NULL DEFAULT 0"),
                 ("user_id", "TEXT"),
                 ("requested_by_name", "TEXT"),
+                ("reviewed_by_id", "TEXT"),
+                ("reviewed_by_name", "TEXT"),
+                ("reviewed_at", "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE request_history ADD COLUMN {col} {definition}")
@@ -139,6 +145,9 @@ class RequestHistoryStore:
             auto_download_artist=bool(row["auto_download_artist"]) if row["auto_download_artist"] is not None else False,
             user_id=row["user_id"] if "user_id" in keys else None,
             requested_by_name=row["requested_by_name"] if "requested_by_name" in keys else None,
+            reviewed_by_id=row["reviewed_by_id"] if "reviewed_by_id" in keys else None,
+            reviewed_by_name=row["reviewed_by_name"] if "reviewed_by_name" in keys else None,
+            reviewed_at=row["reviewed_at"] if "reviewed_at" in keys else None,
         )
 
     async def async_record_request(
@@ -357,6 +366,39 @@ class RequestHistoryStore:
             return [record for row in rows if (record := self._row_to_record(row)) is not None]
 
         return await self._read(operation)
+
+    async def async_get_pending_approval_count(self) -> int:
+        def operation(conn: sqlite3.Connection) -> int:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM request_history WHERE status = 'awaiting_approval'",
+            ).fetchone()
+            return int(row["count"] if row is not None else 0)
+
+        return await self._read(operation)
+
+    async def async_record_review(
+        self,
+        musicbrainz_id: str,
+        status: str,
+        reviewed_by_id: str,
+        reviewed_by_name: str | None,
+        completed_at: str | None = None,
+    ) -> None:
+        normalized_mbid = musicbrainz_id.lower()
+        reviewed_at = datetime.now(timezone.utc).isoformat()
+
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                UPDATE request_history
+                SET status = ?, completed_at = COALESCE(?, completed_at),
+                    reviewed_by_id = ?, reviewed_by_name = ?, reviewed_at = ?
+                WHERE musicbrainz_id_lower = ?
+                """,
+                (status, completed_at, reviewed_by_id, reviewed_by_name, reviewed_at, normalized_mbid),
+            )
+
+        await self._write(operation)
 
     async def async_get_history_for_user(
         self,

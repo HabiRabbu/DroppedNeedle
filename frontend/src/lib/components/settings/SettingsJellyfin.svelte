@@ -14,6 +14,7 @@
 		saveEndpoint: '/api/v1/settings/jellyfin',
 		testEndpoint: '/api/v1/settings/jellyfin/verify',
 		enabledField: 'enabled',
+		secondaryEnabledField: 'login_enabled',
 		refreshIntegration: true,
 		afterTest: (result) => {
 			const typedResult = result as JellyfinTestResult;
@@ -154,6 +155,27 @@
 									Test connection first to enable
 								{:else}
 									Show recently played and favorite artists on the home page
+								{/if}
+							</p>
+						</div>
+					</label>
+				</div>
+
+				<div class="form-control">
+					<label class="label cursor-pointer justify-start gap-4">
+						<input
+							type="checkbox"
+							bind:checked={form.data.login_enabled}
+							class="toggle toggle-primary"
+							disabled={!form.testResult?.success && !form.wasAlreadySecondaryEnabled}
+						/>
+						<div>
+							<span class="label-text font-medium">Allow login with Jellyfin</span>
+							<p class="text-xs text-base-content/50">
+								{#if !form.testResult?.success && !form.wasAlreadySecondaryEnabled}
+									Test and get a valid connection to enable
+								{:else}
+									Let users sign in to Musicseerr with their Jellyfin account
 								{/if}
 							</p>
 						</div>

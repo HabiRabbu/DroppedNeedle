@@ -88,8 +88,8 @@ async def list_auth_providers(
 
     return {
         "local": True,
-        "plex": plex_cfg.enabled,
-        "jellyfin": jellyfin_cfg.enabled,
+        "plex": plex_cfg.login_enabled,
+        "jellyfin": jellyfin_cfg.login_enabled,
         "oidc": oidc_cfg.enabled and bool(oidc_cfg.issuer) and bool(oidc_cfg.client_id),
     }
 
@@ -204,8 +204,9 @@ async def admin_list_users(
         auth.list_users(limit=limit, offset=offset),
         auth.count_users(),
     )
+    providers_by_user = await auth.get_provider_names_for_users([user.id for user in users])
     return UserListResponse(
-        users = [user_to_response(user) for user in users],
+        users = [user_to_response(user, providers_by_user.get(user.id)) for user in users],
         total = total,
     )
 
@@ -250,6 +251,19 @@ async def admin_revoke_user_sessions(
     auth: AuthService = Depends(get_auth_service),
 ) -> None:
     await auth.revoke_user_sessions(user_id)
+
+
+@router.delete("/admin/users/{user_id}", status_code = status.HTTP_204_NO_CONTENT)
+async def admin_delete_user(
+    user_id: str,
+    current_admin: CurrentAdminDep,
+    auth: AuthService = Depends(get_auth_service),
+) -> None:
+    try:
+        await auth.delete_user(user_id, requesting_user_id = current_admin.id)
+    except AuthenticationError as e:
+        logger.debug(f"User deletion failed for user {user_id[:8]}: {e}")
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "Could not delete user")
 
 
 @router.post("/plex/pin", response_model = PlexPinResponse)

@@ -282,7 +282,9 @@
 
 						<div class="flex flex-col items-center gap-1 pb-2">
 							<div class="flex items-center gap-2">
-								<span class="text-xs font-semibold uppercase tracking-widest text-base-content/40">Profile</span>
+								<span class="text-xs font-semibold uppercase tracking-widest text-base-content/40"
+									>Profile</span
+								>
 								{#if authStore.user}
 									{#if authStore.user.role === 'admin'}
 										<span class="badge badge-accent badge-sm gap-1">

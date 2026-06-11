@@ -1,10 +1,15 @@
 import type { ActiveRequestsResponse, RequestHistoryResponse } from '$lib/types';
 import { api } from '$lib/api/client';
 import { requestCountStore } from '$lib/stores/requestCountStore.svelte';
+import { pendingApprovalCountStore } from '$lib/stores/pendingApprovalCountStore.svelte';
 export type { ActiveRequestsResponse, RequestHistoryResponse } from '$lib/types';
 
 export function notifyRequestCountChanged(count?: number): void {
 	requestCountStore.notify(count);
+}
+
+export function notifyPendingApprovalCountChanged(count?: number): void {
+	pendingApprovalCountStore.notify(count);
 }
 
 export async function fetchActiveRequests(signal?: AbortSignal): Promise<ActiveRequestsResponse> {

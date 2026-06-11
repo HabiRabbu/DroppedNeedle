@@ -40,6 +40,16 @@ class OIDCUserAuthService:
     def get_config(self) -> OIDCConnectionSettings:
         return self._prefs.get_oidc_connection()
 
+    async def verify(self, settings: OIDCConnectionSettings) -> tuple[bool, str]:
+        issuer = settings.issuer.strip()
+        if not issuer:
+            return False, "Issuer URL is required"
+        try:
+            doc = await self._discover(issuer)
+        except (ExternalServiceError, ConfigurationError) as e:
+            return False, str(e)
+        return True, f"Connected to {doc.get('issuer', issuer)}"
+
     def _require_config(self) -> OIDCConnectionSettings:
         config = self._prefs.get_oidc_connection_raw()
         if not config.enabled:
@@ -235,6 +245,19 @@ class OIDCUserAuthService:
             if user is None:
                 raise AuthenticationError("Linked account not found")
             return user
+
+        if email:
+            existing_user = await self._store.get_user_by_email(email)
+            if existing_user:
+                await self._store.create_auth_provider(
+                    id = str(uuid.uuid4()),
+                    user_id = existing_user.id,
+                    provider = "oidc",
+                    provider_uid = oidc_uid,
+                    provider_data = provider_data,
+                )
+                logger.info(f"Linked OIDC account to existing user: {existing_user.display_name} ({existing_user.id[:8]})")
+                return existing_user
 
         user_id = str(uuid.uuid4())
         provider_id = str(uuid.uuid4())

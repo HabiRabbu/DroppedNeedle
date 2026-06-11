@@ -33,6 +33,7 @@ class UserResponse(AppStruct):
     role: str
     email: str | None = None
     avatar_url: str | None = None
+    providers: list[str] = []
 
 
 class AuthResponse(AppStruct):
@@ -79,13 +80,14 @@ class OIDCExchangeRequest(AppStruct):
     code: str
 
 
-def user_to_response(user) -> UserResponse:
+def user_to_response(user, providers: list[str] | None = None) -> UserResponse:
     return UserResponse(
         id = user.id,
         display_name = user.display_name,
         role = user.role,
         email = user.email,
         avatar_url = user.avatar_url,
+        providers = providers or [],
     )
 
 

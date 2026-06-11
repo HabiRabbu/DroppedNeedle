@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/state';
 	import { fade, fly } from 'svelte/transition';
 	import RequestCard from '$lib/components/RequestCard.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
@@ -26,7 +27,8 @@
 		notifyRequestCountChanged,
 		fetchPendingApprovals,
 		approveRequest,
-		rejectRequest
+		rejectRequest,
+		notifyPendingApprovalCountChanged
 	} from '$lib/utils/requestsApi';
 	import { requestCountStore } from '$lib/stores/requestCountStore.svelte';
 	import { isAbortError } from '$lib/utils/errorHandling';
@@ -205,6 +207,7 @@
 			if (controller.signal.aborted) return;
 			approvalItems = data.items;
 			approvalCount = data.count;
+			notifyPendingApprovalCountChanged(approvalCount);
 			approvalError = null;
 		} catch (e) {
 			if (isAbortError(e)) return;
@@ -223,6 +226,7 @@
 				approvalItems = approvalItems.filter((i) => i.musicbrainz_id !== mbid);
 				approvalCount = approvalItems.length;
 				notifyRequestCountChanged();
+				notifyPendingApprovalCountChanged(approvalCount);
 			} else {
 				showToast(result.message, 'error');
 			}
@@ -238,6 +242,7 @@
 				showToast(result.message, 'info');
 				approvalItems = approvalItems.filter((i) => i.musicbrainz_id !== mbid);
 				approvalCount = approvalItems.length;
+				notifyPendingApprovalCountChanged(approvalCount);
 			} else {
 				showToast(result.message, 'error');
 			}
@@ -332,10 +337,15 @@
 	}
 
 	onMount(() => {
-		startPolling();
 		document.addEventListener('visibilitychange', handleVisibility);
 		requestCountStore.setPageActive(true);
-		if (authStore.isAdmin) void loadApprovals();
+		const tabParam = page.url.searchParams.get('tab');
+		if (tabParam === 'approvals' && authStore.isAdmin) {
+			switchTab('approvals');
+		} else {
+			startPolling();
+			if (authStore.isAdmin) void loadApprovals();
+		}
 	});
 
 	onDestroy(() => {
@@ -635,19 +645,32 @@
 							in:fly={{ y: 12, duration: 200, delay: i * 30 }}
 							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
 						>
-							<div class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300">
+							<div
+								class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300"
+							>
 								<AlbumImage
-									src={item.cover_url ?? null}
+									mbid={item.musicbrainz_id}
+									customUrl={item.cover_url ?? null}
 									alt={item.album_title}
-									class="w-full h-full object-cover"
+									size="sm"
+									rounded="lg"
+									className="w-full h-full"
 								/>
 							</div>
 							<div class="flex-1 min-w-0">
 								<p class="font-semibold text-sm truncate">{item.album_title}</p>
 								<p class="text-base-content/60 text-xs truncate">{item.artist_name}</p>
-								{#if item.year}
-									<p class="text-base-content/40 text-xs">{item.year}</p>
-								{/if}
+								<div class="flex items-center gap-1.5 flex-wrap">
+									{#if item.year}
+										<p class="text-base-content/40 text-xs">{item.year}</p>
+									{/if}
+									{#if item.requested_by_name}
+										{#if item.year}<span class="text-base-content/20 text-xs">•</span>{/if}
+										<p class="text-base-content/40 text-xs">
+											Requested by {item.requested_by_name}
+										</p>
+									{/if}
+								</div>
 							</div>
 							<div class="flex gap-2 shrink-0">
 								<button

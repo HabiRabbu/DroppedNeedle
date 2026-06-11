@@ -13,6 +13,7 @@ from api.v1.schemas.advanced_settings import (
 )
 from api.v1.routes.settings import router
 from core.dependencies import get_preferences_service, get_settings_service
+from tests.helpers import override_admin_auth
 
 
 def _stored_backend(api_key: str = "originalsecret") -> AdvancedSettings:
@@ -40,6 +41,7 @@ def client(mock_prefs, mock_settings_service):
     app.include_router(router)
     app.dependency_overrides[get_preferences_service] = lambda: mock_prefs
     app.dependency_overrides[get_settings_service] = lambda: mock_settings_service
+    override_admin_auth(app)
     yield TestClient(app)
 
 

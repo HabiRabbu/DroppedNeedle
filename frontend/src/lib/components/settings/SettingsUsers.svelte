@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
+	import { authStore } from '$lib/stores/authStore.svelte';
+	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
+	import PlexIcon from '$lib/components/PlexIcon.svelte';
 	import {
 		UserRound,
 		ShieldCheck,
@@ -9,7 +12,10 @@
 		Plus,
 		Eye,
 		EyeOff,
-		RefreshCw
+		RefreshCw,
+		Trash2,
+		Mail,
+		KeyRound
 	} from 'lucide-svelte';
 
 	interface UserRecord {
@@ -17,6 +23,7 @@
 		display_name: string;
 		role: 'admin' | 'trusted' | 'user';
 		email: string | null;
+		providers: string[];
 	}
 
 	const PAGE_SIZE = 20;
@@ -28,6 +35,12 @@
 	let roleError = $state<string | null>(null);
 	let page = $state(1);
 	let total = $state(0);
+
+	// Delete user
+	let userToDelete = $state<UserRecord | null>(null);
+	let deleteDialogEl: HTMLDialogElement | undefined = $state();
+	let deleting = $state(false);
+	let deleteError = $state<string | null>(null);
 
 	const totalPages = $derived(Math.max(1, Math.ceil(total / PAGE_SIZE)));
 	const rangeStart = $derived(total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1);
@@ -96,9 +109,15 @@
 			newPassword = '';
 			newRole = 'user';
 			showCreateForm = false;
-			// Reload last page so the new user is visible (sorted by created_at ASC)
-			const newTotal = total + 1;
-			await loadUsers(Math.ceil(newTotal / PAGE_SIZE));
+			total += 1;
+			const lastPage = Math.ceil(total / PAGE_SIZE);
+			if (lastPage === page && users.length < PAGE_SIZE) {
+				// Admin-created users always get a local (email/password) login
+				users = [...users, { ...user, providers: ['local'] }];
+			} else {
+				// New user landed on a different page (sorted by created_at ASC)
+				await loadUsers(lastPage);
+			}
 		} catch (e: unknown) {
 			const msg = (e as { message?: string })?.message;
 			createError = msg ?? 'Could not create user';
@@ -107,10 +126,52 @@
 		}
 	}
 
+	function confirmDelete(user: UserRecord) {
+		deleteError = null;
+		userToDelete = user;
+	}
+
+	function closeDeleteDialog() {
+		deleteDialogEl?.close();
+		userToDelete = null;
+		deleteError = null;
+	}
+
+	async function handleDeleteUser() {
+		if (!userToDelete) return;
+		deleting = true;
+		deleteError = null;
+		try {
+			await api.delete(`/api/v1/auth/admin/users/${userToDelete.id}`);
+			deleteDialogEl?.close();
+			const wasLastOnPage = users.length === 1 && page > 1;
+			userToDelete = null;
+			await loadUsers(wasLastOnPage ? page - 1 : page);
+		} catch (e: unknown) {
+			const msg = (e as { message?: string })?.message;
+			deleteError = msg ?? 'Could not delete user';
+		} finally {
+			deleting = false;
+		}
+	}
+
+	$effect(() => {
+		if (userToDelete) {
+			deleteDialogEl?.showModal();
+		}
+	});
+
 	const roleLabel: Record<string, string> = {
 		admin: 'Admin',
 		trusted: 'Trusted',
 		user: 'User'
+	};
+
+	const providerLabel: Record<string, string> = {
+		local: 'Email',
+		jellyfin: 'Jellyfin',
+		plex: 'Plex',
+		oidc: 'SSO'
 	};
 
 	function roleIcon(role: string) {
@@ -161,7 +222,10 @@
 				Create User
 			</h3>
 			<form
-				onsubmit={(e) => { e.preventDefault(); void handleCreateUser(); }}
+				onsubmit={(e) => {
+					e.preventDefault();
+					void handleCreateUser();
+				}}
 				class="grid grid-cols-1 sm:grid-cols-2 gap-3"
 			>
 				<fieldset class="fieldset">
@@ -211,10 +275,10 @@
 							aria-label="Toggle"
 						>
 							{#if showNewPassword}
-							<EyeOff class="h-3.5 w-3.5" />
-						{:else}
-							<Eye class="h-3.5 w-3.5" />
-						{/if}
+								<EyeOff class="h-3.5 w-3.5" />
+							{:else}
+								<Eye class="h-3.5 w-3.5" />
+							{/if}
 						</button>
 					</label>
 				</fieldset>
@@ -287,6 +351,23 @@
 							<p class="text-xs text-base-content/50 truncate">{user.email}</p>
 						{/if}
 					</div>
+					{#if user.providers.length > 0}
+						<div class="flex items-center gap-1.5 shrink-0">
+							{#each user.providers as provider (provider)}
+								<div class="tooltip" data-tip={providerLabel[provider] ?? provider}>
+									{#if provider === 'jellyfin'}
+										<JellyfinIcon class="h-3.5 w-3.5 text-info" />
+									{:else if provider === 'plex'}
+										<PlexIcon class="h-3.5 w-3.5" style="color: rgb(var(--brand-plex))" />
+									{:else if provider === 'oidc'}
+										<KeyRound class="h-3.5 w-3.5 text-base-content/40" />
+									{:else}
+										<Mail class="h-3.5 w-3.5 text-base-content/40" />
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
 					<div class="flex items-center gap-2 shrink-0">
 						<span class="badge {roleBadgeClass(user.role)} badge-sm gap-1">
 							<RoleIcon class="h-3 w-3" />
@@ -310,6 +391,17 @@
 								<option value="admin">Admin</option>
 							</select>
 						{/if}
+						<button
+							class="btn btn-ghost btn-sm btn-circle text-error/70 hover:text-error hover:bg-error/10"
+							onclick={() => confirmDelete(user)}
+							disabled={user.id === authStore.user?.id}
+							aria-label="Delete user"
+							title={user.id === authStore.user?.id
+								? 'You cannot delete your own account'
+								: `Delete ${user.display_name}`}
+						>
+							<Trash2 class="h-4 w-4" />
+						</button>
 					</div>
 				</div>
 			{/each}
@@ -324,7 +416,7 @@
 				onclick={() => void loadUsers(page - 1)}>Previous</button
 			>
 			<span class="text-sm text-base-content/60">
-				Page {page} of {totalPages} ({total} users)
+				Showing {rangeStart}-{rangeEnd} of {total} users (page {page} of {totalPages})
 			</span>
 			<button
 				class="btn btn-sm btn-outline"
@@ -339,16 +431,56 @@
 		<div class="grid gap-2 text-xs text-base-content/60">
 			<div class="flex gap-2">
 				<ShieldCheck class="h-4 w-4 text-accent shrink-0 mt-0.5" />
-				<span><strong class="text-base-content/80">Admin</strong>, full access, approves requests, manages users.</span>
+				<span
+					><strong class="text-base-content/80">Admin</strong>, full access, approves requests,
+					manages users.</span
+				>
 			</div>
 			<div class="flex gap-2">
 				<UserCheck class="h-4 w-4 text-info shrink-0 mt-0.5" />
-				<span><strong class="text-base-content/80">Trusted</strong>, requests auto-approved, no admin functions.</span>
+				<span
+					><strong class="text-base-content/80">Trusted</strong>, requests auto-approved, no admin
+					functions.</span
+				>
 			</div>
 			<div class="flex gap-2">
 				<UserX class="h-4 w-4 text-base-content/40 shrink-0 mt-0.5" />
-				<span><strong class="text-base-content/80">User</strong>, requests need admin approval before downloading.</span>
+				<span
+					><strong class="text-base-content/80">User</strong>, requests need admin approval before
+					downloading.</span
+				>
 			</div>
 		</div>
 	</div>
 </div>
+
+<dialog bind:this={deleteDialogEl} class="modal" onclose={closeDeleteDialog}>
+	<div class="modal-box max-w-md">
+		<h3 class="text-lg font-bold">Delete User</h3>
+		<p class="py-4 text-base-content/70">
+			Delete <span class="font-semibold text-base-content">{userToDelete?.display_name}</span>? This
+			permanently removes their account, login methods, and sessions. This cannot be undone.
+		</p>
+
+		{#if deleteError}
+			<div class="alert alert-error py-2 text-sm">{deleteError}</div>
+		{/if}
+
+		<div class="modal-action">
+			<button class="btn btn-ghost" onclick={closeDeleteDialog} disabled={deleting}>
+				Cancel
+			</button>
+			<button class="btn btn-error" onclick={() => void handleDeleteUser()} disabled={deleting}>
+				{#if deleting}
+					<span class="loading loading-spinner loading-sm"></span>
+					Deleting...
+				{:else}
+					Delete
+				{/if}
+			</button>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button>close</button>
+	</form>
+</dialog>

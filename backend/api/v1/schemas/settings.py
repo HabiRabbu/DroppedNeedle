@@ -88,12 +88,13 @@ class JellyfinConnectionSettings(AppStruct):
     api_key: str = ""
     user_id: str = ""
     enabled: bool = False
+    login_enabled: bool = False
 
     def __post_init__(self) -> None:
         self.jellyfin_url = self.jellyfin_url.rstrip("/")
 
 
-class OIDCConnectionSettings(msgspec.Struct):
+class OIDCConnectionSettings(AppStruct):
     enabled: bool = False
     issuer: str = ""
     client_id: str = ""
@@ -121,6 +122,7 @@ class PlexConnectionSettings(AppStruct):
     plex_url: str = ""
     plex_token: str = ""
     enabled: bool = False
+    login_enabled: bool = False
     music_library_ids: list[str] = []
     scrobble_to_plex: bool = True
 

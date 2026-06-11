@@ -29,6 +29,7 @@ class ActiveRequestItem(AppStruct):
     protocol: str | None = None
     download_client: str | None = None
     user_id: str | None = None
+    requested_by_name: str | None = None
 
 
 class RequestHistoryItem(AppStruct):
@@ -43,6 +44,9 @@ class RequestHistoryItem(AppStruct):
     completed_at: datetime | None = None
     in_library: bool = False
     user_id: str | None = None
+    requested_by_name: str | None = None
+    reviewed_by_name: str | None = None
+    reviewed_at: datetime | None = None
 
 
 class ActiveRequestsResponse(AppStruct):

@@ -172,9 +172,9 @@
 		oidcLoading = true;
 		try {
 			const res = await fetch('/api/v1/auth/oidc/authorize', {
-			method: 'POST',
-			credentials: 'include'
-		});
+				method: 'POST',
+				credentials: 'include'
+			});
 			if (!res.ok) {
 				oidcError = 'SSO is not configured';
 				oidcLoading = false;
@@ -289,7 +289,6 @@
 							Sign in
 						</button>
 					</form>
-
 				{:else if activeTab === 'jellyfin'}
 					<form
 						onsubmit={(e) => {
@@ -353,7 +352,6 @@
 							Sign in with Jellyfin
 						</button>
 					</form>
-
 				{:else if activeTab === 'plex'}
 					<div class="flex flex-col gap-4">
 						<div class="flex items-center gap-2 mb-1">
@@ -380,7 +378,6 @@
 							{/if}
 						</button>
 					</div>
-
 				{:else if activeTab === 'oidc'}
 					<div class="flex flex-col gap-4">
 						<p class="text-sm text-base-content/60">

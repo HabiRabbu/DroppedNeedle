@@ -176,6 +176,21 @@ class AuthService:
                 raise AuthenticationError("Cannot remove the last admin account")
         await self._store.update_user_role(user_id, role)
 
+    async def delete_user(self, user_id: str, *, requesting_user_id: str) -> None:
+        if requesting_user_id == user_id:
+            raise AuthenticationError("Cannot delete your own account")
+        target = await self._store.get_user_by_id(user_id)
+        if target is None:
+            raise AuthenticationError("User not found")
+        if target.role == "admin":
+            admin_count = await self._store.count_users_by_role("admin")
+            if admin_count <= 1:
+                raise AuthenticationError("Cannot delete the last admin account")
+        await self._store.delete_user(user_id)
+
+    async def get_provider_names_for_users(self, user_ids: list[str]) -> dict[str, list[str]]:
+        return await self._store.list_provider_names_for_users(user_ids)
+
     async def revoke_user_sessions(self, user_id: str) -> None:
         await self._store.revoke_all_tokens_for_user(user_id)
 

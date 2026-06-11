@@ -15,6 +15,7 @@ from api.v1.routes.settings import router as settings_router
 from api.v1.schemas.settings import PlexConnectionSettings
 from core.dependencies import get_preferences_service, get_settings_service
 from core.exceptions import ConfigurationError
+from tests.helpers import override_admin_auth
 
 
 @pytest.fixture
@@ -55,6 +56,7 @@ def settings_client(mock_preferences, mock_settings_service):
     app.include_router(settings_router)
     app.dependency_overrides[get_preferences_service] = lambda: mock_preferences
     app.dependency_overrides[get_settings_service] = lambda: mock_settings_service
+    override_admin_auth(app)
     return TestClient(app)
 
 

@@ -8,6 +8,8 @@ export interface SettingsFormConfig<T> {
 	testEndpoint?: string;
 	defaultValue?: T;
 	enabledField?: keyof T;
+	/** A second toggle (e.g. "allow login") that should also stay locked until a test succeeds. */
+	secondaryEnabledField?: keyof T;
 	refreshIntegration?: boolean;
 	afterSave?: (data: T) => void | Promise<void>;
 	afterTest?: (result: unknown) => void;
@@ -22,6 +24,7 @@ export function createSettingsForm<T>(config: SettingsFormConfig<T>) {
 	let messageType = $state<'success' | 'error'>('success');
 	let testResult = $state<unknown>(null);
 	let wasAlreadyEnabled = $state(false);
+	let wasAlreadySecondaryEnabled = $state(false);
 	let clearTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function clearMessage() {
@@ -59,6 +62,9 @@ export function createSettingsForm<T>(config: SettingsFormConfig<T>) {
 			if (config.enabledField && data) {
 				wasAlreadyEnabled = Boolean(data[config.enabledField]);
 			}
+			if (config.secondaryEnabledField && data) {
+				wasAlreadySecondaryEnabled = Boolean(data[config.secondaryEnabledField]);
+			}
 		} catch (e) {
 			if (!isAbortError(e)) {
 				showMessage("Couldn't load your settings", 'error', false);
@@ -79,6 +85,9 @@ export function createSettingsForm<T>(config: SettingsFormConfig<T>) {
 			if (result) data = result;
 			if (config.enabledField && data) {
 				wasAlreadyEnabled = Boolean(data[config.enabledField]);
+			}
+			if (config.secondaryEnabledField && data) {
+				wasAlreadySecondaryEnabled = Boolean(data[config.secondaryEnabledField]);
 			}
 			showMessage('Settings saved');
 			if (config.refreshIntegration) await refreshIntegrationStatus();
@@ -150,6 +159,9 @@ export function createSettingsForm<T>(config: SettingsFormConfig<T>) {
 		},
 		get wasAlreadyEnabled() {
 			return wasAlreadyEnabled;
+		},
+		get wasAlreadySecondaryEnabled() {
+			return wasAlreadySecondaryEnabled;
 		},
 		load,
 		save,

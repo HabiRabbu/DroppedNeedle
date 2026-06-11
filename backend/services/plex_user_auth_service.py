@@ -159,6 +159,19 @@ class PlexUserAuthService:
                 raise AuthenticationError("Linked account not found")
             return user
 
+        if email:
+            existing_user = await self._store.get_user_by_email(email)
+            if existing_user:
+                await self._store.create_auth_provider(
+                    id = str(uuid.uuid4()),
+                    user_id = existing_user.id,
+                    provider = "plex",
+                    provider_uid = plex_uid,
+                    provider_data = provider_data,
+                )
+                logger.info(f"Linked Plex account to existing user: {existing_user.display_name} ({existing_user.id[:8]})")
+                return existing_user
+
         user_id = str(uuid.uuid4())
         provider_id = str(uuid.uuid4())
         is_first = not await self._store.has_any_users()

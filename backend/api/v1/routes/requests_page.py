@@ -104,17 +104,26 @@ async def get_pending_approvals(
     return await service.get_pending_approvals()
 
 
+@router.get("/pending-approvals/count", response_model=ActiveCountResponse)
+async def get_pending_approval_count(
+    service: RequestsPageService = Depends(get_requests_page_service),
+    _admin: CurrentAdminDep = None,
+):
+    count = await service.get_pending_approval_count()
+    return ActiveCountResponse(count=count)
+
+
 @router.post("/approve/{musicbrainz_id}", response_model=ApprovalActionResponse)
 async def approve_request(
     musicbrainz_id: str,
     service: RequestsPageService = Depends(get_requests_page_service),
-    _admin: CurrentAdminDep = None,
+    admin: CurrentAdminDep = None,
 ):
     try:
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    result = await service.approve_request(musicbrainz_id)
+    result = await service.approve_request(musicbrainz_id, admin.id, admin.display_name)
     return ApprovalActionResponse(success=result.success, message=result.message)
 
 
@@ -122,11 +131,11 @@ async def approve_request(
 async def reject_request(
     musicbrainz_id: str,
     service: RequestsPageService = Depends(get_requests_page_service),
-    _admin: CurrentAdminDep = None,
+    admin: CurrentAdminDep = None,
 ):
     try:
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    result = await service.reject_request(musicbrainz_id)
+    result = await service.reject_request(musicbrainz_id, admin.id, admin.display_name)
     return ApprovalActionResponse(success=result.success, message=result.message)

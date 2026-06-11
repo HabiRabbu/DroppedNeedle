@@ -8,7 +8,7 @@ from api.v1.routes.settings import router
 from api.v1.schemas.settings import ScrobbleSettings
 from core.dependencies import get_preferences_service
 from core.exceptions import ConfigurationError
-from tests.helpers import build_test_client
+from tests.helpers import build_test_client, override_admin_auth
 
 
 def _default_scrobble_settings() -> ScrobbleSettings:
@@ -28,6 +28,7 @@ def client(mock_prefs):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_preferences_service] = lambda: mock_prefs
+    override_admin_auth(app)
     yield build_test_client(app)
 
 

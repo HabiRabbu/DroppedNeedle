@@ -31,6 +31,23 @@ from core.exceptions import (
     ValidationError,
 )
 from infrastructure.resilience.retry import CircuitOpenError
+from infrastructure.persistence.auth_store import UserRecord
+from middleware import _get_current_admin
+
+
+def mock_admin_user() -> UserRecord:
+    """A fake authenticated admin user for overriding admin-gated routes in tests."""
+    return UserRecord(
+        id="test-admin-id",
+        display_name="Test Admin",
+        role="admin",
+        created_at="2024-01-01T00:00:00Z",
+    )
+
+
+def override_admin_auth(app: FastAPI) -> None:
+    """Bypass the admin-auth dependency for routers gated by `_get_current_admin`."""
+    app.dependency_overrides[_get_current_admin] = mock_admin_user
 
 
 def add_production_exception_handlers(app: FastAPI) -> FastAPI:

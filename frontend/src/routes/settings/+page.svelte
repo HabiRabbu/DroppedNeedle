@@ -98,14 +98,14 @@
 		{ id: 'local-files', label: 'Local Files', group: 'Library & Sources', icon: Headphones },
 		{ id: 'cache', label: 'Cache', group: 'System', icon: Database },
 		{ id: 'musicbrainz', label: 'MusicBrainz', group: 'System', icon: Globe },
-		{ id: 'advanced', label: 'Advanced', group: 'System', icon: Settings },
-		{ id: 'about', label: 'About', group: 'System', icon: Info },
 		...(authStore.isAdmin
 			? [
-					{ id: 'security', label: 'Security', group: 'System', icon: ShieldCheck },
-					{ id: 'users', label: 'Users', group: 'System', icon: Users }
+					{ id: 'users', label: 'Users', group: 'System', icon: Users },
+					{ id: 'security', label: 'Security', group: 'System', icon: ShieldCheck }
 				]
-			: [])
+			: []),
+		{ id: 'advanced', label: 'Advanced', group: 'System', icon: Settings },
+		{ id: 'about', label: 'About', group: 'System', icon: Info }
 	];
 
 	const groups = [...new Set(tabs.map((t) => t.group))];

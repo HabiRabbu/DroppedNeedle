@@ -260,12 +260,22 @@ export type JellyfinConnectionSettings = {
 	api_key: string;
 	user_id: string;
 	enabled: boolean;
+	login_enabled: boolean;
 };
 
 export type ListenBrainzConnectionSettings = {
 	username: string;
 	user_token: string;
 	enabled: boolean;
+};
+
+export type OIDCConnectionSettings = {
+	enabled: boolean;
+	issuer: string;
+	client_id: string;
+	client_secret: string;
+	scopes: string;
+	redirect_uri: string;
 };
 
 export type HomeSettings = {
@@ -779,6 +789,7 @@ export type ActiveRequestItem = {
 	protocol?: string | null;
 	download_client?: string | null;
 	user_id?: string | null;
+	requested_by_name?: string | null;
 };
 
 export type RequestHistoryItem = {
@@ -794,6 +805,9 @@ export type RequestHistoryItem = {
 	in_library: boolean;
 	monitored?: boolean;
 	user_id?: string | null;
+	requested_by_name?: string | null;
+	reviewed_by_name?: string | null;
+	reviewed_at?: string | null;
 };
 
 export type ActiveRequestsResponse = {
@@ -995,6 +1009,7 @@ export type PlexConnectionSettings = {
 	plex_url: string;
 	plex_token: string;
 	enabled: boolean;
+	login_enabled: boolean;
 	music_library_ids: string[];
 	scrobble_to_plex: boolean;
 };

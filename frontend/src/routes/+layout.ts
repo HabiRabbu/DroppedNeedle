@@ -1,5 +1,5 @@
 import { api } from '$lib/api/client';
-import { API } from '$lib/constants';
+import { API, AUTH_FREE_PATHS } from '$lib/constants';
 import { DEFAULT_SOURCE, isMusicSource } from '$lib/stores/musicSource';
 import { authStore } from '$lib/stores/authStore.svelte';
 import { redirect } from '@sveltejs/kit';
@@ -7,8 +7,6 @@ import type { LayoutLoad } from './$types';
 
 export const ssr = false;
 export const prerender = false;
-
-const AUTH_FREE_PATHS = ['/login', '/setup', '/auth/callback'];
 
 export const load: LayoutLoad = async ({ url }) => {
 	const path = url.pathname;

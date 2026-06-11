@@ -252,6 +252,12 @@ class AuthStore:
             )
         await self._write(operation)
 
+    async def delete_user(self, user_id: str) -> bool:
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute("DELETE FROM auth_users WHERE id = ?", (user_id,))
+            return cursor.rowcount > 0
+        return await self._write(operation)
+
     async def update_user_profile(
         self,
         user_id: str,
@@ -345,6 +351,23 @@ class AuthStore:
                 (user_id,),
             ).fetchall()
             return [p for row in rows if (p := self._to_provider(row)) is not None]
+        return await self._read(operation)
+
+    async def list_provider_names_for_users(self, user_ids: list[str]) -> dict[str, list[str]]:
+        if not user_ids:
+            return {}
+
+        def operation(conn: sqlite3.Connection) -> dict[str, list[str]]:
+            placeholders = ",".join("?" for _ in user_ids)
+            rows = conn.execute(
+                f"SELECT DISTINCT user_id, provider FROM auth_providers WHERE user_id IN ({placeholders}) "
+                "ORDER BY created_at ASC",
+                user_ids,
+            ).fetchall()
+            result: dict[str, list[str]] = {}
+            for row in rows:
+                result.setdefault(row["user_id"], []).append(row["provider"])
+            return result
         return await self._read(operation)
 
     async def delete_auth_provider(self, provider_id: str) -> bool:

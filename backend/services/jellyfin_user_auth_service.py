@@ -110,6 +110,7 @@ class JellyfinUserAuthService:
     async def _find_or_create_user(self, profile: dict) -> UserRecord:
         jellyfin_user_id = profile["jellyfin_user_id"]
         username = profile["username"]
+        email = profile["email"]
         thumb = profile["thumb"]
         access_token = profile["access_token"]
 
@@ -123,6 +124,19 @@ class JellyfinUserAuthService:
                 raise AuthenticationError("Linked account not found")
             return user
 
+        if email:
+            existing_user = await self._store.get_user_by_email(email)
+            if existing_user:
+                await self._store.create_auth_provider(
+                    id = str(uuid.uuid4()),
+                    user_id = existing_user.id,
+                    provider = "jellyfin",
+                    provider_uid = jellyfin_user_id,
+                    provider_data = provider_data,
+                )
+                logger.info(f"Linked Jellyfin account to existing user: {existing_user.display_name} ({existing_user.id[:8]})")
+                return existing_user
+
         user_id = str(uuid.uuid4())
         provider_id = str(uuid.uuid4())
         is_first = not await self._store.has_any_users()
@@ -131,7 +145,7 @@ class JellyfinUserAuthService:
             id = user_id,
             display_name = username,
             role = "admin" if is_first else "user",
-            email = None,
+            email = email,
             avatar_url = thumb,
         )
         await self._store.create_auth_provider(
