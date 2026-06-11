@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const hoisted = vi.hoisted(() => {
 	const listeners = new Map<string, Set<EventListener>>();
+	const resumeAudioEngine = vi.fn(async () => undefined);
 	const audio = {
 		src: '',
 		volume: 1,
@@ -42,18 +43,22 @@ const hoisted = vi.hoisted(() => {
 		audio.load.mockReset();
 		audio.addEventListener.mockClear();
 		audio.removeEventListener.mockClear();
+		resumeAudioEngine.mockReset();
+		resumeAudioEngine.mockResolvedValue(undefined);
 	};
 
 	return {
 		audio,
 		dispatch,
 		reset,
-		getAudioElement: vi.fn(() => audio as unknown as HTMLAudioElement)
+		getAudioElement: vi.fn(() => audio as unknown as HTMLAudioElement),
+		resumeAudioEngine
 	};
 });
 
 vi.mock('./audioElement', () => ({
-	getAudioElement: hoisted.getAudioElement
+	getAudioElement: hoisted.getAudioElement,
+	resumeAudioEngine: hoisted.resumeAudioEngine
 }));
 
 import { NativeAudioSource } from './NativeAudioSource';
@@ -73,6 +78,19 @@ describe('NativeAudioSource', () => {
 		hoisted.dispatch('canplay');
 
 		await expect(loadPromise).resolves.toBeUndefined();
+	});
+
+	it('loads successfully on metadata and reports duration before playback timeupdates', async () => {
+		const source = new NativeAudioSource('local', { url: '/metadata.mp3', seekable: true });
+		const onProgress = vi.fn();
+		source.onProgress(onProgress);
+		const loadPromise = source.load();
+
+		hoisted.audio.duration = 178;
+		hoisted.dispatch('loadedmetadata');
+
+		await expect(loadPromise).resolves.toBeUndefined();
+		expect(onProgress).toHaveBeenCalledWith(0, 178);
 	});
 
 	it('fails load when timeout is reached', async () => {
@@ -109,8 +127,34 @@ describe('NativeAudioSource', () => {
 		hoisted.audio.play.mockImplementationOnce(() => Promise.reject(new Error('blocked')));
 		source.play();
 		await Promise.resolve();
+		await Promise.resolve();
 
 		expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'AUTOPLAY_BLOCKED' }));
+	});
+
+	it('resumes the Web Audio engine before native playback', async () => {
+		const source = new NativeAudioSource('local', { url: '/resume.mp3', seekable: true });
+
+		source.play();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(hoisted.resumeAudioEngine).toHaveBeenCalledTimes(1);
+		expect(hoisted.audio.play).toHaveBeenCalledTimes(1);
+		expect(hoisted.resumeAudioEngine.mock.invocationCallOrder[0]).toBeLessThan(
+			hoisted.audio.play.mock.invocationCallOrder[0]
+		);
+	});
+
+	it('still attempts native playback if Web Audio resume rejects', async () => {
+		const source = new NativeAudioSource('local', { url: '/resume-rejected.mp3', seekable: true });
+
+		hoisted.resumeAudioEngine.mockRejectedValueOnce(new Error('resume blocked'));
+		source.play();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(hoisted.audio.play).toHaveBeenCalledTimes(1);
 	});
 
 	it('seekTo updates currentTime when stream is seekable', () => {

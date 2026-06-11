@@ -38,6 +38,15 @@ export function tryGetAudioEngine(): AudioEngine | null {
 	return engine;
 }
 
+export async function resumeAudioEngine(): Promise<void> {
+	try {
+		await engine?.resume();
+	} catch {
+		// Browsers can reject resume() outside a user activation. Native audio
+		// playback should still continue; the next user gesture can retry.
+	}
+}
+
 export function _resetAudioElement(): void {
 	engine?.destroy();
 	engine = null;

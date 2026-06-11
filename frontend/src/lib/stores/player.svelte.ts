@@ -45,6 +45,7 @@ import {
 	buildPrefetchUrl,
 	buildNowPlayingMetadata
 } from './playerSourceResolver';
+import { resumeAudioEngine } from '$lib/player/audioElement';
 import {
 	persistSession as doPersistSession,
 	restoreSessionData,
@@ -191,9 +192,10 @@ function createPlayerStore() {
 		storeSessionData(null);
 	}
 
-	async function resolveSourceForItem(
-		item: QueueItem
-	): Promise<{ source: PlaybackSource; loadUrl: string | undefined }> {
+	function resolveSourceForItem(item: QueueItem): {
+		source: PlaybackSource;
+		loadUrl: string | undefined;
+	} {
 		const url = resolveSourceUrl(item);
 		if (item.sourceType === 'youtube') {
 			isSeekable = true;
@@ -250,12 +252,17 @@ function createPlayerStore() {
 			errorSkipTimeout = null;
 		}
 		const prevProgress = progress,
-			prevItem = queue[currentIndex] ?? null;
+			prevItem = currentSource ? (queue[currentIndex] ?? null) : null;
 		currentIndex = index;
 		playbackState = 'loading';
 		progress = 0;
 		duration = 0;
-		await stopPreviousSession(prevItem, prevProgress);
+		if (prevItem) {
+			await stopPreviousSession(prevItem, prevProgress);
+		} else {
+			progressReporter.stop();
+			unregisterBeforeUnload();
+		}
 		currentSource?.destroy();
 		const gen = ++loadGeneration;
 		let source: PlaybackSource,
@@ -274,13 +281,20 @@ function createPlayerStore() {
 		subscribeToSource(source, gen);
 		source.setVolume(volume);
 		try {
-			if ((queue[index] ?? item).sourceType === 'jellyfin') await startJellyfinPlayback(index);
-			await source.load({
-				trackSourceId: (queue[index] ?? item).trackSourceId,
+			const activeItem = queue[index] ?? item;
+			const loadPromise = source.load({
+				trackSourceId: activeItem.trackSourceId,
 				url: resolvedUrl,
-				format: (queue[index] ?? item).format
+				format: activeItem.format
 			});
-			if (gen === loadGeneration) source.play();
+			if (gen === loadGeneration && activeItem.sourceType !== 'youtube') {
+				source.play();
+			}
+			if (activeItem.sourceType === 'jellyfin') await startJellyfinPlayback(index);
+			await loadPromise;
+			if (gen === loadGeneration && activeItem.sourceType === 'youtube') {
+				source.play();
+			}
 		} catch {
 			if (gen === loadGeneration) handleTrackError(gen);
 		}
@@ -445,6 +459,7 @@ function createPlayerStore() {
 		},
 
 		playAlbum(source: PlaybackSource, metadata: NowPlaying): void {
+			void resumeAudioEngine();
 			void stopPreviousSession(getCurrentItem(), progress);
 			currentSource?.destroy();
 			const gen = ++loadGeneration;
@@ -464,6 +479,7 @@ function createPlayerStore() {
 
 		playQueue(items: QueueItem[], startIndex: number = 0, shuffle: boolean = false): void {
 			if (items.length === 0) return;
+			void resumeAudioEngine();
 			const s = buildPlayQueueState(items, startIndex, shuffle);
 			queue = s.queue;
 			shuffleEnabled = s.shuffleEnabled;
@@ -672,6 +688,7 @@ function createPlayerStore() {
 		},
 
 		play(): void {
+			void resumeAudioEngine();
 			currentSource?.play();
 		},
 
@@ -699,6 +716,7 @@ function createPlayerStore() {
 				if (item?.sourceType === 'navidrome') void reportNavidromeStopped(item.trackSourceId);
 				persist();
 			} else {
+				void resumeAudioEngine();
 				currentSource?.play();
 			}
 		},
@@ -749,8 +767,9 @@ function createPlayerStore() {
 			duration = 0;
 			const gen = ++loadGeneration;
 
-			void resolveSourceForItem(resume.currentItem)
-				.then(async ({ source, loadUrl }) => {
+			void (async () => {
+				try {
+					const { source, loadUrl } = resolveSourceForItem(resume.currentItem);
 					if (gen !== loadGeneration) return;
 					currentSource = source;
 					nowPlaying = resume.nowPlaying;
@@ -771,13 +790,12 @@ function createPlayerStore() {
 						source.seekTo(resume.progress);
 						progress = resume.progress;
 					}
-				})
-				.catch(() => {
-					if (gen === loadGeneration) {
-						playbackState = 'error';
-						storeSessionData(null);
-					}
-				});
+				} catch {
+					if (gen !== loadGeneration) return;
+					playbackState = 'error';
+					storeSessionData(null);
+				}
+			})();
 		}
 	};
 }
