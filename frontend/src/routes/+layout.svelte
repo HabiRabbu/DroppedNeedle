@@ -14,7 +14,7 @@
 	import { scrobbleManager } from '$lib/stores/scrobble.svelte';
 	import { imageSettingsStore } from '$lib/stores/imageSettings';
 	import { serviceStatusStore } from '$lib/stores/serviceStatus';
-	import { setAudioElement, tryGetAudioEngine } from '$lib/player/audioElement';
+	import { resumeAudioEngine, setAudioElement } from '$lib/player/audioElement';
 	import { eqStore } from '$lib/stores/eq.svelte';
 	import Player from '$lib/components/Player.svelte';
 	import CacheSyncIndicator from '$lib/components/CacheSyncIndicator.svelte';
@@ -112,7 +112,7 @@
 		}
 
 		const resumeAudioContext = () => {
-			tryGetAudioEngine()?.resume();
+			void resumeAudioEngine();
 			cleanupResumeListeners?.();
 			cleanupResumeListeners = null;
 		};
