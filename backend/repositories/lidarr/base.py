@@ -21,6 +21,9 @@ LidarrJsonObject = dict[str, Any]
 LidarrJsonArray = list[LidarrJsonObject]
 LidarrJson = LidarrJsonObject | LidarrJsonArray
 
+# Large Lidarr libraries make /api/v1/album an expensive page-path dependency.
+LIDARR_LIBRARY_SCAN_TTL_SECONDS = 3600
+
 
 def reset_lidarr_circuit_breaker():
     _lidarr_circuit_breaker.reset()
@@ -134,7 +137,7 @@ class LidarrBase:
         if not isinstance(data, list):
             return []
 
-        await self._cache.set(cache_key, data, ttl_seconds=300)
+        await self._cache.set(cache_key, data, ttl_seconds=LIDARR_LIBRARY_SCAN_TTL_SECONDS)
         return data
 
     async def _invalidate_album_list_caches(self) -> None:
