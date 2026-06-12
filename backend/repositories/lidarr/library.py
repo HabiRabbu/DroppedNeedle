@@ -11,7 +11,7 @@ from infrastructure.cache.cache_keys import (
     lidarr_requested_mbids_key,
     lidarr_monitored_mbids_key,
 )
-from .base import LidarrBase
+from .base import LidarrBase, LIDARR_LIBRARY_SCAN_TTL_SECONDS
 
 if TYPE_CHECKING:
     from infrastructure.persistence.request_history import RequestHistoryStore
@@ -84,7 +84,7 @@ class LidarrLibraryRepository(LidarrBase):
                 )
             )
 
-        await self._cache.set(cache_key, out, ttl_seconds=300)
+        await self._cache.set(cache_key, out, ttl_seconds=LIDARR_LIBRARY_SCAN_TTL_SECONDS)
         return out
 
     async def get_artists_from_library(self, include_unmonitored: bool = False) -> list[dict]:
@@ -139,7 +139,7 @@ class LidarrLibraryRepository(LidarrBase):
                 artists_dict[artist_mbid]['date_added'] = date_added
 
         result = list(artists_dict.values())
-        await self._cache.set(cache_key, result, ttl_seconds=300)
+        await self._cache.set(cache_key, result, ttl_seconds=LIDARR_LIBRARY_SCAN_TTL_SECONDS)
         return result
 
     async def get_library_grouped(self) -> list[LibraryGroupedArtist]:
@@ -186,7 +186,7 @@ class LidarrLibraryRepository(LidarrBase):
             LibraryGroupedArtist(artist=artist, albums=albums)
             for artist, albums in grouped.items()
         ]
-        await self._cache.set(cache_key, result, ttl_seconds=300)
+        await self._cache.set(cache_key, result, ttl_seconds=LIDARR_LIBRARY_SCAN_TTL_SECONDS)
         return result
 
     async def get_library_mbids(self, include_release_ids: bool = True) -> set[str]:
@@ -213,7 +213,7 @@ class LidarrLibraryRepository(LidarrBase):
                     if isinstance(rid, str):
                         ids.add(rid.lower())
 
-        await self._cache.set(cache_key, ids, ttl_seconds=300)
+        await self._cache.set(cache_key, ids, ttl_seconds=LIDARR_LIBRARY_SCAN_TTL_SECONDS)
         return ids
 
     async def get_artist_mbids(self) -> set[str]:
@@ -234,7 +234,7 @@ class LidarrLibraryRepository(LidarrBase):
             if isinstance(mbid, str):
                 ids.add(mbid.lower())
 
-        await self._cache.set(cache_key, ids, ttl_seconds=300)
+        await self._cache.set(cache_key, ids, ttl_seconds=LIDARR_LIBRARY_SCAN_TTL_SECONDS)
         return ids
 
     async def get_requested_mbids(self) -> set[str]:
@@ -269,5 +269,5 @@ class LidarrLibraryRepository(LidarrBase):
             if isinstance(rg, str):
                 ids.add(rg.lower())
 
-        await self._cache.set(cache_key, ids, ttl_seconds=300)
+        await self._cache.set(cache_key, ids, ttl_seconds=LIDARR_LIBRARY_SCAN_TTL_SECONDS)
         return ids
