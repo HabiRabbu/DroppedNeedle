@@ -319,6 +319,8 @@ Map both `/app/config` and `/app/cache` to persistent host directories so they s
 
 Interactive API docs (Swagger UI) are available at `/api/v1/docs` on your MusicSeerr instance.
 
+All `/api/v1/*` routes require authentication (a Bearer token or the `musicseerr_session` cookie), aside from a small public allowlist for setup, login, and provider discovery. Everything under `/api/v1/settings/*` additionally requires the **Admin** role.
+
 A health check endpoint is at `/health`.
 
 ---

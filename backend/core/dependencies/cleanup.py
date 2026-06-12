@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from core.config import get_settings
@@ -57,7 +58,7 @@ def clear_listenbrainz_dependent_caches() -> None:
 
 async def init_app_state(app) -> None:
     settings = get_settings()
-    init_crypto(settings.root_app_dir / "config")
+    await asyncio.to_thread(init_crypto, settings.root_app_dir / "config")
 
 
 async def cleanup_app_state() -> None:

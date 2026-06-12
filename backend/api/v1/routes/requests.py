@@ -19,9 +19,9 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/requests", tags=["requests
 
 @router.post("/new", response_model=RequestAcceptedResponse, status_code=202)
 async def request_album(
+    current_user: CurrentUserDep,
     album_request: AlbumRequest = MsgSpecBody(AlbumRequest),
     request_service: RequestService = Depends(get_request_service),
-    current_user: CurrentUserDep = None,
 ):
     return await request_service.request_album(
         album_request.musicbrainz_id,
@@ -39,9 +39,9 @@ async def request_album(
 
 @router.post("/batch", response_model=BatchRequestResponse, status_code=202)
 async def request_batch(
+    current_user: CurrentUserDep,
     batch: BatchAlbumRequest = MsgSpecBody(BatchAlbumRequest),
     request_service: RequestService = Depends(get_request_service),
-    current_user: CurrentUserDep = None,
 ):
     return await request_service.request_batch(
         items=[msgspec.structs.asdict(item) for item in batch.items],

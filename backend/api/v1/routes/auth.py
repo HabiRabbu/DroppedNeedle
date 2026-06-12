@@ -7,6 +7,7 @@ import asyncio, logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, responses, status
 
 from api.v1.schemas.auth import (
+    AuthProvidersResponse,
     AuthResponse,
     CreateUserRequest,
     JellyfinLoginRequest,
@@ -14,16 +15,17 @@ from api.v1.schemas.auth import (
     OIDCAuthorizeResponse,
     OIDCExchangeRequest,
     PlexPinResponse,
+    PlexPollResponse,
     SessionListResponse,
     SetRoleRequest,
     SetupRequest,
     SetupStatusResponse,
     UserListResponse,
+    UserResponse,
     session_to_response,
     user_to_response,
 )
 from core.dependencies.auth_providers import get_auth_service, get_plex_user_auth_service, get_jellyfin_user_auth_service, get_oidc_user_auth_service
-from core.dependencies.cache_providers import get_preferences_service
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError, RegistrationError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep, CurrentTokenDep, CurrentUserDep
@@ -75,23 +77,12 @@ async def setup_status(auth: AuthService = Depends(get_auth_service)) -> SetupSt
     return SetupStatusResponse(required = required)
 
 
-@router.get("/providers")
+@router.get("/providers", response_model = AuthProvidersResponse)
 async def list_auth_providers(
     oidc_auth: OIDCUserAuthService = Depends(get_oidc_user_auth_service),
-):
+) -> AuthProvidersResponse:
     """Return which login methods are currently configured."""
-    prefs = get_preferences_service()
-
-    jellyfin_cfg = prefs.get_jellyfin_connection()
-    plex_cfg = prefs.get_plex_connection()
-    oidc_cfg = oidc_auth.get_config()
-
-    return {
-        "local": True,
-        "plex": plex_cfg.login_enabled,
-        "jellyfin": jellyfin_cfg.login_enabled,
-        "oidc": oidc_cfg.enabled and bool(oidc_cfg.issuer) and bool(oidc_cfg.client_id),
-    }
+    return oidc_auth.get_enabled_providers()
 
 
 @router.post("/setup", response_model = AuthResponse, status_code = status.HTTP_201_CREATED)
@@ -166,8 +157,8 @@ async def logout_all(
     await auth.logout_all(current_user.id, except_token_id = current_token.id)
 
 
-@router.get("/me")
-async def me(current_user: CurrentUserDep):
+@router.get("/me", response_model = UserResponse)
+async def me(current_user: CurrentUserDep) -> UserResponse:
     return user_to_response(current_user)
 
 
@@ -211,12 +202,12 @@ async def admin_list_users(
     )
 
 
-@router.post("/admin/users", status_code = status.HTTP_201_CREATED)
+@router.post("/admin/users", response_model = UserResponse, status_code = status.HTTP_201_CREATED)
 async def admin_create_user(
     _admin: CurrentAdminDep,
     body: CreateUserRequest = MsgSpecBody(CreateUserRequest),
     auth: AuthService = Depends(get_auth_service),
-):
+) -> UserResponse:
     try:
         user = await auth.admin_create_user(
             display_name = body.display_name,
@@ -272,13 +263,13 @@ async def plex_login_pin(plex_auth: PlexUserAuthService = Depends(get_plex_user_
     return PlexPinResponse(pin_id = pin_id, auth_url = auth_url)
 
 
-@router.get("/plex/poll")
+@router.get("/plex/poll", response_model = PlexPollResponse)
 async def plex_login_poll(
     pin_id: int,
     request: Request,
     response: Response,
     plex_auth: PlexUserAuthService = Depends(get_plex_user_auth_service),
-):
+) -> PlexPollResponse:
     try:
         result = await plex_auth.poll_and_login(
             pin_id, user_agent = request.headers.get("User-Agent")
@@ -287,10 +278,10 @@ async def plex_login_poll(
         logger.debug(f"Plex login rejected: {e}")
         raise HTTPException(status_code = status.HTTP_403_FORBIDDEN, detail = "Access denied")
     if result is None:
-        return {"completed": False}
+        return PlexPollResponse(completed = False)
     user, token = result
     _set_session_cookie(response, request, token)
-    return AuthResponse(token = token, user = user_to_response(user))
+    return PlexPollResponse(completed = True, token = token, user = user_to_response(user))
 
 
 @router.post("/jellyfin/login", response_model = AuthResponse)

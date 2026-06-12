@@ -10,6 +10,7 @@ import httpx
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from typing import Any
 
+from api.v1.schemas.auth import AuthProvidersResponse
 from api.v1.schemas.settings import OIDCConnectionSettings
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError
 from infrastructure.cache.memory_cache import CacheInterface
@@ -39,6 +40,18 @@ class OIDCUserAuthService:
 
     def get_config(self) -> OIDCConnectionSettings:
         return self._prefs.get_oidc_connection()
+
+    def get_enabled_providers(self) -> AuthProvidersResponse:
+        jellyfin_cfg = self._prefs.get_jellyfin_connection()
+        plex_cfg = self._prefs.get_plex_connection()
+        oidc_cfg = self.get_config()
+
+        return AuthProvidersResponse(
+            local = True,
+            plex = plex_cfg.login_enabled,
+            jellyfin = jellyfin_cfg.login_enabled,
+            oidc = oidc_cfg.enabled and bool(oidc_cfg.issuer) and bool(oidc_cfg.client_id),
+        )
 
     async def verify(self, settings: OIDCConnectionSettings) -> tuple[bool, str]:
         issuer = settings.issuer.strip()

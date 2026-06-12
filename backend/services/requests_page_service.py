@@ -164,7 +164,14 @@ class RequestsPageService:
             try:
                 await self._request_queue.enqueue(musicbrainz_id)
             except Exception as e:  # noqa: BLE001
-                logger.error("Failed to enqueue approved request %s: %s", musicbrainz_id, e)
+                logger.error(f"Failed to enqueue approved request {musicbrainz_id}: {e}")
+                await self._request_history.async_update_status(
+                    musicbrainz_id, "failed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                )
+                return CancelRequestResponse(
+                    success=False, message=f"Approved but failed to queue: {record.album_title}"
+                )
         return CancelRequestResponse(success=True, message=f"Approved: {record.album_title}")
 
     async def reject_request(

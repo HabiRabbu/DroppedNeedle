@@ -213,20 +213,27 @@ class PlexRepository:
                 headers = self._build_headers(),
                 timeout = 10.0,
             )
-            if response.status_code != 200:
-                return None
-            data = response.json()
-            machine_id = (
-                data.get("MediaContainer", {}).get("machineIdentifier") or data.get("machineIdentifier")
-            )
-            if machine_id:
-                await self._cache.set(cache_key, machine_id, ttl_seconds = 3600)
-            else:
-                await self._cache.set(cache_key, "", ttl_seconds = 300)
-            return machine_id or None
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"Failed to get Plex machine identifier: {e}")
+        except httpx.HTTPError as exc:
+            logger.warning(f"Failed to get Plex machine identifier: {exc}")
+            raise ExternalServiceError("Plex request failed") from exc
+
+        if response.status_code != 200:
             return None
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            logger.warning(f"Plex returned invalid JSON for /identity: {exc}")
+            raise PlexApiError("Plex returned invalid JSON for /identity") from exc
+
+        machine_id = (
+            data.get("MediaContainer", {}).get("machineIdentifier") or data.get("machineIdentifier")
+        )
+        if machine_id:
+            await self._cache.set(cache_key, machine_id, ttl_seconds = 3600)
+        else:
+            await self._cache.set(cache_key, "", ttl_seconds = 300)
+        return machine_id or None
 
     async def get_music_libraries(self) -> list[PlexLibrarySection]:
         sections = await self.get_libraries()

@@ -9,6 +9,13 @@ class SetupStatusResponse(AppStruct):
     required: bool
 
 
+class AuthProvidersResponse(AppStruct):
+    local: bool
+    plex: bool
+    jellyfin: bool
+    oidc: bool
+
+
 class SetupRequest(AppStruct):
     display_name: str
     email: str
@@ -65,6 +72,12 @@ class SetRoleRequest(AppStruct):
 class PlexPinResponse(AppStruct):
     pin_id: int
     auth_url: str
+
+
+class PlexPollResponse(AppStruct):
+    completed: bool
+    token: str | None = None
+    user: UserResponse | None = None
 
 
 class JellyfinLoginRequest(AppStruct):

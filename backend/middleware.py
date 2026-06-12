@@ -11,6 +11,7 @@ from infrastructure.degradation import (
     try_get_degradation_context,
     clear_degradation_context,
 )
+from infrastructure.persistence.auth_store import TokenRecord, UserRecord
 from infrastructure.resilience.rate_limiter import TokenBucketRateLimiter
 from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
 
@@ -233,9 +234,9 @@ class HSTSMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def _get_current_user(request: Request):
+def _get_current_user(request: Request) -> UserRecord:
     """Extract the already verified user from request.state.
- 
+
     The middleware has already validated the token by the time any route
     handler runs, so this is a zero-cost lookup with no DB call.
     """
@@ -249,7 +250,7 @@ def _get_current_user(request: Request):
     return user
 
 
-def _get_current_admin(request: Request):
+def _get_current_admin(request: Request) -> UserRecord:
     """Like _get_current_user but also enforces admin role."""
     user = _get_current_user(request)
     if user.role != "admin":
@@ -260,7 +261,7 @@ def _get_current_admin(request: Request):
     return user
 
 
-def _get_current_token(request: Request):
+def _get_current_token(request: Request) -> TokenRecord:
     """Extract the already verified token record from request.state."""
     token = getattr(request.state, "token", None)
     if token is None:
@@ -272,6 +273,6 @@ def _get_current_token(request: Request):
     return token
 
 
-CurrentUserDep = Annotated[object, Depends(_get_current_user)]
-CurrentAdminDep = Annotated[object, Depends(_get_current_admin)]
-CurrentTokenDep = Annotated[object, Depends(_get_current_token)]
+CurrentUserDep = Annotated[UserRecord, Depends(_get_current_user)]
+CurrentAdminDep = Annotated[UserRecord, Depends(_get_current_admin)]
+CurrentTokenDep = Annotated[TokenRecord, Depends(_get_current_token)]
