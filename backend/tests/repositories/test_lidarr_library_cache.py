@@ -6,6 +6,8 @@ import httpx
 
 from core.config import Settings
 from infrastructure.cache.memory_cache import InMemoryCache
+from infrastructure.cache.cache_keys import lidarr_library_mbids_key, lidarr_raw_albums_key
+from repositories.lidarr.base import LIDARR_LIBRARY_SCAN_TTL_SECONDS
 from repositories.lidarr.library import LidarrLibraryRepository
 
 
@@ -150,6 +152,34 @@ class TestCacheInvalidation:
 
 
 class TestSharedRawAlbumCache:
+    @pytest.mark.asyncio
+    async def test_library_mbids_and_raw_albums_use_long_scan_ttl(self, repo, cache):
+        """Full-library Lidarr scans should stay warm beyond a short page visit cache."""
+        original_set = cache.set
+        cache_set_calls: list[tuple[str, int]] = []
+
+        async def record_set(key, value, ttl_seconds=60):
+            cache_set_calls.append((key, ttl_seconds))
+            await original_set(key, value, ttl_seconds=ttl_seconds)
+
+        cache.set = AsyncMock(side_effect=record_set)
+
+        with patch.object(repo, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = [
+                {
+                    "foreignAlbumId": "aaaa",
+                    "statistics": {"trackFileCount": 10},
+                    "releases": [{"foreignId": "release-aaaa"}],
+                },
+            ]
+
+            result = await repo.get_library_mbids(include_release_ids=True)
+
+        assert result == {"aaaa", "release-aaaa"}
+        ttl_by_key = {key: ttl for key, ttl in cache_set_calls}
+        assert ttl_by_key[lidarr_raw_albums_key()] == LIDARR_LIBRARY_SCAN_TTL_SECONDS
+        assert ttl_by_key[lidarr_library_mbids_key(True)] == LIDARR_LIBRARY_SCAN_TTL_SECONDS
+
     @pytest.mark.asyncio
     async def test_concurrent_mbids_calls_deduplicate_raw_album_fetch(self, repo):
         """Concurrent MBID calls should coalesce to one /api/v1/album request."""

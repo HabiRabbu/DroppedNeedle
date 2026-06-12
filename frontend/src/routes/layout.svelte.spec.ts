@@ -3,7 +3,12 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { createRawSnippet } from 'svelte';
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$env/dynamic/public', () => ({
+	env: {
+		PUBLIC_API_URL: ''
+	}
+}));
+vi.mock('$app/environment', () => ({ browser: true, building: false, dev: false }));
 vi.mock('$app/navigation', () => ({
 	goto: vi.fn(),
 	beforeNavigate: vi.fn(),
@@ -82,9 +87,16 @@ vi.mock('$lib/stores/playbackToast.svelte', () => ({
 vi.mock('$lib/stores/scrobble.svelte', () => ({
 	scrobbleManager: { init: vi.fn().mockResolvedValue(undefined) }
 }));
-vi.mock('$lib/utils/lazyImage', () => ({ cancelPendingImages: vi.fn() }));
+vi.mock('$lib/utils/lazyImage', () => ({
+	cancelPendingImages: vi.fn(),
+	lazyImage: vi.fn(() => ({ destroy: vi.fn(), update: vi.fn() })),
+	resetLazyImage: vi.fn()
+}));
 vi.mock('$lib/utils/requestsApi', () => ({
-	fetchActiveRequestCount: vi.fn().mockResolvedValue(0)
+	fetchActiveRequestCount: vi.fn().mockResolvedValue(0),
+	fetchActiveRequests: vi.fn().mockResolvedValue({ items: [] }),
+	fetchRequestHistory: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+	notifyRequestCountChanged: vi.fn()
 }));
 vi.mock('$lib/utils/navigationProgress', () => ({
 	createNavigationProgressController: vi.fn(() => ({

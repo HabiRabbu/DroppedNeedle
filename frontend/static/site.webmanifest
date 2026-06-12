@@ -1,6 +1,11 @@
 {
   "name": "MusicSeerr",
   "short_name": "MusicSeerr",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen"],
   "icons": [
     {
       "src": "/android-chrome-192x192.png",
@@ -13,7 +18,6 @@
       "type": "image/png"
     }
   ],
-  "theme_color": "#1d232a",
-  "background_color": "#1d232a",
-  "display": "standalone"
+  "theme_color": "#0d120a",
+  "background_color": "#0d120a"
 }
