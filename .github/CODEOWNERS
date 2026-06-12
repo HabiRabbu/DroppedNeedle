@@ -1,0 +1,28 @@
+# Require review on security-sensitive and workflow files.
+# AI review system files are self-hosted and should be reviewed by a human.
+
+# CI/CD and infrastructure
+.github/workflows/*.yml                              @HabiRabbu
+Dockerfile                                           @HabiRabbu
+docker-compose.yml                                   @HabiRabbu
+docker-compose.*.yml                                 @HabiRabbu
+entrypoint.sh                                        @HabiRabbu
+
+# Security-sensitive backend paths
+backend/middleware.py                                @HabiRabbu
+backend/core/config.py                               @HabiRabbu
+backend/core/exceptions.py                           @HabiRabbu
+backend/core/exception_handlers.py                   @HabiRabbu
+backend/infrastructure/crypto.py                     @HabiRabbu
+backend/infrastructure/persistence/auth_store.py     @HabiRabbu
+backend/repositories/plex_repository.py              @HabiRabbu
+backend/services/auth_service.py                     @HabiRabbu
+backend/services/preferences_service.py              @HabiRabbu
+backend/services/*_user_auth_service.py              @HabiRabbu
+backend/api/v1/routes/auth.py                        @HabiRabbu
+frontend/src/lib/stores/authStore.svelte.ts          @HabiRabbu
+frontend/src/lib/components/settings/SettingsSecurity.svelte @HabiRabbu
+
+# Review system self-review
+.github/scripts/ai_review.py                         @HabiRabbu
+.github/review_guidelines.md                         @HabiRabbu

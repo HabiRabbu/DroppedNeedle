@@ -1,6 +1,7 @@
 services:
   musicseerr:
     image: ghcr.io/habirabbu/musicseerr:latest
+    # Built from main on every push - may break: ghcr.io/habirabbu/musicseerr:dev
     container_name: musicseerr
     environment:
       - PUID=1000            # User ID — run `id` on your host to find yours

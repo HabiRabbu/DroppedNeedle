@@ -101,39 +101,42 @@
 
 {#if playerStore.isPlayerVisible && playerStore.nowPlaying}
 	<div
-		class="fixed bottom-0 left-0 right-0 z-50 bg-base-300/95 backdrop-blur-md shadow-[0_-4px_20px_rgba(0,0,0,0.3)] transition-transform duration-300"
-		style="height: 90px;"
+		class="musicseerr-player-bar fixed left-0 right-0 z-50 bg-base-300/95 backdrop-blur-md shadow-[0_-4px_20px_rgba(0,0,0,0.3)] transition-transform duration-300"
 	>
 		<button
-			class="btn btn-ghost btn-xs btn-circle absolute top-1 right-1 opacity-60 hover:opacity-100"
+			class="btn btn-ghost btn-xs btn-circle absolute top-1.5 right-1.5 opacity-60 hover:opacity-100"
 			onclick={() => playerStore.stop()}
 			aria-label="Close player"
 		>
 			<X class="h-3.5 w-3.5" />
 		</button>
 
-		<div class="flex items-center h-full px-4 gap-4 max-w-screen-2xl mx-auto">
-			<div class="flex items-center gap-3 min-w-0 w-1/4">
+		<div
+			class="musicseerr-player-inner flex items-center gap-2 px-3 pr-9 sm:gap-4 sm:px-4 sm:pr-10 max-w-screen-2xl mx-auto"
+		>
+			<div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 lg:w-1/4 lg:flex-none">
 				{#if nowPlayingCoverUrl && !coverImgError}
 					<img
 						src={nowPlayingCoverUrl}
 						alt={playerStore.nowPlaying.albumName}
-						class="w-15 h-15 rounded-lg shadow-lg ring-1 ring-base-content/10 object-cover shrink-0"
+						class="w-12 h-12 sm:w-15 sm:h-15 rounded-lg shadow-lg ring-1 ring-base-content/10 object-cover shrink-0"
 						onerror={() => {
 							coverImgError = true;
 						}}
 					/>
 				{:else}
 					<div
-						class="w-15 h-15 rounded-lg shadow-lg bg-base-200 flex items-center justify-center shrink-0"
+						class="w-12 h-12 sm:w-15 sm:h-15 rounded-lg shadow-lg bg-base-200 flex items-center justify-center shrink-0"
 					>
 						<Disc3 class="h-6 w-6 text-base-content/20" />
 					</div>
 				{/if}
 				{#if playerStore.isPlaying}
-					<NowPlayingIndicator size="md" />
+					<div class="hidden sm:block">
+						<NowPlayingIndicator size="md" />
+					</div>
 				{/if}
-				<div class="min-w-0">
+				<div class="min-w-0 pr-1">
 					{#if playerStore.nowPlaying.trackName}
 						<p class="text-sm font-semibold truncate">{playerStore.nowPlaying.trackName}</p>
 						<p class="text-xs opacity-60 truncate">
@@ -187,11 +190,11 @@
 				</div>
 			</div>
 
-			<div class="flex flex-col items-center justify-center flex-1 gap-1">
-				<div class="flex items-center gap-3">
+			<div class="flex shrink-0 flex-col items-center justify-center gap-1 sm:flex-1">
+				<div class="flex items-center gap-1 sm:gap-3">
 					{#if playerStore.hasQueue}
 						<button
-							class="btn btn-ghost btn-sm btn-circle"
+							class="btn btn-ghost btn-sm btn-circle hidden sm:inline-flex"
 							class:text-accent={playerStore.shuffleEnabled}
 							class:opacity-50={!playerStore.shuffleEnabled}
 							onclick={() => playerStore.toggleShuffle()}
@@ -245,7 +248,7 @@
 					</button>
 				</div>
 
-				<div class="flex items-center gap-2 w-full max-w-lg">
+				<div class="hidden sm:flex items-center gap-2 w-full max-w-lg">
 					<span class="text-xs opacity-60 w-10 text-right tabular-nums"
 						>{formatTime(playerStore.progress)}</span
 					>
@@ -265,11 +268,13 @@
 					>
 				</div>
 				{#if !playerStore.isSeekable}
-					<p class="text-[10px] text-base-content/60">This stream doesn't support seeking.</p>
+					<p class="hidden sm:block text-[10px] text-base-content/60">
+						This stream doesn't support seeking.
+					</p>
 				{/if}
 			</div>
 
-			<div class="flex items-center gap-3 lg:gap-7 w-1/4 justify-end">
+			<div class="hidden md:flex items-center gap-3 lg:gap-7 lg:w-1/4 justify-end">
 				<div class="tooltip tooltip-left" data-tip="Queue">
 					<button
 						class="btn btn-ghost btn-sm btn-circle relative"
