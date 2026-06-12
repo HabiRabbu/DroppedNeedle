@@ -9,7 +9,8 @@ environment variables and never interpolated into shell commands.
 
 from __future__ import annotations
 
-import asyncio, json, logging, os, re, textwrap
+import asyncio, json, logging, os, re, shlex, textwrap
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,199 @@ from openai import OpenAI
 # Configuration
 # ---------------------------------------------------------------------------
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _load_env_file(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+
+    for raw_line in path.read_text(errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            continue
+
+        value = raw_value.strip()
+        try:
+            parsed = shlex.split(value, comments=False, posix=True)
+            if parsed:
+                value = parsed[0]
+        except ValueError:
+            value = value.strip("\"'")
+
+        if value:
+            os.environ.setdefault(key, value)
+
+    return True
+
+
+def _candidate_hermes_paths(file_env: str, default_name: str) -> list[Path]:
+    paths: list[Path] = []
+    explicit = os.getenv(file_env)
+    if explicit:
+        paths.append(Path(explicit).expanduser())
+
+    hermes_home = Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser()
+    paths.append(hermes_home / default_name)
+    paths.append(Path.home() / ".hermes" / default_name)
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.resolve() if path.exists() else path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(path)
+    return deduped
+
+
+def _load_hermes_env() -> None:
+    if not _env_bool("AI_REVIEW_LOAD_HERMES_ENV", default=True):
+        return
+    for path in _candidate_hermes_paths("HERMES_ENV_FILE", ".env"):
+        if _load_env_file(path):
+            return
+
+
+def _load_hermes_config_defaults() -> None:
+    if not _env_bool("AI_REVIEW_LOAD_HERMES_ENV", default=True):
+        return
+
+    for path in _candidate_hermes_paths("HERMES_CONFIG_FILE", "config.yaml"):
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            import yaml  # type: ignore
+            data = yaml.safe_load(path.read_text()) or {}
+        except Exception:
+            return
+
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            return
+
+        _set_provider_api_default(
+            providers,
+            ("ai-router", "local-ai", "local_ai"),
+            ("AI_ROUTER_BASE_URL", "LOCAL_AI_BASE_URL"),
+        )
+        _set_provider_api_default(
+            providers,
+            ("opencode-zen", "opencode", "opencode_zen", "zen"),
+            ("OPENCODE_BASE_URL", "OPENCODE_ZEN_BASE_URL"),
+        )
+        _set_provider_api_default(
+            providers,
+            ("opencode-go", "opencode_go", "go", "opencode-go-sub"),
+            ("OPENCODE_GO_BASE_URL",),
+        )
+        _set_provider_api_default(
+            providers,
+            ("nous", "nous-portal", "nousresearch"),
+            ("NOUS_BASE_URL", "NOUS_INFERENCE_BASE_URL"),
+        )
+        return
+
+
+def _set_provider_api_default(
+    providers: dict[str, Any],
+    aliases: tuple[str, ...],
+    env_names: tuple[str, ...],
+) -> None:
+    alias_set = {alias.lower() for alias in aliases}
+    for name, provider in providers.items():
+        if str(name).lower() not in alias_set or not isinstance(provider, dict):
+            continue
+        api = provider.get("api") or provider.get("base_url") or provider.get("url")
+        if not isinstance(api, str) or not api.strip():
+            return
+        for env_name in env_names:
+            os.environ.setdefault(env_name, api.strip())
+        return
+
+
+def _local_ai_base_url() -> str:
+    raw = (
+        os.getenv("LOCAL_AI_BASE_URL")
+        or os.getenv("AI_ROUTER_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    if not raw:
+        return ""
+    if re.search(r"/v\d+$", raw):
+        return raw
+    return f"{raw}/v1"
+
+
+_load_hermes_env()
+_load_hermes_config_defaults()
+
+AI_REVIEW_PROVIDER_ORDER = os.getenv(
+    "AI_REVIEW_PROVIDER_ORDER",
+    "local-ai,nous,opencode,opencode-go,deepseek,openrouter,openai",
+)
+AI_REVIEW_FALLBACK_ROUTE = os.getenv(
+    "AI_REVIEW_FALLBACK_ROUTE",
+    "Route this PR to another configured reviewer lane, then rerun `/ai-review`.",
+)
+
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 DEEPSEEK_REASONING_EFFORT = os.getenv("DEEPSEEK_REASONING_EFFORT", "max")
+
+LOCAL_AI_BASE_URL = _local_ai_base_url()
+LOCAL_AI_MODEL = (
+    os.getenv("LOCAL_AI_MODEL")
+    or os.getenv("AI_ROUTER_MODEL")
+    or "qwen3.6-27b"
+)
+
+NOUS_BASE_URL = (
+    os.getenv("NOUS_INFERENCE_BASE_URL")
+    or os.getenv("NOUS_BASE_URL")
+    or "https://inference.nousresearch.com/v1"
+)
+NOUS_MODEL = (
+    os.getenv("NOUS_MODEL")
+    or os.getenv("NOUS_PORTAL_MODEL")
+    or "hermes-3-70b"
+)
+
+OPENCODE_BASE_URL = (
+    os.getenv("OPENCODE_BASE_URL")
+    or os.getenv("OPENCODE_ZEN_BASE_URL")
+    or "https://opencode.ai/zen/v1"
+)
+OPENCODE_MODEL = (
+    os.getenv("OPENCODE_MODEL")
+    or os.getenv("OPENCODE_ZEN_MODEL")
+    or "gemini-3-flash"
+)
+OPENCODE_GO_BASE_URL = os.getenv(
+    "OPENCODE_GO_BASE_URL",
+    "https://opencode.ai/zen/go/v1",
+)
+OPENCODE_GO_MODEL = os.getenv("OPENCODE_GO_MODEL", "glm-5")
+
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-5-mini")
+
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 REVIEWER_NAME = "musicseerr-ai-reviewer[bot]"
 
 GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]
@@ -36,6 +227,40 @@ GUIDELINES_PATH = os.environ.get("GUIDELINES_PATH", ".github/review_guidelines.m
 MAX_INPUT_TOKENS = 900_000
 
 log = logging.getLogger("ai_review")
+
+
+@dataclass(frozen=True)
+class ReviewProvider:
+    name: str
+    api_key_envs: tuple[str, ...]
+    base_url: str
+    model: str
+    requires_api_key: bool = True
+    requires_base_url: bool = False
+    reasoning_effort: str | None = None
+    extra_body: dict[str, Any] | None = None
+    default_headers: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class LLMReview:
+    provider: ReviewProvider
+    data: dict[str, Any]
+
+
+class NoReviewProviderError(RuntimeError):
+    def __init__(self, skipped: list[str], failures: list[str]) -> None:
+        self.skipped = skipped
+        self.failures = failures
+        super().__init__(str(self))
+
+    def __str__(self) -> str:
+        parts: list[str] = []
+        if self.skipped:
+            parts.append("skipped " + "; ".join(self.skipped))
+        if self.failures:
+            parts.append("failed " + "; ".join(self.failures))
+        return "; ".join(parts) or "no review providers were configured"
 
 # ---------------------------------------------------------------------------
 # Helpers: GitHub REST API
@@ -331,35 +556,174 @@ def _estimate_tokens(text: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# DeepSeek / OpenAI-compatible API call
+# OpenAI-compatible provider routing
 # ---------------------------------------------------------------------------
 
-async def call_llm(system: str, user: str) -> dict[str, Any]:
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("DEEPSEEK_API_KEY is not set")
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url=DEEPSEEK_BASE_URL,
-        timeout=httpx.Timeout(120.0, connect=10.0),
+def _review_providers() -> list[ReviewProvider]:
+    local_ai = ReviewProvider(
+        name="local-ai",
+        api_key_envs=("LOCAL_AI_API_KEY", "AI_ROUTER_API_KEY"),
+        base_url=LOCAL_AI_BASE_URL,
+        model=LOCAL_AI_MODEL,
+        requires_api_key=False,
+        requires_base_url=True,
     )
+    nous = ReviewProvider(
+        name="nous",
+        api_key_envs=("NOUS_API_KEY", "NOUS_PORTAL_API_KEY"),
+        base_url=NOUS_BASE_URL,
+        model=NOUS_MODEL,
+    )
+    opencode = ReviewProvider(
+        name="opencode",
+        api_key_envs=("OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"),
+        base_url=OPENCODE_BASE_URL,
+        model=OPENCODE_MODEL,
+    )
+    opencode_go = ReviewProvider(
+        name="opencode-go",
+        api_key_envs=("OPENCODE_GO_API_KEY",),
+        base_url=OPENCODE_GO_BASE_URL,
+        model=OPENCODE_GO_MODEL,
+    )
+    providers = {
+        "local-ai": local_ai,
+        "local_ai": local_ai,
+        "ai-router": local_ai,
+        "ai_router": local_ai,
+        "nous": nous,
+        "nous-portal": nous,
+        "nous_portal": nous,
+        "nousresearch": nous,
+        "nous-research": nous,
+        "opencode": opencode,
+        "opencode-zen": opencode,
+        "opencode_zen": opencode,
+        "zen": opencode,
+        "opencode-go": opencode_go,
+        "opencode_go": opencode_go,
+        "opencode-go-sub": opencode_go,
+        "go": opencode_go,
+        "deepseek": ReviewProvider(
+            name="deepseek",
+            api_key_envs=("DEEPSEEK_API_KEY",),
+            base_url=DEEPSEEK_BASE_URL,
+            model=DEEPSEEK_MODEL,
+            reasoning_effort=DEEPSEEK_REASONING_EFFORT,
+            extra_body={"thinking": {"type": "enabled"}},
+        ),
+        "openrouter": ReviewProvider(
+            name="openrouter",
+            api_key_envs=("OPENROUTER_API_KEY",),
+            base_url=OPENROUTER_BASE_URL,
+            model=OPENROUTER_MODEL,
+            default_headers={
+                "HTTP-Referer": os.getenv(
+                    "OPENROUTER_HTTP_REFERER",
+                    f"https://github.com/{GITHUB_REPOSITORY}",
+                ),
+                "X-Title": os.getenv("OPENROUTER_X_TITLE", "MusicSeerr AI Review"),
+            },
+        ),
+        "openai": ReviewProvider(
+            name="openai",
+            api_key_envs=("OPENAI_API_KEY",),
+            base_url=OPENAI_BASE_URL,
+            model=OPENAI_MODEL,
+        ),
+    }
+
+    ordered: list[ReviewProvider] = []
+    for raw_name in AI_REVIEW_PROVIDER_ORDER.split(","):
+        name = raw_name.strip().lower()
+        if not name:
+            continue
+        provider = providers.get(name)
+        if provider is None:
+            log.warning("Unknown AI review provider in order: %s", name)
+            continue
+        ordered.append(provider)
+    return ordered
+
+
+async def call_llm(system: str, user: str) -> LLMReview:
+    skipped: list[str] = []
+    failures: list[str] = []
+
+    for provider in _review_providers():
+        if provider.requires_base_url and not provider.base_url:
+            skipped.append(f"{provider.name} (base URL is not configured)")
+            continue
+
+        api_key = _provider_api_key(provider)
+        if not api_key and provider.requires_api_key:
+            envs = " or ".join(provider.api_key_envs)
+            skipped.append(f"{provider.name} ({envs} is not set)")
+            continue
+
+        if not provider.model:
+            skipped.append(f"{provider.name} (model is not configured)")
+            continue
+
+        try:
+            data = await _call_provider(provider, api_key or "not-needed", system, user)
+            return LLMReview(provider=provider, data=data)
+        except Exception as exc:
+            log.exception("AI review provider failed: %s", provider.name)
+            failures.append(f"{provider.name}: {exc}")
+
+    raise NoReviewProviderError(skipped, failures)
+
+
+def _provider_api_key(provider: ReviewProvider) -> str:
+    for env_name in provider.api_key_envs:
+        value = os.environ.get(env_name, "")
+        if value:
+            return value
+    return ""
+
+
+async def _call_provider(
+    provider: ReviewProvider,
+    api_key: str,
+    system: str,
+    user: str,
+) -> dict[str, Any]:
+    client_args: dict[str, Any] = {
+        "api_key": api_key,
+        "timeout": httpx.Timeout(120.0, connect=10.0),
+    }
+    if provider.base_url:
+        client_args["base_url"] = provider.base_url
+    if provider.default_headers:
+        client_args["default_headers"] = provider.default_headers
+
+    client = OpenAI(**client_args)
 
     total_tokens = _estimate_tokens(system) + _estimate_tokens(user)
-    log.info("Sending prompt (~%d estimated tokens) to %s", total_tokens, DEEPSEEK_MODEL)
+    log.info(
+        "Sending prompt (~%d estimated tokens) to %s/%s",
+        total_tokens,
+        provider.name,
+        provider.model,
+    )
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
-    response = client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
-        messages=messages,
-        response_format={"type": "json_object"},
-        reasoning_effort=DEEPSEEK_REASONING_EFFORT,
-        extra_body={"thinking": {"type": "enabled"}},
-    )
+    request: dict[str, Any] = {
+        "model": provider.model,
+        "messages": messages,
+        "response_format": {"type": "json_object"},
+    }
+    if provider.reasoning_effort:
+        request["reasoning_effort"] = provider.reasoning_effort
+    if provider.extra_body:
+        request["extra_body"] = provider.extra_body
+
+    response = client.chat.completions.create(**request)
 
     usage = response.usage
     if usage:
@@ -384,6 +748,7 @@ async def post_review(
     summary: str,
     findings: list[dict[str, Any]],
     conclusion: str,
+    provider_name: str,
 ) -> None:
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/pulls/{pr_number}/reviews"
 
@@ -404,7 +769,7 @@ async def post_review(
         f"{summary}\n\n"
         f"{findings_summary}\n\n"
         f"---\n"
-        f"*Automated review by MusicSeerr AI Reviewer. "
+        f"*Automated review by MusicSeerr AI Reviewer via `{provider_name}`. "
         f"See `.github/review_guidelines.md` for review criteria.*"
     )
 
@@ -460,8 +825,17 @@ async def post_failure_comment(pr_number: int, reason: str) -> None:
         f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/issues/{pr_number}/comments"
     )
     body = (
-        f"AI review is unavailable: {reason}\n\n"
-        f"Please review this PR manually."
+        f"AI review could not be routed to an available provider.\n\n"
+        f"Reason: {reason}\n\n"
+        f"Next route:\n"
+        f"- Configure the local/Hermes route with `HERMES_HOME`, "
+        f"`HERMES_ENV_FILE`, `LOCAL_AI_BASE_URL`, or `AI_ROUTER_BASE_URL`; "
+        f"or configure one fallback provider credential "
+        f"(`NOUS_API_KEY`, `OPENCODE_ZEN_API_KEY`, `OPENCODE_GO_API_KEY`, "
+        f"`DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, or `OPENAI_API_KEY`).\n"
+        f"- Then rerun `/ai-review`.\n"
+        f"- {AI_REVIEW_FALLBACK_ROUTE}\n\n"
+        f"<!-- ai-review:route-needed -->"
     )
     await gh_post(url, {"body": body})
 
@@ -581,10 +955,11 @@ async def run() -> None:
     user = build_user_prompt(pr_info, files, diff, incremental=is_incremental)
 
     try:
-        result = await call_llm(system, user)
+        review = await call_llm(system, user)
+        result = review.data
     except Exception as exc:
-        log.exception("DeepSeek API call failed")
-        await post_failure_comment(pr_number, f"DeepSeek API error: {exc}")
+        log.exception("AI review provider routing failed")
+        await post_failure_comment(pr_number, str(exc))
         return
 
     try:
@@ -593,14 +968,14 @@ async def run() -> None:
         log.warning("Response validation failed: %s  retrying once...", exc)
         retry_user = user + f"\n\nYour previous response was invalid: {exc}\nPlease fix and return valid JSON."
         try:
-            result = await call_llm(system, retry_user)
+            review = await call_llm(system, retry_user)
+            result = review.data
             validate_response(result)
         except Exception as exc2:
             log.exception("Retry also failed")
             await post_failure_comment(
                 pr_number,
-                f"AI review produced an invalid response and the retry also failed. "
-                f"Please review this PR manually.",
+                f"AI review produced an invalid response and the retry also failed: {exc2}",
             )
             return
 
@@ -608,8 +983,20 @@ async def run() -> None:
     findings = result["findings"]
     conclusion = result["conclusion"]
 
-    await post_review(pr_number, commit_id, summary, findings, conclusion)
-    log.info("Review posted successfully: %d findings, conclusion=%s", len(findings), conclusion)
+    await post_review(
+        pr_number,
+        commit_id,
+        summary,
+        findings,
+        conclusion,
+        review.provider.name,
+    )
+    log.info(
+        "Review posted successfully via %s: %d findings, conclusion=%s",
+        review.provider.name,
+        len(findings),
+        conclusion,
+    )
 
 
 # ---------------------------------------------------------------------------
