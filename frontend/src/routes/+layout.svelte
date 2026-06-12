@@ -250,7 +250,7 @@
 </script>
 
 <QueryProvider>
-	<div data-theme="musicseerr">
+	<div data-theme="musicseerr" class="musicseerr-app-shell">
 		{#if showNavigationProgress}
 			<div class="fixed top-0 left-0 right-0 z-120 pointer-events-none">
 				<progress class="progress progress-primary w-full h-1"></progress>
@@ -260,18 +260,20 @@
 		<DegradedBanner />
 		<VersionOverlays bind:updateAvailable={versionUpdateAvailable} />
 
-		<div class="drawer drawer-open">
+		<div class="drawer lg:drawer-open">
 			<input id="main-drawer" type="checkbox" class="drawer-toggle" />
 
-			<div class="drawer-content flex flex-col">
-				<div class="navbar bg-base-100 shadow-sm sticky top-0 z-50">
+			<div class="drawer-content flex min-w-0 flex-col">
+				<div
+					class="musicseerr-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50"
+				>
 					<div class="navbar-start w-auto">
-						<a href="/" class="btn btn-ghost max-[400px]:hidden" aria-label="Home">
+						<a href="/" class="btn btn-ghost px-2 max-xs:hidden sm:px-4" aria-label="Home">
 							<img src="/logo_wide.png" alt="Musicseerr" class="h-8 hidden sm:block" />
 							<img src="/logo_icon.png" alt="Musicseerr" class="h-8 block sm:hidden" />
 						</a>
 					</div>
-					<div class="navbar-center grow sm:px-4 justify-center">
+					<div class="navbar-center min-w-0 grow justify-center px-1 sm:px-4">
 						<div class="w-full max-w-2xl">
 							<SearchSuggestions
 								bind:query
@@ -281,19 +283,22 @@
 							/>
 						</div>
 					</div>
-					<div class="navbar-end w-auto pr-2">
+					<div class="navbar-end w-auto pr-1 sm:pr-2">
 						<a href="/profile" class="btn btn-ghost btn-circle btn-md" aria-label="Profile">
 							<UserRound class="h-6 w-6" />
 						</a>
 					</div>
 				</div>
 
-				<div class="flex-1" class:pb-24={playerStore.isPlayerVisible}>
+				<div
+					class="musicseerr-main-content flex-1"
+					class:musicseerr-player-visible={playerStore.isPlayerVisible}
+				>
 					{@render children()}
 				</div>
 			</div>
 
-			<div class="drawer-side is-drawer-close:overflow-visible">
+			<div class="drawer-side hidden lg:block is-drawer-close:overflow-visible">
 				<label for="main-drawer" aria-label="close sidebar" class="drawer-overlay"></label>
 				<div
 					class="is-drawer-close:w-16 is-drawer-open:w-64 bg-base-200 flex flex-col items-start min-h-full"
@@ -560,6 +565,63 @@
 			</div>
 		</div>
 
+		<nav class="musicseerr-bottom-nav lg:hidden" aria-label="Primary navigation">
+			<a
+				href="/"
+				class="musicseerr-bottom-nav__item"
+				class:active={currentPath === '/'}
+				aria-current={currentPath === '/' ? 'page' : undefined}
+			>
+				<House />
+				<span>Home</span>
+			</a>
+			<a
+				href="/discover"
+				class="musicseerr-bottom-nav__item"
+				class:active={isNavActive('/discover')}
+				aria-current={isNavActive('/discover') ? 'page' : undefined}
+			>
+				<Compass />
+				<span>Discover</span>
+			</a>
+			<button
+				type="button"
+				class="musicseerr-bottom-nav__item"
+				class:active={isNavActive('/search')}
+				onclick={() => (document.getElementById('search_modal') as HTMLDialogElement)?.showModal()}
+				aria-current={isNavActive('/search') ? 'page' : undefined}
+			>
+				<Search />
+				<span>Search</span>
+			</button>
+			<a
+				href="/library"
+				class="musicseerr-bottom-nav__item"
+				class:active={isNavActive('/library')}
+				aria-current={isNavActive('/library') ? 'page' : undefined}
+			>
+				<Menu />
+				<span>Library</span>
+				{#if syncStatus.isActive}
+					<span class="musicseerr-bottom-nav__badge" aria-label="Library sync in progress"></span>
+				{/if}
+			</a>
+			<a
+				href={versionUpdateAvailable ? '/settings?tab=about' : '/settings'}
+				class="musicseerr-bottom-nav__item"
+				class:active={isNavActive('/settings')}
+				aria-current={isNavActive('/settings') ? 'page' : undefined}
+			>
+				<Settings />
+				<span>Settings</span>
+				{#if versionUpdateAvailable}
+					<span class="musicseerr-bottom-nav__badge" aria-label="Update available">
+						<ArrowUpCircle class="h-3 w-3" />
+					</span>
+				{/if}
+			</a>
+		</nav>
+
 		<dialog id="search_modal" class="modal">
 			<div class="modal-box overflow-visible">
 				<form method="dialog">
@@ -634,8 +696,8 @@
 
 		{#if playbackToast.visible}
 			<div
-				class="fixed z-50 left-1/2 -translate-x-1/2 transition-all duration-300"
-				style="bottom: {playerStore.isPlayerVisible ? '100px' : '16px'}"
+				class="musicseerr-playback-toast fixed z-50 left-1/2 -translate-x-1/2 transition-all duration-300"
+				class:musicseerr-playback-toast--player={playerStore.isPlayerVisible}
 			>
 				<div
 					class="alert {playbackToast.type === 'error'
