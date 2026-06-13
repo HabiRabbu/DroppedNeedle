@@ -198,6 +198,43 @@ class PlexRepository:
         await self._cache.set(cache_key, sections, self._ttl_list)
         return sections
 
+    async def get_machine_identifier(self) -> str | None:
+        cache_key = f"{PLEX_PREFIX}machine_identifier"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached if cached else None
+
+        if not self._configured:
+            return None
+
+        try:
+            response = await self._client.get(
+                f"{self._url}/identity",
+                headers = self._build_headers(),
+                timeout = 10.0,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(f"Failed to get Plex machine identifier: {exc}")
+            raise ExternalServiceError("Plex request failed") from exc
+
+        if response.status_code != 200:
+            return None
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            logger.warning(f"Plex returned invalid JSON for /identity: {exc}")
+            raise PlexApiError("Plex returned invalid JSON for /identity") from exc
+
+        machine_id = (
+            data.get("MediaContainer", {}).get("machineIdentifier") or data.get("machineIdentifier")
+        )
+        if machine_id:
+            await self._cache.set(cache_key, machine_id, ttl_seconds = 3600)
+        else:
+            await self._cache.set(cache_key, "", ttl_seconds = 300)
+        return machine_id or None
+
     async def get_music_libraries(self) -> list[PlexLibrarySection]:
         sections = await self.get_libraries()
         return [s for s in sections if s.type == "artist"]

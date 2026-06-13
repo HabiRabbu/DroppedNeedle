@@ -1,4 +1,5 @@
 import logging
+import os
 import msgspec
 from fastapi import APIRouter, Depends, HTTPException
 from api.v1.schemas.settings import (
@@ -25,6 +26,8 @@ from api.v1.schemas.settings import (
     PlexConnectionSettings,
     PlexVerifyResponse,
     MusicBrainzConnectionSettings,
+    SecuritySettings,
+    OIDCConnectionSettings,
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo
 from api.v1.schemas.common import VerifyConnectionResponse
@@ -33,16 +36,28 @@ from core.dependencies import (
     get_preferences_service,
     get_settings_service,
     get_local_files_service,
+    get_oidc_user_auth_service,
 )
+from services.oidc_user_auth_service import OIDCUserAuthService
 from core.exceptions import ConfigurationError, ExternalServiceError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
+from middleware import CurrentAdminDep
 from services.local_files_service import LocalFilesService
 from services.preferences_service import PreferencesService
 from services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(route_class=MsgSpecRoute, prefix="/settings", tags=["settings"])
+
+async def _admin_guard(_: CurrentAdminDep) -> None: ...
+
+
+router = APIRouter(
+    route_class=MsgSpecRoute,
+    prefix="/settings",
+    tags=["settings"],
+    dependencies=[Depends(_admin_guard)],
+)
 
 
 @router.get("/preferences", response_model=UserPreferences)
@@ -552,3 +567,97 @@ async def verify_musicbrainz_connection(
 ):
     result = await settings_service.verify_musicbrainz(settings)
     return VerifyConnectionResponse(valid=result.valid, message=result.message)
+
+
+@router.get("/security", response_model=SecuritySettings)
+async def get_security_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> SecuritySettings:
+    return preferences_service.get_security_settings()
+
+
+@router.put("/security", response_model=SecuritySettings)
+async def update_security_settings(
+    settings: SecuritySettings = MsgSpecBody(SecuritySettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> SecuritySettings:
+    try:
+        preferences_service.save_security_settings(settings)
+        return settings
+    except ConfigurationError as e:
+        logger.warning(f"Configuration error updating security settings: {e}")
+        raise HTTPException(status_code=400, detail="Could not save security settings")
+
+
+@router.post("/security/verify-hibp", response_model=VerifyConnectionResponse)
+async def verify_hibp_local_file(
+    settings: SecuritySettings = MsgSpecBody(SecuritySettings),
+) -> VerifyConnectionResponse:
+    """Validate a user-supplied HIBP local database path."""
+    path = (settings.hibp_local_path or "").strip()
+    if not path:
+        return VerifyConnectionResponse(valid=False, message="No path provided.")
+
+    if not os.path.isfile(path):
+        return VerifyConnectionResponse(valid=False, message=f"File not found: {path}")
+
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            first_line = fh.readline().decode("ascii", errors="ignore").strip()
+
+        if not first_line or ":" not in first_line:
+            return VerifyConnectionResponse(
+                valid=False,
+                message="File does not appear to be a valid HIBP hash list (unexpected format).",
+            )
+
+        parts = first_line.split(":", 1)
+        if len(parts[0]) != 40 or not parts[0].isalnum():
+            return VerifyConnectionResponse(
+                valid=False,
+                message="File does not appear to be a valid HIBP hash list (expected 40-char SHA-1 hash).",
+            )
+
+        def _fmt_size(b: int) -> str:
+            for unit in ("B", "KB", "MB", "GB"):
+                if b < 1024:
+                    return f"{b:.1f} {unit}"
+                b //= 1024
+            return f"{b:.1f} TB"
+
+        return VerifyConnectionResponse(
+            valid=True,
+            message=f"File looks valid. Size: {_fmt_size(size)}.",
+        )
+    except OSError as e:
+        return VerifyConnectionResponse(valid=False, message=f"Could not read file: {e}")
+
+
+@router.get("/oidc", response_model=OIDCConnectionSettings)
+async def get_oidc_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> OIDCConnectionSettings:
+    return preferences_service.get_oidc_connection()
+
+
+@router.put("/oidc", response_model=OIDCConnectionSettings)
+async def update_oidc_settings(
+    settings: OIDCConnectionSettings = MsgSpecBody(OIDCConnectionSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> OIDCConnectionSettings:
+    try:
+        preferences_service.save_oidc_connection(settings)
+        return preferences_service.get_oidc_connection()
+    except ConfigurationError as e:
+        logger.warning(f"Configuration error updating OIDC settings: {e}")
+        raise HTTPException(status_code=400, detail="OIDC settings are incomplete or invalid")
+
+
+@router.post("/oidc/verify", response_model=VerifyConnectionResponse)
+async def verify_oidc_connection(
+    settings: OIDCConnectionSettings = MsgSpecBody(OIDCConnectionSettings),
+    oidc_auth: OIDCUserAuthService = Depends(get_oidc_user_auth_service),
+) -> VerifyConnectionResponse:
+    valid, message = await oidc_auth.verify(settings)
+    return VerifyConnectionResponse(valid=valid, message=message)

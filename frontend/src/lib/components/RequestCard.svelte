@@ -123,6 +123,10 @@
 				return { badgeClass: 'badge-error', label: 'Failed', icon: XCircle };
 			case 'cancelled':
 				return { badgeClass: 'badge-ghost', label: 'Cancelled', icon: Ban };
+			case 'awaiting_approval':
+				return { badgeClass: 'badge-warning', label: 'Awaiting Approval', icon: Clock };
+			case 'rejected':
+				return { badgeClass: 'badge-error', label: 'Rejected', icon: Ban };
 			default:
 				return { badgeClass: 'badge-ghost', label: item.status, icon: Music };
 		}
@@ -253,6 +257,12 @@
 				{#if isActive && activeItem.protocol}
 					<span class="text-base-content/20">•</span>
 					<span class="text-xs text-base-content/40 capitalize">{activeItem.protocol}</span>
+				{/if}
+				{#if !isActive && historyItem.reviewed_by_name}
+					<span class="text-base-content/20">•</span>
+					<span class="text-xs text-base-content/40">
+						{historyItem.status === 'rejected' ? 'Rejected' : 'Approved'} by {historyItem.reviewed_by_name}
+					</span>
 				{/if}
 			</div>
 		</div>

@@ -9,7 +9,7 @@ from core.dependencies._registry import _singleton_registry, clear_all_singleton
 
 class TestSingletonRegistry:
     def test_registry_has_expected_count(self):
-        assert len(_singleton_registry) == 57
+        assert len(_singleton_registry) == 62
 
     def test_all_entries_have_cache_clear(self):
         for fn in _singleton_registry:

@@ -10,6 +10,7 @@ from api.v1.schemas.settings import (
     LidarrConnectionSettings,
     JellyfinConnectionSettings,
     ListenBrainzConnectionSettings,
+    OIDCConnectionSettings,
     YouTubeConnectionSettings,
     HomeSettings,
     LocalFilesConnectionSettings,
@@ -19,14 +20,18 @@ from api.v1.schemas.settings import (
     LASTFM_SECRET_MASK,
     NavidromeConnectionSettings,
     NAVIDROME_PASSWORD_MASK,
+    OIDCConnectionSettings,
+    OIDC_SECRET_MASK,
     PlexConnectionSettings,
     PLEX_TOKEN_MASK,
     MusicBrainzConnectionSettings,
+    SecuritySettings,
 )
 from api.v1.schemas.profile import ProfileSettings
 from api.v1.schemas.advanced_settings import AdvancedSettings
 from core.config import Settings
 from core.exceptions import ConfigurationError
+from infrastructure.crypto import decrypt, encrypt
 from infrastructure.file_utils import atomic_write_json, read_json
 from infrastructure.serialization import to_jsonable
 
@@ -103,6 +108,19 @@ class PreferencesService:
         config[key] = to_jsonable(value)
         self._save_config(config)
 
+    def _read_secret(self, path: tuple[str, ...], stored_value: str) -> str:
+        if not stored_value:
+            return stored_value
+        plaintext, was_legacy = decrypt(stored_value)
+        if was_legacy:
+            config = self._load_config().copy()
+            node = config
+            for key in path[:-1]:
+                node = node.setdefault(key, {})
+            node[path[-1]] = encrypt(plaintext)
+            self._save_config(config)
+        return plaintext
+
     def get_preferences(self) -> UserPreferences:
         return self._get_section("user_preferences", UserPreferences)
 
@@ -135,9 +153,14 @@ class PreferencesService:
 
     def get_lidarr_connection(self) -> LidarrConnectionSettings:
         config = self._load_config()
+        stored_key = config.get("lidarr_api_key")
+        if stored_key is not None:
+            api_key = self._read_secret(("lidarr_api_key",), stored_key)
+        else:
+            api_key = self._settings.lidarr_api_key
         return LidarrConnectionSettings(
             lidarr_url=config.get("lidarr_url", self._settings.lidarr_url),
-            lidarr_api_key=config.get("lidarr_api_key", self._settings.lidarr_api_key),
+            lidarr_api_key=api_key,
             quality_profile_id=config.get("quality_profile_id", self._settings.quality_profile_id),
             metadata_profile_id=config.get("metadata_profile_id", self._settings.metadata_profile_id),
             root_folder_path=config.get("root_folder_path", self._settings.root_folder_path),
@@ -148,7 +171,7 @@ class PreferencesService:
             config = self._load_config().copy()
             config.update({
                 "lidarr_url": settings.lidarr_url,
-                "lidarr_api_key": settings.lidarr_api_key,
+                "lidarr_api_key": encrypt(settings.lidarr_api_key),
                 "quality_profile_id": settings.quality_profile_id,
                 "metadata_profile_id": settings.metadata_profile_id,
                 "root_folder_path": settings.root_folder_path,
@@ -167,11 +190,13 @@ class PreferencesService:
     def get_jellyfin_connection(self) -> JellyfinConnectionSettings:
         config = self._load_config()
         jellyfin_data = config.get("jellyfin_settings", {})
+        api_key = self._read_secret(("jellyfin_settings", "api_key"), jellyfin_data.get("api_key", ""))
         return JellyfinConnectionSettings(
             jellyfin_url=jellyfin_data.get("jellyfin_url", config.get("jellyfin_url", self._settings.jellyfin_url)),
-            api_key=jellyfin_data.get("api_key", ""),
+            api_key=api_key,
             user_id=jellyfin_data.get("user_id", ""),
             enabled=jellyfin_data.get("enabled", False),
+            login_enabled=jellyfin_data.get("login_enabled", False),
         )
 
     def save_jellyfin_connection(self, settings: JellyfinConnectionSettings) -> None:
@@ -180,9 +205,10 @@ class PreferencesService:
             config["jellyfin_url"] = settings.jellyfin_url
             config["jellyfin_settings"] = {
                 "jellyfin_url": settings.jellyfin_url,
-                "api_key": settings.api_key,
+                "api_key": encrypt(settings.api_key),
                 "user_id": settings.user_id,
                 "enabled": settings.enabled,
+                "login_enabled": settings.login_enabled,
             }
             self._save_config(config)
 
@@ -205,10 +231,11 @@ class PreferencesService:
     def get_navidrome_connection_raw(self) -> NavidromeConnectionSettings:
         config = self._load_config()
         nd_data = config.get("navidrome_settings", {})
+        password = self._read_secret(("navidrome_settings", "password"), nd_data.get("password", ""))
         return NavidromeConnectionSettings(
             navidrome_url=nd_data.get("navidrome_url", ""),
             username=nd_data.get("username", ""),
-            password=nd_data.get("password", ""),
+            password=password,
             enabled=nd_data.get("enabled", False),
         )
 
@@ -220,6 +247,8 @@ class PreferencesService:
             password = settings.password
             if password == NAVIDROME_PASSWORD_MASK:
                 password = current_data.get("password", "")
+            else:
+                password = encrypt(password)
 
             config["navidrome_settings"] = {
                 "navidrome_url": settings.navidrome_url,
@@ -239,6 +268,7 @@ class PreferencesService:
             plex_url=plex_data.get("plex_url", ""),
             plex_token=plex_data.get("plex_token", ""),
             enabled=plex_data.get("enabled", False),
+            login_enabled=plex_data.get("login_enabled", False),
             music_library_ids=plex_data.get("music_library_ids", []),
             scrobble_to_plex=plex_data.get("scrobble_to_plex", True),
         )
@@ -249,10 +279,12 @@ class PreferencesService:
     def get_plex_connection_raw(self) -> PlexConnectionSettings:
         config = self._load_config()
         plex_data = config.get("plex_settings", {})
+        token = self._read_secret(("plex_settings", "plex_token"), plex_data.get("plex_token", ""))
         return PlexConnectionSettings(
             plex_url=plex_data.get("plex_url", ""),
-            plex_token=plex_data.get("plex_token", ""),
+            plex_token=token,
             enabled=plex_data.get("enabled", False),
+            login_enabled=plex_data.get("login_enabled", False),
             music_library_ids=plex_data.get("music_library_ids", []),
             scrobble_to_plex=plex_data.get("scrobble_to_plex", True),
         )
@@ -265,11 +297,14 @@ class PreferencesService:
             token = settings.plex_token
             if token == PLEX_TOKEN_MASK:
                 token = current_data.get("plex_token", "")
+            else:
+                token = encrypt(token)
 
             config["plex_settings"] = {
                 "plex_url": settings.plex_url,
                 "plex_token": token,
                 "enabled": settings.enabled,
+                "login_enabled": settings.login_enabled,
                 "music_library_ids": settings.music_library_ids,
                 "scrobble_to_plex": settings.scrobble_to_plex,
             }
@@ -282,9 +317,10 @@ class PreferencesService:
     def get_listenbrainz_connection(self) -> ListenBrainzConnectionSettings:
         config = self._load_config()
         lb_data = config.get("listenbrainz_settings", {})
+        user_token = self._read_secret(("listenbrainz_settings", "user_token"), lb_data.get("user_token", ""))
         return ListenBrainzConnectionSettings(
             username=lb_data.get("username", ""),
-            user_token=lb_data.get("user_token", ""),
+            user_token=user_token,
             enabled=lb_data.get("enabled", False),
         )
 
@@ -293,7 +329,7 @@ class PreferencesService:
             config = self._load_config().copy()
             config["listenbrainz_settings"] = {
                 "username": settings.username,
-                "user_token": settings.user_token,
+                "user_token": encrypt(settings.user_token),
                 "enabled": settings.enabled,
             }
             self._save_config(config)
@@ -304,7 +340,7 @@ class PreferencesService:
     def get_youtube_connection(self) -> YouTubeConnectionSettings:
         config = self._load_config()
         yt_data = config.get("youtube_settings", {})
-        api_key = str(yt_data.get("api_key") or "")
+        api_key = self._read_secret(("youtube_settings", "api_key"), str(yt_data.get("api_key") or ""))
         enabled = yt_data.get("enabled", False)
         # Auto-migrate: existing setups with enabled+api_key get api_enabled=True
         if "api_enabled" not in yt_data and enabled and api_key.strip():
@@ -322,7 +358,7 @@ class PreferencesService:
         try:
             config = self._load_config().copy()
             config["youtube_settings"] = {
-                "api_key": settings.api_key.strip(),
+                "api_key": encrypt(settings.api_key.strip()),
                 "enabled": settings.enabled,
                 "api_enabled": settings.api_enabled,
                 "daily_quota_limit": settings.daily_quota_limit,
@@ -353,7 +389,15 @@ class PreferencesService:
             raise ConfigurationError(f"Failed to save local files settings: {e}")
 
     def get_lastfm_connection(self) -> LastFmConnectionSettings:
-        return self._get_section("lastfm_settings", LastFmConnectionSettings)
+        config = self._load_config()
+        data = config.get("lastfm_settings", {})
+        return LastFmConnectionSettings(
+            api_key=self._read_secret(("lastfm_settings", "api_key"), data.get("api_key", "")),
+            shared_secret=self._read_secret(("lastfm_settings", "shared_secret"), data.get("shared_secret", "")),
+            session_key=self._read_secret(("lastfm_settings", "session_key"), data.get("session_key", "")),
+            username=data.get("username", ""),
+            enabled=data.get("enabled", False),
+        )
 
     def save_lastfm_connection(self, settings: LastFmConnectionSettings) -> None:
         try:
@@ -380,9 +424,9 @@ class PreferencesService:
                 username = ""
 
             resolved = LastFmConnectionSettings(
-                api_key=api_key,
-                shared_secret=shared_secret,
-                session_key=session_key,
+                api_key=encrypt(api_key),
+                shared_secret=encrypt(shared_secret),
+                session_key=encrypt(session_key),
                 username=username,
                 enabled=enabled,
             )
@@ -483,3 +527,60 @@ class PreferencesService:
         except Exception:  # noqa: BLE001
             logger.warning("Failed to migrate musicbrainz_concurrent_searches, using defaults")
             self._save_section("musicbrainz_settings", MusicBrainzConnectionSettings())
+    
+    def get_oidc_connection(self) -> OIDCConnectionSettings:
+        config = self._load_config()
+        data = config.get("oidc_settings", {})
+        return OIDCConnectionSettings(
+            enabled=data.get("enabled", False),
+            issuer=data.get("issuer", ""),
+            client_id=data.get("client_id", ""),
+            client_secret=OIDC_SECRET_MASK if data.get("client_secret") else "",
+            scopes=data.get("scopes", "openid email profile"),
+            redirect_uri=data.get("redirect_uri", ""),
+        )
+
+    def get_oidc_connection_raw(self) -> OIDCConnectionSettings:
+        config = self._load_config()
+        data = config.get("oidc_settings", {})
+        secret = self._read_secret(("oidc_settings", "client_secret"), data.get("client_secret", ""))
+        return OIDCConnectionSettings(
+            enabled=data.get("enabled", False),
+            issuer=data.get("issuer", ""),
+            client_id=data.get("client_id", ""),
+            client_secret=secret,
+            scopes=data.get("scopes", "openid email profile"),
+            redirect_uri=data.get("redirect_uri", ""),
+        )
+
+    def save_oidc_connection(self, settings: OIDCConnectionSettings) -> None:
+        try:
+            config = self._load_config().copy()
+            current_data = config.get("oidc_settings", {})
+            secret = settings.client_secret
+            if secret == OIDC_SECRET_MASK:
+                secret = current_data.get("client_secret", "")
+            else:
+                secret = encrypt(secret)
+            config["oidc_settings"] = {
+                "enabled": settings.enabled,
+                "issuer": settings.issuer,
+                "client_id": settings.client_id,
+                "client_secret": secret,
+                "scopes": settings.scopes,
+                "redirect_uri": settings.redirect_uri,
+            }
+            self._save_config(config)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save OIDC settings: {e}")
+            raise ConfigurationError("Failed to save OIDC settings")
+
+    def get_security_settings(self) -> SecuritySettings:
+        return self._get_section("security_settings", SecuritySettings)
+
+    def save_security_settings(self, settings: SecuritySettings) -> None:
+        try:
+            self._save_section("security_settings", settings)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save security settings: {e}")
+            raise ConfigurationError(f"Failed to save security settings")

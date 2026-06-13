@@ -116,3 +116,11 @@ class NavidromeSubsonicError(ExternalServiceError):
 
 class ClientDisconnectedError(MusicseerrException):
     pass
+
+
+class AuthenticationError(MusicseerrException):
+    pass
+
+
+class RegistrationError(MusicseerrException):
+    pass

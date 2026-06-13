@@ -24,7 +24,9 @@ def _make_service(queue_add_result: dict | None = None) -> tuple[RequestService,
 async def test_request_album_records_history_and_returns_response():
     service, request_queue, request_history = _make_service()
 
-    response = await service.request_album("rg-123", artist="Fallback Artist", album="Fallback Album", year=2024)
+    response = await service.request_album(
+        "rg-123", artist="Fallback Artist", album="Fallback Album", year=2024, user_role="admin"
+    )
 
     assert response.success is True
     assert response.message == "Request accepted"
@@ -44,7 +46,7 @@ async def test_request_album_wraps_errors():
     request_queue.enqueue = AsyncMock(side_effect=RuntimeError("boom"))
 
     with pytest.raises(ExternalServiceError):
-        await service.request_album("rg-123")
+        await service.request_album("rg-123", user_role="admin")
 
 
 def test_get_queue_status_returns_schema():

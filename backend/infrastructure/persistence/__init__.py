@@ -4,6 +4,7 @@ All stores share a single SQLite database via :class:`PersistenceBase`.
 """
 
 from infrastructure.persistence._database import PersistenceBase
+from infrastructure.persistence.auth_store import AuthStore
 from infrastructure.persistence.genre_index import GenreIndex
 from infrastructure.persistence.library_db import LibraryDB
 from infrastructure.persistence.mbid_store import MBIDStore
@@ -13,10 +14,11 @@ from infrastructure.persistence.youtube_store import YouTubeStore
 
 __all__ = [
     "PersistenceBase",
-    "LibraryDB",
+    "AuthStore",
     "GenreIndex",
-    "YouTubeStore",
+    "LibraryDB",
     "MBIDStore",
-    "SyncStateStore",
     "RequestHistoryStore",
+    "SyncStateStore",
+    "YouTubeStore",
 ]

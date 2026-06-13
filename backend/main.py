@@ -17,6 +17,7 @@ from core.dependencies import (
 from core.tasks import start_cache_cleanup_task, start_library_sync_task, start_disk_cache_cleanup_task, start_home_cache_warming_task, start_genre_cache_warming_task, start_discover_cache_warming_task, start_artist_discovery_cache_warming_task, start_audiodb_sweep_task, start_request_status_sync_task
 from core.task_registry import TaskRegistry
 from core.config import get_settings
+from core.dependencies.auth_providers import get_auth_service
 from core.exceptions import ResourceNotFoundError, ExternalServiceError, SourceResolutionError, ValidationError, ConfigurationError, ClientDisconnectedError
 from core.exception_handlers import (
     resource_not_found_handler,
@@ -33,7 +34,7 @@ from core.exception_handlers import (
 )
 from infrastructure.resilience.retry import CircuitOpenError
 from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
-from middleware import DegradationMiddleware, PerformanceMiddleware, RateLimitMiddleware
+from middleware import DegradationMiddleware, HSTSMiddleware, PerformanceMiddleware, RateLimitMiddleware, AuthMiddleware
 from static_server import mount_frontend
 from api.v1.routes import (
     search, requests, library, status, queue, covers, artists, albums, settings, home, discover, profile, playlists
@@ -52,6 +53,7 @@ from api.v1.routes import plex_library as plex_library_routes
 from api.v1.routes import plex_auth as plex_auth_routes
 from api.v1.routes import version as version_routes
 from api.v1.routes import download as download_routes
+from api.v1.routes import auth as auth_routes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ async def lifespan(app: FastAPI):
     logging.getLogger().setLevel(configured_level)
 
     await init_app_state(app)
+    await get_auth_service().cleanup_expired_tokens()
     
     preferences_service = get_preferences_service()
     settings.instance_id = preferences_service.get_instance_id()
@@ -279,8 +282,11 @@ app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handl
 app.add_exception_handler(RequestValidationError, request_validation_error_handler)
 app.add_exception_handler(Exception, general_exception_handler)
 
+app.add_middleware(HSTSMiddleware)
 app.add_middleware(DegradationMiddleware)
 app.add_middleware(PerformanceMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     RateLimitMiddleware,
     default_rate=30.0,
@@ -289,9 +295,12 @@ app.add_middleware(
         "/api/v1/search": (10.0, 20),
         "/api/v1/discover": (10.0, 20),
         "/api/v1/covers": (15.0, 30),
+        "/api/v1/auth/login": (2.0, 5),
+        "/api/v1/auth/setup": (1.0, 3),
+        "/api/v1/auth/plex/poll": (5.0, 10),
+        "/api/v1/auth/jellyfin/login": (2.0, 5),
     },
 )
-app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
 
 app_settings = get_settings()
 if app_settings.debug:
@@ -344,6 +353,7 @@ v1_router.include_router(profile.router)
 v1_router.include_router(playlists.router)
 v1_router.include_router(version_routes.router)
 v1_router.include_router(download_routes.router)
+v1_router.include_router(auth_routes.router)
 app.include_router(v1_router)
 
 mount_frontend(app)

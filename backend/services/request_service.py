@@ -34,25 +34,39 @@ class RequestService:
         artist_mbid: str | None = None,
         monitor_artist: bool = False,
         auto_download_artist: bool = False,
+        user_id: str | None = None,
+        user_role: str | None = None,
+        requested_by_name: str | None = None,
     ) -> RequestAcceptedResponse:
+        if user_role is None:
+            raise ExternalServiceError("User role is required to submit a request.")
+
         if not self._lidarr_repo.is_configured():
             raise ExternalServiceError("Lidarr isn't configured. Add an API key in Settings before requesting albums.")
 
+        needs_approval = user_role == "user"
+        initial_status = "awaiting_approval" if needs_approval else "pending"
+
         try:
-            # Don't overwrite an active record (pending/downloading) — just re-check the queue.
             existing = await self._request_history.async_get_record(musicbrainz_id)
             if existing and existing.status in ("pending", "downloading"):
-                # Merge monitoring flags if the user updated their choice on re-request
                 if monitor_artist and not existing.monitor_artist:
                     await self._request_history.async_update_monitoring_flags(
                         musicbrainz_id, monitor_artist=True, auto_download_artist=auto_download_artist,
                     )
-                enqueued = await self._request_queue.enqueue(musicbrainz_id)
+                await self._request_queue.enqueue(musicbrainz_id)
                 return RequestAcceptedResponse(
                     success=True,
                     message="Request already in progress",
                     musicbrainz_id=musicbrainz_id,
                     status=existing.status,
+                )
+            if existing and existing.status == "awaiting_approval":
+                return RequestAcceptedResponse(
+                    success=True,
+                    message="Request is awaiting admin approval",
+                    musicbrainz_id=musicbrainz_id,
+                    status="awaiting_approval",
                 )
             await self._request_history.async_record_request(
                 musicbrainz_id=musicbrainz_id,
@@ -62,10 +76,22 @@ class RequestService:
                 artist_mbid=artist_mbid,
                 monitor_artist=monitor_artist,
                 auto_download_artist=auto_download_artist,
+                user_id=user_id,
+                requested_by_name=requested_by_name,
+                initial_status=initial_status,
             )
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to record request history for %s: %s", musicbrainz_id, e)
             raise ExternalServiceError(f"Failed to record request: {e}")
+
+        if needs_approval:
+            logger.info("Request queued for approval: %s by user %s", musicbrainz_id, user_id)
+            return RequestAcceptedResponse(
+                success=True,
+                message="Request submitted, awaiting admin approval",
+                musicbrainz_id=musicbrainz_id,
+                status="awaiting_approval",
+            )
 
         try:
             enqueued = await self._request_queue.enqueue(musicbrainz_id)
@@ -79,7 +105,6 @@ class RequestService:
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to enqueue album %s: %s", musicbrainz_id, e)
             try:
-                from datetime import datetime, timezone
                 await self._request_history.async_update_status(
                     musicbrainz_id, "failed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
@@ -100,10 +125,19 @@ class RequestService:
         items: list[dict],
         monitor_artist: bool = False,
         auto_download_artist: bool = False,
+        user_id: str | None = None,
+        user_role: str | None = None,
+        requested_by_name: str | None = None,
     ) -> BatchRequestResponse:
         """Request multiple albums at once. Returns counts of requested, skipped, and overflow."""
+        if user_role is None:
+            raise ExternalServiceError("User role is required to submit a request.")
+
         if not self._lidarr_repo.is_configured():
             raise ExternalServiceError("Lidarr isn't configured. Add an API key in Settings before requesting albums.")
+
+        needs_approval = user_role == "user"
+        initial_status = "awaiting_approval" if needs_approval else "pending"
 
         try:
             active = await self._request_history.async_get_active_mbids()
@@ -125,7 +159,18 @@ class RequestService:
                 new_items,
                 monitor_artist=monitor_artist,
                 auto_download_artist=auto_download_artist,
+                user_id=user_id,
+                requested_by_name=requested_by_name,
+                initial_status=initial_status,
             )
+
+            if needs_approval:
+                return BatchRequestResponse(
+                    success=True,
+                    message=f"Batch request submitted, awaiting admin approval",
+                    requested=len(new_items),
+                    skipped=skipped,
+                )
 
             mbids = [item["musicbrainz_id"] for item in new_items]
             enqueued, overflow = await self._request_queue.enqueue_many(mbids)

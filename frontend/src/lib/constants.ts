@@ -1,5 +1,7 @@
 import type { MusicSource } from './stores/musicSource';
 
+export const AUTH_FREE_PATHS = ['/login', '/setup', '/auth/callback'];
+
 export const CACHE_KEY_GROUPS = {
 	core: {
 		LIBRARY_MBIDS: 'musicseerr_library_mbids',

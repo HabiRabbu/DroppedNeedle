@@ -25,6 +25,9 @@ backend/.ruff*
 
 # Dev-only files
 backend/requirements-dev.txt
+**/.env
+**/.env.*
+backend/app-dev/
 
 # Frontend build artifacts & dev files
 frontend/node_modules/

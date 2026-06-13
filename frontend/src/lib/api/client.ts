@@ -1,5 +1,7 @@
 import { pageFetch } from '$lib/utils/navigationAbort';
 import { getApiUrl } from '$lib/api/api-utils';
+import { browser } from '$app/environment';
+import { authStore } from '$lib/stores/authStore.svelte';
 
 export class ApiError extends Error {
 	readonly status: number;
@@ -23,6 +25,13 @@ interface RequestOptions extends Omit<RequestInit, 'method' | 'body'> {
 
 async function handleResponse<T = void>(res: Response): Promise<T> {
 	if (!res.ok) {
+		// Session expired mid-use: hard redirect so layout re-initialises cleanly
+		if (res.status === 401 && browser && authStore.isAuthenticated) {
+			authStore.clear();
+			window.location.href = '/login';
+			return undefined as T;
+		}
+
 		const text = await res.text().catch(() => '');
 		let message = text || `Request failed with status ${res.status}`;
 		let code = '';
@@ -78,10 +87,12 @@ function createClient(fetchFn: FetchFn): ApiClient {
 		opts?: RequestOptions
 	): Promise<T> {
 		const { raw, ...fetchOpts } = opts ?? {};
-		const init: RequestInit = { method, ...fetchOpts };
+		// credentials: 'include' sends the httpOnly session cookie cross-origin (dev proxy)
+		const init: RequestInit = { method, credentials: 'include', ...fetchOpts };
 
 		if (body !== undefined && body !== null) {
 			if (body instanceof FormData) {
+				// Do not set Content-Type, the browser sets multipart/form-data with boundary automatically
 				init.body = body;
 			} else {
 				const headers = new Headers(init.headers as HeadersInit | undefined);

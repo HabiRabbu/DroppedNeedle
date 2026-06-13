@@ -11,6 +11,7 @@ from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cache.disk_cache import DiskMetadataCache
 from infrastructure.queue.request_queue import RequestQueue
 from infrastructure.persistence.request_history import RequestHistoryStore
+from middleware import CurrentUserDep, CurrentAdminDep, CurrentTokenDep
 from repositories.lidarr import LidarrRepository
 from repositories.musicbrainz_repository import MusicBrainzRepository
 from repositories.wikidata_repository import WikidataRepository

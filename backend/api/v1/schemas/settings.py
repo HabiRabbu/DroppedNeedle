@@ -88,11 +88,22 @@ class JellyfinConnectionSettings(AppStruct):
     api_key: str = ""
     user_id: str = ""
     enabled: bool = False
+    login_enabled: bool = False
 
     def __post_init__(self) -> None:
         self.jellyfin_url = self.jellyfin_url.rstrip("/")
 
 
+class OIDCConnectionSettings(AppStruct):
+    enabled: bool = False
+    issuer: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    scopes: str = "openid email profile"
+    redirect_uri: str = ""
+
+
+OIDC_SECRET_MASK = "oidc****"
 NAVIDROME_PASSWORD_MASK = "********"
 PLEX_TOKEN_MASK = "plex****"
 
@@ -111,6 +122,7 @@ class PlexConnectionSettings(AppStruct):
     plex_url: str = ""
     plex_token: str = ""
     enabled: bool = False
+    login_enabled: bool = False
     music_library_ids: list[str] = []
     scrobble_to_plex: bool = True
 
@@ -242,6 +254,19 @@ def is_official_musicbrainz(url: str) -> bool:
         return hostname in ("musicbrainz.org", "www.musicbrainz.org")
     except (ValueError, AttributeError):
         return False
+
+
+class SecuritySettings(AppStruct):
+    # Password security
+    hibp_check: bool = True
+    # Path to a local copy of the HIBP "Pwned Passwords" sorted-by-hash file.
+    # When set and the file exists, used instead of the API, no outbound calls.
+    hibp_local_path: str = ""
+
+    # HSTS: only enable when serving over HTTPS
+    hsts_max_age: int = 0            # seconds; 0 = disabled
+    hsts_include_subdomains: bool = False
+    hsts_preload: bool = False
 
 
 class MusicBrainzConnectionSettings(AppStruct):

@@ -1,10 +1,15 @@
 import type { ActiveRequestsResponse, RequestHistoryResponse } from '$lib/types';
 import { api } from '$lib/api/client';
 import { requestCountStore } from '$lib/stores/requestCountStore.svelte';
+import { pendingApprovalCountStore } from '$lib/stores/pendingApprovalCountStore.svelte';
 export type { ActiveRequestsResponse, RequestHistoryResponse } from '$lib/types';
 
 export function notifyRequestCountChanged(count?: number): void {
 	requestCountStore.notify(count);
+}
+
+export function notifyPendingApprovalCountChanged(count?: number): void {
+	pendingApprovalCountStore.notify(count);
 }
 
 export async function fetchActiveRequests(signal?: AbortSignal): Promise<ActiveRequestsResponse> {
@@ -53,4 +58,24 @@ export async function fetchActiveRequestCount(signal?: AbortSignal): Promise<num
 		signal
 	});
 	return data.count ?? 0;
+}
+
+export async function fetchPendingApprovals(signal?: AbortSignal): Promise<ActiveRequestsResponse> {
+	return api.global.get<ActiveRequestsResponse>('/api/v1/requests/pending-approvals', { signal });
+}
+
+export async function approveRequest(
+	musicbrainzId: string
+): Promise<{ success: boolean; message: string }> {
+	return api.global.post<{ success: boolean; message: string }>(
+		`/api/v1/requests/approve/${musicbrainzId}`
+	);
+}
+
+export async function rejectRequest(
+	musicbrainzId: string
+): Promise<{ success: boolean; message: string }> {
+	return api.global.post<{ success: boolean; message: string }>(
+		`/api/v1/requests/reject/${musicbrainzId}`
+	);
 }

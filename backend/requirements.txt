@@ -1,10 +1,14 @@
 aiofiles==24.1.0
+bcrypt>=5.0.0
+cryptography>=48.0
 fastapi==0.118.3
 h2>=4.1,<5
 httpx[h2]==0.28.1
 msgspec==0.20.0
-python-multipart==0.0.20
+packaging>=24.0
+plex-api-client>=0.34.2,<1.0.0
 pydantic==2.12.0
 pydantic-settings==2.3.0
+python-dotenv>=1.2.2
+python-multipart==0.0.20
 uvicorn[standard]==0.37.0
-packaging>=24.0

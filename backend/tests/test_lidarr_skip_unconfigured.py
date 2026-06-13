@@ -147,7 +147,7 @@ class TestRequestServiceSkipsLidarr:
         svc = RequestService(lidarr, MagicMock(), MagicMock())
 
         with pytest.raises(ExternalServiceError, match="isn.t configured"):
-            await svc.request_album("test-mbid")
+            await svc.request_album("test-mbid", user_role="admin")
 
 
 class TestLibraryServiceSkipsLidarr:
