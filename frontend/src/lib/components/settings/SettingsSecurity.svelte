@@ -497,7 +497,7 @@
 								<span class="label-text font-medium">Allow login with SSO</span>
 								<p class="text-xs text-base-content/50">
 									{#if !hasOidcCredentials}
-										Fill in the client ID, client secret, and redirect URI first.
+										Fill in the client ID and redirect URI first.
 									{:else if !oidcForm.testResult?.valid && !oidcForm.wasAlreadyEnabled}
 										Test and get a valid connection to enable
 									{:else}
