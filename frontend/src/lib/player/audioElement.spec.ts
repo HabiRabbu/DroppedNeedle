@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mockEngine = vi.hoisted(() => ({
+	connect: vi.fn(),
+	destroy: vi.fn(),
+	isConnected: vi.fn(() => true),
+	resume: vi.fn(async () => undefined)
+}));
+
 vi.mock('./audioEngine', () => {
-	const MockAudioEngine = vi.fn().mockImplementation(() => ({
-		connect: vi.fn(),
-		destroy: vi.fn(),
-		isConnected: vi.fn(() => true)
-	}));
+	const MockAudioEngine = vi.fn().mockImplementation(() => mockEngine);
 	return { AudioEngine: MockAudioEngine };
 });
 
@@ -13,6 +16,7 @@ import {
 	_resetAudioElement,
 	getAudioElement,
 	getAudioEngine,
+	resumeAudioEngine,
 	tryGetAudioEngine,
 	setAudioElement
 } from './audioElement';
@@ -21,6 +25,7 @@ describe('audioElement registry', () => {
 	beforeEach(() => {
 		_resetAudioElement();
 		vi.clearAllMocks();
+		mockEngine.resume.mockResolvedValue(undefined);
 	});
 
 	it('throws when getting audio element before registration', () => {
@@ -88,5 +93,33 @@ describe('audioElement registry', () => {
 		_resetAudioElement();
 		expect(engine.destroy).toHaveBeenCalled();
 		expect(tryGetAudioEngine()).toBeNull();
+	});
+
+	it('resumeAudioEngine calls the registered engine', async () => {
+		expect.assertions(1);
+		const audio = { src: '' } as HTMLAudioElement;
+		setAudioElement(audio);
+
+		await resumeAudioEngine();
+
+		expect(mockEngine.resume).toHaveBeenCalledTimes(1);
+	});
+
+	it('resumeAudioEngine is a no-op when the engine is unavailable', async () => {
+		expect.assertions(1);
+
+		await resumeAudioEngine();
+
+		expect(mockEngine.resume).not.toHaveBeenCalled();
+	});
+
+	it('resumeAudioEngine swallows browser resume rejections', async () => {
+		expect.assertions(2);
+		const audio = { src: '' } as HTMLAudioElement;
+		setAudioElement(audio);
+		mockEngine.resume.mockRejectedValueOnce(new Error('not allowed'));
+
+		await expect(resumeAudioEngine()).resolves.toBeUndefined();
+		expect(mockEngine.resume).toHaveBeenCalledTimes(1);
 	});
 });

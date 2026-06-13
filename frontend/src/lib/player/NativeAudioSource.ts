@@ -1,5 +1,5 @@
 import type { PlaybackSource, PlaybackState } from './types';
-import { getAudioElement } from './audioElement';
+import { getAudioElement, resumeAudioEngine } from './audioElement';
 
 const LOAD_TIMEOUT_MS = 15_000;
 const STALL_TIMEOUT_MS = 15_000;
@@ -46,8 +46,15 @@ export class NativeAudioSource implements PlaybackSource {
 				action();
 			};
 
-			const onCanPlay = () => {
+			const emitProgress = () => {
+				const currentTime = this.getCurrentTime();
+				const duration = this.getDuration();
+				this.progressCallbacks.forEach((cb) => cb(currentTime, duration));
+			};
+
+			const onReady = () => {
 				finalize(() => {
+					emitProgress();
 					this.readyCallbacks.forEach((cb) => cb());
 					resolve();
 				});
@@ -84,9 +91,7 @@ export class NativeAudioSource implements PlaybackSource {
 				if (this.currentState === 'buffering') {
 					this.emitStateChange('playing');
 				}
-				const currentTime = this.getCurrentTime();
-				const duration = this.getDuration();
-				this.progressCallbacks.forEach((cb) => cb(currentTime, duration));
+				emitProgress();
 			};
 
 			const onError = () => {
@@ -112,10 +117,20 @@ export class NativeAudioSource implements PlaybackSource {
 				reject(new Error(message));
 			}, LOAD_TIMEOUT_MS);
 
-			this.registerListener('canplay', () => {
+			const readyEvents = ['canplay', 'loadedmetadata', 'loadeddata'];
+			const handleReady = () => {
 				clearTimeout(timeoutHandle);
-				onCanPlay();
-			});
+				// Single-shot: detach all ready listeners on first fire so the other
+				// two events can never re-enter onReady.
+				for (const event of readyEvents) {
+					this.unregisterListener(event, handleReady);
+				}
+				onReady();
+			};
+			for (const event of readyEvents) {
+				this.registerListener(event, handleReady);
+			}
+			this.registerListener('durationchange', emitProgress);
 			this.registerListener('play', onPlay);
 			this.registerListener('playing', onPlaying);
 			this.registerListener('pause', onPause);
@@ -135,10 +150,7 @@ export class NativeAudioSource implements PlaybackSource {
 	}
 
 	play(): void {
-		void this.audio.play().catch(() => {
-			this.emitError('AUTOPLAY_BLOCKED', 'Playback failed. Browser may be blocking autoplay.');
-			this.emitStateChange('error');
-		});
+		void this.playWithEngineResume();
 	}
 
 	pause(): void {
@@ -209,6 +221,11 @@ export class NativeAudioSource implements PlaybackSource {
 		this.listeners.push({ event, handler });
 	}
 
+	private unregisterListener(event: string, handler: EventListener): void {
+		this.audio.removeEventListener(event, handler);
+		this.listeners = this.listeners.filter((l) => !(l.event === event && l.handler === handler));
+	}
+
 	private cleanupListeners(): void {
 		for (const { event, handler } of this.listeners) {
 			this.audio.removeEventListener(event, handler);
@@ -229,6 +246,20 @@ export class NativeAudioSource implements PlaybackSource {
 		if (!this.stallTimeoutHandle) return;
 		clearTimeout(this.stallTimeoutHandle);
 		this.stallTimeoutHandle = null;
+	}
+
+	private async playWithEngineResume(): Promise<void> {
+		try {
+			await resumeAudioEngine();
+		} catch {
+			// Keep native playback attempt alive even if Web Audio resume fails.
+		}
+		try {
+			await this.audio.play();
+		} catch {
+			this.emitError('AUTOPLAY_BLOCKED', 'Playback failed. Browser may be blocking autoplay.');
+			this.emitStateChange('error');
+		}
 	}
 
 	private emitStateChange(state: PlaybackState): void {
