@@ -71,6 +71,23 @@ def test_albums_without_mbid_are_skipped():
     assert [a.id for a in albums] == ["rg-3"]
 
 
+def test_duplicate_in_library_copy_upgrades_kept_entry():
+    # Lidarr reports the release group twice: the first copy has no files, a later
+    # copy is actually downloaded. The kept entry must reflect the in-library copy
+    # rather than the arbitrary first occurrence.
+    albums, _singles, _eps = categorize_lidarr_albums(
+        [
+            _album("rg-1", "Album"),
+            {**_album("rg-1", "Album (downloaded copy)"), "track_file_count": 5},
+        ],
+        _PRIMARY,
+        _NO_SECONDARY_FILTER,
+    )
+
+    assert len(albums) == 1
+    assert albums[0].in_library is True
+
+
 def test_distinct_albums_across_types_are_all_kept():
     albums, singles, eps = categorize_lidarr_albums(
         [
