@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { replaceState } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { fromStore } from 'svelte/store';
 	import { integrationStore } from '$lib/stores/integration';
@@ -114,6 +115,13 @@
 		return tabs.filter((t) => t.group === group);
 	}
 
+	function selectTab(id: string) {
+		activeTab = id;
+		const url = new URL(page.url);
+		url.searchParams.set('tab', id);
+		replaceState(url, {});
+	}
+
 	onMount(() => {
 		integrationStore.ensureLoaded();
 	});
@@ -135,7 +143,7 @@
 
 		<div class="flex flex-col lg:flex-row gap-6">
 			<aside
-				class="w-full lg:w-80 space-y-4 lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto"
+				class="w-full lg:w-80 lg:shrink-0 space-y-4 lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto"
 			>
 				{#each groups as group, i (`group-${i}`)}
 					<div class="bg-base-200 rounded-box p-2">
@@ -151,7 +159,7 @@
 									<button
 										class="text-base justify-start"
 										class:btn-active={activeTab === tab.id}
-										onclick={() => (activeTab = tab.id)}
+										onclick={() => selectTab(tab.id)}
 									>
 										<Icon class="w-5 h-5" />
 										<span>{tab.label}</span>
@@ -182,7 +190,7 @@
 				{/each}
 			</aside>
 
-			<main class="flex-1">
+			<main class="flex-1 min-w-0">
 				{#if activeTab === 'settings'}
 					<SettingsPreferences />
 				{:else if activeTab === 'home'}
