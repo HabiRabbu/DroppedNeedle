@@ -455,8 +455,8 @@
 							placeholder="https://musicseerr.example.com/api/v1/auth/oidc/callback"
 						/>
 						<p class="text-xs text-base-content/50 mt-1.5 ml-1">
-							This must point to the Musicseerr <strong>backend API</strong>, not the web app
-							page. Register this exact URL (ending in
+							This must point to the Musicseerr <strong>backend API</strong>, not the web app page.
+							Register this exact URL (ending in
 							<code class="text-xs">/api/v1/auth/oidc/callback</code>) as a redirect/callback URI
 							with your provider.
 						</p>
