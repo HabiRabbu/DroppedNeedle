@@ -171,6 +171,7 @@ def categorize_lidarr_albums(
     eps: list[ReleaseItem] = []
     _cache_mbids = library_cache_mbids or set()
     _requested_mbids = requested_mbids or set()
+    seen: dict[str, ReleaseItem] = {}
     for album in lidarr_albums:
         album_type = (album.get("album_type") or "").lower()
         secondary_types = set(map(str.lower, album.get("secondary_types", []) or []))
@@ -182,12 +183,27 @@ def categorize_lidarr_albums(
                     continue
             elif not secondary_types.intersection(included_secondary_types):
                 continue
-        mbid = album.get("mbid", "")
+        mbid = album.get("mbid") or ""
         mbid_lower = mbid.lower() if mbid else ""
+        if not mbid_lower:
+            continue
         track_file_count = album.get("track_file_count", 0)
         in_library = track_file_count > 0 or (mbid_lower in _cache_mbids)
         requested = mbid_lower in _requested_mbids and not in_library
         is_monitored = album.get("monitored", False) and not in_library and not requested
+        # De-duplicate release groups Lidarr can report more than once; duplicate
+        # (or id-less) entries would otherwise collide as duplicate keys when
+        # rendered (svelte each_key_duplicate), mirroring the MusicBrainz path's
+        # `if item.id and item.id not in seen_mbids` guard. If a later duplicate is
+        # actually in the library, upgrade the kept entry so a richer copy isn't
+        # masked by an arbitrary first occurrence.
+        existing = seen.get(mbid_lower)
+        if existing is not None:
+            if in_library and not existing.in_library:
+                existing.in_library = True
+                existing.requested = False
+                existing.monitored = False
+            continue
         album_data = ReleaseItem(
             id=mbid,
             title=album.get("title"),
@@ -198,6 +214,7 @@ def categorize_lidarr_albums(
             requested=requested,
             monitored=is_monitored,
         )
+        seen[mbid_lower] = album_data
         if album_type == "album":
             albums.append(album_data)
         elif album_type == "single":
