@@ -114,7 +114,6 @@ class PlexHubResponse(AppStruct):
     recently_added: list[PlexAlbumSummary] = []
     all_albums_preview: list[PlexAlbumSummary] = []
     genres: list[str] = []
-    playlists: list[PlexPlaylistSummary] = []
 
 
 class PlexDiscoveryAlbum(AppStruct):

@@ -85,7 +85,6 @@ class NavidromeHubResponse(AppStruct):
     favorite_tracks: list[NavidromeTrackInfo] = []
     all_albums_preview: list[NavidromeAlbumSummary] = []
     genres: list[str] = []
-    playlists: list[NavidromePlaylistSummary] = []
 
 
 class NavidromeAlbumPage(AppStruct):

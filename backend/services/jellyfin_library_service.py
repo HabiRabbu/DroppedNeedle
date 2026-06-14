@@ -575,7 +575,6 @@ class JellyfinLibraryService:
             asyncio.wait_for(self.get_recently_added(limit=20), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_most_played_artists(limit=10), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_most_played_albums(limit=10), timeout=_HUB_TIMEOUT),
-            asyncio.wait_for(self.list_playlists(limit=20), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_genres(), timeout=_HUB_TIMEOUT),
             return_exceptions=True,
         )
@@ -615,13 +614,9 @@ class JellyfinLibraryService:
         if isinstance(results[6], BaseException):
             logger.warning("Hub: get_most_played_albums failed: %s", results[6])
 
-        playlists = results[7] if not isinstance(results[7], BaseException) else []
+        genres = results[7] if not isinstance(results[7], BaseException) else []
         if isinstance(results[7], BaseException):
-            logger.warning("Hub: list_playlists failed: %s", results[7])
-
-        genres = results[8] if not isinstance(results[8], BaseException) else []
-        if isinstance(results[8], BaseException):
-            logger.warning("Hub: get_genres failed: %s", results[8])
+            logger.warning("Hub: get_genres failed: %s", results[7])
 
         return JellyfinHubResponse(
             stats=stats,
@@ -631,7 +626,6 @@ class JellyfinLibraryService:
             most_played_artists=most_played_artists,
             most_played_albums=most_played_albums,
             all_albums_preview=all_albums_preview,
-            playlists=playlists,
             genres=genres,
         )
 

@@ -824,7 +824,6 @@ class PlexLibraryService:
             asyncio.wait_for(self.get_albums(size=12), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_stats(), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_recently_added_albums(limit=20), timeout=_HUB_TIMEOUT),
-            asyncio.wait_for(self.list_playlists(limit=20), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_genres(), timeout=_HUB_TIMEOUT),
             return_exceptions=True,
         )
@@ -852,20 +851,15 @@ class PlexLibraryService:
         if isinstance(results[3], BaseException):
             logger.warning("Hub: get_recently_added_albums failed: %s", results[3])
 
-        playlists = results[4] if not isinstance(results[4], BaseException) else []
+        genres = results[4] if not isinstance(results[4], BaseException) else []
         if isinstance(results[4], BaseException):
-            logger.warning("Hub: list_playlists failed: %s", results[4])
-
-        genres = results[5] if not isinstance(results[5], BaseException) else []
-        if isinstance(results[5], BaseException):
-            logger.warning("Hub: get_genres failed: %s", results[5])
+            logger.warning("Hub: get_genres failed: %s", results[4])
 
         return PlexHubResponse(
             stats=stats,
             recently_played=recently_played,
             recently_added=recently_added,
             all_albums_preview=all_albums_preview,
-            playlists=playlists,
             genres=genres,
         )
 

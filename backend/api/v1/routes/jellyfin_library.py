@@ -47,15 +47,9 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/jellyfin", tags=["jellyfin
 @router.get("/hub", response_model=JellyfinHubResponse)
 async def get_jellyfin_hub(
     service: JellyfinLibraryService = Depends(get_jellyfin_library_service),
-    playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> JellyfinHubResponse:
     try:
-        hub = await service.get_hub_data()
-        imported_ids = await playlist_service.get_imported_source_ids("jellyfin:")
-        for p in hub.playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return hub
+        return await service.get_hub_data()
     except ExternalServiceError as e:
         logger.error("Jellyfin service error getting hub data: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Jellyfin")

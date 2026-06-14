@@ -23,6 +23,7 @@
 	import ArtistIndexSidebar from '$lib/components/ArtistIndexSidebar.svelte';
 	import { playerStore } from '$lib/stores/player.svelte';
 	import { nowPlayingMerged } from '$lib/stores/nowPlayingMerged.svelte';
+	import { getSourcePlaylistsQuery } from '$lib/queries/playlists/SourcePlaylistsQuery.svelte';
 	import { buildDiscoveryQueueFromJellyfin } from '$lib/player/queueHelpers';
 	import { formatDurationSec as formatDuration } from '$lib/utils/formatting';
 	import { reveal } from '$lib/actions/reveal';
@@ -75,6 +76,9 @@
 	);
 
 	let jellyfinSessions = $derived(nowPlayingMerged.sessionsForSource('jellyfin'));
+
+	const playlistsQuery = getSourcePlaylistsQuery('jellyfin');
+	let playlists = $derived(playlistsQuery.data ?? []);
 
 	let refreshing = $state(false);
 
@@ -266,9 +270,9 @@
 
 	<BrowseHeroCards cards={browseCards} />
 
-	{#if hub && hub.playlists.length > 0}
+	{#if playlists.length > 0}
 		<PlaylistImportBanner
-			playlists={hub.playlists}
+			{playlists}
 			sourceLabel="Jellyfin"
 			playlistsHref="/library/jellyfin/playlists"
 		>

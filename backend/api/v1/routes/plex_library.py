@@ -54,15 +54,9 @@ _PLEX_SORT_FIELD: dict[str, str] = {
 @router.get("/hub", response_model=PlexHubResponse)
 async def get_plex_hub(
     service: PlexLibraryService = Depends(get_plex_library_service),
-    playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> PlexHubResponse:
     try:
-        hub = await service.get_hub_data()
-        imported_ids = await playlist_service.get_imported_source_ids("plex:")
-        for p in hub.playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return hub
+        return await service.get_hub_data()
     except ExternalServiceError as e:
         logger.error("Plex service error getting hub data: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Plex")

@@ -692,7 +692,6 @@ class NavidromeLibraryService:
             asyncio.wait_for(self.get_favorites(), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_albums(size=12), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_stats(), timeout=_HUB_TIMEOUT),
-            asyncio.wait_for(self.list_playlists(limit=20), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_genres(), timeout=_HUB_TIMEOUT),
             return_exceptions=True,
         )
@@ -724,13 +723,9 @@ class NavidromeLibraryService:
         if isinstance(results[3], BaseException):
             logger.warning("Hub: get_stats failed: %s", results[3])
 
-        playlists = results[4] if not isinstance(results[4], BaseException) else []
+        genres = results[4] if not isinstance(results[4], BaseException) else []
         if isinstance(results[4], BaseException):
-            logger.warning("Hub: list_playlists failed: %s", results[4])
-
-        genres = results[5] if not isinstance(results[5], BaseException) else []
-        if isinstance(results[5], BaseException):
-            logger.warning("Hub: get_genres failed: %s", results[5])
+            logger.warning("Hub: get_genres failed: %s", results[4])
 
         return NavidromeHubResponse(
             stats=stats,
@@ -739,7 +734,6 @@ class NavidromeLibraryService:
             favorite_artists=favorite_artists,
             favorite_tracks=favorite_tracks,
             all_albums_preview=all_albums_preview,
-            playlists=playlists,
             genres=genres,
         )
 

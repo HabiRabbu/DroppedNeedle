@@ -1138,7 +1138,6 @@ export type PlexHubResponse = {
 	recently_played: PlexAlbumSummary[];
 	recently_added: PlexAlbumSummary[];
 	all_albums_preview: PlexAlbumSummary[];
-	playlists: SourcePlaylistSummary[];
 	genres: string[];
 };
 
@@ -1167,7 +1166,6 @@ export type NavidromeHubResponse = {
 	favorite_artists: NavidromeArtistSummary[];
 	favorite_tracks: NavidromeTrackInfo[];
 	all_albums_preview: NavidromeAlbumSummary[];
-	playlists: SourcePlaylistSummary[];
 	genres: string[];
 };
 
@@ -1179,7 +1177,6 @@ export type JellyfinHubResponse = {
 	most_played_artists: JellyfinArtistSummary[];
 	most_played_albums: JellyfinAlbumSummary[];
 	all_albums_preview: JellyfinAlbumSummary[];
-	playlists: SourcePlaylistSummary[];
 	genres: string[];
 };
 

@@ -17,6 +17,7 @@
 	import PlaylistImportBanner from '$lib/components/PlaylistImportBanner.svelte';
 	import NowPlayingWidget from '$lib/components/NowPlayingWidget.svelte';
 	import { nowPlayingMerged } from '$lib/stores/nowPlayingMerged.svelte';
+	import { getSourcePlaylistsQuery } from '$lib/queries/playlists/SourcePlaylistsQuery.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
 	import ArtistIndexSidebar from '$lib/components/ArtistIndexSidebar.svelte';
 	import GenreSongsBrowser from '$lib/components/GenreSongsBrowser.svelte';
@@ -77,6 +78,9 @@
 	);
 
 	let navidromeSessions = $derived(nowPlayingMerged.sessionsForSource('navidrome'));
+
+	const playlistsQuery = getSourcePlaylistsQuery('navidrome');
+	let playlists = $derived(playlistsQuery.data ?? []);
 
 	let refreshing = $state(false);
 
@@ -313,9 +317,9 @@
 
 	<BrowseHeroCards cards={browseCards} />
 
-	{#if hub && hub.playlists.length > 0}
+	{#if playlists.length > 0}
 		<PlaylistImportBanner
-			playlists={hub.playlists}
+			{playlists}
 			sourceLabel="Navidrome"
 			playlistsHref="/library/navidrome/playlists"
 		>

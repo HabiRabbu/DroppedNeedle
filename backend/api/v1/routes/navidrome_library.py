@@ -62,15 +62,9 @@ _NEEDS_REVERSE: dict[tuple[str, str], bool] = {
 @router.get("/hub", response_model=NavidromeHubResponse)
 async def get_navidrome_hub(
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
-    playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> NavidromeHubResponse:
     try:
-        hub = await service.get_hub_data()
-        imported_ids = await playlist_service.get_imported_source_ids("navidrome:")
-        for p in hub.playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return hub
+        return await service.get_hub_data()
     except ExternalServiceError as e:
         logger.error("Navidrome service error getting hub data: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Navidrome")

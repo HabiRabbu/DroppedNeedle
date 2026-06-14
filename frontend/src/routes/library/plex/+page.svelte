@@ -19,6 +19,7 @@
 	import NowPlayingWidget from '$lib/components/NowPlayingWidget.svelte';
 	import ArtistIndexSidebar from '$lib/components/ArtistIndexSidebar.svelte';
 	import { nowPlayingMerged } from '$lib/stores/nowPlayingMerged.svelte';
+	import { getSourcePlaylistsQuery } from '$lib/queries/playlists/SourcePlaylistsQuery.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { toastStore } from '$lib/stores/toast';
 	import { buildDiscoveryQueueFromPlex } from '$lib/player/queueHelpers';
@@ -73,6 +74,9 @@
 	);
 
 	let plexSessions = $derived(nowPlayingMerged.sessionsForSource('plex'));
+
+	const playlistsQuery = getSourcePlaylistsQuery('plex');
+	let playlists = $derived(playlistsQuery.data ?? []);
 
 	let refreshing = $state(false);
 
@@ -297,12 +301,8 @@
 
 	<BrowseHeroCards cards={browseCards} />
 
-	{#if hub && hub.playlists.length > 0}
-		<PlaylistImportBanner
-			playlists={hub.playlists}
-			sourceLabel="Plex"
-			playlistsHref="/library/plex/playlists"
-		>
+	{#if playlists.length > 0}
+		<PlaylistImportBanner {playlists} sourceLabel="Plex" playlistsHref="/library/plex/playlists">
 			{#snippet sourceIcon()}
 				<PlexIcon class="h-4 w-4" style="color: rgb(var(--brand-plex));" />
 			{/snippet}

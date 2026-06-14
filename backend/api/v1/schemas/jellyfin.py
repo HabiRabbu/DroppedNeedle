@@ -85,7 +85,6 @@ class JellyfinHubResponse(AppStruct):
     most_played_albums: list[JellyfinAlbumSummary] = []
     all_albums_preview: list[JellyfinAlbumSummary] = []
     genres: list[str] = []
-    playlists: list[JellyfinPlaylistSummary] = []
 
 
 class JellyfinPaginatedResponse(AppStruct):

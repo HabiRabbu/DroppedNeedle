@@ -1,30 +1,11 @@
 <script lang="ts">
-	import { API } from '$lib/constants';
-	import { api } from '$lib/api/client';
 	import BackButton from '$lib/components/BackButton.svelte';
 	import SourcePlaylistCard from '$lib/components/SourcePlaylistCard.svelte';
+	import { getSourcePlaylistsQuery } from '$lib/queries/playlists/SourcePlaylistsQuery.svelte';
 	import { Tv } from 'lucide-svelte';
-	import type { SourcePlaylistSummary } from '$lib/types';
 
-	let playlists = $state<SourcePlaylistSummary[]>([]);
-	let loading = $state(true);
-	let error = $state('');
-
-	$effect(() => {
-		loadPlaylists();
-	});
-
-	async function loadPlaylists() {
-		loading = true;
-		error = '';
-		try {
-			playlists = await api.get<SourcePlaylistSummary[]>(API.jellyfinLibrary.playlists(200));
-		} catch {
-			error = "Couldn't load playlists.";
-		} finally {
-			loading = false;
-		}
-	}
+	const playlistsQuery = getSourcePlaylistsQuery('jellyfin');
+	let playlists = $derived(playlistsQuery.data ?? []);
 </script>
 
 <div class="max-w-6xl mx-auto px-4 py-6 space-y-6">
@@ -34,12 +15,12 @@
 		<h1 class="text-2xl font-bold">Jellyfin Playlists</h1>
 	</div>
 
-	{#if loading}
+	{#if playlistsQuery.isPending}
 		<div class="flex justify-center py-12">
 			<span class="loading loading-spinner loading-lg"></span>
 		</div>
-	{:else if error}
-		<div class="alert alert-error">{error}</div>
+	{:else if playlistsQuery.isError}
+		<div class="alert alert-error">Couldn't load playlists.</div>
 	{:else if playlists.length === 0}
 		<p class="text-base-content/50 text-center py-12">No playlists were found in Jellyfin.</p>
 	{:else}
