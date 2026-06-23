@@ -94,10 +94,23 @@ jobs:
         id: date
         run: echo "timestamp=$(git log -1 --pretty=%cI)" >> "$GITHUB_OUTPUT"
 
-      - name: Set image name
+      - name: Set image tags
         env:
-          OWNER: ${{ github.repository_owner }}
-        run: echo "IMAGE=ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/musicseerr" >> $GITHUB_ENV
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          {
+            echo "TAGS<<EOF"
+            if [[ "$TAG" == *-* ]]; then
+              # pre-release (beta): quiet, obscure name only, Docker Hub
+              echo "habirabbu/dn-beta:$TAG"
+              echo "habirabbu/dn-beta:beta"
+            else
+              # stable (active once beta -> main at Phase 6): public name + old name, Docker Hub
+              echo "habirabbu/droppedneedle:$TAG"
+              echo "habirabbu/musicseerr:$TAG"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
 
       - name: Build and push (multi-arch)
         uses: docker/build-push-action@v7
@@ -105,9 +118,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
-            habirabbu/musicseerr:${{ steps.version.outputs.tag }}
+          tags: ${{ env.TAGS }}
           build-args: |
             COMMIT_TAG=${{ steps.version.outputs.tag }}
             BUILD_DATE=${{ steps.date.outputs.timestamp }}
@@ -122,6 +133,6 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           docker buildx imagetools create \
-            -t "${IMAGE}:latest" \
+            -t "habirabbu/droppedneedle:latest" \
             -t "habirabbu/musicseerr:latest" \
-            "${IMAGE}:${TAG}"
+            "habirabbu/droppedneedle:${TAG}"

@@ -108,19 +108,14 @@ jobs:
 
       - name: Set image tags
         env:
-          OWNER: ${{ github.repository_owner }}
           SHORT_SHA: ${{ steps.sha.outputs.short }}
         run: |
-          image="ghcr.io/$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')/musicseerr"
           {
-            echo "IMAGE=$image"
             echo "TAGS<<EOF"
-            echo "$image:dev"
-            echo "$image:dev-$SHORT_SHA"
-            if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
-              echo "habirabbu/musicseerr:dev"
-              echo "habirabbu/musicseerr:dev-$SHORT_SHA"
-            fi
+            echo "habirabbu/musicseerr:dev"
+            echo "habirabbu/musicseerr:dev-$SHORT_SHA"
+            echo "habirabbu/droppedneedle:dev"
+            echo "habirabbu/droppedneedle:dev-$SHORT_SHA"
             echo "EOF"
           } >> "$GITHUB_ENV"
 
