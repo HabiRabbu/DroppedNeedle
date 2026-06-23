@@ -7,8 +7,6 @@ from typing import Any
 from api.v1.schemas.discover import (
     DiscoverResponse,
     BecauseYouListenTo,
-    DiscoverIntegrationStatus,
-    DiscoverQueueItemLight,
     PlaylistProfile,
 )
 from api.v1.schemas.home import (
@@ -26,12 +24,15 @@ from infrastructure.serialization import clone_with_updates
 from repositories.protocols import (
     ListenBrainzRepositoryProtocol,
     JellyfinRepositoryProtocol,
-    LidarrRepositoryProtocol,
+    LibraryRepositoryProtocol,
     MusicBrainzRepositoryProtocol,
     LastFmRepositoryProtocol,
 )
 from repositories.listenbrainz_models import ListenBrainzArtist
 from services.home_transformers import HomeDataTransformers
+from services.home.integration_helpers import resolve_source_value
+from services.per_user_client_factory import PerUserClientFactory
+from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
 from services.discover.integration_helpers import IntegrationHelpers
 from services.discover.mbid_resolution_service import MbidResolutionService
 from services.discover.queue_strategies import build_similar_artist_pools, build_similar_artist_pools_lastfm, discover_by_genres, queue_item_to_home_album, round_robin_dedup_select
@@ -56,7 +57,7 @@ class DiscoverHomepageService:
         self,
         listenbrainz_repo: ListenBrainzRepositoryProtocol,
         jellyfin_repo: JellyfinRepositoryProtocol,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         musicbrainz_repo: MusicBrainzRepositoryProtocol,
         integration: IntegrationHelpers,
         mbid_resolution: MbidResolutionService,
@@ -65,10 +66,12 @@ class DiscoverHomepageService:
         audiodb_image_service: Any = None,
         genre_index: Any = None,
         mbid_store: MBIDStore | None = None,
+        client_factory: PerUserClientFactory | None = None,
+        listening_prefs_store: UserListeningPrefsStore | None = None,
     ) -> None:
         self._lb_repo = listenbrainz_repo
         self._jf_repo = jellyfin_repo
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._mb_repo = musicbrainz_repo
         self._integration = integration
         self._mbid = mbid_resolution
@@ -77,49 +80,73 @@ class DiscoverHomepageService:
         self._audiodb_image_service = audiodb_image_service
         self._genre_index = genre_index
         self._mbid_store = mbid_store
+        self._client_factory = client_factory
+        self._prefs_store = listening_prefs_store
         self._transformers = HomeDataTransformers(jellyfin_repo)
         self._weekly_exploration = WeeklyExplorationService(listenbrainz_repo, musicbrainz_repo)
-        self._building = False
+        # per-(user, source) in-flight warm guard so one user never blocks another
+        self._building_keys: set[tuple[str, str]] = set()
 
-    def _daily_mix_cache_key(self, source: str) -> str:
+    def _daily_mix_cache_key(self, user_id: str, source: str) -> str:
         today = datetime.now(timezone.utc).date().isoformat()
-        return f"daily_mix:{source}:{today}"
+        return f"daily_mix:{user_id}:{source}:{today}"
 
-    def _discover_picks_cache_key(self, source: str) -> str:
-        return f"discover_picks:{source}"
+    def _discover_picks_cache_key(self, user_id: str, source: str) -> str:
+        return f"discover_picks:{user_id}:{source}"
 
-    async def get_discover_data(self, source: str | None = None) -> DiscoverResponse:
-        resolved_source = self._integration.resolve_source(source)
+    async def _resolve_user_music(self, user_id: str, source: str | None):
+        # request-scoped LB/Last.fm clients; never mutates a shared singleton's creds
+        lb_client = lfm_client = None
+        lb_username = lfm_username = None
+        if self._client_factory:
+            lb_client = await self._client_factory.resolve_listenbrainz(user_id)
+            lfm_client = await self._client_factory.resolve_lastfm(user_id)
+            lb_username = await self._client_factory.resolve_listenbrainz_username(user_id)
+            lfm_username = await self._client_factory.resolve_lastfm_username(user_id)
+        primary_source = "listenbrainz"
+        if self._prefs_store:
+            primary_source = (await self._prefs_store.get(user_id)).primary_music_source
+        lb_enabled = lb_client is not None
+        lfm_enabled = lfm_client is not None
+        resolved = resolve_source_value(source, primary_source, lb_enabled, lfm_enabled)
+        return lb_client, lfm_client, lb_username, lfm_username, lb_enabled, lfm_enabled, resolved
+
+    async def get_discover_data(self, user_id: str, source: str | None = None) -> DiscoverResponse:
+        _, _, _, _, lb_enabled, lfm_enabled, resolved_source = await self._resolve_user_music(user_id, source)
+        building = (user_id, resolved_source) in self._building_keys
         if self._memory_cache:
-            cache_key = self._integration.get_discover_cache_key(source)
+            cache_key = self._integration.get_discover_cache_key(
+                user_id, resolved_source, lb_enabled, lfm_enabled
+            )
             cached = await self._memory_cache.get(cache_key)
             if cached is not None:
                 if isinstance(cached, DiscoverResponse):
-                    updates = {"refreshing": self._building}
+                    updates = {"refreshing": building}
                     home_settings = self._integration.get_home_settings()
                     if not home_settings.show_globally_trending:
                         updates["globally_trending"] = None
                     return clone_with_updates(cached, updates)
-        if not self._building:
+        if not building:
             from core.task_registry import TaskRegistry
             registry = TaskRegistry.get_instance()
-            if not registry.is_running("discover-homepage-warm"):
-                task = asyncio.create_task(self.warm_cache(source=resolved_source))
+            task_name = f"discover-homepage-warm-{user_id}-{resolved_source}"
+            if not registry.is_running(task_name):
+                task = asyncio.create_task(self.warm_cache(user_id, source=resolved_source))
                 try:
-                    registry.register("discover-homepage-warm", task)
+                    registry.register(task_name, task)
                 except RuntimeError:
                     pass
         return DiscoverResponse(
             integration_status=self._integration.get_integration_status(),
-            service_prompts=self._build_service_prompts(),
+            service_prompts=self._build_service_prompts(lb_enabled, lfm_enabled),
             refreshing=True,
         )
 
-    async def get_discover_preview(self) -> DiscoverPreview | None:
+    async def get_discover_preview(self, user_id: str) -> DiscoverPreview | None:
         if not self._memory_cache:
             return None
-        resolved = self._integration.resolve_source(None)
-        cache_key = self._integration.get_discover_cache_key(resolved)
+        _, _, _, _, lb_enabled, lfm_enabled, resolved = await self._resolve_user_music(user_id, None)
+        cache_key = self._integration.get_discover_cache_key(user_id, resolved, lb_enabled, lfm_enabled)
         cached = await self._memory_cache.get(cache_key)
         if not cached or not isinstance(cached, DiscoverResponse):
             return None
@@ -136,34 +163,39 @@ class DiscoverHomepageService:
             items=preview_items,
         )
 
-    async def refresh_discover_data(self) -> None:
-        if self._building:
+    async def refresh_discover_data(self, user_id: str) -> None:
+        _, _, _, _, _, _, resolved = await self._resolve_user_music(user_id, None)
+        if (user_id, resolved) in self._building_keys:
             return
         from core.task_registry import TaskRegistry
         registry = TaskRegistry.get_instance()
-        if not registry.is_running("discover-homepage-warm"):
-            task = asyncio.create_task(self.warm_cache())
+        task_name = f"discover-homepage-warm-{user_id}-{resolved}"
+        if not registry.is_running(task_name):
+            task = asyncio.create_task(self.warm_cache(user_id, source=resolved))
             try:
-                registry.register("discover-homepage-warm", task)
+                registry.register(task_name, task)
             except RuntimeError:
                 pass
 
-    async def warm_cache(self, source: str | None = None) -> None:
-        if self._building:
+    async def warm_cache(self, user_id: str, source: str | None = None) -> None:
+        _, _, _, _, lb_enabled, lfm_enabled, resolved = await self._resolve_user_music(user_id, source)
+        key = (user_id, resolved)
+        if key in self._building_keys:
             return
-        self._building = True
+        self._building_keys.add(key)
         try:
-            resolved = self._integration.resolve_source(source)
-            response = await self.build_discover_data(source=resolved)
+            response = await self.build_discover_data(user_id, source=resolved)
             if self._memory_cache and self._has_meaningful_content(response):
-                cache_key = self._integration.get_discover_cache_key(resolved)
+                cache_key = self._integration.get_discover_cache_key(
+                    user_id, resolved, lb_enabled, lfm_enabled
+                )
                 await self._memory_cache.set(cache_key, response, DISCOVER_CACHE_TTL)
             elif not self._has_meaningful_content(response):
                 logger.warning("Discover build produced no meaningful content, keeping existing cache")
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to build discover data: {e}")
         finally:
-            self._building = False
+            self._building_keys.discard(key)
 
     def _has_meaningful_content(self, response: DiscoverResponse) -> bool:
         return bool(
@@ -184,30 +216,21 @@ class DiscoverHomepageService:
             or response.unexplored_genres
         )
 
-    async def build_discover_data(self, source: str | None = None) -> DiscoverResponse:
-        resolved_source = self._integration.resolve_source(source)
+    async def build_discover_data(self, user_id: str, source: str | None = None) -> DiscoverResponse:
+        (lb_client, lfm_client, username, lfm_username,
+         lb_enabled, lfm_enabled, resolved_source) = await self._resolve_user_music(user_id, source)
         home_settings = self._integration.get_home_settings()
-        lb_enabled = self._integration.is_listenbrainz_enabled()
         jf_enabled = self._integration.is_jellyfin_enabled()
-        lidarr_configured = self._integration.is_lidarr_configured()
-        lfm_enabled = self._integration.is_lastfm_enabled()
-        username = self._integration.get_listenbrainz_username()
-        lfm_username = self._integration.get_lastfm_username()
+        library_configured = self._integration.is_library_configured()
 
-        library_mbids = await self._mbid.get_library_artist_mbids(lidarr_configured)
-
-        monitored_mbids: set[str] = set()
-        if lidarr_configured:
-            try:
-                monitored_mbids = await self._lidarr_repo.get_monitored_no_files_mbids()
-            except Exception:  # noqa: BLE001
-                logger.debug("Failed to fetch monitored MBIDs for discover page")
+        library_mbids = await self._mbid.get_library_artist_mbids(library_configured)
 
         seed_artists = await self._get_seed_artists(
             lb_enabled, username, jf_enabled,
             resolved_source=resolved_source,
             lfm_enabled=lfm_enabled,
             lfm_username=lfm_username,
+            lb_client=lb_client,
         )
 
         tasks: dict[str, Any] = {}
@@ -239,9 +262,9 @@ class DiscoverHomepageService:
                 lfm_username, limit=20
             )
 
-        if resolved_source == "listenbrainz" and lb_enabled and username:
-            tasks["lb_fresh"] = self._lb_repo.get_user_fresh_releases()
-            tasks["lb_genres"] = self._lb_repo.get_user_genre_activity(username)
+        if resolved_source == "listenbrainz" and lb_client and username:
+            tasks["lb_fresh"] = lb_client.get_user_fresh_releases()
+            tasks["lb_genres"] = lb_client.get_user_genre_activity(username)
         elif resolved_source == "lastfm" and self._lfm_repo and lfm_enabled and lfm_username:
             tasks["lfm_user_top_artists_for_genres"] = self._lfm_repo.get_user_top_artists(
                 lfm_username, period="3month", limit=5
@@ -250,9 +273,9 @@ class DiscoverHomepageService:
         if jf_enabled:
             tasks["jf_most_played"] = self._jf_repo.get_most_played_artists(limit=50)
 
-        if lidarr_configured:
-            tasks["library_artists"] = self._lidarr_repo.get_artists_from_library(include_unmonitored=True)
-            tasks["library_albums"] = self._lidarr_repo.get_library(include_unmonitored=True)
+        if library_configured:
+            tasks["library_artists"] = self._library_repo.get_artists_from_library(include_unmonitored=True)
+            tasks["library_albums"] = self._library_repo.get_library(include_unmonitored=True)
 
         results = await self._execute_tasks(tasks)
 
@@ -268,26 +291,28 @@ class DiscoverHomepageService:
         )
         await self._enrich_because_sections_audiodb(response.because_you_listen_to)
 
-        response.fresh_releases = self._build_fresh_releases(results, library_mbids, monitored_mbids)
+        response.fresh_releases = self._build_fresh_releases(results, library_mbids)
 
         post_tasks: dict[str, Any] = {
-            "missing_essentials": self._build_missing_essentials(results, library_mbids, monitored_mbids),
+            "missing_essentials": self._build_missing_essentials(results, library_mbids),
             "lastfm_weekly_album_chart": self._build_lastfm_weekly_album_chart(
-                results, library_mbids, monitored_mbids
+                results, library_mbids
             ),
             "lastfm_recent_scrobbles": self._build_lastfm_recent_scrobbles(
-                results, library_mbids, monitored_mbids
+                results, library_mbids
             ),
-            "daily_mixes": self._build_daily_mix_sections(resolved_source, library_mbids),
+            "daily_mixes": self._build_daily_mix_sections(user_id, resolved_source, library_mbids),
             "discover_picks": self._build_discover_picks(
-                library_mbids, resolved_source, lb_enabled, username,
+                user_id, library_mbids, resolved_source, lb_enabled, username,
             ),
             "radio_sections": self._build_radio_sections(
                 seed_artists, library_mbids, resolved_source,
             ),
         }
-        if resolved_source == "listenbrainz" and lb_enabled and username:
-            post_tasks["weekly_exploration"] = self._weekly_exploration.build_section(username)
+        if resolved_source == "listenbrainz" and lb_client and username:
+            post_tasks["weekly_exploration"] = self._weekly_exploration.build_section(
+                username, lb_repo=lb_client
+            )
         post_results = await self._execute_tasks(post_tasks)
         response.missing_essentials = post_results.get("missing_essentials")
         response.weekly_exploration = post_results.get("weekly_exploration")
@@ -364,20 +389,20 @@ class DiscoverHomepageService:
         response.lastfm_weekly_album_chart = post_results.get("lastfm_weekly_album_chart")
         response.lastfm_recent_scrobbles = post_results.get("lastfm_recent_scrobbles")
 
-        response.service_prompts = self._build_service_prompts()
+        response.service_prompts = self._build_service_prompts(lb_enabled, lfm_enabled)
 
         return response
 
     async def build_playlist_suggestions(
         self,
+        user_id: str,
         profile: PlaylistProfile,
         count: int = 10,
         source: str | None = None,
     ) -> HomeSection:
-        resolved_source = self._integration.resolve_source(source)
-
-        lb_enabled = self._integration.is_listenbrainz_enabled()
-        lfm_enabled = self._integration.is_lastfm_enabled()
+        _, _, _, _, lb_enabled, lfm_enabled, resolved_source = await self._resolve_user_music(
+            user_id, source
+        )
         source_available = (
             (resolved_source == "listenbrainz" and lb_enabled)
             or (resolved_source == "lastfm" and lfm_enabled)
@@ -471,6 +496,7 @@ class DiscoverHomepageService:
         resolved_source: str = "listenbrainz",
         lfm_enabled: bool = False,
         lfm_username: str | None = None,
+        lb_client: Any = None,
     ) -> list[ListenBrainzArtist]:
         seeds: list[ListenBrainzArtist] = []
         seen_mbids: set[str] = set()
@@ -496,12 +522,15 @@ class DiscoverHomepageService:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to get Last.fm seed artists: %s", e)
 
+        # LB top-artists rely on the client's own identity, so use the per-user client
+        seed_lb_repo = lb_client or self._lb_repo
         if resolved_source != "lastfm" and len(seeds) < 3 and lb_enabled and username:
-            for range_ in ("this_week", "this_month"):
+            # fall back to broader windows so a quiet week/month still yields seeds
+            for range_ in ("this_week", "this_month", "this_year", "all_time"):
                 if len(seeds) >= 3:
                     break
                 try:
-                    artists = await self._lb_repo.get_user_top_artists(count=10, range_=range_)
+                    artists = await seed_lb_repo.get_user_top_artists(count=10, range_=range_)
                     for a in artists:
                         if len(seeds) >= 3:
                             break
@@ -618,21 +647,21 @@ class DiscoverHomepageService:
 
         return sections
 
-    async def _build_daily_mix_sections(self, resolved_source: str, library_mbids: set[str]) -> list[HomeSection]:
-        """Build 3-5 genre-clustered daily mix sections with 60/40 new-to-familiar ratio."""
+    async def _build_daily_mix_sections(self, user_id: str, resolved_source: str, library_mbids: set[str]) -> list[HomeSection]:
+        # 3-5 genre-clustered daily mixes, 60/40 new-to-familiar ratio
         try:
             if self._genre_index is None:
                 return []
 
             if self._memory_cache:
-                cache_key = self._daily_mix_cache_key(resolved_source)
+                cache_key = self._daily_mix_cache_key(user_id, resolved_source)
                 cached = await self._memory_cache.get(cache_key)
                 if cached is not None:
                     return cached  # type: ignore[return-value]
 
             top_genres = await self._genre_index.get_top_genres(limit=20)
             if not top_genres:
-                await self._cache_daily_mix_result([], resolved_source)
+                await self._cache_daily_mix_result([], user_id, resolved_source)
                 return []
 
             genre_names = [g for g, _ in top_genres[:10]]
@@ -654,7 +683,7 @@ class DiscoverHomepageService:
             clusters = candidate_clusters[:MAX_CLUSTERS]
 
             if not clusters:
-                await self._cache_daily_mix_result([], resolved_source)
+                await self._cache_daily_mix_result([], user_id, resolved_source)
                 return []
 
             sections: list[HomeSection] = []
@@ -669,7 +698,7 @@ class DiscoverHomepageService:
                     logger.warning(f"Daily mix cluster {i} ({genre_lower}) failed: {e}")
                     continue
 
-            await self._cache_daily_mix_result(sections, resolved_source)
+            await self._cache_daily_mix_result(sections, user_id, resolved_source)
             return sections
 
         except Exception as e:  # noqa: BLE001
@@ -684,7 +713,6 @@ class DiscoverHomepageService:
         resolved_source: str,
         library_mbids: set[str],
     ) -> HomeSection | None:
-        """Build a single daily mix section for a genre cluster."""
         genre_label = genre_lower.title()
         MAX_ITEMS = 12
 
@@ -798,27 +826,29 @@ class DiscoverHomepageService:
         )
 
     async def _cache_daily_mix_result(
-        self, sections: list[HomeSection], source: str,
+        self, sections: list[HomeSection], user_id: str, source: str,
     ) -> None:
-        """Cache daily mix result (including empty lists) with 24h TTL."""
+        # caches empty lists too (negative cache) so a barren run isn't retried for 24h
         if self._memory_cache:
-            cache_key = self._daily_mix_cache_key(source)
+            cache_key = self._daily_mix_cache_key(user_id, source)
             await self._memory_cache.set(cache_key, sections, DAILY_MIX_CACHE_TTL)
 
     async def _build_discover_picks(
         self,
+        user_id: str,
         library_mbids: set[str],
         resolved_source: str,
         lb_enabled: bool,
         username: str | None,
     ) -> HomeSection | None:
-        """Build a serendipity section of random undiscovered albums with genre-affinity weighting."""
+        # genre-affinity-weighted undiscovered albums; library/genre-derived (no
+        # external account) so it renders for unlinked users too (D1).
         try:
             if self._genre_index is None:
                 return None
 
             if self._memory_cache is not None:
-                cache_key = self._discover_picks_cache_key(resolved_source)
+                cache_key = self._discover_picks_cache_key(user_id, resolved_source)
                 cached = await self._memory_cache.get(cache_key)
                 if isinstance(cached, dict) and "section" in cached:
                     return cached["section"]  # type: ignore[return-value]
@@ -853,7 +883,8 @@ class DiscoverHomepageService:
                     logger.warning("Timeout fetching top artists for discover picks")
                 except Exception:  # noqa: BLE001
                     pass
-            elif lb_enabled:
+            else:
+                # sitewide candidates (no account needed) so unlinked users still get picks
                 try:
                     candidates = await asyncio.wait_for(
                         self._lb_repo.get_sitewide_top_release_groups(count=100),
@@ -865,13 +896,13 @@ class DiscoverHomepageService:
                     pass
 
             if not candidates:
-                await self._cache_discover_picks_result(None, resolved_source)
+                await self._cache_discover_picks_result(None, user_id, resolved_source)
                 return None
 
             ignored_mbids: set[str] = set()
             if self._mbid_store is not None:
                 try:
-                    ignored_mbids = await self._mbid_store.get_ignored_release_mbids()
+                    ignored_mbids = await self._mbid_store.get_ignored_release_mbids(user_id)
                 except Exception:  # noqa: BLE001
                     logger.warning("Failed to load ignored release MBIDs for discover picks")
 
@@ -883,7 +914,7 @@ class DiscoverHomepageService:
             ]
 
             if not filtered:
-                await self._cache_discover_picks_result(None, resolved_source)
+                await self._cache_discover_picks_result(None, user_id, resolved_source)
                 return None
 
             top_genres = await self._genre_index.get_top_genres(limit=10)
@@ -921,13 +952,13 @@ class DiscoverHomepageService:
             for release in selected:
                 try:
                     items.append(
-                        self._transformers.lb_release_to_home(release, library_mbids, None),
+                        self._transformers.lb_release_to_home(release, library_mbids),
                     )
                 except Exception:  # noqa: BLE001
                     continue
 
             if not items:
-                await self._cache_discover_picks_result(None, resolved_source)
+                await self._cache_discover_picks_result(None, user_id, resolved_source)
                 return None
 
             section = HomeSection(
@@ -936,7 +967,7 @@ class DiscoverHomepageService:
                 items=items,
                 source=resolved_source,
             )
-            await self._cache_discover_picks_result(section, resolved_source)
+            await self._cache_discover_picks_result(section, user_id, resolved_source)
             return section
 
         except Exception as e:  # noqa: BLE001
@@ -944,17 +975,16 @@ class DiscoverHomepageService:
             return None
 
     async def _cache_discover_picks_result(
-        self, result: HomeSection | None, source: str,
+        self, result: HomeSection | None, user_id: str, source: str,
     ) -> None:
         if self._memory_cache:
-            cache_key = self._discover_picks_cache_key(source)
+            cache_key = self._discover_picks_cache_key(user_id, source)
             await self._memory_cache.set(
                 cache_key, {"section": result}, DISCOVER_PICKS_CACHE_TTL,
             )
 
     def _build_fresh_releases(
         self, results: dict[str, Any], library_mbids: set[str],
-        monitored_mbids: set[str] | None = None,
     ) -> HomeSection | None:
         releases = results.get("lb_fresh")
         if not releases:
@@ -966,10 +996,6 @@ class DiscoverHomepageService:
                     mbid = r.get("release_group_mbid", "")
                     artist_mbids = r.get("artist_mbids", [])
                     in_lib = mbid.lower() in library_mbids if isinstance(mbid, str) and mbid else False
-                    is_monitored = (
-                        not in_lib and bool(monitored_mbids) and isinstance(mbid, str) and mbid
-                        and mbid.lower() in monitored_mbids
-                    )
                     items.append(HomeAlbum(
                         mbid=mbid,
                         name=r.get("release_name", r.get("title", "Unknown")),
@@ -977,10 +1003,9 @@ class DiscoverHomepageService:
                         artist_mbid=artist_mbids[0] if artist_mbids else None,
                         listen_count=r.get("listen_count"),
                         in_library=in_lib,
-                        monitored=is_monitored,
                     ))
                 else:
-                    items.append(self._transformers.lb_release_to_home(r, library_mbids, monitored_mbids))
+                    items.append(self._transformers.lb_release_to_home(r, library_mbids))
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"Skipping fresh release item: {e}")
                 continue
@@ -995,7 +1020,6 @@ class DiscoverHomepageService:
 
     async def _build_missing_essentials(
         self, results: dict[str, Any], library_mbids: set[str],
-        monitored_mbids: set[str] | None = None,
     ) -> HomeSection | None:
         library_artists = results.get("library_artists") or []
         library_albums = results.get("library_albums") or []
@@ -1048,7 +1072,6 @@ class DiscoverHomepageService:
                     artist_name=rg.artist_name,
                     listen_count=rg.listen_count,
                     in_library=False,
-                    monitored=bool(monitored_mbids) and rg_mbid.lower() in monitored_mbids,
                 ))
                 artist_missing += 1
 
@@ -1074,7 +1097,7 @@ class DiscoverHomepageService:
             title="Missing Essentials",
             type="albums",
             items=all_missing[:15],
-            source="lidarr",
+            source="library",
         )
 
     def _build_rediscover(
@@ -1323,7 +1346,7 @@ class DiscoverHomepageService:
         genres = self._transformers.extract_genres_from_library(library_albums, lb_genres)
         if not genres:
             return None
-        source = "listenbrainz" if lb_genres else ("lidarr" if library_albums else None)
+        source = "listenbrainz" if lb_genres else ("library" if library_albums else None)
         return HomeSection(title="Browse by Genre", type="genres", items=genres, source=source)
 
     async def _build_unexplored_genres(
@@ -1479,7 +1502,6 @@ class DiscoverHomepageService:
         self,
         results: dict[str, Any],
         library_mbids: set[str],
-        monitored_mbids: set[str] | None = None,
     ) -> HomeSection | None:
         albums = results.get("lfm_weekly_albums") or []
         if not albums:
@@ -1490,7 +1512,7 @@ class DiscoverHomepageService:
 
         items = []
         for album in albums[:20]:
-            home_album = self._transformers.lastfm_album_to_home(album, library_mbids, monitored_mbids)
+            home_album = self._transformers.lastfm_album_to_home(album, library_mbids)
             if home_album and home_album.mbid:
                 home_album.mbid = rg_map.get(home_album.mbid, home_album.mbid)
                 items.append(home_album)
@@ -1509,7 +1531,6 @@ class DiscoverHomepageService:
         self,
         results: dict[str, Any],
         library_mbids: set[str],
-        monitored_mbids: set[str] | None = None,
     ) -> HomeSection | None:
         tracks = results.get("lfm_recent") or []
         if not tracks:
@@ -1521,7 +1542,7 @@ class DiscoverHomepageService:
         items = []
         seen_album_mbids: set[str] = set()
         for track in tracks[:30]:
-            home_album = self._transformers.lastfm_recent_to_home(track, library_mbids, monitored_mbids)
+            home_album = self._transformers.lastfm_recent_to_home(track, library_mbids)
             if home_album and home_album.mbid:
                 resolved = rg_map.get(home_album.mbid, home_album.mbid)
                 home_album.mbid = resolved
@@ -1595,9 +1616,10 @@ class DiscoverHomepageService:
         results = await asyncio.gather(*tasks)
         return {genre: url for genre, url in results if url}
 
-    def _build_service_prompts(self) -> list[ServicePrompt]:
+    def _build_service_prompts(self, lb_enabled: bool, lfm_enabled: bool) -> list[ServicePrompt]:
+        # LB/Last.fm prompts are per-user; jellyfin/download-client stay global (D2)
         prompts = []
-        if not self._integration.is_listenbrainz_enabled():
+        if not lb_enabled:
             prompts.append(ServicePrompt(
                 service="listenbrainz",
                 title="Connect ListenBrainz",
@@ -1615,16 +1637,16 @@ class DiscoverHomepageService:
                 color="secondary",
                 features=["Rediscover favorites", "Play statistics", "Listening history", "Better recommendations"],
             ))
-        if not self._integration.is_lidarr_configured():
+        if not self._integration.is_download_client_configured():
             prompts.append(ServicePrompt(
-                service="lidarr-connection",
-                title="Connect Lidarr",
-                description="Finds gaps in your collection and keeps your library up to date.",
-                icon="LD",
+                service="download-client",
+                title="Connect Download Client",
+                description="Lets you request and download albums and tracks straight into your library.",
+                icon="DL",
                 color="accent",
-                features=["Missing essentials", "Library management", "Album requests", "Collection tracking"],
+                features=["Album requests", "Track requests", "Automatic import", "Library management"],
             ))
-        if not self._integration.is_lastfm_enabled():
+        if not lfm_enabled:
             prompts.append(ServicePrompt(
                 service="lastfm",
                 title="Connect Last.fm",

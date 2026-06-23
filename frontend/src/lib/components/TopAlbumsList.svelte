@@ -6,8 +6,6 @@
 	import { colors } from '$lib/colors';
 	import { libraryStore } from '$lib/stores/library';
 	import { requestAlbum } from '$lib/utils/albumRequest';
-	import { toggleAlbumMonitored } from '$lib/utils/monitorAlbum';
-	import { toastStore } from '$lib/stores/toast';
 	import AlbumImage from './AlbumImage.svelte';
 	import LibraryBadge from './LibraryBadge.svelte';
 	import LastFmPlaceholder from './LastFmPlaceholder.svelte';
@@ -26,14 +24,12 @@
 
 	let libraryMbids = new SvelteSet<string>();
 	let requestedMbids = new SvelteSet<string>();
-	let monitoredMbids = new SvelteSet<string>();
 	let storeInitialized = $state(false);
 
 	onMount(() => {
 		const unsubscribe = libraryStore.subscribe((state) => {
 			libraryMbids = new SvelteSet(state.mbidSet);
 			requestedMbids = new SvelteSet(state.requestedSet);
-			monitoredMbids = new SvelteSet(state.monitoredSet);
 			storeInitialized = state.initialized;
 		});
 		return unsubscribe;
@@ -50,14 +46,6 @@
 		const mbid = album.release_group_mbid?.toLowerCase();
 		if (!mbid) return false;
 		return requestedMbids.has(mbid) && !libraryMbids.has(mbid);
-	}
-
-	function isMonitored(album: TopAlbum): boolean {
-		if (isInLibrary(album) || isRequested(album)) return false;
-		const mbid = album.release_group_mbid?.toLowerCase();
-		if (!mbid) return false;
-		if (storeInitialized) return monitoredMbids.has(mbid);
-		return album.monitored || monitoredMbids.has(mbid);
 	}
 
 	function isRequesting(album: TopAlbum): boolean {
@@ -101,7 +89,7 @@
 		<div class="bg-base-200 rounded-lg p-4 text-center flex-1 flex items-center justify-center">
 			<div>
 				<p class="text-base-content/70 text-sm">Connect a music service to see popular albums</p>
-				<a href="/settings" class="btn btn-primary btn-xs mt-2">Configure</a>
+				<a href="/profile#scrobbling" class="btn btn-primary btn-xs mt-2">Configure</a>
 			</div>
 		</div>
 	{:else if albums.length === 0}
@@ -141,26 +129,6 @@
 									size="sm"
 									positioning="absolute -bottom-1 -right-1"
 								/>
-							{:else if isMonitored(album)}
-								<LibraryBadge
-									status="monitored"
-									musicbrainzId={album.release_group_mbid}
-									albumTitle={album.title}
-									artistName={album.artist_name || 'Unknown'}
-									size="sm"
-									positioning="absolute -bottom-1 -right-1"
-									ontogglemonitored={async () => {
-										if (!album.release_group_mbid) return;
-										try {
-											await toggleAlbumMonitored(album.release_group_mbid, false);
-										} catch {
-											toastStore.show({
-												message: 'Failed to update monitoring status',
-												type: 'error'
-											});
-										}
-									}}
-								/>
 							{/if}
 						</div>
 
@@ -175,7 +143,7 @@
 							</p>
 						</div>
 
-						{#if !isInLibrary(album) && !isRequested(album) && !isMonitored(album)}
+						{#if !isInLibrary(album) && !isRequested(album)}
 							<button
 								type="button"
 								class="btn btn-circle btn-sm opacity-0 group-hover:opacity-100 transition-all shrink-0 hover:scale-110 hover:brightness-110"

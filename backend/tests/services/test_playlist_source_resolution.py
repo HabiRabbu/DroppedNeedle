@@ -16,11 +16,15 @@ from repositories.playlist_repository import PlaylistRecord, PlaylistTrackRecord
 from services.playlist_service import PlaylistService
 
 
+_OWNER = SimpleNamespace(id="owner", role="user")
+
+
 def _make_playlist(id="p-1") -> PlaylistRecord:
     return PlaylistRecord(
         id=id, name="Test", cover_image_path=None,
         created_at="2025-01-01T00:00:00+00:00",
         updated_at="2025-01-01T00:00:00+00:00",
+        user_id="owner",
     )
 
 
@@ -200,7 +204,7 @@ class TestResolveTrackSourcesPersistence:
 class TestStringTrackNumberRegression:
     """Regression tests: source resolution must work when track_number arrives as a string.
 
-    Root cause: Lidarr API returns trackNumber as a string (e.g., "6"). If not coerced,
+    Root cause: a source API returns trackNumber as a string (e.g., "6"). If not coerced,
     the source map gets string keys while playlist DB uses int keys, causing lookup misses.
     """
 
@@ -212,7 +216,7 @@ class TestStringTrackNumberRegression:
         repo.get_tracks = MagicMock(return_value=[track])
 
         nd = _make_nd_service()
-        # Local service returns string track_number (simulating pre-fix Lidarr data)
+        # Local service returns string track_number (simulating pre-fix source data)
         local = _make_local_service(tracks=[
             SimpleNamespace(track_number="1", title="Wall Street Shuffle", track_file_id=789),
         ])
@@ -244,7 +248,7 @@ class TestStringTrackNumberRegression:
         ])
 
         await service.update_track_source(
-            "p-1", "t-1", source_type="local",
+            "p-1", _OWNER, "t-1", source_type="local",
             jf_service=None, local_service=local, nd_service=nd,
         )
 

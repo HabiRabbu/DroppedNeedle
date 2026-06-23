@@ -12,6 +12,7 @@ from infrastructure.persistence import (
     GenreIndex,
     YouTubeStore,
     MBIDStore,
+    ScanStateStore,
     SyncStateStore,
 )
 
@@ -79,6 +80,13 @@ def get_sync_state_store() -> SyncStateStore:
     settings = get_settings()
     lock = get_persistence_write_lock()
     return SyncStateStore(db_path=settings.library_db_path, write_lock=lock)
+
+
+@singleton
+def get_scan_state_store() -> ScanStateStore:
+    settings = get_settings()
+    lock = get_persistence_write_lock()
+    return ScanStateStore(db_path=settings.library_db_path, write_lock=lock)
 
 
 @singleton

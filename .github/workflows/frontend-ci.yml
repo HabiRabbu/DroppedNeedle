@@ -75,3 +75,9 @@ jobs:
 
       - name: Run tests (server project)
         run: pnpm exec vitest run --project server
+
+      - name: Install Playwright chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run component tests (client project)
+        run: pnpm exec vitest run --project client

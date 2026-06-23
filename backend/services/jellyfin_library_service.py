@@ -453,22 +453,25 @@ class JellyfinLibraryService:
         self,
         playlist_id: str,
         playlist_service: 'PlaylistService',
+        requesting: 'UserRecord',
     ) -> JellyfinImportResult:
         source_ref = f"jellyfin:{playlist_id}"
-        existing = await playlist_service.get_by_source_ref(source_ref)
+        existing = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
         if existing:
             return JellyfinImportResult(
-                musicseerr_playlist_id=existing.id,
+                droppedneedle_playlist_id=existing.id,
                 already_imported=True,
             )
 
         detail = await self.get_playlist_detail(playlist_id)
         try:
-            created = await playlist_service.create_playlist(detail.name, source_ref=source_ref)
+            created = await playlist_service.create_playlist(
+                detail.name, source_ref=source_ref, user_id=requesting.id,
+            )
         except Exception:  # noqa: BLE001
-            re_check = await playlist_service.get_by_source_ref(source_ref)
+            re_check = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
             if re_check:
-                return JellyfinImportResult(musicseerr_playlist_id=re_check.id, already_imported=True)
+                return JellyfinImportResult(droppedneedle_playlist_id=re_check.id, already_imported=True)
             raise
 
         track_dicts = []
@@ -493,14 +496,14 @@ class JellyfinLibraryService:
 
         if track_dicts:
             try:
-                await playlist_service.add_tracks(created.id, track_dicts)
+                await playlist_service.add_tracks(created.id, requesting, track_dicts)
             except Exception:  # noqa: BLE001
                 logger.error("Failed to add tracks during Jellyfin playlist import %s", playlist_id, exc_info=True)
-                await playlist_service.delete_playlist(created.id)
+                await playlist_service.delete_playlist(created.id, requesting)
                 raise ExternalServiceError(f"Failed to import Jellyfin playlist {playlist_id}")
 
         return JellyfinImportResult(
-            musicseerr_playlist_id=created.id,
+            droppedneedle_playlist_id=created.id,
             tracks_imported=len(track_dicts),
             tracks_failed=failed,
         )

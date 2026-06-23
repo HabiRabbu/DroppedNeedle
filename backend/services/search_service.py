@@ -6,7 +6,7 @@ import unicodedata
 from math import ceil
 from typing import Optional, TYPE_CHECKING
 from api.v1.schemas.search import SearchResult, SearchResponse, SuggestResult, SuggestResponse
-from repositories.protocols import MusicBrainzRepositoryProtocol, LidarrRepositoryProtocol, CoverArtRepositoryProtocol
+from repositories.protocols import MusicBrainzRepositoryProtocol, LibraryRepositoryProtocol, CoverArtRepositoryProtocol
 from services.preferences_service import PreferencesService
 from infrastructure.http.deduplication import deduplicate
 
@@ -28,14 +28,14 @@ class SearchService:
     def __init__(
         self,
         mb_repo: MusicBrainzRepositoryProtocol,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         coverart_repo: CoverArtRepositoryProtocol,
         preferences_service: PreferencesService,
         audiodb_image_service: "AudioDBImageService | None" = None,
         audiodb_browse_queue: "AudioDBBrowseQueue | None" = None,
     ):
         self._mb_repo = mb_repo
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._coverart_repo = coverart_repo
         self._preferences_service = preferences_service
         self._audiodb_image_service = audiodb_image_service
@@ -156,6 +156,7 @@ class SearchService:
 
         prefs = self._preferences_service.get_preferences()
         included_secondary_types = set(t.lower() for t in prefs.secondary_types)
+        included_primary_types = set(t.lower() for t in prefs.primary_types)
         
         limits = {}
         if not buckets or "artists" in buckets:
@@ -164,38 +165,29 @@ class SearchService:
             limits["albums"] = limit_albums
         
         try:
-            grouped, library_mbids_raw, queue_items_raw, monitored_mbids_raw = await self._safe_gather(
+            grouped, library_mbids_raw = await self._safe_gather(
                 self._mb_repo.search_grouped(
                     query,
                     limits=limits,
                     buckets=buckets,
-                    included_secondary_types=included_secondary_types
+                    included_secondary_types=included_secondary_types,
+                    included_primary_types=included_primary_types
                 ),
-                self._lidarr_repo.get_library_mbids(include_release_ids=True),
-                self._lidarr_repo.get_queue(),
-                self._lidarr_repo.get_monitored_no_files_mbids(),
+                self._library_repo.get_library_mbids(include_release_ids=True),
             )
         except Exception as e:  # noqa: BLE001
             logger.error(f"Search gather failed unexpectedly: {e}")
-            grouped, library_mbids_raw, queue_items_raw, monitored_mbids_raw = None, None, None, None
-        
+            grouped, library_mbids_raw = None, None
+
         if grouped is None:
             logger.warning("MusicBrainz search returned no results or failed")
         grouped = grouped or {"artists": [], "albums": []}
         library_mbids = library_mbids_raw or set()
-        
-        if queue_items_raw:
-            queued_mbids = {item.musicbrainz_id.lower() for item in queue_items_raw if item.musicbrainz_id}
-        else:
-            queued_mbids = set()
-
-        monitored_mbids = monitored_mbids_raw or set()
 
         for item in grouped.get("albums", []):
             mbid_lower = (item.musicbrainz_id or "").lower()
             item.in_library = mbid_lower in library_mbids
-            item.requested = mbid_lower in queued_mbids and not item.in_library
-            item.monitored = mbid_lower in monitored_mbids and not item.in_library and not item.requested
+            item.requested = False
 
         all_results = grouped.get("artists", []) + grouped.get("albums", [])
         await self._apply_audiodb_search_overlay(all_results)
@@ -236,6 +228,7 @@ class SearchService:
     ) -> tuple[list[SearchResult], SearchResult | None]:
         prefs = self._preferences_service.get_preferences()
         included_secondary_types = set(t.lower() for t in prefs.secondary_types)
+        included_primary_types = set(t.lower() for t in prefs.primary_types)
         
         if bucket == "artists":
             results = await self._mb_repo.search_artists(query, limit=limit, offset=offset)
@@ -244,30 +237,22 @@ class SearchService:
                 query,
                 limit=limit,
                 offset=offset,
-                included_secondary_types=included_secondary_types
+                included_secondary_types=included_secondary_types,
+                included_primary_types=included_primary_types
             )
         else:
             return [], None
         
         if bucket == "albums":
-            library_mbids_raw, queue_items_raw, monitored_mbids_raw = await self._safe_gather(
-                self._lidarr_repo.get_library_mbids(include_release_ids=True),
-                self._lidarr_repo.get_queue(),
-                self._lidarr_repo.get_monitored_no_files_mbids(),
+            [library_mbids_raw] = await self._safe_gather(
+                self._library_repo.get_library_mbids(include_release_ids=True),
             )
             library_mbids = library_mbids_raw or set()
-            if queue_items_raw:
-                queued_mbids = {item.musicbrainz_id.lower() for item in queue_items_raw if item.musicbrainz_id}
-            else:
-                queued_mbids = set()
-
-            monitored_mbids = monitored_mbids_raw or set()
 
             for item in results:
                 mbid_lower = (item.musicbrainz_id or "").lower()
                 item.in_library = mbid_lower in library_mbids
-                item.requested = mbid_lower in queued_mbids and not item.in_library
-                item.monitored = mbid_lower in monitored_mbids and not item.in_library and not item.requested
+                item.requested = False
 
         await self._apply_audiodb_search_overlay(results)
 
@@ -282,6 +267,7 @@ class SearchService:
 
         prefs = self._preferences_service.get_preferences()
         included_secondary_types = set(t.lower() for t in prefs.secondary_types)
+        included_primary_types = set(t.lower() for t in prefs.primary_types)
         bucket_limit = ceil(limit * 0.6)
 
         try:
@@ -289,6 +275,7 @@ class SearchService:
                 query,
                 limits={"artists": bucket_limit, "albums": bucket_limit},
                 included_secondary_types=included_secondary_types,
+                included_primary_types=included_primary_types,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("MusicBrainz suggest failed (query_len=%d): %s", len(query), type(e).__name__)
@@ -296,24 +283,15 @@ class SearchService:
 
         grouped = grouped or {"artists": [], "albums": []}
 
-        library_mbids_raw, queue_items_raw, monitored_mbids_raw = await self._safe_gather(
-            self._lidarr_repo.get_library_mbids(include_release_ids=True),
-            self._lidarr_repo.get_queue(),
-            self._lidarr_repo.get_monitored_no_files_mbids(),
+        [library_mbids_raw] = await self._safe_gather(
+            self._library_repo.get_library_mbids(include_release_ids=True),
         )
         library_mbids = library_mbids_raw or set()
-        if queue_items_raw:
-            queued_mbids = {item.musicbrainz_id.lower() for item in queue_items_raw if item.musicbrainz_id}
-        else:
-            queued_mbids = set()
-
-        monitored_mbids = monitored_mbids_raw or set()
 
         for item in grouped.get("albums", []):
             mbid_lower = (item.musicbrainz_id or "").lower()
             item.in_library = mbid_lower in library_mbids
-            item.requested = mbid_lower in queued_mbids and not item.in_library
-            item.monitored = mbid_lower in monitored_mbids and not item.in_library and not item.requested
+            item.requested = False
 
         suggestions: list[SuggestResult] = []
         for item in grouped.get("artists", []) + grouped.get("albums", []):
@@ -325,7 +303,6 @@ class SearchService:
                 musicbrainz_id=item.musicbrainz_id,
                 in_library=item.in_library,
                 requested=item.requested,
-                monitored=item.monitored,
                 disambiguation=item.disambiguation,
                 score=item.score,
             ))

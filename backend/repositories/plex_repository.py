@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
@@ -14,6 +13,7 @@ from infrastructure.degradation import try_get_degradation_context
 from infrastructure.integration_result import IntegrationResult
 from infrastructure.resilience.retry import CircuitBreaker, with_retry
 from repositories.plex_models import (
+    PlexAccount,
     PlexAlbum,
     PlexArtist,
     PlexHistoryEntry,
@@ -22,6 +22,7 @@ from repositories.plex_models import (
     PlexPlaylist,
     PlexSession,
     PlexTrack,
+    PlexUserProfile,
     StreamProxyResult,
     parse_album,
     parse_artist,
@@ -29,6 +30,8 @@ from repositories.plex_models import (
     parse_plex_history,
     parse_plex_response,
     parse_plex_sessions,
+    parse_plex_user_profile,
+    parse_plex_users,
     parse_playlist,
     parse_track,
 )
@@ -119,7 +122,7 @@ class PlexRepository:
     def _build_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {
             "X-Plex-Token": self._token,
-            "X-Plex-Product": "MusicSeerr",
+            "X-Plex-Product": "DroppedNeedle",
             "X-Plex-Version": "1.0",
             "Accept": "application/json",
         }
@@ -814,7 +817,7 @@ class PlexRepository:
             response = await client.post(
                 f"{_PLEX_TV_BASE}/pins",
                 headers={
-                    "X-Plex-Product": "MusicSeerr",
+                    "X-Plex-Product": "DroppedNeedle",
                     "X-Plex-Client-Identifier": client_id,
                     "Accept": "application/json",
                 },
@@ -842,6 +845,102 @@ class PlexRepository:
             data = response.json()
             token = data.get("authToken")
             return token if token else None
+
+    async def _plex_tv_get(
+        self,
+        path: str,
+        auth_token: str,
+        client_id: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        # Account-scoped plex.tv call authenticated with a user's auth token (not
+        # the configured server token). Used by the login flow.
+        headers = {
+            "X-Plex-Token": auth_token,
+            "X-Plex-Product": "DroppedNeedle",
+            "X-Plex-Client-Identifier": client_id,
+            "Accept": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+                response = await client.get(
+                    f"{_PLEX_TV_BASE}{path}", params=params, headers=headers
+                )
+        except httpx.HTTPError as exc:
+            raise PlexApiError(f"Plex request failed: {exc}") from exc
+        if response.status_code in (401, 403):
+            raise PlexAuthError(f"Plex authentication failed ({response.status_code})")
+        if response.status_code != 200:
+            raise PlexApiError(f"Plex request failed ({response.status_code})")
+        try:
+            return response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise PlexApiError(f"Plex returned invalid JSON for {path}") from exc
+
+    async def get_account_profile(self, auth_token: str, client_id: str) -> PlexUserProfile:
+        data = await self._plex_tv_get("/user", auth_token, client_id)
+        if not isinstance(data, dict):
+            raise PlexApiError("Unexpected Plex /user response shape")
+        profile = parse_plex_user_profile(data)
+        if not profile.uuid:
+            raise PlexApiError("Plex /user response missing uuid")
+        return profile
+
+    async def get_account_server_ids(self, auth_token: str, client_id: str) -> set[str]:
+        # clientIdentifiers of servers the account can reach (plex.tv /resources).
+        # Lenient parse - Plex lists client devices with no accessToken, which the
+        # generated SDK model rejected, breaking login for everyone.
+        data = await self._plex_tv_get(
+            "/resources",
+            auth_token,
+            client_id,
+            params={"includeHttps": 1, "includeRelay": 1},
+        )
+        devices = data if isinstance(data, list) else []
+        server_ids: set[str] = set()
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+            cid = device.get("clientIdentifier")
+            provides = device.get("provides") or ""
+            if cid and "server" in provides:
+                server_ids.add(cid)
+        return server_ids
+
+    async def enumerate_users(self) -> list[PlexAccount]:
+        # Enumerate Plex Home/managed users + shared friends for admin import
+        # (Phase 6, D5). Hits the plex.tv account API with the admin account
+        # token, NOT the server. Verified shapes: plex_API_NOTES.md (AMU-7).
+        # Home + friends are two calls merged and de-duplicated by uuid.
+        if not self._token:
+            return []
+        headers = self._build_headers()
+        home = await self._fetch_plex_tv_accounts(
+            f"{_PLEX_TV_BASE}/home/users", "home", headers
+        )
+        friends = await self._fetch_plex_tv_accounts(
+            f"{_PLEX_TV_BASE}/friends", "friend", headers
+        )
+        merged: dict[str, PlexAccount] = {}
+        for account in (*home, *friends):
+            merged.setdefault(account.uuid, account)
+        return list(merged.values())
+
+    async def _fetch_plex_tv_accounts(
+        self, url: str, source: str, headers: dict[str, str]
+    ) -> list[PlexAccount]:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+                response = await client.get(url, headers=headers)
+            if response.status_code != 200:
+                _record_degradation(
+                    f"Plex {source} enumeration failed ({response.status_code})"
+                )
+                return []
+            return parse_plex_users(response.json(), source)
+        except Exception as exc:  # noqa: BLE001
+            _record_degradation(f"Plex {source} enumeration error: {exc}")
+            return []
 
     async def get_sessions(self) -> list[PlexSession]:
         if not self._configured:

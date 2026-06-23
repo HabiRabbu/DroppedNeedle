@@ -8,30 +8,30 @@ from services.library_service import LibraryService
 
 
 def _make_service() -> tuple[LibraryService, MagicMock]:
-    lidarr_repo = MagicMock()
+    library_repo = MagicMock()
     library_db = MagicMock()
     cover_repo = MagicMock()
     preferences_service = MagicMock()
 
     service = LibraryService(
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         library_db=library_db,
         cover_repo=cover_repo,
         preferences_service=preferences_service,
     )
-    return service, lidarr_repo
+    return service, library_repo
 
 
 @pytest.mark.asyncio
 async def test_get_library_grouped_returns_typed_data():
-    service, lidarr_repo = _make_service()
+    service, library_repo = _make_service()
     expected = [
         LibraryGroupedArtist(
             artist="Artist A",
-            albums=[LibraryGroupedAlbum(title="Album A", year=2024, monitored=True)],
+            albums=[LibraryGroupedAlbum(title="Album A", year=2024)],
         )
     ]
-    lidarr_repo.get_library_grouped = AsyncMock(return_value=expected)
+    library_repo.get_library_grouped = AsyncMock(return_value=expected)
 
     grouped = await service.get_library_grouped()
 
@@ -42,8 +42,8 @@ async def test_get_library_grouped_returns_typed_data():
 
 @pytest.mark.asyncio
 async def test_get_library_grouped_wraps_errors():
-    service, lidarr_repo = _make_service()
-    lidarr_repo.get_library_grouped = AsyncMock(side_effect=RuntimeError("unavailable"))
+    service, library_repo = _make_service()
+    library_repo.get_library_grouped = AsyncMock(side_effect=RuntimeError("unavailable"))
 
     with pytest.raises(ExternalServiceError):
         await service.get_library_grouped()

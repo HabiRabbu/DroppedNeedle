@@ -18,15 +18,28 @@ function createMockSource() {
 	};
 }
 
+function createMockAnalyser() {
+	return {
+		fftSize: 0,
+		frequencyBinCount: 64,
+		smoothingTimeConstant: 0,
+		connect: vi.fn(),
+		disconnect: vi.fn(),
+		getByteFrequencyData: vi.fn()
+	};
+}
+
 function createMockContext(
 	mockSource: ReturnType<typeof createMockSource>,
-	mockFilterFactory: () => ReturnType<typeof createMockFilter>
+	mockFilterFactory: () => ReturnType<typeof createMockFilter>,
+	mockAnalyser: ReturnType<typeof createMockAnalyser>
 ) {
 	return {
 		state: 'suspended' as string,
 		destination: {},
 		createMediaElementSource: vi.fn(() => mockSource),
 		createBiquadFilter: vi.fn(mockFilterFactory),
+		createAnalyser: vi.fn(() => mockAnalyser),
 		resume: vi.fn(() => Promise.resolve()),
 		close: vi.fn(() => Promise.resolve())
 	};
@@ -40,6 +53,7 @@ describe('AudioEngine', () => {
 	let engine: AudioEngine;
 	let mockSource: ReturnType<typeof createMockSource>;
 	let mockFilters: ReturnType<typeof createMockFilter>[];
+	let mockAnalyser: ReturnType<typeof createMockAnalyser>;
 	let mockCtx: ReturnType<typeof createMockContext>;
 	const mockAudio = { src: '' } as unknown as HTMLAudioElement;
 
@@ -48,6 +62,7 @@ describe('AudioEngine', () => {
 		engine = new AudioEngine();
 		mockSource = createMockSource();
 		mockFilters = [];
+		mockAnalyser = createMockAnalyser();
 
 		const filterFactory = () => {
 			const f = createMockFilter();
@@ -55,7 +70,7 @@ describe('AudioEngine', () => {
 			return f;
 		};
 
-		mockCtx = createMockContext(mockSource, filterFactory);
+		mockCtx = createMockContext(mockSource, filterFactory, mockAnalyser);
 		vi.mocked(AudioContext).mockImplementation(() => mockCtx as unknown as AudioContext);
 	});
 
@@ -215,6 +230,39 @@ describe('AudioEngine', () => {
 			const freqs = engine.getFrequencies();
 			expect(freqs).toHaveLength(10);
 			expect(freqs[0]).toBe(31);
+		});
+	});
+
+	describe('analyser', () => {
+		it('creates an analyser tapped off the end of the filter chain', () => {
+			expect.assertions(4);
+			engine.connect(mockAudio);
+
+			expect(mockCtx.createAnalyser).toHaveBeenCalledTimes(1);
+			expect(mockAnalyser.fftSize).toBe(128);
+			expect(mockFilters[9].connect).toHaveBeenCalledWith(mockAnalyser);
+			// Analyser must be a terminal sink, else audio sums to destination twice.
+			expect(mockAnalyser.connect).not.toHaveBeenCalled();
+		});
+
+		it('getFrequencyData returns null before connect and a buffer after', () => {
+			expect.assertions(3);
+			expect(engine.getFrequencyData()).toBeNull();
+
+			engine.connect(mockAudio);
+			const data = engine.getFrequencyData();
+
+			expect(data).toBeInstanceOf(Uint8Array);
+			expect(mockAnalyser.getByteFrequencyData).toHaveBeenCalled();
+		});
+
+		it('disconnects the analyser on destroy', () => {
+			expect.assertions(2);
+			engine.connect(mockAudio);
+			engine.destroy();
+
+			expect(mockAnalyser.disconnect).toHaveBeenCalled();
+			expect(engine.getFrequencyData()).toBeNull();
 		});
 	});
 });

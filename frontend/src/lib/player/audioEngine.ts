@@ -1,11 +1,15 @@
 import { EQ_FREQUENCIES, EQ_BAND_COUNT, EQ_MIN_GAIN, EQ_MAX_GAIN } from '../stores/eqPresets';
 
 const DEFAULT_Q = 1.4;
+// Small FFT keeps per-frame visualiser reads cheap; 128 yields 64 bins.
+const ANALYSER_FFT_SIZE = 128;
 
 export class AudioEngine {
 	private context: AudioContext | null = null;
 	private source: MediaElementAudioSourceNode | null = null;
 	private filters: BiquadFilterNode[] = [];
+	private analyser: AnalyserNode | null = null;
+	private freqData: Uint8Array<ArrayBuffer> | null = null;
 	private connectedElement: HTMLAudioElement | null = null;
 
 	connect(audio: HTMLAudioElement): void {
@@ -33,7 +37,28 @@ export class AudioEngine {
 		}
 		prev.connect(this.context.destination);
 
+		// Analyser is a terminal sink (not connected onward), so it never alters the audio.
+		if (typeof this.context.createAnalyser === 'function') {
+			this.analyser = this.context.createAnalyser();
+			this.analyser.fftSize = ANALYSER_FFT_SIZE;
+			this.analyser.smoothingTimeConstant = 0.82;
+			prev.connect(this.analyser);
+		}
+
 		this.connectedElement = audio;
+	}
+
+	/**
+	 * Current frequency spectrum (0-255 per bin) for the visualiser, or null when
+	 * no analyser is available. The buffer is owned and reused across frames.
+	 */
+	getFrequencyData(): Uint8Array | null {
+		if (!this.analyser) return null;
+		if (!this.freqData || this.freqData.length !== this.analyser.frequencyBinCount) {
+			this.freqData = new Uint8Array(this.analyser.frequencyBinCount);
+		}
+		this.analyser.getByteFrequencyData(this.freqData);
+		return this.freqData;
 	}
 
 	setBandGain(index: number, dB: number): void {
@@ -77,11 +102,14 @@ export class AudioEngine {
 		for (const filter of this.filters) {
 			filter.disconnect();
 		}
+		this.analyser?.disconnect();
 		this.source?.disconnect();
 		if (this.context && this.context.state !== 'closed') {
 			void this.context.close();
 		}
 		this.filters = [];
+		this.analyser = null;
+		this.freqData = null;
 		this.source = null;
 		this.context = null;
 		this.connectedElement = null;

@@ -90,7 +90,6 @@ class TestGetOrCreateSettingNoDeadlock:
             config_file_path=config_path,
             cache_dir=tmp_path / "cache",
             library_db_path=tmp_path / "cache" / "library.db",
-            queue_db_path=tmp_path / "cache" / "queue.db",
         )
 
         result = None

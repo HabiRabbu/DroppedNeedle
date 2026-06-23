@@ -21,13 +21,13 @@ from infrastructure.http.disconnect import DisconnectCallable, check_disconnecte
 if TYPE_CHECKING:
     from services.audiodb_image_service import AudioDBImageService
     from repositories.musicbrainz_repository import MusicBrainzRepository
-    from repositories.lidarr import LidarrRepository
+    from repositories.protocols.library import LibraryRepositoryProtocol
     from repositories.jellyfin_repository import JellyfinRepository
 
 logger = logging.getLogger(__name__)
 LOCAL_SOURCE_TIMEOUT_SECONDS = 1.0
 T = TypeVar("T")
-DEFAULT_EXTERNAL_USER_AGENT = "Musicseerr/1.0 (contact@musicseerr.com; https://www.musicseerr.com)"
+DEFAULT_EXTERNAL_USER_AGENT = "DroppedNeedle/1.0 (contact@droppedneedle.com; https://www.droppedneedle.com)"
 
 
 class TransientImageFetchError(Exception):
@@ -105,7 +105,7 @@ class ArtistImageFetcher:
         write_cache_fn,
         cache: CacheInterface,
         mb_repo: 'MusicBrainzRepository' | None = None,
-        lidarr_repo: 'LidarrRepository' | None = None,
+        library_repo: 'LibraryRepositoryProtocol' | None = None,
         jellyfin_repo: 'JellyfinRepository' | None = None,
         audiodb_service: 'AudioDBImageService' | None = None,
         user_agent: str | None = None,
@@ -114,7 +114,7 @@ class ArtistImageFetcher:
         self._write_disk_cache = write_cache_fn
         self._cache = cache
         self._mb_repo = mb_repo
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._jellyfin_repo = jellyfin_repo
         self._audiodb_service = audiodb_service
         resolved_user_agent = user_agent
@@ -183,8 +183,8 @@ class ArtistImageFetcher:
         had_transient_failure = False
 
         try:
-            result = await self._fetch_from_lidarr(artist_id, size, file_path, priority=priority)
-        except TRANSIENT_FETCH_EXCEPTIONS as exc:
+            result = await self._fetch_from_library(artist_id, size, file_path, priority=priority)
+        except TRANSIENT_FETCH_EXCEPTIONS:
             had_transient_failure = True
             result = None
 
@@ -193,7 +193,7 @@ class ArtistImageFetcher:
 
         try:
             result = await self._fetch_from_jellyfin(artist_id, file_path, priority=priority)
-        except TRANSIENT_FETCH_EXCEPTIONS as exc:
+        except TRANSIENT_FETCH_EXCEPTIONS:
             had_transient_failure = True
             result = None
 
@@ -234,28 +234,28 @@ class ArtistImageFetcher:
             return (content, content_type, "audiodb")
         except TRANSIENT_FETCH_EXCEPTIONS:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return None
 
-    async def _fetch_from_lidarr(
+    async def _fetch_from_library(
         self,
         artist_id: str,
         size: int | None,
         file_path: Path,
         priority: RequestPriority = RequestPriority.IMAGE_FETCH,
     ) -> tuple[bytes, str, str] | None:
-        if not self._lidarr_repo:
+        if not self._library_repo:
             return None
-        if not self._lidarr_repo.is_configured():
+        if not self._library_repo.is_configured():
             return None
         try:
-            image_url = await self._lidarr_repo.get_artist_image_url(artist_id, size=size or 250)
+            image_url = await self._library_repo.get_artist_image_url(artist_id, size=size or 250)
             if not image_url:
                 return None
             response = await self._http_get(
                 image_url,
                 priority,
-                source="lidarr",
+                source="library",
             )
             if response.status_code != 200:
                 return None
@@ -264,12 +264,12 @@ class ArtistImageFetcher:
                 logger.warning(f"[IMG:Lidarr] Non-image content-type ({content_type}) for {artist_id[:8]}")
                 return None
             content = response.content
-            task = asyncio.create_task(self._write_disk_cache(file_path, content, content_type, {"source": "lidarr"}))
+            task = asyncio.create_task(self._write_disk_cache(file_path, content, content_type, {"source": "library"}))
             task.add_done_callback(_log_task_error)
-            return (content, content_type, "lidarr")
+            return (content, content_type, "library")
         except TRANSIENT_FETCH_EXCEPTIONS:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return None
 
     async def _fetch_from_jellyfin(
@@ -307,7 +307,7 @@ class ArtistImageFetcher:
             return (content, content_type, "jellyfin")
         except TRANSIENT_FETCH_EXCEPTIONS:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return None
 
     async def _fetch_from_wikidata(

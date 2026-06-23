@@ -1,25 +1,38 @@
-from repositories.protocols import LidarrRepositoryProtocol
-from api.v1.schemas.common import StatusReport, ServiceStatus
+from typing import TYPE_CHECKING
+
+from api.v1.schemas.common import ServiceStatus, StatusReport
+
+if TYPE_CHECKING:
+    from repositories.protocols.download_client import DownloadClientProtocol
+    from services.native.library_manager import LibraryManager
 
 
 class StatusService:
-    def __init__(self, lidarr_repo: LidarrRepositoryProtocol):
-        self._lidarr_repo = lidarr_repo
-    
+    """Aggregate health of the native engine's integrations: the download client
+    (real ``health_check``) and the always-present library scanner."""
+
+    def __init__(
+        self,
+        download_client: "DownloadClientProtocol",
+        library_manager: "LibraryManager",
+    ):
+        self._client = download_client
+        self._library = library_manager
+
     async def get_status(self) -> StatusReport:
-        lidarr_status = await self._lidarr_repo.get_status()
-        
+        library_ok = self._library.is_configured()
         services = {
-            "lidarr": lidarr_status
+            "download_client": await self._client.health_check(),
+            "library": ServiceStatus(
+                status="ok" if library_ok else "error",
+                message="Library scanner available" if library_ok else "Library not configured",
+            ),
         }
-        
+
         overall_status = "ok"
         if any(s.status == "error" for s in services.values()):
             overall_status = "error"
         elif any(s.status != "ok" for s in services.values()):
             overall_status = "degraded"
-        
-        return StatusReport(
-            status=overall_status,
-            services=services
-        )
+
+        return StatusReport(status=overall_status, services=services)

@@ -178,3 +178,65 @@ async def test_verify_lastfm_with_session_key():
 
     assert result.valid is True
     assert "session" in result.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_verify_download_client_uses_submitted_values():
+    from models.common import ServiceStatus
+    from api.v1.schemas.settings import DownloadClientConnectionSettings
+
+    service = _make_service()
+    settings = DownloadClientConnectionSettings(url="https://slskd.example.com", api_key="typed-key")
+
+    repo = MagicMock()
+    repo.health_check = AsyncMock(
+        return_value=ServiceStatus(status="ok", version="0.25.1.0", message="slskd 0.25.1.0")
+    )
+    with patch("core.dependencies.build_slskd_repository", return_value=repo) as build:
+        result = await service.verify_download_client(settings)
+
+    assert result.status == "ok"
+    assert result.version == "0.25.1.0"
+    build.assert_called_once_with("https://slskd.example.com", "typed-key")
+
+
+@pytest.mark.asyncio
+async def test_verify_download_client_masked_key_falls_back_to_stored():
+    from models.common import ServiceStatus
+    from api.v1.schemas.settings import (
+        DownloadClientConnectionSettings,
+        DOWNLOAD_CLIENT_API_KEY_MASK,
+    )
+
+    prefs = MagicMock()
+    prefs.get_download_client_settings_raw = MagicMock(
+        return_value=MagicMock(api_key="real-stored-key")
+    )
+    service = _make_service(preferences=prefs)
+    settings = DownloadClientConnectionSettings(
+        url="https://slskd.example.com", api_key=DOWNLOAD_CLIENT_API_KEY_MASK
+    )
+
+    repo = MagicMock()
+    repo.health_check = AsyncMock(
+        return_value=ServiceStatus(status="ok", version="1", message="ok")
+    )
+    with patch("core.dependencies.build_slskd_repository", return_value=repo) as build:
+        result = await service.verify_download_client(settings)
+
+    assert result.status == "ok"
+    build.assert_called_once_with("https://slskd.example.com", "real-stored-key")
+
+
+@pytest.mark.asyncio
+async def test_verify_download_client_invalid_url_returns_error():
+    from api.v1.schemas.settings import DownloadClientConnectionSettings
+
+    service = _make_service()
+    # Empty url survives __post_init__ unchanged, so validate_service_url rejects it.
+    settings = DownloadClientConnectionSettings(url="", api_key="k")
+
+    result = await service.verify_download_client(settings)
+
+    assert result.status == "error"
+    assert "URL" in result.message

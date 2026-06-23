@@ -1,31 +1,30 @@
 import { get, writable } from 'svelte/store';
 import { API } from '$lib/constants';
 import { api } from '$lib/api/client';
+import type { DownloadClientStatus } from '$lib/types';
 
 interface IntegrationStatus {
-	lidarr: boolean;
+	download_client: boolean;
+	library: boolean;
 	jellyfin: boolean;
 	navidrome: boolean;
 	plex: boolean;
-	listenbrainz: boolean;
 	youtube: boolean;
 	youtube_api: boolean;
 	localfiles: boolean;
-	lastfm: boolean;
 	loaded: boolean;
 }
 
 function createIntegrationStore() {
 	const { subscribe, set, update } = writable<IntegrationStatus>({
-		lidarr: false,
+		download_client: false,
+		library: false,
 		jellyfin: false,
 		navidrome: false,
 		plex: false,
-		listenbrainz: false,
 		youtube: false,
 		youtube_api: false,
 		localfiles: false,
-		lastfm: false,
 		loaded: false
 	});
 	let loadPromise: Promise<void> | null = null;
@@ -35,20 +34,19 @@ function createIntegrationStore() {
 		setStatus: (status: Partial<IntegrationStatus>) => {
 			update((current) => ({ ...current, ...status, loaded: true }));
 		},
-		setLidarrConfigured: (configured: boolean) => {
-			update((current) => ({ ...current, lidarr: configured }));
+		setDownloadClientConfigured: (configured: boolean) => {
+			update((current) => ({ ...current, download_client: configured }));
 		},
 		reset: () => {
 			set({
-				lidarr: false,
+				download_client: false,
+				library: false,
 				jellyfin: false,
 				navidrome: false,
 				plex: false,
-				listenbrainz: false,
 				youtube: false,
 				youtube_api: false,
 				localfiles: false,
-				lastfm: false,
 				loaded: false
 			});
 		},
@@ -63,12 +61,17 @@ function createIntegrationStore() {
 						API.homeIntegrationStatus()
 					);
 					update((state) => ({ ...state, ...status, loaded: true }));
-					return;
 				} catch {
-					// Ignore error
+					update((state) => ({ ...state, loaded: true }));
 				}
 
-				update((state) => ({ ...state, loaded: true }));
+				// drive download_client off the real slskd health check, not config presence; non-blocking so a slow/unreachable slskd never stalls the load
+				api.global
+					.get<DownloadClientStatus>(API.downloadClient.status())
+					.then((dc) =>
+						update((state) => ({ ...state, download_client: dc.client.status === 'ok' }))
+					)
+					.catch(() => {});
 			})().finally(() => {
 				loadPromise = null;
 			});

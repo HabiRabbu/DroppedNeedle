@@ -1,5 +1,3 @@
-"""Tier 3: repository providers and infrastructure services."""
-
 from __future__ import annotations
 
 import logging
@@ -7,12 +5,17 @@ import logging
 import httpx
 
 from core.config import get_settings
-from infrastructure.http.client import get_http_client, get_listenbrainz_http_client
+from infrastructure.http.client import (
+    HttpClientFactory,
+    get_http_client,
+    get_listenbrainz_http_client,
+)
 
 from ._registry import singleton
 from .cache_providers import (
     get_cache,
     get_disk_cache,
+    get_library_db,
     get_mbid_store,
     get_preferences_service,
 )
@@ -32,14 +35,11 @@ def _get_configured_http_client() -> httpx.AsyncClient:
 
 
 @singleton
-def get_lidarr_repository() -> "LidarrRepository":
-    from repositories.lidarr import LidarrRepository
+def get_library_repository() -> "LibraryRepositoryProtocol":
+    # answers the wide legacy surface for services not yet migrated to the native engine
+    from services.native.library_manager import LibraryManager
 
-    settings = get_settings()
-    cache = get_cache()
-    http_client = _get_configured_http_client()
-    request_history_store = get_request_history_store()
-    return LidarrRepository(settings, http_client, cache, request_history_store=request_history_store)
+    return LibraryManager(get_library_db())
 
 
 @singleton
@@ -225,9 +225,12 @@ def get_lastfm_repository() -> "LastFmRepository":
 @singleton
 def get_playlist_repository() -> "PlaylistRepository":
     from repositories.playlist_repository import PlaylistRepository
+    from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
-    return PlaylistRepository(db_path=settings.library_db_path)
+    return PlaylistRepository(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock(),
+    )
 
 
 @singleton
@@ -240,6 +243,50 @@ def get_request_history_store() -> "RequestHistoryStore":
 
 
 @singleton
+def get_user_connections_store() -> "UserConnectionsStore":
+    from infrastructure.persistence.user_connections_store import UserConnectionsStore
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return UserConnectionsStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
+
+
+@singleton
+def get_user_listening_prefs_store() -> "UserListeningPrefsStore":
+    from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return UserListeningPrefsStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
+
+
+@singleton
+def get_play_history_store() -> "PlayHistoryStore":
+    from infrastructure.persistence.play_history_store import PlayHistoryStore
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return PlayHistoryStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
+
+
+@singleton
+def get_follow_store() -> "FollowStore":
+    from infrastructure.persistence.follow_store import FollowStore
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return FollowStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
+
+
+@singleton
 def get_coverart_repository() -> "CoverArtRepository":
     from repositories.coverart_repository import CoverArtRepository
 
@@ -247,7 +294,7 @@ def get_coverart_repository() -> "CoverArtRepository":
     advanced = get_preferences_service().get_advanced_settings()
     cache = get_cache()
     mb_repo = get_musicbrainz_repository()
-    lidarr_repo = get_lidarr_repository()
+    library_repo = get_library_repository()
     jellyfin_repo = get_jellyfin_repository()
     audiodb_service = get_audiodb_image_service()
     http_client = _get_configured_http_client()
@@ -256,7 +303,7 @@ def get_coverart_repository() -> "CoverArtRepository":
         http_client,
         cache,
         mb_repo,
-        lidarr_repo,
+        library_repo,
         jellyfin_repo,
         audiodb_service=audiodb_service,
         cache_dir=cache_dir,
@@ -274,3 +321,81 @@ def get_github_repository() -> "GitHubRepository":
     cache = get_cache()
     http_client = _get_configured_http_client()
     return GitHubRepository(http_client, cache)
+
+
+@singleton
+def get_download_store() -> "DownloadStore":
+    from infrastructure.persistence.download_store import DownloadStore
+
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return DownloadStore(
+        db_path=settings.library_db_path,
+        write_lock=get_persistence_write_lock(),
+    )
+
+
+@singleton
+def get_slskd_client() -> "SlskdClient":
+    from repositories.slskd.slskd_client import SlskdClient
+
+    # raw settings: the client needs the real api_key, not the mask
+    dc = get_preferences_service().get_download_client_settings_raw()
+    # unique client name avoids the per-name timeout-caching issue
+    http = HttpClientFactory.get_client(name="slskd", timeout=30.0, connect_timeout=5.0)
+    return SlskdClient(http, dc.url, dc.api_key)
+
+
+@singleton
+def get_slskd_repository() -> "SlskdRepository":
+    from pathlib import Path
+
+    from repositories.slskd.slskd_repository import SlskdRepository
+
+    settings = get_settings()
+    dc = get_preferences_service().get_download_client_settings_raw()
+    return SlskdRepository(
+        client=get_slskd_client(),
+        url=dc.url,
+        api_key=dc.api_key,
+        downloads_mount=Path(settings.slskd_downloads_path),
+        concurrent_searches=settings.download_client_concurrent_searches,
+        concurrent_enqueues=settings.download_client_concurrent_enqueues,
+    )
+
+
+def build_slskd_repository(url: str, api_key: str) -> "SlskdRepository":
+    """Transient (not cached) repo from caller-supplied credentials.
+
+    Test-connection validates what the admin typed before saving, so it needs a
+    one-off repo from the submitted url/key, not the stored config. Distinct httpx
+    client name so it never shares the live config.
+    """
+    from pathlib import Path
+
+    from repositories.slskd.slskd_client import SlskdClient
+    from repositories.slskd.slskd_repository import SlskdRepository
+
+    settings = get_settings()
+    http = HttpClientFactory.get_client(name="slskd-verify", timeout=30.0, connect_timeout=5.0)
+    return SlskdRepository(
+        client=SlskdClient(http, url, api_key),
+        url=url,
+        api_key=api_key,
+        downloads_mount=Path(settings.slskd_downloads_path),
+        concurrent_searches=settings.download_client_concurrent_searches,
+        concurrent_enqueues=settings.download_client_concurrent_enqueues,
+    )
+
+
+@singleton
+def get_download_client_repository() -> "DownloadClientProtocol":
+    from core.exceptions import ConfigurationError
+
+    dc = get_preferences_service().get_download_client_settings()
+    match dc.client_type:
+        case "slskd":
+            return get_slskd_repository()
+        case other:
+            raise ConfigurationError(f"Unknown download client type: {other!r}")

@@ -2,7 +2,7 @@ from infrastructure.msgspec_fastapi import AppStruct
 
 
 class LocalTrackInfo(AppStruct):
-    track_file_id: int
+    track_file_id: str
     title: str
     track_number: int
     disc_number: int = 1
@@ -15,14 +15,13 @@ class LocalTrackInfo(AppStruct):
 
 class LocalAlbumMatch(AppStruct):
     found: bool
-    lidarr_album_id: int | None = None
+    musicbrainz_id: str | None = None
     tracks: list[LocalTrackInfo] = []
     total_size_bytes: int = 0
     primary_format: str | None = None
 
 
 class LocalAlbumSummary(AppStruct):
-    lidarr_album_id: int
     musicbrainz_id: str
     name: str
     artist_name: str
@@ -57,3 +56,42 @@ class LocalStorageStats(AppStruct):
     disk_free_bytes: int = 0
     disk_free_human: str = "0 B"
     format_breakdown: dict[str, FormatInfo] = {}
+
+
+class CrateTrack(AppStruct):
+    """One playable track suggestion for the Listening Room crate, tagged with
+    WHY it's there so the card can show a reason badge."""
+
+    track_file_id: str
+    title: str
+    album_name: str
+    artist_name: str
+    album_mbid: str | None = None
+    cover_url: str | None = None
+    format: str = ""
+    year: int | None = None
+    duration_seconds: float | None = None
+    reason: str = "surprise"  # recent | rediscover | surprise | same_era
+
+
+class CrateResponse(AppStruct):
+    items: list[CrateTrack] = []
+
+
+class LocalSearchResponse(AppStruct):
+    """Library search results: matching albums and matching individual tracks.
+    Tracks reuse CrateTrack so the player can queue them with the same wiring."""
+
+    albums: list[LocalAlbumSummary] = []
+    tracks: list[CrateTrack] = []
+
+
+class DecadeShelf(AppStruct):
+    decade: int
+    label: str
+    album_count: int
+    albums: list[LocalAlbumSummary] = []
+
+
+class DecadesResponse(AppStruct):
+    items: list[DecadeShelf] = []

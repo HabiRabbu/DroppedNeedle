@@ -95,7 +95,7 @@ class TestPrewarmLogContract:
             prefs = MagicMock()
             prefs.get_advanced_settings.return_value = settings
         return LibraryPrecacheService(
-            lidarr_repo=AsyncMock(),
+            library_repo=AsyncMock(),
             cover_repo=AsyncMock(),
             preferences_service=prefs,
             sync_state_store=AsyncMock(),

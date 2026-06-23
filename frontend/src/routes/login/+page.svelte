@@ -17,7 +17,7 @@
 		type PlexPollResponse
 	} from '$lib/queries/auth/types';
 	import { onDestroy } from 'svelte';
-	import { Music, Eye, EyeOff } from 'lucide-svelte';
+	import { Eye, EyeOff } from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
 
@@ -34,7 +34,7 @@
 	const providers = $derived(providersQuery.data ?? DEFAULT_PROVIDERS);
 
 	let activeTab = $state<Tab>('local');
-	// Auto-select a tab once providers load, but never override a user's choice.
+	// auto-select a tab once providers load, but never override a user's choice
 	let tabInitialised = false;
 	$effect(() => {
 		if (tabInitialised || !providersQuery.isSuccess) return;
@@ -44,27 +44,24 @@
 		else if (!providers.local && providers.oidc) activeTab = 'oidc';
 	});
 
-	// Local login
-	let email = $state('');
+	let username = $state('');
 	let password = $state('');
 	let showPassword = $state(false);
 	let localError = $state<string | null>(null);
 	const localLogin = createLocalLoginMutation();
 
-	// Jellyfin login
 	let jfUsername = $state('');
 	let jfPassword = $state('');
 	let jfShowPassword = $state(false);
 	let jfError = $state<string | null>(null);
 	const jellyfinLogin = createJellyfinLoginMutation();
 
-	// Plex login: the PIN request is a mutation; authorisation is polled imperatively.
+	// plex PIN request is a mutation; authorisation is polled imperatively
 	let plexLoading = $state(false);
 	let plexError = $state<string | null>(null);
 	let plexPollInterval: ReturnType<typeof setInterval> | null = null;
 	const plexPin = createPlexPinMutation();
 
-	// OIDC
 	let oidcLoading = $state(false);
 	let oidcError = $state<string | null>(null);
 	const oidcAuthorize = createOidcAuthorizeMutation();
@@ -81,7 +78,7 @@
 	async function handleLocalLogin() {
 		localError = null;
 		try {
-			storeSession(await localLogin.mutateAsync({ email, password }));
+			storeSession(await localLogin.mutateAsync({ username, password }));
 		} catch (e) {
 			localError = e instanceof ApiError ? e.message : 'Could not reach the server';
 		}
@@ -141,17 +138,16 @@
 </script>
 
 <svelte:head>
-	<title>Sign in - Musicseerr</title>
+	<title>Sign in - DroppedNeedle</title>
 </svelte:head>
 
-<div class="min-h-screen bg-base-100 flex items-center justify-center p-4">
+<div class="login-wrap grain min-h-screen flex items-center justify-center p-4">
 	<div class="w-full max-w-md">
-		<div class="flex flex-col items-center mb-8 gap-3">
-			<div class="bg-primary/10 rounded-full p-4">
-				<Music class="h-10 w-10 text-primary" />
-			</div>
-			<h1 class="text-3xl font-bold">Musicseerr</h1>
-			<p class="text-base-content/60 text-sm">Sign in to continue</p>
+		<div class="login-brand">
+			<img src="/logo_icon.png" alt="" aria-hidden="true" class="login-mark" />
+			<h1 class="login-wordmark">DroppedNeedle</h1>
+			<div class="login-rule" aria-hidden="true"></div>
+			<p class="login-sub">Sign in to continue</p>
 		</div>
 
 		<div class="bg-base-200 rounded-box shadow-lg border border-base-300">
@@ -167,7 +163,7 @@
 							{:else if tab === 'jellyfin'}<JellyfinIcon class="h-4 w-4 text-info" />
 							{/if}
 							{tab === 'local'
-								? 'Email'
+								? 'Username'
 								: tab === 'oidc'
 									? 'SSO'
 									: tab.charAt(0).toUpperCase() + tab.slice(1)}
@@ -186,14 +182,14 @@
 						class="flex flex-col gap-4"
 					>
 						<fieldset class="fieldset">
-							<legend class="fieldset-legend">Email</legend>
+							<legend class="fieldset-legend">Username</legend>
 							<input
-								type="email"
+								type="text"
 								class="input input-bordered w-full"
-								placeholder="you@example.com"
-								bind:value={email}
+								placeholder="Username"
+								bind:value={username}
 								required
-								autocomplete="email"
+								autocomplete="username"
 							/>
 						</fieldset>
 						<fieldset class="fieldset">
@@ -374,5 +370,64 @@
 	.tab-btn-active {
 		color: oklch(from var(--color-primary) l c h / 1);
 		border-bottom-color: oklch(from var(--color-primary) l c h / 1);
+	}
+
+	.login-wrap {
+		--grain-opacity: 0.1;
+		position: relative;
+		isolation: isolate;
+		background:
+			radial-gradient(
+				circle at 50% -8rem,
+				oklch(from var(--color-primary) l c h / 0.08),
+				transparent 22rem
+			),
+			var(--color-base-100);
+	}
+
+	.login-brand {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: 2rem;
+	}
+
+	.login-mark {
+		height: 3rem;
+		width: auto;
+		margin-bottom: 0.25rem;
+		opacity: 0.9;
+	}
+
+	.login-wordmark {
+		font-family: var(--font-display);
+		font-weight: 800;
+		font-size: clamp(2.75rem, 14vw, 4rem);
+		line-height: 0.85;
+		letter-spacing: 0.01em;
+		color: oklch(from var(--color-base-content) l c h / 0.95);
+		text-shadow: 0 2px 1px rgb(0 0 0 / 0.4);
+	}
+
+	.login-rule {
+		height: 2px;
+		width: 7rem;
+		border-radius: 999px;
+		background: linear-gradient(
+			to right,
+			transparent,
+			oklch(from var(--color-primary) l c h / 0.6),
+			oklch(from var(--color-accent) l c h / 0.6),
+			transparent
+		);
+	}
+
+	.login-sub {
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: oklch(from var(--color-base-content) l c h / 0.5);
 	}
 </style>

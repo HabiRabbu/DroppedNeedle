@@ -22,8 +22,8 @@ def _fake_album_info() -> AlbumInfo:
 
 
 def _make_service() -> AlbumService:
-    lidarr = AsyncMock()
-    lidarr.is_configured.return_value = False
+    library_repo = AsyncMock()
+    library_repo.is_configured.return_value = False
     mb = AsyncMock()
     lib_cache = AsyncMock()
     mem_cache = AsyncMock()
@@ -37,7 +37,7 @@ def _make_service() -> AlbumService:
     audiodb_img.fetch_and_cache_album_images = AsyncMock(return_value=None)
 
     svc = AlbumService(
-        lidarr_repo=lidarr,
+        library_repo=library_repo,
         mb_repo=mb,
         library_db=lib_cache,
         memory_cache=mem_cache,

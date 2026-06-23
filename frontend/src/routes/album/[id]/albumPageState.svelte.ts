@@ -1,7 +1,7 @@
 import { browser } from '$app/environment';
 import { get } from 'svelte/store';
 import { untrack } from 'svelte';
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import type {
 	AlbumBasicInfo,
 	AlbumTracksInfo,
@@ -19,10 +19,12 @@ import type {
 	PlexAlbumMatch,
 	PlexTrackInfo,
 	LastFmAlbumEnrichment,
-	TrackCacheCheckItem
+	TrackCacheCheckItem,
+	LibraryAlbumStatus,
+	LibraryFileMeta,
+	DownloadTask
 } from '$lib/types';
 import { libraryStore } from '$lib/stores/library';
-import { monitoredArtistsStore } from '$lib/stores/monitoredArtists';
 import { integrationStore } from '$lib/stores/integration';
 import { API } from '$lib/constants';
 import { isAbortError } from '$lib/utils/errorHandling';
@@ -66,8 +68,9 @@ import {
 	getTrackContextMenuItems as getTrackContextMenuItemsImpl,
 	buildSourceCallbacks
 } from './albumPlaybackHandlers';
-import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
-import { ArtistQueryKeyFactory } from '$lib/queries/artist/ArtistQueryKeyFactory';
+import { getLibraryAlbumStatusQuery } from '$lib/queries/library/LibraryQueries.svelte';
+import { getAlbumDownloadsQuery } from '$lib/queries/downloads/DownloadQueries.svelte';
+import { isActiveDownloadStatus } from '$lib/queries/downloads/downloadStatus';
 
 export interface SourceCallbacks {
 	onPlayAll: () => void;
@@ -111,11 +114,70 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 	let playlistModalRef = $state<{ open: (tracks: QueueItem[]) => void } | null>(null);
 	let abortController: AbortController | null = null;
 	let refreshing = $state(false);
-	let monitorToggleLoading = $state(false);
-	let pollingForSources = $state(false);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
-	let artistInLidarr = $state(false);
-	let artistMonitored = $state(false);
+	let downloadClientConfigured = $state(false);
+	let externalRecheckTimers: ReturnType<typeof setTimeout>[] = [];
+	// task ids we've watched go active this session, and the ones whose completion we've already
+	// handled - so an already-finished download present on first load doesn't trigger a spurious refresh
+	const seenActiveTaskIds = new SvelteSet<string>();
+	const settledTaskIds = new SvelteSet<string>();
+	// shared TanStack query so tag-edit/rescan mutations that invalidate album(mbid) refresh this overlay in place
+	const libraryStatusQuery = getLibraryAlbumStatusQuery(albumIdGetter);
+	const libraryStatus = $derived<LibraryAlbumStatus | null>(libraryStatusQuery.data ?? null);
+
+	const downloadsQuery = getAlbumDownloadsQuery(albumIdGetter, () => downloadClientConfigured);
+	const albumDownloadTasks = $derived(downloadsQuery.data?.items ?? []);
+	// what the header strip shows: any in-flight task (prefer a live downloading/processing one),
+	// else the most recent attempt only if it's actionable (failed/partial -> retry). completed and
+	// cancelled show nothing - the In-Library badge takes over and we don't nag on old cancellations.
+	const headerDownloadTask = $derived.by<DownloadTask | null>(() => {
+		if (albumDownloadTasks.length === 0) return null;
+		const inflight = albumDownloadTasks.filter((t) => isActiveDownloadStatus(t.status));
+		if (inflight.length > 0) {
+			const live = inflight.filter((t) => t.status === 'downloading' || t.status === 'processing');
+			const pool = live.length > 0 ? live : inflight;
+			return pool.reduce((best, t) => (t.created_at > best.created_at ? t : best), pool[0]);
+		}
+		const latest = albumDownloadTasks.reduce((best, t) =>
+			t.created_at > best.created_at ? t : best
+		);
+		return latest.status === 'failed' || latest.status === 'partial' ? latest : null;
+	});
+	// per-recording active task for the track rows (most recent active wins)
+	const trackDownloadTasks = $derived.by(() => {
+		const m = new SvelteMap<string, DownloadTask>();
+		for (const t of albumDownloadTasks) {
+			if (!t.recording_mbid || !isActiveDownloadStatus(t.status)) continue;
+			const existing = m.get(t.recording_mbid);
+			if (!existing || t.created_at > existing.created_at) m.set(t.recording_mbid, t);
+		}
+		return m;
+	});
+
+	$effect(() => {
+		const unsub = integrationStore.subscribe((s) => (downloadClientConfigured = s.download_client));
+		return unsub;
+	});
+
+	// when a task we watched go active later settles (completed/partial), refresh library status +
+	// source matches once so the In-Library count and play bars update without a manual refresh
+	$effect(() => {
+		const tasks = albumDownloadTasks;
+		untrack(() => {
+			for (const t of tasks) {
+				if (isActiveDownloadStatus(t.status)) {
+					seenActiveTaskIds.add(t.id);
+				} else if (
+					(t.status === 'completed' || t.status === 'partial') &&
+					seenActiveTaskIds.has(t.id) &&
+					!settledTaskIds.has(t.id)
+				) {
+					settledTaskIds.add(t.id);
+					onDownloadSettled();
+				}
+			}
+		});
+	});
+
 	const previewCacheMap = new SvelteMap<string, boolean>();
 	let lastPreviewCacheKey = '';
 	let previewCacheAbort: AbortController | null = null;
@@ -137,17 +199,23 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 	const isRequested = $derived(
 		!!(album && !inLibrary && (album.requested || libraryStore.isRequested(album.musicbrainz_id)))
 	);
-	const isMonitored = $derived(
-		!!(
-			album &&
-			!inLibrary &&
-			!isRequested &&
-			(album.monitored || libraryStore.isMonitored(album.musicbrainz_id))
-		)
-	);
-	const albumMonitored = $derived(
-		!!(album && (album.monitored || libraryStore.isMonitored(album.musicbrainz_id)))
-	);
+	const libraryTracksByRecording = $derived.by(() => {
+		const m = new SvelteMap<string, LibraryFileMeta>();
+		for (const t of libraryStatus?.tracks ?? []) {
+			if (t.recording_mbid) m.set(t.recording_mbid, t);
+		}
+		return m;
+	});
+	// positional fallback (disc:track): downloaded files often lack a recording MBID, and the same song has different recording MBIDs across releases, so MBID-only matching misses in-library tracks
+	const libraryTracksByPosition = $derived.by(() => {
+		const m = new SvelteMap<string, LibraryFileMeta>();
+		for (const t of libraryStatus?.tracks ?? []) {
+			m.set(getDiscTrackKey({ disc_number: t.disc_number, track_number: t.track_number }), t);
+		}
+		return m;
+	});
+	const libraryInLibrary = $derived(libraryStatus?.in_library ?? false);
+	const libraryTrackCount = $derived(libraryStatus?.track_count ?? 0);
 
 	$effect(() => {
 		const artist = album?.artist_name;
@@ -192,7 +260,9 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		}
 		previewCacheAbort?.abort();
 		previewCacheAbort = null;
-		stopPolling();
+		clearExternalRecheck();
+		seenActiveTaskIds.clear();
+		settledTaskIds.clear();
 		album = null;
 		tracksInfo = null;
 		renderedTrackSections = [];
@@ -376,11 +446,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 			loadingLastfm = false;
 			return;
 		}
-		await integrationStore.ensureLoaded();
-		if (!get(integrationStore).lastfm) {
-			loadingLastfm = false;
-			return;
-		}
+		// global/shared feature; backend returns null when Last.fm isn't configured
 		loadingLastfm = true;
 		try {
 			const result = await fetchLastFm(
@@ -399,18 +465,73 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		}
 	}
 
-	async function fetchArtistMonitoringState(artistId: string, signal: AbortSignal) {
+	// MBID-only source matches (Jellyfin, Local Files) - can start before basic info loads
+	async function fetchMbidSourceMatches(albumId: string, signal: AbortSignal) {
 		try {
-			const integrations = get(integrationStore);
-			if (!integrations.lidarr) return;
-			const info = await api.global.get<{
-				in_lidarr?: boolean;
-				monitored?: boolean;
-				auto_download?: boolean;
-			}>(`/api/v1/artists/${artistId}/monitoring`, { signal });
+			await integrationStore.ensureLoaded();
 			if (signal.aborted) return;
-			artistInLidarr = info.in_lidarr ?? false;
-			artistMonitored = info.monitored ?? false;
+			const integrations = get(integrationStore);
+			if (integrations.jellyfin)
+				void doFetchSourceMatch(
+					signal,
+					() => fetchJellyfinMatch(albumId, signal),
+					(v) => (jellyfinMatch = v),
+					(v) => (loadingJellyfin = v),
+					'Jellyfin',
+					albumId,
+					'jellyfin'
+				);
+			if (integrations.localfiles)
+				void doFetchSourceMatch(
+					signal,
+					() => fetchLocalMatch(albumId, signal),
+					(v) => (localMatch = v),
+					(v) => (loadingLocal = v),
+					'local',
+					albumId,
+					'local'
+				);
+		} catch {
+			return;
+		}
+	}
+
+	// name-based source matches (Navidrome, Plex) - need album title/artist from basic info
+	async function fetchNamedSourceMatches(albumId: string, signal: AbortSignal) {
+		try {
+			await integrationStore.ensureLoaded();
+			if (signal.aborted) return;
+			const integrations = get(integrationStore);
+			if (integrations.navidrome)
+				void doFetchSourceMatch(
+					signal,
+					() =>
+						fetchNavidromeMatch(
+							albumId,
+							{ albumTitle: album?.title, artistName: album?.artist_name },
+							signal
+						),
+					(v) => (navidromeMatch = v),
+					(v) => (loadingNavidrome = v),
+					'Navidrome',
+					albumId,
+					'navidrome'
+				);
+			if (integrations.plex)
+				void doFetchSourceMatch(
+					signal,
+					() =>
+						fetchPlexMatch(
+							albumId,
+							{ albumTitle: album?.title, artistName: album?.artist_name },
+							signal
+						),
+					(v) => (plexMatch = v),
+					(v) => (loadingPlex = v),
+					'Plex',
+					albumId,
+					'plex'
+				);
 		} catch {
 			return;
 		}
@@ -423,40 +544,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		abortController = new AbortController();
 		const signal = abortController.signal;
 
-		artistInLidarr = false;
-		artistMonitored = false;
-
-		if (refreshSourceMatch) {
-			void (async () => {
-				try {
-					await integrationStore.ensureLoaded();
-					if (signal.aborted) return;
-					const integrations = get(integrationStore);
-					if (integrations.jellyfin)
-						void doFetchSourceMatch(
-							signal,
-							() => fetchJellyfinMatch(albumId, signal),
-							(v) => (jellyfinMatch = v),
-							(v) => (loadingJellyfin = v),
-							'Jellyfin',
-							albumId,
-							'jellyfin'
-						);
-					if (integrations.localfiles)
-						void doFetchSourceMatch(
-							signal,
-							() => fetchLocalMatch(albumId, signal),
-							(v) => (localMatch = v),
-							(v) => (loadingLocal = v),
-							'local',
-							albumId,
-							'local'
-						);
-				} catch {
-					return;
-				}
-			})();
-		}
+		if (refreshSourceMatch) void fetchMbidSourceMatches(albumId, signal);
 
 		if (refreshBasic) {
 			if (refreshTracks) void doFetchTracks(albumId, signal);
@@ -466,69 +554,43 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 			void doFetchBasic(albumId, signal);
 		}
 		if (signal.aborted || !album) return;
-		if (album.artist_id) void fetchArtistMonitoringState(album.artist_id, signal);
 		if (refreshTracks && !refreshBasic) void doFetchTracks(albumId, signal);
 		if (refreshDiscovery) void doFetchDiscovery(albumId, signal);
 		if (!refreshBasic) void doFetchYouTube(albumId, signal);
 		if (refreshLastfm) void doFetchLastFm(albumId, signal);
-		if (refreshSourceMatch) {
-			void (async () => {
-				try {
-					await integrationStore.ensureLoaded();
-					if (signal.aborted) return;
-					const integrations = get(integrationStore);
-					if (integrations.navidrome)
-						void doFetchSourceMatch(
-							signal,
-							() =>
-								fetchNavidromeMatch(
-									albumId,
-									{ albumTitle: album?.title, artistName: album?.artist_name },
-									signal
-								),
-							(v) => (navidromeMatch = v),
-							(v) => (loadingNavidrome = v),
-							'Navidrome',
-							albumId,
-							'navidrome'
-						);
-					if (integrations.plex)
-						void doFetchSourceMatch(
-							signal,
-							() =>
-								fetchPlexMatch(
-									albumId,
-									{ albumTitle: album?.title, artistName: album?.artist_name },
-									signal
-								),
-							(v) => (plexMatch = v),
-							(v) => (loadingPlex = v),
-							'Plex',
-							albumId,
-							'plex'
-						);
-				} catch {
-					return;
-				}
-			})();
+		if (refreshSourceMatch) void fetchNamedSourceMatches(albumId, signal);
+	}
+
+	function clearExternalRecheck() {
+		for (const t of externalRecheckTimers) clearTimeout(t);
+		externalRecheckTimers = [];
+	}
+
+	function refreshSourcesAfterDownload(): void {
+		const albumId = albumIdGetter();
+		const signal = abortController?.signal;
+		if (!albumId || !signal || signal.aborted) return;
+		albumSourceMatchCache.remove(albumId);
+		void fetchMbidSourceMatches(albumId, signal);
+		void fetchNamedSourceMatches(albumId, signal);
+	}
+
+	// external servers (Jellyfin/Navidrome/Plex) index newly-imported files on their own schedule, so
+	// re-check a couple of times after a download lands, then stop. Local Files is the native library
+	// and is already fresh from the immediate refresh.
+	function scheduleExternalSourceRecheck(): void {
+		clearExternalRecheck();
+		const integrations = get(integrationStore);
+		if (!integrations.jellyfin && !integrations.navidrome && !integrations.plex) return;
+		for (const delay of [20_000, 50_000]) {
+			externalRecheckTimers.push(setTimeout(() => refreshSourcesAfterDownload(), delay));
 		}
 	}
 
-	function stopPolling() {
-		if (pollTimer) {
-			clearInterval(pollTimer);
-			pollTimer = null;
-		}
-		pollingForSources = false;
-	}
-
-	function hasAnySourceFound(): boolean {
-		return !!(
-			jellyfinMatch?.found ||
-			localMatch?.found ||
-			navidromeMatch?.found ||
-			plexMatch?.found
-		);
+	function onDownloadSettled(): void {
+		void libraryStatusQuery.refetch();
+		refreshSourcesAfterDownload();
+		scheduleExternalSourceRecheck();
 	}
 
 	async function forceLoadAlbum(albumId: string): Promise<void> {
@@ -560,28 +622,11 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		if (!albumId || refreshing) return;
 		refreshing = true;
 		try {
+			void libraryStatusQuery.refetch();
 			await forceLoadAlbum(albumId);
 		} finally {
 			refreshing = false;
 		}
-	}
-
-	function startSourcePolling(): void {
-		stopPolling();
-		const albumId = albumIdGetter();
-		if (!albumId) return;
-		pollingForSources = true;
-		const startTime = Date.now();
-		const POLL_INTERVAL = 30_000;
-		const MAX_POLL_DURATION = 5 * 60_000;
-
-		pollTimer = setInterval(() => {
-			if (Date.now() - startTime >= MAX_POLL_DURATION || hasAnySourceFound()) {
-				stopPolling();
-				return;
-			}
-			void forceLoadAlbum(albumId);
-		}, POLL_INTERVAL);
 	}
 
 	$effect(() => {
@@ -592,18 +637,12 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 			void loadAlbum(albumId);
 		});
 		return () => {
-			stopPolling();
+			clearExternalRecheck();
 			if (abortController) {
 				abortController.abort();
 				abortController = null;
 			}
 		};
-	});
-
-	$effect(() => {
-		if (inLibrary && !hasAnySourceFound()) {
-			untrack(() => startSourcePolling());
-		}
 	});
 
 	const eventHandlers = createEventHandlers({
@@ -620,21 +659,15 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		setShowDeleteModal: (v) => (showDeleteModal = v),
 		setShowArtistRemovedModal: (v) => (showArtistRemovedModal = v),
 		setRemovedArtistName: (v) => (removedArtistName = v),
-		setMonitorToggleLoading: (v) => (monitorToggleLoading = v),
 		setToast: (msg, type) => {
 			toastMessage = msg;
 			toastType = type;
 		},
 		setShowToast: (v) => (showToast = v),
-		onRequestSuccess: (opts) => {
+		onRequestSuccess: () => {
 			albumSourceMatchCache.remove(albumIdGetter());
-			const aid = album?.artist_id;
-			if (aid && abortController) void fetchArtistMonitoringState(aid, abortController.signal);
-			if (opts?.monitorArtist && aid) {
-				monitoredArtistsStore.addPendingMonitor(aid, opts.autoDownloadArtist ?? false);
-				invalidateQueriesWithPersister({ queryKey: ArtistQueryKeyFactory.basic(aid) });
-				invalidateQueriesWithPersister({ queryKey: ArtistQueryKeyFactory.releases(aid) });
-			}
+			// pick up the freshly-created download task so the header strip + polling kick in
+			void downloadsQuery.refetch();
 		}
 	});
 
@@ -695,8 +728,10 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 
 	const localDownloadCallback = $derived<{ callback: (() => void) | undefined }>(
 		(() => {
-			const id = localMatch?.lidarr_album_id;
-			return { callback: id ? () => downloadFile(API.download.localAlbum(id)) : undefined };
+			const mbid = localMatch?.musicbrainz_id;
+			return {
+				callback: mbid ? () => downloadFile(API.download.localAlbumByMbid(mbid)) : undefined
+			};
 		})()
 	);
 
@@ -869,26 +904,29 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		get isRequested() {
 			return isRequested;
 		},
-		get isMonitored() {
-			return isMonitored;
+		get libraryStatus() {
+			return libraryStatus;
 		},
-		get albumMonitored() {
-			return albumMonitored;
+		get libraryTracksByRecording() {
+			return libraryTracksByRecording;
 		},
-		get artistInLidarr() {
-			return artistInLidarr;
+		get libraryTracksByPosition() {
+			return libraryTracksByPosition;
 		},
-		get artistMonitored() {
-			return artistMonitored;
+		get libraryInLibrary() {
+			return libraryInLibrary;
+		},
+		get libraryTrackCount() {
+			return libraryTrackCount;
 		},
 		get refreshing() {
 			return refreshing;
 		},
-		get monitorToggleLoading() {
-			return monitorToggleLoading;
+		get headerDownloadTask() {
+			return headerDownloadTask;
 		},
-		get pollingForSources() {
-			return pollingForSources;
+		get trackDownloadTasks() {
+			return trackDownloadTasks;
 		},
 		get playlistModalRef() {
 			return playlistModalRef;

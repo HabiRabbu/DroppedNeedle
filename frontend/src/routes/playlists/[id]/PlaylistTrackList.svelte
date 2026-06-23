@@ -26,9 +26,10 @@
 		ontrackchange: () => void;
 		onsourcechange?: () => void;
 		onplaytrack?: (index: number) => void;
+		readonly?: boolean;
 	}
 
-	let { playlist, ontrackchange, onsourcechange, onplaytrack }: Props = $props();
+	let { playlist, ontrackchange, onsourcechange, onplaytrack, readonly = false }: Props = $props();
 
 	let dragIndex = $state<number | null>(null);
 	let dragOverIndex = $state<number | null>(null);
@@ -294,7 +295,7 @@
 	}
 
 	function getTrackMenuItems(track: PlaylistTrack): MenuItem[] {
-		return [
+		const items: MenuItem[] = [
 			{
 				label: 'Add to Queue',
 				icon: ListPlus,
@@ -304,13 +305,17 @@
 				label: 'Play Next',
 				icon: ListStart,
 				onclick: () => playTrackNext(track)
-			},
-			{
+			}
+		];
+		// Non-owners (public read-only view) cannot mutate the playlist (D4).
+		if (!readonly) {
+			items.push({
 				label: 'Remove',
 				icon: Trash2,
 				onclick: () => void removeTrack(track)
-			}
-		];
+			});
+		}
+		return items;
 	}
 
 	export function clearReorderState() {
@@ -338,7 +343,7 @@
 	</div>
 {:else}
 	<ul class="list bg-base-200 rounded-box overflow-visible">
-		{#if playlist.tracks.length > 1}
+		{#if playlist.tracks.length > 1 && !readonly}
 			<li class="px-3 sm:px-4 py-2 border-b border-base-300/50">
 				<label class="flex items-center gap-2 cursor-pointer text-xs text-base-content/50">
 					<input
@@ -369,7 +374,7 @@
 				class:opacity-50={dragIndex === i}
 				class:border-t-2={dragOverIndex === i && dragIndex !== null && dragIndex !== i}
 				class:border-accent={dragOverIndex === i && dragIndex !== null && dragIndex !== i}
-				draggable={!selectionMode}
+				draggable={!selectionMode && !readonly}
 				ondragstart={(e) => handleDragStart(e, i)}
 				ondragover={(e) => handleDragOver(e, i)}
 				ondragleave={handleDragLeave}
@@ -379,30 +384,32 @@
 				aria-roledescription="sortable"
 			>
 				<div class="flex items-center gap-4 w-full">
-					<button
-						class="cursor-grab active:cursor-grabbing p-1 touch-none shrink-0 transition-opacity {selectionMode
-							? 'pointer-events-none opacity-0'
-							: '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-visible:opacity-100'}"
-						aria-label="Drag to reorder"
-						onkeydown={(e) => void handleTrackKeydown(e, i)}
-						tabindex={selectionMode ? -1 : 0}
-						aria-hidden={selectionMode ? 'true' : undefined}
-					>
-						<GripVertical class="h-4 w-4 text-base-content/30" />
-					</button>
+					{#if !readonly}
+						<button
+							class="cursor-grab active:cursor-grabbing p-1 touch-none shrink-0 transition-opacity {selectionMode
+								? 'pointer-events-none opacity-0'
+								: '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-visible:opacity-100'}"
+							aria-label="Drag to reorder"
+							onkeydown={(e) => void handleTrackKeydown(e, i)}
+							tabindex={selectionMode ? -1 : 0}
+							aria-hidden={selectionMode ? 'true' : undefined}
+						>
+							<GripVertical class="h-4 w-4 text-base-content/30" />
+						</button>
 
-					<input
-						type="checkbox"
-						class="checkbox checkbox-sm shrink-0 transition-opacity {selectionMode
-							? ''
-							: '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-visible:opacity-100'}"
-						checked={selectedIds.has(track.id)}
-						onclick={(e: MouseEvent) => {
-							e.stopPropagation();
-							toggleTrackSelection(track.id, i, e.shiftKey);
-						}}
-						aria-label="Select {track.track_name}"
-					/>
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm shrink-0 transition-opacity {selectionMode
+								? ''
+								: '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-visible:opacity-100'}"
+							checked={selectedIds.has(track.id)}
+							onclick={(e: MouseEvent) => {
+								e.stopPropagation();
+								toggleTrackSelection(track.id, i, e.shiftKey);
+							}}
+							aria-label="Select {track.track_name}"
+						/>
+					{/if}
 
 					{#if isCurrentlyPlaying}
 						<div class="w-6 flex items-center justify-center shrink-0">
@@ -472,11 +479,13 @@
 						{formatDurationSec(track.duration)}
 					</span>
 
-					<SourcePickerDropdown
-						currentSource={track.source_type}
-						availableSources={track.available_sources ?? [track.source_type]}
-						onchange={(src) => void handleSourceChange(track, src)}
-					/>
+					{#if !readonly}
+						<SourcePickerDropdown
+							currentSource={track.source_type}
+							availableSources={track.available_sources ?? [track.source_type]}
+							onchange={(src) => void handleSourceChange(track, src)}
+						/>
+					{/if}
 
 					<div
 						class="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0"

@@ -27,6 +27,7 @@ from api.v1.schemas.navidrome import (
     NavidromeTrackPage,
 )
 from core.dependencies import (
+    CurrentUserDep,
     get_jellyfin_library_service,
     get_local_files_service,
     get_navidrome_library_service,
@@ -61,12 +62,13 @@ _NEEDS_REVERSE: dict[tuple[str, str], bool] = {
 
 @router.get("/hub", response_model=NavidromeHubResponse)
 async def get_navidrome_hub(
+    current_user: CurrentUserDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> NavidromeHubResponse:
     try:
         hub = await service.get_hub_data()
-        imported_ids = await playlist_service.get_imported_source_ids("navidrome:")
+        imported_ids = await playlist_service.get_imported_source_ids("navidrome:", user_id=current_user.id)
         for p in hub.playlists:
             if p.id in imported_ids:
                 p.is_imported = True
@@ -318,13 +320,14 @@ async def match_navidrome_album(
 
 @router.get("/playlists", response_model=list[NavidromePlaylistSummary])
 async def get_navidrome_playlists(
+    current_user: CurrentUserDep,
     limit: int = Query(default=50, ge=1, le=200),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> list[NavidromePlaylistSummary]:
     try:
         playlists = await service.list_playlists(limit=limit)
-        imported_ids = await playlist_service.get_imported_source_ids("navidrome:")
+        imported_ids = await playlist_service.get_imported_source_ids("navidrome:", user_id=current_user.id)
         for p in playlists:
             if p.id in imported_ids:
                 p.is_imported = True
@@ -352,6 +355,7 @@ async def get_navidrome_playlist_detail(
 async def import_navidrome_playlist(
     playlist_id: str,
     background_tasks: BackgroundTasks,
+    current_user: CurrentUserDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
     jf_service=Depends(get_jellyfin_library_service),
@@ -359,7 +363,7 @@ async def import_navidrome_playlist(
     plex_service=Depends(get_plex_library_service),
 ) -> NavidromeImportResult:
     try:
-        result = await service.import_playlist(playlist_id, playlist_service)
+        result = await service.import_playlist(playlist_id, playlist_service, requesting=current_user)
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Navidrome playlist not found")
     except ExternalServiceError as e:
@@ -369,7 +373,7 @@ async def import_navidrome_playlist(
     if not result.already_imported:
         background_tasks.add_task(
             playlist_service.resolve_track_sources,
-            result.musicseerr_playlist_id,
+            result.droppedneedle_playlist_id,
             jf_service=jf_service,
             local_service=local_service,
             nd_service=service,

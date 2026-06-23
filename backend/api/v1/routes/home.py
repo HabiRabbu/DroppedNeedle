@@ -1,5 +1,5 @@
 from typing import Literal
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query
 from api.v1.schemas.home import (
     HomeResponse,
     HomeIntegrationStatus,
@@ -12,22 +12,27 @@ from api.v1.schemas.home import (
     PopularAlbumsRangeResponse,
 )
 from core.dependencies import get_home_service, get_home_charts_service
+from core.dependencies.type_aliases import CurrentUserDep
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.msgspec_fastapi import MsgSpecRoute
 
+import logging
 import msgspec.structs
 from services.home_service import HomeService
 from services.home_charts_service import HomeChartsService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=MsgSpecRoute, prefix="/home", tags=["home"])
 
 
 @router.get("", response_model=HomeResponse)
 async def get_home_data(
+    current_user: CurrentUserDep,
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source: listenbrainz or lastfm"),
     home_service: HomeService = Depends(get_home_service),
 ):
-    result = await home_service.get_home_data(source=source)
+    result = await home_service.get_home_data(user_id=current_user.id, source=source)
     ctx = try_get_degradation_context()
     if ctx is not None and ctx.has_degradation():
         result = msgspec.structs.replace(result, service_status=ctx.degraded_summary())
@@ -38,7 +43,14 @@ async def get_home_data(
 async def get_integration_status(
     home_service: HomeService = Depends(get_home_service)
 ):
-    return home_service.get_integration_status()
+    status = home_service.get_integration_status()
+    # Refine localfiles via async lib check; never blank gating-critical status, so fall back on error.
+    try:
+        has_local = await home_service.has_local_files()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("has_local_files check failed; keeping sync default: %s", e)
+        has_local = status.localfiles
+    return msgspec.structs.replace(status, localfiles=has_local)
 
 
 @router.get("/genre/{genre_name}", response_model=GenreDetailResponse)
@@ -103,15 +115,19 @@ async def get_popular_albums_by_range(
 
 @router.get("/your-top/albums", response_model=PopularAlbumsResponse)
 async def get_your_top_albums(
+    current_user: CurrentUserDep,
     limit: int = Query(default=10, ge=1, le=25),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
     charts_service: HomeChartsService = Depends(get_home_charts_service)
 ):
-    return await charts_service.get_your_top_albums(limit=limit, source=source)
+    return await charts_service.get_your_top_albums(
+        user_id=current_user.id, limit=limit, source=source
+    )
 
 
 @router.get("/your-top/albums/{range_key}", response_model=PopularAlbumsRangeResponse)
 async def get_your_top_albums_by_range(
+    current_user: CurrentUserDep,
     range_key: str,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -119,7 +135,7 @@ async def get_your_top_albums_by_range(
     charts_service: HomeChartsService = Depends(get_home_charts_service)
 ):
     return await charts_service.get_your_top_albums_by_range(
-        range_key=range_key, limit=limit, offset=offset, source=source
+        user_id=current_user.id, range_key=range_key, limit=limit, offset=offset, source=source
     )
 
 

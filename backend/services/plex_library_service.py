@@ -114,10 +114,10 @@ class PlexLibraryService:
         self._album_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._artist_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._mbid_to_plex_id: dict[str, str] = {}
-        self._lidarr_album_index: dict[str, tuple[str, str]] = {}
+        self._library_album_index: dict[str, tuple[str, str]] = {}
         self._analytics_cache: PlexAnalyticsResponse | None = None
         self._analytics_cache_ts: float = 0.0
-        self._lidarr_artist_index: dict[str, str] = {}
+        self._library_artist_index: dict[str, str] = {}
         self._dirty = False
         self._stats_cache: PlexLibraryStats | None = None
         self._stats_cache_ts: float = 0.0
@@ -150,7 +150,7 @@ class PlexLibraryService:
             elif cached is None:
                 del self._album_mbid_cache[cache_key]
 
-        match = self._lidarr_album_index.get(cache_key)
+        match = self._library_album_index.get(cache_key)
         if match:
             self._album_mbid_cache[cache_key] = match[0]
             self._dirty = True
@@ -158,7 +158,7 @@ class PlexLibraryService:
 
         clean_key = f"{_normalize(_clean_album_name(name))}:{_normalize(artist)}"
         if clean_key != cache_key:
-            match = self._lidarr_album_index.get(clean_key)
+            match = self._library_album_index.get(clean_key)
             if match:
                 self._album_mbid_cache[cache_key] = match[0]
                 self._dirty = True
@@ -184,7 +184,7 @@ class PlexLibraryService:
             elif cached is None:
                 del self._artist_mbid_cache[cache_key]
 
-        match = self._lidarr_artist_index.get(cache_key)
+        match = self._library_artist_index.get(cache_key)
         if match:
             self._artist_mbid_cache[cache_key] = match
             self._dirty = True
@@ -691,22 +691,25 @@ class PlexLibraryService:
         self,
         playlist_id: str,
         playlist_service: 'PlaylistService',
+        requesting: 'UserRecord',
     ) -> PlexImportResult:
         source_ref = f"plex:{playlist_id}"
-        existing = await playlist_service.get_by_source_ref(source_ref)
+        existing = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
         if existing:
             return PlexImportResult(
-                musicseerr_playlist_id=existing.id,
+                droppedneedle_playlist_id=existing.id,
                 already_imported=True,
             )
 
         detail = await self.get_playlist_detail(playlist_id)
         try:
-            created = await playlist_service.create_playlist(detail.name, source_ref=source_ref)
+            created = await playlist_service.create_playlist(
+                detail.name, source_ref=source_ref, user_id=requesting.id,
+            )
         except Exception:  # noqa: BLE001
-            re_check = await playlist_service.get_by_source_ref(source_ref)
+            re_check = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
             if re_check:
-                return PlexImportResult(musicseerr_playlist_id=re_check.id, already_imported=True)
+                return PlexImportResult(droppedneedle_playlist_id=re_check.id, already_imported=True)
             raise
 
         track_dicts = []
@@ -740,14 +743,14 @@ class PlexLibraryService:
 
         if track_dicts:
             try:
-                await playlist_service.add_tracks(created.id, track_dicts)
+                await playlist_service.add_tracks(created.id, requesting, track_dicts)
             except Exception:  # noqa: BLE001
                 logger.error("Failed to add tracks during Plex playlist import %s", playlist_id, exc_info=True)
-                await playlist_service.delete_playlist(created.id)
+                await playlist_service.delete_playlist(created.id, requesting)
                 raise ExternalServiceError(f"Failed to import Plex playlist {playlist_id}")
 
         return PlexImportResult(
-            musicseerr_playlist_id=created.id,
+            droppedneedle_playlist_id=created.id,
             tracks_imported=len(track_dicts),
             tracks_failed=failed,
         )
@@ -872,21 +875,21 @@ class PlexLibraryService:
     async def warm_mbid_cache(self) -> None:
         if self._library_db:
             try:
-                lidarr_albums = await self._library_db.get_all_albums_for_matching()
-                self._lidarr_album_index = {}
-                self._lidarr_artist_index = {}
-                for title, artist_name, album_mbid, artist_mbid in lidarr_albums:
+                library_albums = await self._library_db.get_all_albums_for_matching()
+                self._library_album_index = {}
+                self._library_artist_index = {}
+                for title, artist_name, album_mbid, artist_mbid in library_albums:
                     key = f"{_normalize(title)}:{_normalize(artist_name)}"
                     clean_key = f"{_normalize(_clean_album_name(title))}:{_normalize(artist_name)}"
-                    self._lidarr_album_index[key] = (album_mbid, artist_mbid)
+                    self._library_album_index[key] = (album_mbid, artist_mbid)
                     if clean_key != key:
-                        self._lidarr_album_index[clean_key] = (album_mbid, artist_mbid)
+                        self._library_album_index[clean_key] = (album_mbid, artist_mbid)
                     norm_artist = _normalize(artist_name)
                     if norm_artist and artist_mbid:
-                        self._lidarr_artist_index[norm_artist] = artist_mbid
+                        self._library_artist_index[norm_artist] = artist_mbid
                 logger.info(
                     "Built Plex Lidarr matching indices: %d album entries, %d artist entries",
-                    len(self._lidarr_album_index), len(self._lidarr_artist_index),
+                    len(self._library_album_index), len(self._library_artist_index),
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to build Plex Lidarr matching indices", exc_info=True)

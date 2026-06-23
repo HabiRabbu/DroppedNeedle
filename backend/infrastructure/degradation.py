@@ -9,7 +9,6 @@ call signatures.
 from __future__ import annotations
 
 import contextvars
-from typing import Literal
 
 from infrastructure.integration_result import IntegrationResult, IntegrationStatus
 

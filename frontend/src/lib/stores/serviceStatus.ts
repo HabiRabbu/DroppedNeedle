@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-export interface ServiceDegradation {
+interface ServiceDegradation {
 	[source: string]: string;
 }
 

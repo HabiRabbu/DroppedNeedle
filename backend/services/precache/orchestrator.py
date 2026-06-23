@@ -7,7 +7,7 @@ import asyncio
 import time
 from typing import Any, TYPE_CHECKING
 
-from repositories.protocols import LidarrRepositoryProtocol, CoverArtRepositoryProtocol
+from repositories.protocols import LibraryRepositoryProtocol, CoverArtRepositoryProtocol
 from repositories.coverart_disk_cache import get_cache_filename
 from services.cache_status_service import CacheStatusService
 from core.exceptions import ExternalServiceError
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class LibraryPrecacheService:
     def __init__(
         self,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         cover_repo: CoverArtRepositoryProtocol,
         preferences_service: Any,
         sync_state_store: "SyncStateStore",
@@ -37,14 +37,14 @@ class LibraryPrecacheService:
         artist_discovery_service: Any = None,
         audiodb_image_service: 'AudioDBImageService | None' = None,
     ):
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._cover_repo = cover_repo
         self._preferences_service = preferences_service
         self._sync_state_store = sync_state_store
         self._artist_discovery_service = artist_discovery_service
         self._audiodb_image_service = audiodb_image_service
 
-        self._artist_phase = ArtistPhase(lidarr_repo, cover_repo, preferences_service, genre_index, sync_state_store)
+        self._artist_phase = ArtistPhase(library_repo, cover_repo, preferences_service, genre_index, sync_state_store)
         self._album_phase = AlbumPhase(cover_repo, preferences_service, sync_state_store)
         self._audiodb_phase = AudioDBPhase(cover_repo, preferences_service, audiodb_image_service)
 
@@ -165,8 +165,8 @@ class LibraryPrecacheService:
             total_albums = len(albums)
 
             album_service = get_album_service()
-            library_artist_mbids = await self._lidarr_repo.get_artist_mbids()
-            library_album_mbids = await self._lidarr_repo.get_library_mbids(include_release_ids=True)
+            library_artist_mbids = await self._library_repo.get_artist_mbids()
+            library_album_mbids = await self._library_repo.get_library_mbids(include_release_ids=True)
 
             if not skip_artists:
                 remaining_artists = [a for a in artists if a.get('mbid') not in processed_artists]
@@ -242,7 +242,6 @@ class LibraryPrecacheService:
                 if not file_path.exists():
                     items_needing_covers.append(rgid)
             items_to_process = list(set(items_needing_metadata + items_needing_covers))
-            already_cached = len(deduped_release_groups) - len(items_to_process) - len(processed_albums)
             if items_to_process:
                 await status_service.update_phase('albums', len(items_to_process), generation=generation)
                 await self._album_phase.precache_album_data(items_to_process, library_album_mbids_set, status_service, library_album_mbids, len(processed_albums), generation=generation)

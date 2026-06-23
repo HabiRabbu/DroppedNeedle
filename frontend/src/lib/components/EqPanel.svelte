@@ -176,7 +176,7 @@
 						<div class="flex flex-col items-center flex-1 min-w-7">
 							<span
 								class="text-[10px] tabular-nums font-semibold mb-1.5 select-none h-3 leading-none"
-								style="color: oklch(var(--a) / {Math.min(
+								style="color: oklch(from var(--color-accent) l c h / {Math.min(
 									1,
 									0.5 + (Math.abs(eqStore.gains[i]) / EQ_MAX_GAIN) * 0.5
 								)})"
@@ -213,7 +213,7 @@
 								<div
 									class="absolute left-1/2 -translate-x-1/2 w-1.75 rounded-full transition-[height,top] duration-75"
 									style="top: {barStyle(eqStore.gains[i]).top}; height: {barStyle(eqStore.gains[i])
-										.height}; background: oklch(var(--a) / 0.7);"
+										.height}; background: oklch(from var(--color-accent) l c h / 0.7);"
 								></div>
 
 								<div
@@ -221,9 +221,9 @@
 										   border-2 transition-transform duration-75
 										   {draggingIndex === i ? 'scale-125' : 'hover:scale-110'}"
 									style="top: {gainToY(eqStore.gains[i]) - 7}px;
-										   background: oklch(var(--a));
-										   border-color: oklch(var(--a) / 0.5);
-										   box-shadow: 0 0 8px oklch(var(--a) / 0.35);"
+										   background: var(--color-accent);
+										   border-color: oklch(from var(--color-accent) l c h / 0.5);
+										   box-shadow: 0 0 8px oklch(from var(--color-accent) l c h / 0.35);"
 								></div>
 							</div>
 

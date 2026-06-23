@@ -78,7 +78,7 @@ def _artist_service(audiodb=None) -> ArtistService:
     prefs.get_advanced_settings.return_value = adv
     return ArtistService(
         mb_repo=MagicMock(),
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         wikidata_repo=MagicMock(),
         preferences_service=prefs,
         memory_cache=MagicMock(),
@@ -96,7 +96,7 @@ def _album_service(audiodb=None) -> AlbumService:
     adv.cache_ttl_album_non_library = 3600
     prefs.get_advanced_settings.return_value = adv
     return AlbumService(
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         mb_repo=MagicMock(),
         library_db=MagicMock(),
         memory_cache=MagicMock(),
@@ -130,13 +130,13 @@ class TestArtistDetailCacheHitEnrichment:
         audiodb = MagicMock()
         audiodb.get_cached_artist_images = AsyncMock(return_value=ARTIST_IMAGES)
         svc = _artist_service(audiodb)
-        cached = _cached_artist(fanart_url="https://lidarr.example.com/fanart.jpg")
+        cached = _cached_artist(fanart_url="https://library.example.com/fanart.jpg")
         svc._cache = MagicMock()
         svc._cache.get = AsyncMock(return_value=cached)
 
         result = await svc.get_artist_info(TEST_ARTIST_MBID)
 
-        assert result.fanart_url == "https://lidarr.example.com/fanart.jpg"
+        assert result.fanart_url == "https://library.example.com/fanart.jpg"
         assert result.thumb_url == "https://cdn.example.com/thumb.jpg"
 
     @pytest.mark.asyncio
@@ -194,7 +194,7 @@ class TestAlbumBasicInfoOnDemandFetch:
         svc = _album_service(audiodb)
         cached = _cached_album(album_thumb_url=None)
         svc._get_cached_album_info = AsyncMock(return_value=cached)
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         result = await svc.get_album_basic_info(TEST_ALBUM_MBID)
 
@@ -207,7 +207,7 @@ class TestAlbumBasicInfoOnDemandFetch:
         svc = _album_service(audiodb)
         cached = _cached_album(album_thumb_url="https://existing.example.com/thumb.jpg")
         svc._get_cached_album_info = AsyncMock(return_value=cached)
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         result = await svc.get_album_basic_info(TEST_ALBUM_MBID)
 
@@ -221,7 +221,7 @@ class TestAlbumBasicInfoOnDemandFetch:
         svc = _album_service(audiodb)
         cached = _cached_album(album_thumb_url=None)
         svc._get_cached_album_info = AsyncMock(return_value=cached)
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         result = await svc.get_album_basic_info(TEST_ALBUM_MBID)
 

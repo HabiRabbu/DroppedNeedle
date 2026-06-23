@@ -48,13 +48,13 @@ def test_artist_info_existing_fields_unchanged():
     artist = ArtistInfo(
         name="Artist",
         musicbrainz_id="mb-id",
-        image="http://lidarr/img.jpg",
-        fanart_url="http://lidarr/fanart.jpg",
+        image="http://library/img.jpg",
+        fanart_url="http://library/fanart.jpg",
     )
     assert artist.name == "Artist"
     assert artist.musicbrainz_id == "mb-id"
-    assert artist.image == "http://lidarr/img.jpg"
-    assert artist.fanart_url == "http://lidarr/fanart.jpg"
+    assert artist.image == "http://library/img.jpg"
+    assert artist.fanart_url == "http://library/fanart.jpg"
     assert artist.in_library is False
     assert artist.albums == []
 

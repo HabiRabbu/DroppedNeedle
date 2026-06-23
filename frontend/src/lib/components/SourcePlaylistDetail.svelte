@@ -45,10 +45,10 @@
 		try {
 			importResult = await api.post<SourceImportResult>(importUrl(playlistId));
 			if (importResult.already_imported) {
-				toastStore.show({ message: 'This playlist is already in MusicSeerr.', type: 'info' });
+				toastStore.show({ message: 'This playlist is already in DroppedNeedle.', type: 'info' });
 			} else {
 				toastStore.show({
-					message: `Imported ${importResult.tracks_imported} tracks into MusicSeerr.`,
+					message: `Imported ${importResult.tracks_imported} tracks into DroppedNeedle.`,
 					type: 'success'
 				});
 			}
@@ -84,7 +84,7 @@
 				{/if}
 			</div>
 			<div class="space-y-2">
-				<h1 class="text-2xl font-bold">{detail.name}</h1>
+				<h1 class="hero-title text-2xl font-bold">{detail.name}</h1>
 				<p class="text-base-content/60">
 					{detail.track_count} track{detail.track_count === 1 ? '' : 's'}
 					{#if detail.duration_seconds}
@@ -101,7 +101,7 @@
 					{:else}
 						<Download class="w-4 h-4" />
 					{/if}
-					{importResult?.already_imported ? 'Already in MusicSeerr' : 'Import into MusicSeerr'}
+					{importResult?.already_imported ? 'Already in DroppedNeedle' : 'Import into DroppedNeedle'}
 				</button>
 				{#if importResult && !importResult.already_imported}
 					<p class="text-sm text-success">

@@ -10,6 +10,8 @@ MB_RELEASE_DETAIL_PREFIX = "mb:release:detail:"
 MB_RELEASE_TO_RG_PREFIX = "mb:release_to_rg:"
 MB_RELEASE_REC_PREFIX = "mb:release_rec_positions:"
 MB_RECORDING_PREFIX = "mb:recording:"
+MB_RECORDING_SEARCH_PREFIX = "mb:recording:search:"
+MB_RECORDING_TO_RG_PREFIX = "mb:recording_to_rg:"
 MB_ARTIST_RELS_PREFIX = "mb:artist_rels:"
 MB_ARTISTS_BY_TAG_PREFIX = "mb_artists_by_tag:"
 MB_RG_BY_TAG_PREFIX = "mb_rg_by_tag:"
@@ -24,16 +26,16 @@ NAVIDROME_PREFIX = "navidrome:"
 
 PLEX_PREFIX = "plex:"
 
-LIDARR_PREFIX = "lidarr:"
-LIDARR_REQUESTED_PREFIX = "lidarr_requested"
-LIDARR_ARTIST_IMAGE_PREFIX = "lidarr_artist_image:"
-LIDARR_ARTIST_DETAILS_PREFIX = "lidarr_artist_details:"
-LIDARR_ARTIST_ALBUMS_PREFIX = "lidarr_artist_albums:"
-LIDARR_ALBUM_IMAGE_PREFIX = "lidarr_album_image:"
-LIDARR_ALBUM_DETAILS_PREFIX = "lidarr_album_details:"
-LIDARR_ALBUM_TRACKS_PREFIX = "lidarr_album_tracks:"
-LIDARR_TRACKFILE_PREFIX = "lidarr_trackfile:"
-LIDARR_ALBUM_TRACKFILES_PREFIX = "lidarr_album_trackfiles_raw:"
+LIBRARY_PREFIX = "library:"
+LIBRARY_REQUESTED_PREFIX = "library_requested"
+LIBRARY_ARTIST_IMAGE_PREFIX = "library_artist_image:"
+LIBRARY_ARTIST_DETAILS_PREFIX = "library_artist_details:"
+LIBRARY_ARTIST_ALBUMS_PREFIX = "library_artist_albums:"
+LIBRARY_ALBUM_IMAGE_PREFIX = "library_album_image:"
+LIBRARY_ALBUM_DETAILS_PREFIX = "library_album_details:"
+LIBRARY_ALBUM_TRACKS_PREFIX = "library_album_tracks:"
+LIBRARY_TRACKFILE_PREFIX = "library_trackfile:"
+LIBRARY_ALBUM_TRACKFILES_PREFIX = "library_album_trackfiles_raw:"
 
 LOCAL_FILES_PREFIX = "local_files_"
 
@@ -73,6 +75,8 @@ def musicbrainz_prefixes() -> list[str]:
         MB_RELEASE_TO_RG_PREFIX,
         MB_RELEASE_REC_PREFIX,
         MB_RECORDING_PREFIX,
+        MB_RECORDING_SEARCH_PREFIX,
+        MB_RECORDING_TO_RG_PREFIX,
         MB_ARTIST_RELS_PREFIX,
         MB_ARTISTS_BY_TAG_PREFIX,
         MB_RG_BY_TAG_PREFIX,
@@ -105,10 +109,12 @@ def mb_album_search_key(
     query: str,
     limit: int,
     offset: int,
-    included_secondary_types: Optional[set[str]] = None
+    included_secondary_types: Optional[set[str]] = None,
+    included_primary_types: Optional[set[str]] = None,
 ) -> str:
     types_str = ",".join(sorted(included_secondary_types)) if included_secondary_types else "none"
-    return f"{MB_ALBUM_SEARCH_PREFIX}{query}:{limit}:{offset}:{types_str}"
+    primary_str = ",".join(sorted(included_primary_types)) if included_primary_types else "none"
+    return f"{MB_ALBUM_SEARCH_PREFIX}{query}:{limit}:{offset}:{types_str}:{primary_str}"
 
 
 def mb_artist_detail_key(mbid: str) -> str:
@@ -125,43 +131,39 @@ def mb_release_key(release_id: str, includes: Optional[list[str]] = None) -> str
     return f"{MB_RELEASE_DETAIL_PREFIX}{release_id}:{includes_str}"
 
 
-def lidarr_library_albums_key(include_unmonitored: bool = False) -> str:
+def library_albums_key(include_unmonitored: bool = False) -> str:
     suffix = "all" if include_unmonitored else "monitored"
-    return f"{LIDARR_PREFIX}library:albums:{suffix}"
+    return f"{LIBRARY_PREFIX}library:albums:{suffix}"
 
 
-def lidarr_library_artists_key(include_unmonitored: bool = False) -> str:
+def library_artists_key(include_unmonitored: bool = False) -> str:
     suffix = "all" if include_unmonitored else "monitored"
-    return f"{LIDARR_PREFIX}library:artists:{suffix}"
+    return f"{LIBRARY_PREFIX}library:artists:{suffix}"
 
 
-def lidarr_library_mbids_key(include_release_ids: bool = False) -> str:
+def library_mbids_key(include_release_ids: bool = False) -> str:
     suffix = "with_releases" if include_release_ids else "albums_only"
-    return f"{LIDARR_PREFIX}library:mbids:{suffix}"
+    return f"{LIBRARY_PREFIX}library:mbids:{suffix}"
 
 
-def lidarr_artist_mbids_key() -> str:
-    return f"{LIDARR_PREFIX}artists:mbids"
+def library_artist_mbids_key() -> str:
+    return f"{LIBRARY_PREFIX}artists:mbids"
 
 
-def lidarr_raw_albums_key() -> str:
-    return f"{LIDARR_PREFIX}raw:albums"
+def library_raw_albums_key() -> str:
+    return f"{LIBRARY_PREFIX}raw:albums"
 
 
-def lidarr_library_grouped_key() -> str:
-    return f"{LIDARR_PREFIX}library:grouped"
+def library_grouped_key() -> str:
+    return f"{LIBRARY_PREFIX}library:grouped"
 
 
-def lidarr_requested_mbids_key() -> str:
-    return f"{LIDARR_REQUESTED_PREFIX}_mbids"
+def library_requested_mbids_key() -> str:
+    return f"{LIBRARY_REQUESTED_PREFIX}_mbids"
 
 
-def lidarr_monitored_mbids_key() -> str:
-    return f"{LIDARR_PREFIX}monitored_mbids"
-
-
-def lidarr_status_key() -> str:
-    return f"{LIDARR_PREFIX}status"
+def library_status_key() -> str:
+    return f"{LIBRARY_PREFIX}status"
 
 
 def wikidata_artist_image_key(wikidata_id: str) -> str:

@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-export interface ErrorModalState {
+interface ErrorModalState {
 	show: boolean;
 	title: string;
 	message: string;

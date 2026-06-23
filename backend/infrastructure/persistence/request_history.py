@@ -20,7 +20,7 @@ class RequestHistoryRecord(msgspec.Struct):
     year: int | None = None
     cover_url: str | None = None
     completed_at: str | None = None
-    lidarr_album_id: int | None = None
+    download_task_id: str | None = None
     monitor_artist: bool = False
     auto_download_artist: bool = False
     user_id: str | None = None
@@ -65,7 +65,6 @@ class RequestHistoryStore:
                     requested_at TEXT NOT NULL,
                     completed_at TEXT,
                     status TEXT NOT NULL,
-                    lidarr_album_id INTEGER,
                     monitor_artist INTEGER NOT NULL DEFAULT 0,
                     auto_download_artist INTEGER NOT NULL DEFAULT 0
                 )
@@ -82,6 +81,7 @@ class RequestHistoryStore:
                 ("reviewed_by_id", "TEXT"),
                 ("reviewed_by_name", "TEXT"),
                 ("reviewed_at", "TEXT"),
+                ("download_task_id", "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE request_history ADD COLUMN {col} {definition}")
@@ -140,7 +140,7 @@ class RequestHistoryStore:
             requested_at=row["requested_at"],
             completed_at=row["completed_at"],
             status=row["status"],
-            lidarr_album_id=row["lidarr_album_id"],
+            download_task_id=row["download_task_id"] if "download_task_id" in keys else None,
             monitor_artist=bool(row["monitor_artist"]) if row["monitor_artist"] is not None else False,
             auto_download_artist=bool(row["auto_download_artist"]) if row["auto_download_artist"] is not None else False,
             user_id=row["user_id"] if "user_id" in keys else None,
@@ -158,7 +158,6 @@ class RequestHistoryStore:
         year: int | None = None,
         cover_url: str | None = None,
         artist_mbid: str | None = None,
-        lidarr_album_id: int | None = None,
         monitor_artist: bool = False,
         auto_download_artist: bool = False,
         user_id: str | None = None,
@@ -173,9 +172,9 @@ class RequestHistoryStore:
                 """
                 INSERT INTO request_history (
                     musicbrainz_id_lower, musicbrainz_id, artist_name, album_title,
-                    artist_mbid, year, cover_url, requested_at, completed_at, status, lidarr_album_id,
+                    artist_mbid, year, cover_url, requested_at, completed_at, status,
                     monitor_artist, auto_download_artist, user_id, requested_by_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
                 ON CONFLICT(musicbrainz_id_lower) DO UPDATE SET
                     musicbrainz_id = excluded.musicbrainz_id,
                     artist_name = excluded.artist_name,
@@ -186,7 +185,6 @@ class RequestHistoryStore:
                     requested_at = excluded.requested_at,
                     completed_at = NULL,
                     status = excluded.status,
-                    lidarr_album_id = COALESCE(excluded.lidarr_album_id, request_history.lidarr_album_id),
                     monitor_artist = excluded.monitor_artist,
                     auto_download_artist = excluded.auto_download_artist,
                     user_id = COALESCE(excluded.user_id, request_history.user_id),
@@ -202,7 +200,6 @@ class RequestHistoryStore:
                     cover_url,
                     requested_at,
                     initial_status,
-                    lidarr_album_id,
                     int(monitor_artist),
                     int(auto_download_artist),
                     user_id,
@@ -237,7 +234,6 @@ class RequestHistoryStore:
                 item.get("cover_url"),
                 requested_at,
                 initial_status,
-                None,  # lidarr_album_id
                 monitor_int,
                 auto_download_int,
                 user_id,
@@ -251,9 +247,9 @@ class RequestHistoryStore:
                 """
                 INSERT INTO request_history (
                     musicbrainz_id_lower, musicbrainz_id, artist_name, album_title,
-                    artist_mbid, year, cover_url, requested_at, completed_at, status, lidarr_album_id,
+                    artist_mbid, year, cover_url, requested_at, completed_at, status,
                     monitor_artist, auto_download_artist, user_id, requested_by_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
                 ON CONFLICT(musicbrainz_id_lower) DO UPDATE SET
                     musicbrainz_id = excluded.musicbrainz_id,
                     artist_name = excluded.artist_name,
@@ -264,7 +260,6 @@ class RequestHistoryStore:
                     requested_at = excluded.requested_at,
                     completed_at = NULL,
                     status = excluded.status,
-                    lidarr_album_id = COALESCE(excluded.lidarr_album_id, request_history.lidarr_album_id),
                     monitor_artist = excluded.monitor_artist,
                     auto_download_artist = excluded.auto_download_artist,
                     user_id = COALESCE(excluded.user_id, request_history.user_id),
@@ -520,17 +515,6 @@ class RequestHistoryStore:
 
         await self._write(operation)
 
-    async def async_update_lidarr_album_id(self, musicbrainz_id: str, lidarr_album_id: int) -> None:
-        normalized_mbid = musicbrainz_id.lower()
-
-        def operation(conn: sqlite3.Connection) -> None:
-            conn.execute(
-                "UPDATE request_history SET lidarr_album_id = ? WHERE musicbrainz_id_lower = ?",
-                (lidarr_album_id, normalized_mbid),
-            )
-
-        await self._write(operation)
-
     async def async_update_artist_mbid(self, musicbrainz_id: str, artist_mbid: str) -> None:
         """Backfill the artist MBID without resetting other fields."""
         normalized_mbid = musicbrainz_id.lower()
@@ -539,6 +523,21 @@ class RequestHistoryStore:
             conn.execute(
                 "UPDATE request_history SET artist_mbid = ? WHERE musicbrainz_id_lower = ? AND (artist_mbid IS NULL OR artist_mbid = '')",
                 (artist_mbid, normalized_mbid),
+            )
+
+        await self._write(operation)
+
+    async def async_update_download_task_id(
+        self, musicbrainz_id: str, download_task_id: str
+    ) -> None:
+        """Link a request to its native download task (Q5-A), set at task creation.
+        Mirrors ``async_update_cover_url`` / ``async_update_artist_mbid``."""
+        normalized_mbid = musicbrainz_id.lower()
+
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE request_history SET download_task_id = ? WHERE musicbrainz_id_lower = ?",
+                (download_task_id, normalized_mbid),
             )
 
         await self._write(operation)

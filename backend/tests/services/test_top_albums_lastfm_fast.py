@@ -40,15 +40,15 @@ def _make_service() -> tuple[ArtistDiscoveryService, AsyncMock]:
         side_effect=AssertionError("MusicBrainz resolution should NOT be called for Last.fm top-albums")
     )
 
-    lidarr_repo = AsyncMock()
-    lidarr_repo.get_library_mbids = AsyncMock(return_value={RELEASE_MBID_1})
-    lidarr_repo.get_requested_mbids = AsyncMock(return_value={RELEASE_MBID_2})
+    library_repo = AsyncMock()
+    library_repo.get_library_mbids = AsyncMock(return_value={RELEASE_MBID_1})
+    library_repo.get_requested_mbids = AsyncMock(return_value={RELEASE_MBID_2})
 
     svc = ArtistDiscoveryService(
         listenbrainz_repo=lb_repo,
         musicbrainz_repo=mb_repo,
         library_db=library_db,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         memory_cache=memory_cache,
         lastfm_repo=lastfm_repo,
         preferences_service=prefs,

@@ -96,12 +96,12 @@
 							All {totalCount} playlists imported!
 						</h3>
 						<p class="mt-1 text-sm text-base-content/50">
-							Your {sourceLabel} playlists are now in MusicSeerr.
+							Your {sourceLabel} playlists are now in DroppedNeedle.
 						</p>
 					{:else}
 						<h3 class="text-lg font-bold leading-tight sm:text-xl">
 							Bring your {totalCount}
-							{sourceLabel} playlist{totalCount === 1 ? '' : 's'} to MusicSeerr
+							{sourceLabel} playlist{totalCount === 1 ? '' : 's'} to DroppedNeedle
 						</h3>
 						<p class="mt-1 text-sm text-base-content/50">
 							{#if noneImported}

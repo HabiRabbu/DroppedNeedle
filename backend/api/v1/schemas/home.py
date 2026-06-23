@@ -22,7 +22,6 @@ class HomeAlbum(AppStruct):
     listen_count: int | None = None
     in_library: bool = False
     requested: bool = False
-    monitored: bool = False
     source: str | None = None
 
 

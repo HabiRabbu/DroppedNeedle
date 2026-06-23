@@ -7,7 +7,6 @@ from api.v1.schemas.settings import (
     LastFmAuthSessionRequest,
     LastFmAuthSessionResponse,
     LastFmConnectionSettings,
-    LASTFM_SECRET_MASK,
 )
 from core.dependencies import (
     get_lastfm_auth_service,

@@ -1,6 +1,5 @@
 from typing import Annotated
 import msgspec
-from models.request import QueueItem as QueueItem
 from infrastructure.msgspec_fastapi import AppStruct
 
 
@@ -19,13 +18,6 @@ class RequestAcceptedResponse(AppStruct):
     message: str
     musicbrainz_id: str
     status: str = "pending"
-
-
-class QueueStatusResponse(AppStruct):
-    queue_size: int
-    processing: bool
-    active_workers: int = 0
-    max_workers: int = 1
 
 
 class BatchAlbumItem(AppStruct):

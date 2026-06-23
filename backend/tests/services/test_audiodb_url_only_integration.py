@@ -49,14 +49,12 @@ def _artist_result(**overrides) -> SearchResult:
 
 def _search_service(audiodb: MagicMock | None = None) -> SearchService:
     mb_repo = MagicMock()
-    lidarr_repo = MagicMock()
-    lidarr_repo.get_library_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_queue = AsyncMock(return_value=[])
-    lidarr_repo.get_monitored_no_files_mbids = AsyncMock(return_value=set())
+    library_repo = MagicMock()
+    library_repo.get_library_mbids = AsyncMock(return_value=set())
     coverart_repo = MagicMock()
     prefs = MagicMock()
     prefs.get_preferences.return_value = MagicMock(secondary_types=[])
-    return SearchService(mb_repo, lidarr_repo, coverart_repo, prefs, audiodb)
+    return SearchService(mb_repo, library_repo, coverart_repo, prefs, audiodb)
 
 
 def _make_artist_info(**overrides) -> ArtistInfo:
@@ -70,7 +68,7 @@ def _make_artist_service(audiodb_service: MagicMock | None = None) -> ArtistServ
         audiodb_service = MagicMock()
     return ArtistService(
         mb_repo=MagicMock(),
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         wikidata_repo=MagicMock(),
         preferences_service=MagicMock(),
         memory_cache=MagicMock(),
@@ -94,7 +92,7 @@ def _make_album_service(audiodb_service: MagicMock | None = None) -> AlbumServic
     if audiodb_service is None:
         audiodb_service = MagicMock()
     return AlbumService(
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         mb_repo=MagicMock(),
         library_db=MagicMock(),
         memory_cache=MagicMock(),

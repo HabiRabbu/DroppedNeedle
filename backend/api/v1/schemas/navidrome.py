@@ -130,7 +130,7 @@ class NavidromePlaylistDetail(AppStruct):
 
 
 class NavidromeImportResult(AppStruct):
-    musicseerr_playlist_id: str = ""
+    droppedneedle_playlist_id: str = ""
     tracks_imported: int = 0
     tracks_failed: int = 0
     already_imported: bool = False

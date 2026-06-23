@@ -46,7 +46,7 @@ def _make_service(prefs=None):
     if prefs is None:
         prefs = _make_prefs()
     return LibraryPrecacheService(
-        lidarr_repo=AsyncMock(),
+        library_repo=AsyncMock(),
         cover_repo=AsyncMock(),
         preferences_service=prefs,
         sync_state_store=AsyncMock(),

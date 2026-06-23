@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from api.v1.schemas.scrobble import (
@@ -9,8 +10,9 @@ from api.v1.schemas.scrobble import (
     ScrobbleResponse,
     ServiceResult,
 )
-from repositories.protocols import LastFmRepositoryProtocol, ListenBrainzRepositoryProtocol
-from services.preferences_service import PreferencesService
+from infrastructure.persistence.play_history_store import PlayHistoryStore
+from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
+from services.per_user_client_factory import PerUserClientFactory
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +22,26 @@ MIN_TRACK_DURATION_MS = 30_000
 
 
 class ScrobbleService:
+    """Per-user scrobbling + local play_history source of truth.
+
+    Every accepted play is recorded regardless of external linkage; external
+    forwarding goes only to the user's own linked Last.fm / ListenBrainz accounts.
+    """
+
     def __init__(
         self,
-        lastfm_repo: LastFmRepositoryProtocol,
-        listenbrainz_repo: ListenBrainzRepositoryProtocol,
-        preferences_service: PreferencesService,
+        client_factory: PerUserClientFactory,
+        listening_prefs_store: UserListeningPrefsStore,
+        play_history_store: PlayHistoryStore,
     ):
-        self._lastfm_repo = lastfm_repo
-        self._listenbrainz_repo = listenbrainz_repo
-        self._preferences_service = preferences_service
+        self._client_factory = client_factory
+        self._listening_prefs_store = listening_prefs_store
+        self._play_history_store = play_history_store
         self._dedup_cache: dict[str, float] = {}
 
-    def _dedup_key(self, artist: str, track: str, timestamp: int) -> str:
-        return f"{artist.lower()}::{track.lower()}::{timestamp}"
+    def _dedup_key(self, user_id: str, artist: str, track: str, timestamp: int) -> str:
+        # user_id-scoped so two users scrobbling the same track aren't cross-deduped
+        return f"{user_id}::{artist.lower()}::{track.lower()}::{timestamp}"
 
     def _is_duplicate(self, key: str) -> bool:
         entry_time = self._dedup_cache.get(key)
@@ -55,143 +64,135 @@ class ScrobbleService:
                 for k in oldest[: len(self._dedup_cache) - DEDUP_MAX_ENTRIES]:
                     del self._dedup_cache[k]
 
-    def _is_lastfm_enabled(self) -> bool:
-        scrobble = self._preferences_service.get_scrobble_settings()
-        if not scrobble.scrobble_to_lastfm:
-            return False
-        lastfm = self._preferences_service.get_lastfm_connection()
-        return (
-            lastfm.enabled
-            and bool(lastfm.api_key)
-            and bool(lastfm.shared_secret)
-            and bool(lastfm.session_key)
-        )
-
-    def _is_listenbrainz_enabled(self) -> bool:
-        scrobble = self._preferences_service.get_scrobble_settings()
-        if not scrobble.scrobble_to_listenbrainz:
-            return False
-        lb = self._preferences_service.get_listenbrainz_connection()
-        return lb.enabled and bool(lb.user_token)
-
     async def report_now_playing(
-        self, request: NowPlayingRequest
+        self, request: NowPlayingRequest, *, user_id: str
     ) -> ScrobbleResponse:
+        prefs = await self._listening_prefs_store.get(user_id)
         tasks: dict[str, Any] = {}
         duration_sec = request.duration_ms // 1000 if request.duration_ms > 0 else 0
 
-        if self._is_lastfm_enabled():
-            tasks["lastfm"] = self._lastfm_repo.update_now_playing(
-                artist=request.artist_name,
-                track=request.track_name,
-                album=request.album_name,
-                duration=duration_sec,
-                mbid=request.mbid,
-            )
+        if prefs.scrobble_to_lastfm:
+            lastfm = await self._client_factory.resolve_lastfm(user_id)
+            if lastfm is not None:
+                tasks["lastfm"] = lastfm.update_now_playing(
+                    artist=request.artist_name,
+                    track=request.track_name,
+                    album=request.album_name,
+                    duration=duration_sec,
+                    mbid=request.mbid,
+                )
 
-        if self._is_listenbrainz_enabled():
-            tasks["listenbrainz"] = self._listenbrainz_repo.submit_now_playing(
-                artist_name=request.artist_name,
-                track_name=request.track_name,
-                release_name=request.album_name,
-                duration_ms=request.duration_ms,
-            )
+        if prefs.scrobble_to_listenbrainz:
+            listenbrainz = await self._client_factory.resolve_listenbrainz(user_id)
+            if listenbrainz is not None:
+                tasks["listenbrainz"] = listenbrainz.submit_now_playing(
+                    artist_name=request.artist_name,
+                    track_name=request.track_name,
+                    release_name=request.album_name,
+                    duration_ms=request.duration_ms,
+                )
 
         if not tasks:
             return ScrobbleResponse(accepted=False, services={})
 
-        results_list = await asyncio.gather(
-            *tasks.values(), return_exceptions=True
-        )
-        services: dict[str, ServiceResult] = {}
-        any_success = False
-
-        for service_name, result in zip(tasks.keys(), results_list):
-            if isinstance(result, BaseException):
-                logger.warning(
-                    "Now playing report failed for %s: %s",
-                    service_name,
-                    result,
-                )
-                services[service_name] = ServiceResult(
-                    success=False, error=str(result)
-                )
-            else:
-                services[service_name] = ServiceResult(success=True)
-                any_success = True
-
+        services, any_success = await self._gather_results(tasks, "Now playing report failed")
         return ScrobbleResponse(accepted=any_success, services=services)
 
     async def submit_scrobble(
-        self, request: ScrobbleRequest
+        self, request: ScrobbleRequest, *, user_id: str
     ) -> ScrobbleResponse:
-        if 0 < request.duration_ms < MIN_TRACK_DURATION_MS:
-            logger.debug(
-                "Skipping scrobble for short track (%dms): %s - %s",
-                request.duration_ms,
-                request.artist_name,
-                request.track_name,
-            )
-            return ScrobbleResponse(accepted=False, services={})
-
         dedup = self._dedup_key(
-            request.artist_name, request.track_name, request.timestamp
+            user_id, request.artist_name, request.track_name, request.timestamp
         )
         if self._is_duplicate(dedup):
             logger.debug(
-                "Duplicate scrobble skipped: %s - %s at %d",
+                "Duplicate scrobble skipped for %s: %s - %s at %d",
+                user_id,
                 request.artist_name,
                 request.track_name,
                 request.timestamp,
             )
             return ScrobbleResponse(accepted=True, services={})
 
+        # record the play locally for every user regardless of external linkage or the
+        # short-track gate below; recorded once - retries are deduped above
+        await self._record_play_history(request, user_id)
+        self._record_dedup(dedup)
+
+        # short-track gate blocks only external forwarding; history is already saved
+        if 0 < request.duration_ms < MIN_TRACK_DURATION_MS:
+            logger.debug(
+                "Short track (%dms) recorded locally, not forwarded: %s - %s",
+                request.duration_ms,
+                request.artist_name,
+                request.track_name,
+            )
+            return ScrobbleResponse(accepted=True, services={})
+
+        prefs = await self._listening_prefs_store.get(user_id)
         tasks: dict[str, Any] = {}
         duration_sec = request.duration_ms // 1000 if request.duration_ms > 0 else 0
 
-        if self._is_lastfm_enabled():
-            tasks["lastfm"] = self._lastfm_repo.scrobble(
-                artist=request.artist_name,
-                track=request.track_name,
-                timestamp=request.timestamp,
-                album=request.album_name,
-                duration=duration_sec,
-                mbid=request.mbid,
-            )
+        if prefs.scrobble_to_lastfm:
+            lastfm = await self._client_factory.resolve_lastfm(user_id)
+            if lastfm is not None:
+                tasks["lastfm"] = lastfm.scrobble(
+                    artist=request.artist_name,
+                    track=request.track_name,
+                    timestamp=request.timestamp,
+                    album=request.album_name,
+                    duration=duration_sec,
+                    mbid=request.mbid,
+                )
 
-        if self._is_listenbrainz_enabled():
-            tasks["listenbrainz"] = self._listenbrainz_repo.submit_single_listen(
-                artist_name=request.artist_name,
-                track_name=request.track_name,
-                listened_at=request.timestamp,
-                release_name=request.album_name,
-                duration_ms=request.duration_ms,
-            )
+        if prefs.scrobble_to_listenbrainz:
+            listenbrainz = await self._client_factory.resolve_listenbrainz(user_id)
+            if listenbrainz is not None:
+                tasks["listenbrainz"] = listenbrainz.submit_single_listen(
+                    artist_name=request.artist_name,
+                    track_name=request.track_name,
+                    listened_at=request.timestamp,
+                    release_name=request.album_name,
+                    duration_ms=request.duration_ms,
+                )
 
         if not tasks:
-            return ScrobbleResponse(accepted=False, services={})
+            # no linked/enabled external account - the play is still recorded
+            return ScrobbleResponse(accepted=True, services={})
 
-        results_list = await asyncio.gather(
-            *tasks.values(), return_exceptions=True
+        # play is already recorded locally, so accepted=True regardless of the external
+        # outcome; per-service results are reported in `services`
+        services, _ = await self._gather_results(tasks, "Scrobble submission failed")
+        return ScrobbleResponse(accepted=True, services=services)
+
+    async def _record_play_history(self, request: ScrobbleRequest, user_id: str) -> None:
+        played_at = datetime.fromtimestamp(request.timestamp, tz=timezone.utc).isoformat()
+        await self._play_history_store.insert(
+            user_id,
+            track_name=request.track_name,
+            artist_name=request.artist_name,
+            album_name=request.album_name or None,
+            recording_mbid=request.mbid,
+            release_group_mbid=request.release_group_mbid,
+            duration_ms=request.duration_ms or None,
+            source=request.source,
+            played_at=played_at,
         )
+
+    @staticmethod
+    async def _gather_results(
+        tasks: dict[str, Any], failure_msg: str
+    ) -> tuple[dict[str, ServiceResult], bool]:
+        results_list = await asyncio.gather(*tasks.values(), return_exceptions=True)
         services: dict[str, ServiceResult] = {}
         any_success = False
 
         for service_name, result in zip(tasks.keys(), results_list):
             if isinstance(result, BaseException):
-                logger.warning(
-                    "Scrobble submission failed for %s: %s",
-                    service_name,
-                    result,
-                )
-                services[service_name] = ServiceResult(
-                    success=False, error=str(result)
-                )
+                logger.warning("%s for %s: %s", failure_msg, service_name, result)
+                services[service_name] = ServiceResult(success=False, error=str(result))
             else:
                 services[service_name] = ServiceResult(success=True)
                 any_success = True
 
-        if any_success:
-            self._record_dedup(dedup)
-
-        return ScrobbleResponse(accepted=any_success, services=services)
+        return services, any_success

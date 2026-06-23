@@ -16,17 +16,17 @@ import { createLocalStorageCache } from '$lib/utils/localStorageCache';
 
 const MAX_ALBUM_DETAIL_CACHE_ENTRIES = 120;
 
-export type AlbumDiscoveryCachePayload = {
+type AlbumDiscoveryCachePayload = {
 	moreByArtist: MoreByArtistResponse | null;
 	similarAlbums: SimilarAlbumsResponse | null;
 };
 
-export type AlbumYouTubeCachePayload = {
+type AlbumYouTubeCachePayload = {
 	albumLink: YouTubeLink | null;
 	trackLinks: YouTubeTrackLink[];
 };
 
-export type AlbumSourceMatchCachePayload = {
+type AlbumSourceMatchCachePayload = {
 	jellyfin: JellyfinAlbumMatch | null;
 	local: LocalAlbumMatch | null;
 	navidrome: NavidromeAlbumMatch | null;

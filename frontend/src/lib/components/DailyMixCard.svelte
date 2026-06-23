@@ -28,7 +28,7 @@
 <div class="w-full">
 	<div style="perspective: 1200px;">
 		<button
-			use:tilt={{ shadowColorVar: 'var(--p)' }}
+			use:tilt={{ shadowColorVar: 'var(--color-primary)' }}
 			type="button"
 			class="group relative w-full overflow-hidden rounded-2xl border transition-all cursor-pointer text-left
 				focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100

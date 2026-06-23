@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from api.v1.schemas.settings import (
@@ -40,10 +41,10 @@ def _make_prefs(
     jf_settings.api_key = ""
     prefs.get_jellyfin_connection.return_value = jf_settings
 
-    lidarr = MagicMock()
-    lidarr.lidarr_url = ""
-    lidarr.lidarr_api_key = ""
-    prefs.get_lidarr_connection.return_value = lidarr
+    download_client = MagicMock()
+    download_client.enabled = False
+    download_client.url = ""
+    prefs.get_download_client_settings.return_value = download_client
 
     yt = MagicMock()
     yt.enabled = False
@@ -80,10 +81,10 @@ def _make_service(
     lfm_repo.get_user_loved_tracks = AsyncMock(return_value=[])
 
     jf_repo = AsyncMock()
-    lidarr_repo = AsyncMock()
-    lidarr_repo.get_library = AsyncMock(return_value=[])
-    lidarr_repo.get_artists_from_library = AsyncMock(return_value=[])
-    lidarr_repo.get_recently_imported = AsyncMock(return_value=[])
+    library_repo = AsyncMock()
+    library_repo.get_library = AsyncMock(return_value=[])
+    library_repo.get_artists_from_library = AsyncMock(return_value=[])
+    library_repo.get_recently_imported = AsyncMock(return_value=[])
     mb_repo = AsyncMock()
 
     prefs = _make_prefs(
@@ -92,13 +93,28 @@ def _make_service(
         primary_source=primary_source,
     )
 
+    factory = MagicMock()
+    factory.resolve_listenbrainz = AsyncMock(return_value=lb_repo if lb_enabled else None)
+    factory.resolve_lastfm = AsyncMock(return_value=lfm_repo if lfm_enabled else None)
+    factory.resolve_listenbrainz_username = AsyncMock(return_value="lbuser" if lb_enabled else None)
+    factory.resolve_lastfm_username = AsyncMock(return_value="lfmuser" if lfm_enabled else None)
+
+    prefs_store = MagicMock()
+    prefs_store.get = AsyncMock(return_value=SimpleNamespace(primary_music_source=primary_source))
+
+    play_history_store = MagicMock()
+    play_history_store.recent = AsyncMock(return_value=[])
+
     service = HomeService(
         listenbrainz_repo=lb_repo,
         jellyfin_repo=jf_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         musicbrainz_repo=mb_repo,
         preferences_service=prefs,
         lastfm_repo=lfm_repo,
+        client_factory=factory,
+        listening_prefs_store=prefs_store,
+        play_history_store=play_history_store,
     )
     return service, lb_repo, lfm_repo, prefs
 
@@ -119,7 +135,7 @@ class TestHomeServiceSourceSelection:
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        await service.get_home_data("listenbrainz")
+        await service.get_home_data("u1", "listenbrainz")
         lb_repo.get_sitewide_top_artists.assert_awaited_once()
         lfm_repo.get_global_top_artists.assert_not_awaited()
 
@@ -128,7 +144,7 @@ class TestHomeServiceSourceSelection:
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
         )
-        await service.get_home_data("lastfm")
+        await service.get_home_data("u1", "lastfm")
         lfm_repo.get_global_top_artists.assert_awaited_once()
         lb_repo.get_sitewide_top_artists.assert_not_awaited()
 
@@ -137,7 +153,7 @@ class TestHomeServiceSourceSelection:
         service, _, _, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        response = await service.get_home_data("listenbrainz")
+        response = await service.get_home_data("u1", "listenbrainz")
         assert response.integration_status is not None
         assert response.integration_status.lastfm is True
         assert response.integration_status.listenbrainz is True
@@ -147,20 +163,19 @@ class TestHomeServiceSourceSelection:
         service, lb_repo, _, prefs = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        lidarr_conn = MagicMock()
-        lidarr_conn.lidarr_url = "http://lidarr.local"
-        lidarr_conn.lidarr_api_key = "apikey"
-        prefs.get_lidarr_connection.return_value = lidarr_conn
-        service._lidarr_repo.get_library.return_value = [
+        download_client_conn = MagicMock()
+        download_client_conn.enabled = True
+        download_client_conn.url = "http://slskd.local"
+        prefs.get_download_client_settings.return_value = download_client_conn
+        service._library_repo.get_library.return_value = [
             LibraryAlbum(
                 artist="Artist",
                 album="Album",
-                monitored=True,
                 musicbrainz_id="rg-123",
                 artist_mbid="artist-123",
             )
         ]
-        service._lidarr_repo.get_artists_from_library.return_value = [{"mbid": "artist-123"}]
+        service._library_repo.get_artists_from_library.return_value = [{"mbid": "artist-123"}]
         lb_repo.get_sitewide_top_release_groups.return_value = [
             ListenBrainzReleaseGroup(
                 release_group_name="Album",
@@ -171,7 +186,7 @@ class TestHomeServiceSourceSelection:
             )
         ]
 
-        response = await service.get_home_data("listenbrainz")
+        response = await service.get_home_data("u1", "listenbrainz")
 
         assert response.popular_albums is not None
         assert len(response.popular_albums.items) == 1
@@ -182,15 +197,9 @@ class TestHomeServiceSourceSelection:
         service, _, lfm_repo, prefs = _make_service(
             lb_enabled=False, lfm_enabled=True, primary_source="lastfm"
         )
-        prefs.get_lastfm_connection.return_value = LastFmConnectionSettings(
-            api_key="key",
-            shared_secret="secret",
-            session_key="sk",
-            username="",
-            enabled=True,
-        )
+        service._client_factory.resolve_lastfm_username = AsyncMock(return_value="")
 
-        await service.get_home_data("lastfm")
+        await service.get_home_data("u1", "lastfm")
 
         lfm_repo.get_global_top_artists.assert_awaited_once()
         lfm_repo.get_user_top_albums.assert_not_awaited()
@@ -224,7 +233,7 @@ class TestHomeServiceSourceSelection:
         )
         service._mb_repo.get_release_group_id_from_release.return_value = "release-group-1"
 
-        response = await service.get_home_data("listenbrainz")
+        response = await service.get_home_data("u1", "listenbrainz")
 
         assert response.weekly_exploration is not None
         assert response.weekly_exploration.source_url == "https://listenbrainz.org/playlist/weekly-123"
@@ -237,7 +246,7 @@ class TestHomeServiceSourceSelection:
             lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
         )
 
-        response = await service.get_home_data("lastfm")
+        response = await service.get_home_data("u1", "lastfm")
 
         assert response.weekly_exploration is None
         lb_repo.get_recommendation_playlists.assert_not_awaited()
@@ -246,16 +255,22 @@ class TestHomeServiceSourceSelection:
 class TestHomeServiceCacheKeySourceAware:
     def test_different_sources_produce_different_keys(self):
         service, _, _, _ = _make_service()
-        key_lb = service._get_home_cache_key("listenbrainz")
-        key_lfm = service._get_home_cache_key("lastfm")
+        key_lb = service._get_home_cache_key("u1", "listenbrainz", True, True)
+        key_lfm = service._get_home_cache_key("u1", "lastfm", True, True)
         assert key_lb != key_lfm
+
+    def test_different_users_produce_different_keys(self):
+        service, _, _, _ = _make_service()
+        key_a = service._get_home_cache_key("user-a", "listenbrainz", True, True)
+        key_b = service._get_home_cache_key("user-b", "listenbrainz", True, True)
+        assert key_a != key_b
 
 
 class TestBuildServicePrompts:
     def test_source_prompts_hidden_when_one_source_enabled(self):
         service, _, _, _ = _make_service()
         prompts = service._build_service_prompts(
-            lb_enabled=True, lidarr_configured=True, lfm_enabled=False
+            lb_enabled=True, download_client_configured=True, lfm_enabled=False
         )
         services = [p.service for p in prompts]
         assert "lastfm" not in services
@@ -264,7 +279,7 @@ class TestBuildServicePrompts:
     def test_source_prompts_hidden_when_lastfm_enabled(self):
         service, _, _, _ = _make_service()
         prompts = service._build_service_prompts(
-            lb_enabled=False, lidarr_configured=True, lfm_enabled=True
+            lb_enabled=False, download_client_configured=True, lfm_enabled=True
         )
         services = [p.service for p in prompts]
         assert "listenbrainz" not in services
@@ -273,22 +288,22 @@ class TestBuildServicePrompts:
     def test_no_prompts_when_all_enabled(self):
         service, _, _, _ = _make_service()
         prompts = service._build_service_prompts(
-            lb_enabled=True, lidarr_configured=True, lfm_enabled=True
+            lb_enabled=True, download_client_configured=True, lfm_enabled=True
         )
         assert prompts == []
 
     def test_all_prompts_when_nothing_enabled(self):
         service, _, _, _ = _make_service()
         prompts = service._build_service_prompts(
-            lb_enabled=False, lidarr_configured=False, lfm_enabled=False
+            lb_enabled=False, download_client_configured=False, lfm_enabled=False
         )
         services = {p.service for p in prompts}
-        assert services == {"lidarr-connection", "listenbrainz", "lastfm"}
+        assert services == {"download-client", "listenbrainz", "lastfm"}
 
     def test_lb_prompt_mentions_lastfm(self):
         service, _, _, _ = _make_service()
         prompts = service._build_service_prompts(
-            lb_enabled=False, lidarr_configured=True, lfm_enabled=False
+            lb_enabled=False, download_client_configured=True, lfm_enabled=False
         )
         lb_prompt = next(p for p in prompts if p.service == "listenbrainz")
         assert "last.fm" in lb_prompt.description.lower()
@@ -302,7 +317,7 @@ class TestShowWhatsHotSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=False)
 
-        response = await service.get_home_data("listenbrainz")
+        response = await service.get_home_data("u1", "listenbrainz")
 
         lb_repo.get_sitewide_top_artists.assert_not_awaited()
         lb_repo.get_sitewide_top_release_groups.assert_not_awaited()
@@ -316,7 +331,7 @@ class TestShowWhatsHotSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=False)
 
-        response = await service.get_home_data("lastfm")
+        response = await service.get_home_data("u1", "lastfm")
 
         lfm_repo.get_global_top_artists.assert_not_awaited()
         assert response.trending_artists is None
@@ -328,7 +343,7 @@ class TestShowWhatsHotSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=True)
 
-        await service.get_home_data("listenbrainz")
+        await service.get_home_data("u1", "listenbrainz")
 
         lb_repo.get_sitewide_top_artists.assert_awaited_once()
         lb_repo.get_sitewide_top_release_groups.assert_awaited_once()
@@ -340,7 +355,7 @@ class TestShowWhatsHotSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=False)
 
-        response = await service.get_home_data("listenbrainz")
+        response = await service.get_home_data("u1", "listenbrainz")
 
         assert response.trending_artists is None
         assert response.popular_albums is None
@@ -357,7 +372,7 @@ class TestShowWhatsHotSetting:
 
         cached = HomeResponse(
             integration_status=HomeIntegrationStatus(
-                listenbrainz=True, jellyfin=False, lidarr=False,
+                listenbrainz=True, jellyfin=False, download_client=False,
                 youtube=False, lastfm=True,
             ),
             trending_artists=HomeSection(
@@ -370,7 +385,7 @@ class TestShowWhatsHotSetting:
         mock_cache.get = AsyncMock(return_value=cached)
         service._memory_cache = mock_cache
 
-        response = await service.get_home_data("listenbrainz")
+        response = await service.get_home_data("u1", "listenbrainz")
 
         assert response.trending_artists is None
         assert response.popular_albums is None

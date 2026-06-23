@@ -10,7 +10,7 @@ from api.v1.routes.scrobble import router as scrobble_router
 from api.v1.schemas.scrobble import ScrobbleResponse, ServiceResult
 from core.dependencies import get_scrobble_service
 from core.exceptions import ConfigurationError, ExternalServiceError
-from tests.helpers import build_test_client
+from tests.helpers import build_test_client, override_user_auth
 
 
 def _success_response() -> ScrobbleResponse:
@@ -45,7 +45,29 @@ def client(mock_scrobble_service):
     app = FastAPI()
     app.include_router(scrobble_router)
     app.dependency_overrides[get_scrobble_service] = lambda: mock_scrobble_service
+    override_user_auth(app, user_id="route-user")
     return build_test_client(app)
+
+
+def test_submit_requires_auth(mock_scrobble_service):
+    app = FastAPI()
+    app.include_router(scrobble_router)
+    app.dependency_overrides[get_scrobble_service] = lambda: mock_scrobble_service
+    unauth_client = build_test_client(app)
+    resp = unauth_client.post(
+        "/scrobble/submit",
+        json={"track_name": "S", "artist_name": "A", "timestamp": int(time.time()) - 60, "duration_ms": 200000},
+    )
+    assert resp.status_code == 401
+
+
+def test_submit_passes_current_user_id(client, mock_scrobble_service):
+    resp = client.post(
+        "/scrobble/submit",
+        json={"track_name": "S", "artist_name": "A", "timestamp": int(time.time()) - 60, "duration_ms": 200000},
+    )
+    assert resp.status_code == 200
+    assert mock_scrobble_service.submit_scrobble.await_args.kwargs["user_id"] == "route-user"
 
 
 class TestNowPlaying:

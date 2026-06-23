@@ -1,5 +1,3 @@
-"""Tests for the Daily Mix section builder in DiscoverHomepageService."""
-
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,10 +49,10 @@ def _make_prefs(
     jf_settings.api_key = ""
     prefs.get_jellyfin_connection.return_value = jf_settings
 
-    lidarr = MagicMock()
-    lidarr.lidarr_url = ""
-    lidarr.lidarr_api_key = ""
-    prefs.get_lidarr_connection.return_value = lidarr
+    download_client = MagicMock()
+    download_client.enabled = False
+    download_client.url = ""
+    prefs.get_download_client_settings.return_value = download_client
 
     yt = MagicMock()
     yt.enabled = False
@@ -118,7 +116,7 @@ def _make_service(
 ) -> DiscoverHomepageService:
     lb_repo = AsyncMock()
     jf_repo = AsyncMock()
-    lidarr_repo = AsyncMock()
+    library_repo = AsyncMock()
     mb_repo = AsyncMock()
     prefs = _make_prefs()
     integration = IntegrationHelpers(prefs)
@@ -127,7 +125,7 @@ def _make_service(
     return DiscoverHomepageService(
         listenbrainz_repo=lb_repo,
         jellyfin_repo=jf_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         musicbrainz_repo=mb_repo,
         integration=integration,
         mbid_resolution=mbid_resolution,
@@ -154,7 +152,7 @@ class TestDailyMixReturnsEmptyWhenGenreIndexIsNone:
     @pytest.mark.asyncio
     async def test_returns_empty_when_genre_index_is_none(self) -> None:
         service = _make_service(genre_index=None)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert result == []
 
 
@@ -164,7 +162,7 @@ class TestDailyMixReturnsEmptyWhenNoGenres:
         genre_index = _make_genre_index(top_genres=[])
         cache = _make_cache()
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert result == []
 
 
@@ -172,14 +170,14 @@ class TestDailyMixReturnsEmptyWhenAllGenresBelowMinArtists:
     @pytest.mark.asyncio
     async def test_returns_empty_when_all_genres_below_min_artists(self) -> None:
         top_genres = [("rock", 5), ("pop", 3)]
-        # Each genre has only 2 artists (below the 3 minimum)
+        # 2 artists per genre, under the 3-artist minimum
         artists_by_genre = {"rock": ["a1", "a2"], "pop": ["a3", "a4"]}
         genre_index = _make_genre_index(
             top_genres=top_genres, artists_by_genre=artists_by_genre,
         )
         cache = _make_cache()
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert result == []
 
 
@@ -202,11 +200,10 @@ class TestDailyMixCorrectCountWith5QualifyingGenres:
             albums_by_genre=albums,
         )
         cache = _make_cache()
-        # Return some pool items for each seed
         mock_pools.return_value = [_make_pool_items(3, f"pool-{i}") for i in range(3)]
 
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert len(result) == 5
 
 
@@ -229,7 +226,7 @@ class TestDailyMixCorrectCountWith2QualifyingGenres:
         mock_pools.return_value = [_make_pool_items(3)]
 
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert len(result) == 2
 
 
@@ -249,7 +246,7 @@ class TestDailyMixSectionTypeIsAlbums:
         mock_pools.return_value = [_make_pool_items(3)]
 
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert len(result) >= 1
         for section in result:
             assert section.type == "albums"
@@ -271,7 +268,7 @@ class TestDailyMixSectionTitleFormat:
         mock_pools.return_value = [_make_pool_items(3)]
 
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert len(result) >= 1
         for i, section in enumerate(result):
             assert section.title.startswith(f"Daily Mix {i + 1} - ")
@@ -295,7 +292,7 @@ class TestDailyMixSectionSourceMatchesResolvedSource:
         mock_pools.return_value = [_make_pool_items(3)]
 
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("my_source", set())
+        result = await service._build_daily_mix_sections("u1", "my_source", set())
         assert len(result) >= 1
         for section in result:
             assert section.source == "my_source"
@@ -307,7 +304,6 @@ class TestDailyMixFamiliarVsNewRatio:
     async def test_familiar_vs_new_ratio(self, mock_pools: AsyncMock) -> None:
         top_genres = [("rock", 10)]
         artists_by_genre = {"rock": ["a1", "a2", "a3", "a4"]}
-        # Provide plenty of familiar albums
         albums = [
             {"title": f"Lib {i}", "mbid": f"lib-{i}", "artist_name": f"Art {i}"}
             for i in range(20)
@@ -318,18 +314,16 @@ class TestDailyMixFamiliarVsNewRatio:
             albums_by_genre=albums,
         )
         cache = _make_cache()
-        # Provide plenty of new items
         mock_pools.return_value = [_make_pool_items(15)]
 
         service = _make_service(genre_index=genre_index, cache=cache)
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert len(result) >= 1
         section = result[0]
         total = len(section.items)
         assert total > 0
         new_count = sum(1 for item in section.items if not getattr(item, "in_library", False))
         familiar_count = sum(1 for item in section.items if getattr(item, "in_library", False))
-        # At least 50% new items (allowing rounding tolerance)
         assert new_count >= total * 0.5 - 1
 
 
@@ -344,9 +338,8 @@ class TestDailyMixCachedResultReturnedOnSecondCall:
         genre_index = _make_genre_index(top_genres=[("rock", 10)])
         service = _make_service(genre_index=genre_index, cache=cache)
 
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert result == cached_sections
-        # genre_index should not have been queried
         genre_index.get_top_genres.assert_not_awaited()
 
 
@@ -357,25 +350,24 @@ class TestDailyMixEmptyResultIsCached:
         cache = _make_cache()
         service = _make_service(genre_index=genre_index, cache=cache)
 
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert result == []
-        # Verify empty list was written to cache
         cache.set.assert_awaited_once()
         args = cache.set.call_args
-        assert args[0][1] == []  # cached value is empty list
+        assert args[0][1] == []
         assert args[0][2] == DAILY_MIX_CACHE_TTL
 
 
 class TestDailyMixCacheKeyIncludesSourceAndDate:
     def test_cache_key_includes_source_and_date(self) -> None:
         service = _make_service()
-        key = service._daily_mix_cache_key("listenbrainz")
-        assert key.startswith("daily_mix:listenbrainz:")
-        # Date portion should be YYYY-MM-DD format
+        key = service._daily_mix_cache_key("u1", "listenbrainz")
+        assert key.startswith("daily_mix:u1:listenbrainz:")
+        # date portion is YYYY-MM-DD
         date_part = key.split(":")[-1]
         parts = date_part.split("-")
         assert len(parts) == 3
-        assert len(parts[0]) == 4  # year
+        assert len(parts[0]) == 4
 
 
 class TestDailyMixExceptionReturnsEmptyList:
@@ -386,7 +378,7 @@ class TestDailyMixExceptionReturnsEmptyList:
         cache = _make_cache()
         service = _make_service(genre_index=genre_index, cache=cache)
 
-        result = await service._build_daily_mix_sections("listenbrainz", set())
+        result = await service._build_daily_mix_sections("u1", "listenbrainz", set())
         assert result == []
 
 

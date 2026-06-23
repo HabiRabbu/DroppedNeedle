@@ -1,0 +1,105 @@
+import { api } from '$lib/api/client';
+import { createMutation } from '@tanstack/svelte-query';
+import { authStore } from '$lib/stores/authStore.svelte';
+import { toastStore } from '$lib/stores/toast';
+import {
+	invalidateQueriesWithPersister,
+	queryClient,
+	setQueryDataWithPersister
+} from '../QueryClient';
+import { FollowQueryKeyFactory } from './FollowQueryKeyFactory';
+import { FOLLOW_ENDPOINTS } from './endpoints';
+import type { AutoDownloadState, FollowStatus } from './types';
+
+const NOT_FOLLOWING: FollowStatus = {
+	followed: false,
+	auto_download: false,
+	auto_download_state: 'none'
+};
+
+function statusKey(mbid: string) {
+	return FollowQueryKeyFactory.status(mbid, authStore.user?.id);
+}
+
+function invalidateFollowedArtists(): Promise<void> {
+	return invalidateQueriesWithPersister({
+		queryKey: FollowQueryKeyFactory.artists(authStore.user?.id)
+	});
+}
+
+export const createSetFollowMutation = (getMbid: () => string) =>
+	createMutation(() => ({
+		mutationFn: (followed: boolean) =>
+			api.global.put<FollowStatus>(FOLLOW_ENDPOINTS.setFollow(getMbid()), { followed }),
+		onMutate: async (followed: boolean) => {
+			const key = statusKey(getMbid());
+			await queryClient.cancelQueries({ queryKey: key });
+			const prev = queryClient.getQueryData<FollowStatus>(key) ?? NOT_FOLLOWING;
+			// unfollowing also clears the auto-download intent
+			const optimistic: FollowStatus = followed
+				? { ...prev, followed: true }
+				: { ...NOT_FOLLOWING };
+			await setQueryDataWithPersister<FollowStatus>(key, optimistic);
+			return { prev };
+		},
+		onError: (_err, _followed, ctx) => {
+			if (ctx) void setQueryDataWithPersister<FollowStatus>(statusKey(getMbid()), ctx.prev);
+		},
+		onSuccess: (data) => {
+			void setQueryDataWithPersister<FollowStatus>(statusKey(getMbid()), data);
+		},
+		onSettled: () => {
+			void invalidateFollowedArtists();
+		}
+	}));
+
+// mbid is the mutation variable so one instance serves every card in the hub
+export const createUnfollowMutation = () =>
+	createMutation(() => ({
+		mutationFn: (mbid: string) =>
+			api.global.put<FollowStatus>(FOLLOW_ENDPOINTS.setFollow(mbid), { followed: false }),
+		onSuccess: (data, mbid) => {
+			void setQueryDataWithPersister<FollowStatus>(statusKey(mbid), data);
+		},
+		onSettled: () => {
+			void invalidateFollowedArtists();
+		}
+	}));
+
+export const createSetAutoDownloadMutation = (getMbid: () => string) =>
+	createMutation(() => ({
+		mutationFn: (enabled: boolean) =>
+			api.global.put<FollowStatus>(FOLLOW_ENDPOINTS.autoDownload(getMbid()), { enabled }),
+		onMutate: async (enabled: boolean) => {
+			const key = statusKey(getMbid());
+			await queryClient.cancelQueries({ queryKey: key });
+			const prev = queryClient.getQueryData<FollowStatus>(key) ?? NOT_FOLLOWING;
+			// admins are approved immediately; everyone else enters a pending state (D3)
+			const optimisticState: AutoDownloadState = enabled
+				? authStore.isAdmin
+					? 'approved'
+					: 'pending'
+				: 'none';
+			await setQueryDataWithPersister<FollowStatus>(key, {
+				...prev,
+				auto_download: enabled,
+				auto_download_state: optimisticState
+			});
+			return { prev };
+		},
+		onError: (_err, _enabled, ctx) => {
+			if (ctx) void setQueryDataWithPersister<FollowStatus>(statusKey(getMbid()), ctx.prev);
+		},
+		onSuccess: (data, enabled) => {
+			void setQueryDataWithPersister<FollowStatus>(statusKey(getMbid()), data);
+			if (enabled && data.auto_download_state === 'pending') {
+				toastStore.show({
+					message: 'Request sent - an admin will approve auto-downloads for this artist.',
+					type: 'info'
+				});
+			}
+		},
+		onSettled: () => {
+			void invalidateFollowedArtists();
+		}
+	}));

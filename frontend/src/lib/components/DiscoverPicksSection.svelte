@@ -6,7 +6,7 @@
 	import HorizontalCarousel from '$lib/components/HorizontalCarousel.svelte';
 	import TrackPreviewButton from '$lib/components/TrackPreviewButton.svelte';
 	import SourceBadge from '$lib/components/SourceBadge.svelte';
-	import { Sparkles, Check, Bookmark, Search } from 'lucide-svelte';
+	import { Sparkles, Check, Search } from 'lucide-svelte';
 	import { albumHrefOrNull } from '$lib/utils/entityRoutes';
 	import { goto } from '$app/navigation';
 	import { integrationStore } from '$lib/stores/integration';
@@ -86,10 +86,6 @@
 								<div class="absolute left-2 top-2 z-20 badge badge-success badge-sm">
 									<Check class="h-3.5 w-3.5" />
 								</div>
-							{:else if heroAlbum.monitored && !heroAlbum.requested}
-								<div class="absolute left-2 top-2 z-20 badge badge-neutral badge-sm">
-									<Bookmark class="h-3.5 w-3.5" />
-								</div>
 							{/if}
 
 							{#if heroAlbum.mbid && heroAlbum.in_library}
@@ -136,7 +132,7 @@
 					</svelte:element>
 					{#if heroAlbum.mbid}
 						<div class="flex items-center justify-center gap-2 mt-2">
-							{#if $integrationStore.lidarr && !heroAlbum.in_library && !(heroAlbum.requested || libraryStore.isRequested(heroAlbum.mbid))}
+							{#if $integrationStore.download_client && !heroAlbum.in_library && !(heroAlbum.requested || libraryStore.isRequested(heroAlbum.mbid))}
 								<AlbumRequestButton
 									mbid={heroAlbum.mbid}
 									artistName={heroAlbum.artist_name ?? ''}
@@ -183,10 +179,6 @@
 												<div class="absolute top-2 left-2 z-20 badge badge-success badge-sm">
 													<Check class="w-3.5 h-3.5" />
 												</div>
-											{:else if album.monitored && !album.requested}
-												<div class="absolute top-2 left-2 z-20 badge badge-neutral badge-sm">
-													<Bookmark class="w-3.5 h-3.5" />
-												</div>
 											{/if}
 											{#if album.mbid && album.in_library}
 												<AlbumCardOverlay
@@ -225,7 +217,7 @@
 										{@const isAlbumRequested =
 											album.requested || libraryStore.isRequested(album.mbid)}
 										<div class="flex items-center justify-center gap-1 mt-1 pb-1">
-											{#if $integrationStore.lidarr && !album.in_library && !isAlbumRequested}
+											{#if $integrationStore.download_client && !album.in_library && !isAlbumRequested}
 												<AlbumRequestButton
 													mbid={album.mbid}
 													artistName={album.artist_name ?? ''}

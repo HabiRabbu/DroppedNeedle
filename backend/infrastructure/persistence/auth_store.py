@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio, hashlib, hmac, logging, os, sqlite3, threading
+import asyncio, hashlib, hmac, logging, os, re, sqlite3, threading
 from base64 import urlsafe_b64encode
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +23,8 @@ class UserRecord(msgspec.Struct, frozen = True):
     last_login_at: str | None = None
     email: str | None = None
     avatar_url: str | None = None
+    username: str | None = None          # lowercased, unique, used for login lookup
+    username_display: str | None = None  # preferred casing; NULL -> fall back to username
 
 
 class AuthProviderRecord(msgspec.Struct, frozen = True):
@@ -143,6 +145,18 @@ class AuthStore:
             have = {row[1] for row in conn.execute("PRAGMA table_info(auth_oidc_states)")}
             if "code_verifier" not in have:
                 conn.execute("ALTER TABLE auth_oidc_states ADD COLUMN code_verifier TEXT")
+            # Username login (D3): additive, idempotent. `username` is the lowercased
+            # login identifier; `username_display` preserves preferred casing. The
+            # partial unique index lets pre-backfill NULL rows coexist.
+            for column in ("username", "username_display"):
+                try:
+                    conn.execute(f"ALTER TABLE auth_users ADD COLUMN {column} TEXT")
+                except sqlite3.OperationalError:
+                    pass  # duplicate column - already present
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username "
+                "ON auth_users(username) WHERE username IS NOT NULL"
+            )
             conn.commit()
         finally:
             conn.close()
@@ -159,6 +173,8 @@ class AuthStore:
             role = row["role"],
             created_at = row["created_at"],
             last_login_at = row["last_login_at"],
+            username = row["username"],
+            username_display = row["username_display"],
         )
 
     @staticmethod
@@ -204,14 +220,17 @@ class AuthStore:
         role: str,
         email: str | None = None,
         avatar_url: str | None = None,
+        username: str | None = None,
+        username_display: str | None = None,
     ) -> UserRecord:
         now = _now_iso()
 
         def operation(conn: sqlite3.Connection) -> None:
             conn.execute(
-                """INSERT INTO auth_users (id, display_name, email, avatar_url, role, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (id, display_name, email, avatar_url, role, now),
+                """INSERT INTO auth_users
+                   (id, display_name, email, avatar_url, role, created_at, username, username_display)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (id, display_name, email, avatar_url, role, now, username, username_display),
             )
 
         await self._write(operation)
@@ -222,6 +241,8 @@ class AuthStore:
             avatar_url = avatar_url,
             role = role,
             created_at = now,
+            username = username,
+            username_display = username_display,
         )
 
     async def get_user_by_id(self, user_id: str) -> UserRecord | None:
@@ -236,6 +257,20 @@ class AuthStore:
             return self._to_user(
                 conn.execute(
                     "SELECT * FROM auth_users WHERE email = ?", (email.lower(),)
+                ).fetchone()
+            )
+        return await self._read(operation)
+
+    async def get_user_by_username(self, username: str) -> UserRecord | None:
+        """Look up a user by their lowercased username (D3 login lookup).
+
+        The service lowercases input before calling, so the stored and queried
+        values match.
+        """
+        def operation(conn: sqlite3.Connection) -> UserRecord | None:
+            return self._to_user(
+                conn.execute(
+                    "SELECT * FROM auth_users WHERE username = ?", (username,)
                 ).fetchone()
             )
         return await self._read(operation)
@@ -259,6 +294,11 @@ class AuthStore:
 
     async def delete_user(self, user_id: str) -> bool:
         def operation(conn: sqlite3.Connection) -> bool:
+            # playlists.user_id is an ALTER-added column and cannot carry ON DELETE
+            # CASCADE, so delete the user's playlists explicitly first (their
+            # playlist_tracks cascade via the playlist_id FK). Same connection, FK
+            # pragma on. Owner reassignment is NOT offered (AMU-1 / M4).
+            conn.execute("DELETE FROM playlists WHERE user_id = ?", (user_id,))
             cursor = conn.execute("DELETE FROM auth_users WHERE id = ?", (user_id,))
             return cursor.rowcount > 0
         return await self._write(operation)
@@ -284,6 +324,111 @@ class AuthStore:
                     "UPDATE auth_users SET avatar_url = ? WHERE id = ?",
                     (avatar_url, user_id),
                 )
+
+        await self._write(operation)
+
+    async def update_username(
+        self,
+        user_id: str,
+        username: str,
+        username_display: str,
+        *,
+        local_provider_id: str | None = None,
+    ) -> None:
+        """Rename a user's username, atomically syncing their local provider_uid (D8, M3).
+
+        Both UPDATEs run in one transaction so a provider_uid collision rolls the
+        username change back too - without the sync, login_local(new) would fail
+        after a rename because the local provider's provider_uid still held the old
+        value. Relies on the unique indexes to raise sqlite3.IntegrityError on a
+        collision (the service maps that to a domain error).
+        """
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE auth_users SET username = ?, username_display = ? WHERE id = ?",
+                (username, username_display, user_id),
+            )
+            if local_provider_id is not None:
+                conn.execute(
+                    "UPDATE auth_providers SET provider_uid = ? WHERE id = ?",
+                    (username, local_provider_id),
+                )
+
+        await self._write(operation)
+
+    async def update_email(self, user_id: str, email: str | None) -> None:
+        """Set (or clear, when None) a user's email (D8). UNIQUE - may raise IntegrityError."""
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE auth_users SET email = ? WHERE id = ?", (email, user_id)
+            )
+
+        await self._write(operation)
+
+    async def get_first_admin(self) -> UserRecord | None:
+        """Earliest-created admin (D7/D9/D10 first-admin selection for backfills)."""
+        def operation(conn: sqlite3.Connection) -> UserRecord | None:
+            return self._to_user(
+                conn.execute(
+                    "SELECT * FROM auth_users WHERE role = 'admin' "
+                    "ORDER BY created_at ASC LIMIT 1"
+                ).fetchone()
+            )
+        return await self._read(operation)
+
+    async def backfill_usernames(self) -> None:
+        """Assign a derived unique username to every user missing one (D3).
+
+        Idempotent: rows that already have a username are skipped, so re-running
+        at boot is a no-op. MUST run before migrate_local_provider_to_username().
+        """
+        def _load(conn: sqlite3.Connection) -> list[tuple[str, str | None, str]]:
+            rows = conn.execute(
+                "SELECT id, email, display_name FROM auth_users WHERE username IS NULL"
+            ).fetchall()
+            return [(r["id"], r["email"], r["display_name"]) for r in rows]
+
+        for user_id, email, display_name in await self._read(_load):
+            await self._assign_unique_username(user_id, email = email, display_name = display_name)
+
+    async def _assign_unique_username(
+        self, user_id: str, *, email: str | None, display_name: str
+    ) -> None:
+        """Allocate a unique username from the derived base and persist it.
+
+        Retries on a unique-index collision (the TOCTOU race between the de-dup
+        check and the UPDATE) so a transient clash never aborts the backfill.
+        """
+        for _ in range(50):
+            username, display = await _derive_username(self, email = email, display_name = display_name)
+
+            def operation(conn: sqlite3.Connection, u = username, d = display) -> None:
+                conn.execute(
+                    "UPDATE auth_users SET username = ?, username_display = ? WHERE id = ?",
+                    (u, d, user_id),
+                )
+
+            try:
+                await self._write(operation)
+                return
+            except sqlite3.IntegrityError:
+                continue  # lost the race; re-derive picks the next free suffix
+        logger.warning("Could not allocate a unique username for %s after retries", user_id[:8])
+
+    async def migrate_local_provider_to_username(self) -> None:
+        """Point each local provider's provider_uid at the user's username (D3).
+
+        MUST run after backfill_usernames(). Idempotent: the UPDATE is convergent
+        (re-running rewrites the same value); non-local providers are untouched and
+        rows whose user has no username are skipped (never writes a NULL uid).
+        """
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE auth_providers "
+                "SET provider_uid = (SELECT username FROM auth_users WHERE id = auth_providers.user_id) "
+                "WHERE provider = 'local' "
+                "  AND (SELECT username FROM auth_users WHERE id = auth_providers.user_id) IS NOT NULL"
+            )
 
         await self._write(operation)
 
@@ -538,6 +683,48 @@ class AuthStore:
             return True, row["code_verifier"]
 
         return await self._write(operation)
+
+
+_USERNAME_SUB = re.compile(r"[^a-zA-Z0-9._-]+")
+
+
+def _slugify(raw: str) -> str:
+    """Reduce a string to the username charset [a-zA-Z0-9._-], preserving case.
+
+    Disallowed runs collapse to '-'; repeated '-' collapse; leading/trailing
+    separators are trimmed. Returns "" when nothing usable remains.
+    """
+    s = _USERNAME_SUB.sub("-", (raw or "").strip())
+    s = re.sub(r"-{2,}", "-", s).strip("-._")
+    return s
+
+
+def _username_base(*, email: str | None = None, display_name: str | None = None) -> str:
+    """Pick a base username candidate: email local-part, else display_name, else 'user'.
+
+    Case is preserved here; the caller lowercases for storage (D3).
+    """
+    local_part = email.split("@", 1)[0] if email and "@" in email else ""
+    return _slugify(local_part) or _slugify(display_name or "") or "user"
+
+
+async def _derive_username(
+    store, *, email: str | None = None, display_name: str | None = None
+) -> tuple[str, str]:
+    """Derive a unique (username_lowercased, username_display) against `store`.
+
+    De-dups with a numeric suffix (jane, jane-2, jane-3, …). Reused by the
+    username backfill and the SSO auto-create flows (D3). `store` must expose an
+    async `get_user_by_username`.
+    """
+    base = _username_base(email = email, display_name = display_name)
+    n = 1
+    while True:
+        username = base.lower() if n == 1 else f"{base.lower()}-{n}"
+        display = base if n == 1 else f"{base}-{n}"
+        if await store.get_user_by_username(username) is None:
+            return username, display
+        n += 1
 
 
 def _now_iso() -> str:

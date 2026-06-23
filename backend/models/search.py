@@ -9,7 +9,6 @@ class SearchResult(AppStruct):
     year: int | None = None
     in_library: bool = False
     requested: bool = False
-    monitored: bool = False
     cover_url: str | None = None
     album_thumb_url: str | None = None
     thumb_url: str | None = None

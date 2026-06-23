@@ -3,7 +3,7 @@ import { API, CACHE_TTL } from '$lib/constants';
 import { createQuery } from '@tanstack/svelte-query';
 import { VersionQueryKeyFactory } from './VersionQueryKeyFactory';
 
-export interface VersionInfo {
+interface VersionInfo {
 	version: string;
 	build_date: string | null;
 }
@@ -17,7 +17,7 @@ export interface GitHubRelease {
 	prerelease: boolean;
 }
 
-export interface UpdateCheckResponse {
+interface UpdateCheckResponse {
 	current_version: string;
 	latest_version: string | null;
 	update_available: boolean;

@@ -3,7 +3,7 @@
  * Fed by polling the library store after a batch request is submitted.
  */
 
-export type BatchDownloadJob = {
+type BatchDownloadJob = {
 	artistName: string;
 	artistId: string;
 	total: number;

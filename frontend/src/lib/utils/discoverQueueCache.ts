@@ -1,5 +1,5 @@
 import { CACHE_KEYS, CACHE_TTL } from '$lib/constants';
-import { createLocalStorageCache } from '$lib/utils/localStorageCache';
+import { clearLocalStorageNamespace, createLocalStorageCache } from '$lib/utils/localStorageCache';
 import type { DiscoverQueueItemFull } from '$lib/types';
 
 export interface QueueCacheData {
@@ -14,6 +14,12 @@ const queueCache = createLocalStorageCache<QueueCacheData>(
 );
 
 const QUEUE_CACHE_EVENT = 'discover-queue-cache-changed';
+
+// Entries scoped per user so a shared browser never serves one user's queue to
+// another. The change event still carries only `source` (what consumers react to).
+function scopedSuffix(userId: string, source?: string): string {
+	return source ? `${userId}:${source}` : userId;
+}
 
 function notifyQueueCacheChanged(source?: string): void {
 	if (typeof window === 'undefined') return;
@@ -38,12 +44,13 @@ export function subscribeQueueCacheChanges(listener: (source?: string) => void):
 	};
 }
 
-export const getQueueCachedData = (source?: string) => {
-	const cached = queueCache.get(source);
+export const getQueueCachedData = (userId: string, source?: string) => {
+	const suffix = scopedSuffix(userId, source);
+	const cached = queueCache.get(suffix);
 	if (!cached) return null;
 
 	if (queueCache.isStale(cached.timestamp)) {
-		queueCache.remove(source);
+		queueCache.remove(suffix);
 		notifyQueueCacheChanged(source);
 		return null;
 	}
@@ -51,22 +58,18 @@ export const getQueueCachedData = (source?: string) => {
 	return cached;
 };
 
-export const setQueueCachedData = (data: QueueCacheData, source?: string) => {
-	queueCache.set(data, source);
+export const setQueueCachedData = (data: QueueCacheData, userId: string, source?: string) => {
+	queueCache.set(data, scopedSuffix(userId, source));
 	notifyQueueCacheChanged(source);
 };
 
-export const removeQueueCachedData = (source?: string) => {
-	queueCache.remove(source);
+export const removeQueueCachedData = (userId: string, source?: string) => {
+	queueCache.remove(scopedSuffix(userId, source));
 	notifyQueueCacheChanged(source);
 };
 export const updateDiscoverQueueCacheTTL = queueCache.updateTTL;
 
-const KNOWN_SOURCES = ['listenbrainz', 'lastfm'] as const;
-
 export function removeAllQueueCachedData(): void {
-	removeQueueCachedData();
-	for (const src of KNOWN_SOURCES) {
-		removeQueueCachedData(src);
-	}
+	clearLocalStorageNamespace(CACHE_KEYS.DISCOVER_QUEUE);
+	notifyQueueCacheChanged();
 }

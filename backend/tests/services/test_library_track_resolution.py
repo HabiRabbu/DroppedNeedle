@@ -22,7 +22,7 @@ def _make_service(
     preferences=None,
     cache=None,
 ):
-    lidarr_repo = MagicMock()
+    library_repo = MagicMock()
     library_db = MagicMock()
     memory_cache = cache or MagicMock()
     disk_cache = MagicMock()
@@ -31,7 +31,7 @@ def _make_service(
     cover_repo = MagicMock()
 
     service = LibraryService(
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         library_db=library_db,
         cover_repo=cover_repo,
         preferences_service=prefs,

@@ -8,11 +8,18 @@ from repositories.playlist_repository import PlaylistRecord, PlaylistTrackRecord
 from services.playlist_service import PlaylistService
 
 
-def _make_playlist(id="p-1", name="Test", cover_image_path=None) -> PlaylistRecord:
+# Mutating service methods now take a requesting user and enforce ownership; these
+# unit tests drive the owner path (record owner == requester) so they exercise the
+# core logic. Ownership/redaction is covered by tests/routes/test_playlist_ownership.py.
+_OWNER = SimpleNamespace(id="owner", role="user")
+
+
+def _make_playlist(id="p-1", name="Test", cover_image_path=None, user_id="owner") -> PlaylistRecord:
     return PlaylistRecord(
         id=id, name=name, cover_image_path=cover_image_path,
         created_at="2025-01-01T00:00:00+00:00",
         updated_at="2025-01-01T00:00:00+00:00",
+        user_id=user_id,
     )
 
 
@@ -47,27 +54,27 @@ class TestCreatePlaylist:
     @pytest.mark.asyncio
     async def test_valid_name(self, tmp_path):
         service, repo = _make_service(tmp_path)
-        result = await service.create_playlist("My Playlist")
+        result = await service.create_playlist("My Playlist", user_id="owner")
         assert result.name == "Test"
-        repo.create_playlist.assert_called_once_with("My Playlist", None)
+        repo.create_playlist.assert_called_once_with("My Playlist", None, "owner")
 
     @pytest.mark.asyncio
     async def test_empty_name(self, tmp_path):
         service, _ = _make_service(tmp_path)
         with pytest.raises(InvalidPlaylistDataError):
-            await service.create_playlist("")
+            await service.create_playlist("", user_id="owner")
 
     @pytest.mark.asyncio
     async def test_whitespace_name(self, tmp_path):
         service, _ = _make_service(tmp_path)
         with pytest.raises(InvalidPlaylistDataError):
-            await service.create_playlist("   ")
+            await service.create_playlist("   ", user_id="owner")
 
     @pytest.mark.asyncio
     async def test_strips_whitespace(self, tmp_path):
         service, repo = _make_service(tmp_path)
-        await service.create_playlist("  Hello  ")
-        repo.create_playlist.assert_called_once_with("Hello", None)
+        await service.create_playlist("  Hello  ", user_id="owner")
+        repo.create_playlist.assert_called_once_with("Hello", None, "owner")
 
 
 class TestGetPlaylist:
@@ -89,7 +96,7 @@ class TestUpdatePlaylist:
     @pytest.mark.asyncio
     async def test_valid_update(self, tmp_path):
         service, repo = _make_service(tmp_path)
-        result = await service.update_playlist("p-1", name="New")
+        result = await service.update_playlist("p-1", _OWNER, name="New")
         assert result is not None
         repo.update_playlist.assert_called_once()
 
@@ -98,20 +105,20 @@ class TestUpdatePlaylist:
         service, repo = _make_service(tmp_path)
         repo.update_playlist = MagicMock(return_value=None)
         with pytest.raises(PlaylistNotFoundError):
-            await service.update_playlist("nonexistent", name="X")
+            await service.update_playlist("nonexistent", _OWNER, name="X")
 
     @pytest.mark.asyncio
     async def test_empty_name(self, tmp_path):
         service, _ = _make_service(tmp_path)
         with pytest.raises(InvalidPlaylistDataError):
-            await service.update_playlist("p-1", name="")
+            await service.update_playlist("p-1", _OWNER, name="")
 
 
 class TestDeletePlaylist:
     @pytest.mark.asyncio
     async def test_successful(self, tmp_path):
         service, repo = _make_service(tmp_path)
-        await service.delete_playlist("p-1")
+        await service.delete_playlist("p-1", _OWNER)
         repo.delete_playlist.assert_called_once_with("p-1")
 
     @pytest.mark.asyncio
@@ -119,7 +126,7 @@ class TestDeletePlaylist:
         service, repo = _make_service(tmp_path)
         repo.delete_playlist = MagicMock(return_value=False)
         with pytest.raises(PlaylistNotFoundError):
-            await service.delete_playlist("nonexistent")
+            await service.delete_playlist("nonexistent", _OWNER)
 
 
 class TestAddTracks:
@@ -127,28 +134,28 @@ class TestAddTracks:
     async def test_valid(self, tmp_path):
         service, repo = _make_service(tmp_path)
         tracks = [{"track_name": "T", "artist_name": "A", "album_name": "AL", "source_type": "local"}]
-        result = await service.add_tracks("p-1", tracks)
+        result = await service.add_tracks("p-1", _OWNER, tracks)
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_empty_list(self, tmp_path):
         service, _ = _make_service(tmp_path)
         with pytest.raises(InvalidPlaylistDataError):
-            await service.add_tracks("p-1", [])
+            await service.add_tracks("p-1", _OWNER, [])
 
     @pytest.mark.asyncio
     async def test_playlist_not_found(self, tmp_path):
         service, repo = _make_service(tmp_path)
         repo.get_playlist = MagicMock(return_value=None)
         with pytest.raises(PlaylistNotFoundError):
-            await service.add_tracks("nonexistent", [{"track_name": "T", "artist_name": "A", "album_name": "AL", "source_type": "local"}])
+            await service.add_tracks("nonexistent", _OWNER, [{"track_name": "T", "artist_name": "A", "album_name": "AL", "source_type": "local"}])
 
 
 class TestRemoveTrack:
     @pytest.mark.asyncio
     async def test_successful(self, tmp_path):
         service, repo = _make_service(tmp_path)
-        await service.remove_track("p-1", "t-1")
+        await service.remove_track("p-1", _OWNER, "t-1")
         repo.remove_track.assert_called_once_with("p-1", "t-1")
 
     @pytest.mark.asyncio
@@ -156,14 +163,14 @@ class TestRemoveTrack:
         service, repo = _make_service(tmp_path)
         repo.remove_track = MagicMock(return_value=False)
         with pytest.raises(PlaylistNotFoundError):
-            await service.remove_track("p-1", "nonexistent")
+            await service.remove_track("p-1", _OWNER, "nonexistent")
 
 
 class TestReorderTrack:
     @pytest.mark.asyncio
     async def test_valid(self, tmp_path):
         service, repo = _make_service(tmp_path)
-        result = await service.reorder_track("p-1", "t-1", 2)
+        result = await service.reorder_track("p-1", _OWNER, "t-1", 2)
         assert result == 2
         repo.reorder_track.assert_called_once_with("p-1", "t-1", 2)
 
@@ -171,14 +178,14 @@ class TestReorderTrack:
     async def test_negative_position(self, tmp_path):
         service, _ = _make_service(tmp_path)
         with pytest.raises(InvalidPlaylistDataError):
-            await service.reorder_track("p-1", "t-1", -1)
+            await service.reorder_track("p-1", _OWNER, "t-1", -1)
 
     @pytest.mark.asyncio
     async def test_not_found(self, tmp_path):
         service, repo = _make_service(tmp_path)
         repo.reorder_track = MagicMock(return_value=None)
         with pytest.raises(PlaylistNotFoundError):
-            await service.reorder_track("p-1", "nonexistent", 0)
+            await service.reorder_track("p-1", _OWNER, "nonexistent", 0)
 
 
 class TestUploadCover:
@@ -187,7 +194,7 @@ class TestUploadCover:
         service, repo = _make_service(tmp_path)
         repo.get_playlist = MagicMock(return_value=_make_playlist(id="abcdef-1234"))
         with pytest.raises(InvalidPlaylistDataError, match="Invalid image type"):
-            await service.upload_cover("abcdef-1234", b"data", "application/pdf")
+            await service.upload_cover("abcdef-1234", _OWNER, b"data", "application/pdf")
 
     @pytest.mark.asyncio
     async def test_too_large(self, tmp_path):
@@ -195,14 +202,14 @@ class TestUploadCover:
         repo.get_playlist = MagicMock(return_value=_make_playlist(id="abcdef-1234"))
         data = b"x" * (2 * 1024 * 1024 + 1)
         with pytest.raises(InvalidPlaylistDataError, match="too large"):
-            await service.upload_cover("abcdef-1234", data, "image/png")
+            await service.upload_cover("abcdef-1234", _OWNER, data, "image/png")
 
     @pytest.mark.asyncio
     async def test_path_traversal_id(self, tmp_path):
         service, repo = _make_service(tmp_path)
         repo.get_playlist = MagicMock(return_value=_make_playlist(id="../evil"))
         with pytest.raises(InvalidPlaylistDataError, match="Invalid playlist ID"):
-            await service.upload_cover("../evil", b"data", "image/png")
+            await service.upload_cover("../evil", _OWNER, b"data", "image/png")
 
     @pytest.mark.asyncio
     async def test_valid_upload(self, tmp_path):
@@ -210,7 +217,7 @@ class TestUploadCover:
         playlist = _make_playlist(id="abcdef-1234")
         repo.get_playlist = MagicMock(return_value=playlist)
 
-        result = await service.upload_cover("abcdef-1234", b"PNG_DATA", "image/png")
+        result = await service.upload_cover("abcdef-1234", _OWNER, b"PNG_DATA", "image/png")
         assert result == "/api/v1/playlists/abcdef-1234/cover"
         repo.update_playlist.assert_called()
 
@@ -223,11 +230,11 @@ class TestUploadCover:
         playlist = _make_playlist(id="abcdef-1234")
         repo.get_playlist = MagicMock(return_value=playlist)
 
-        await service.upload_cover("abcdef-1234", b"OLD_PNG", "image/png")
+        await service.upload_cover("abcdef-1234", _OWNER, b"OLD_PNG", "image/png")
         cover_dir = tmp_path / "covers" / "playlists"
         assert (cover_dir / "abcdef-1234.png").exists()
 
-        await service.upload_cover("abcdef-1234", b"NEW_JPEG", "image/jpeg")
+        await service.upload_cover("abcdef-1234", _OWNER, b"NEW_JPEG", "image/jpeg")
         assert not (cover_dir / "abcdef-1234.png").exists()
         assert (cover_dir / "abcdef-1234.jpg").exists()
         assert (cover_dir / "abcdef-1234.jpg").read_bytes() == b"NEW_JPEG"
@@ -246,7 +253,7 @@ class TestRemoveCover:
             return_value=_make_playlist(cover_image_path=str(cover_file)),
         )
 
-        await service.remove_cover("p-1")
+        await service.remove_cover("p-1", _OWNER)
         assert not cover_file.exists()
         repo.update_playlist.assert_called()
 
@@ -256,7 +263,7 @@ class TestRemoveCover:
         repo.get_playlist = MagicMock(
             return_value=_make_playlist(cover_image_path="/nonexistent/stale.png"),
         )
-        await service.remove_cover("p-1")
+        await service.remove_cover("p-1", _OWNER)
         repo.update_playlist.assert_called()
 
 
@@ -266,21 +273,21 @@ class TestSourceTypeValidation:
         service, _ = _make_service(tmp_path)
         tracks = [{"track_name": "T", "artist_name": "A", "album_name": "AL", "source_type": "invalid"}]
         with pytest.raises(InvalidPlaylistDataError, match="Invalid source_type"):
-            await service.add_tracks("p-1", tracks)
+            await service.add_tracks("p-1", _OWNER, tracks)
 
     @pytest.mark.asyncio
     async def test_valid_source_types_in_add_tracks(self, tmp_path):
         service, repo = _make_service(tmp_path)
         for st in ("local", "jellyfin", "youtube", ""):
             tracks = [{"track_name": "T", "artist_name": "A", "album_name": "AL", "source_type": st}]
-            result = await service.add_tracks("p-1", tracks)
+            result = await service.add_tracks("p-1", _OWNER, tracks)
             assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_invalid_source_type_in_update_track(self, tmp_path):
         service, _ = _make_service(tmp_path)
         with pytest.raises(InvalidPlaylistDataError, match="Invalid source_type"):
-            await service.update_track_source("p-1", "t-1", source_type="bogus")
+            await service.update_track_source("p-1", _OWNER, "t-1", source_type="bogus")
 
 
 class TestUpdatePlaylistWithDetail:
@@ -288,7 +295,7 @@ class TestUpdatePlaylistWithDetail:
     async def test_returns_playlist_and_tracks(self, tmp_path):
         service, repo = _make_service(tmp_path)
         repo.get_tracks = MagicMock(return_value=[_make_track()])
-        playlist, tracks = await service.update_playlist_with_detail("p-1", name="New")
+        playlist, tracks = await service.update_playlist_with_detail("p-1", _OWNER, name="New")
         assert playlist is not None
         assert len(tracks) == 1
         repo.update_playlist.assert_called_once()
@@ -305,7 +312,7 @@ class TestCheckTrackMembership:
         assert result == {"p-1": [0]}
         repo.check_track_membership.assert_called_once_with([
             ("Song", "Artist", "Album"),
-        ])
+        ], None)
 
 
 def _jf_match(tracks):
@@ -410,7 +417,7 @@ class TestResolveNewSourceId:
         local_svc = AsyncMock()
 
         result = await service.update_track_source(
-            "p-1", "t-1", source_type="jellyfin",
+            "p-1", _OWNER, "t-1", source_type="jellyfin",
             jf_service=jf_svc, local_service=local_svc,
         )
         assert result.track_source_id == "jf-id-1"
@@ -430,7 +437,7 @@ class TestResolveNewSourceId:
 
         with pytest.raises(SourceResolutionError, match="missing album_id"):
             await service.update_track_source(
-                "p-1", "t-1", source_type="jellyfin",
+                "p-1", _OWNER, "t-1", source_type="jellyfin",
                 jf_service=AsyncMock(), local_service=AsyncMock(),
             )
 
@@ -446,6 +453,6 @@ class TestResolveNewSourceId:
 
         with pytest.raises(SourceResolutionError, match="not found in Jellyfin"):
             await service.update_track_source(
-                "p-1", "t-1", source_type="jellyfin",
+                "p-1", _OWNER, "t-1", source_type="jellyfin",
                 jf_service=jf_svc, local_service=local_svc,
             )

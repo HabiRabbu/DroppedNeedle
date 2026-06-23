@@ -14,6 +14,9 @@ export interface AuthSessionUser {
 	role: string;
 	email: string | null;
 	avatar_url: string | null;
+	username: string | null;
+	username_display: string | null;
+	providers?: string[];
 }
 
 export interface AuthSessionResponse {
@@ -21,7 +24,7 @@ export interface AuthSessionResponse {
 }
 
 export interface LocalLoginVars {
-	email: string;
+	username: string;
 	password: string;
 }
 
@@ -32,7 +35,8 @@ export interface JellyfinLoginVars {
 
 export interface SetupVars {
 	display_name: string;
-	email: string;
+	username: string;
+	email?: string;
 	password: string;
 }
 
@@ -55,6 +59,32 @@ export interface OidcAuthorizeResponse {
 	redirect_url: string;
 }
 
+/** An importable media-server account (admin import picker, Phase 6 / D5). */
+export interface ImportCandidate {
+	provider: string;
+	provider_uid: string;
+	display_name: string;
+	avatar_url: string | null;
+	email: string | null;
+	already_imported: boolean;
+}
+
+export interface ImportCandidateListResponse {
+	users: ImportCandidate[];
+}
+
+export interface ImportUsersVars {
+	provider: string;
+	provider_uids: string[];
+}
+
+export interface ImportUsersResult {
+	imported: AuthSessionUser[];
+	linked: AuthSessionUser[];
+	skipped: string[];
+	total_imported: number;
+}
+
 const KNOWN_ROLES: readonly AuthUser['role'][] = ['admin', 'trusted', 'user'];
 
 /** Validates the server-provided role, falling back to least-privilege 'user' for
@@ -75,6 +105,9 @@ export function toAuthUser(user: AuthSessionUser): AuthUser {
 		display_name: user.display_name,
 		role: toRole(user.role),
 		email: user.email,
-		avatar_url: user.avatar_url
+		avatar_url: user.avatar_url,
+		username: user.username,
+		username_display: user.username_display,
+		providers: user.providers ?? []
 	};
 }

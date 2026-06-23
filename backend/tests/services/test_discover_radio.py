@@ -64,10 +64,10 @@ def _make_prefs(
     jf_settings.api_key = ""
     prefs.get_jellyfin_connection.return_value = jf_settings
 
-    lidarr = MagicMock()
-    lidarr.lidarr_url = ""
-    lidarr.lidarr_api_key = ""
-    prefs.get_lidarr_connection.return_value = lidarr
+    download_client = MagicMock()
+    download_client.enabled = False
+    download_client.url = ""
+    prefs.get_download_client_settings.return_value = download_client
 
     yt = MagicMock()
     yt.enabled = False
@@ -153,7 +153,7 @@ def _make_homepage_service(
 ) -> DiscoverHomepageService:
     lb_repo = AsyncMock()
     jf_repo = AsyncMock()
-    lidarr_repo = AsyncMock()
+    library_repo = AsyncMock()
     mb_repo = AsyncMock()
     prefs = _make_prefs()
     integration = IntegrationHelpers(prefs)
@@ -162,7 +162,7 @@ def _make_homepage_service(
     return DiscoverHomepageService(
         listenbrainz_repo=lb_repo,
         jellyfin_repo=jf_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         musicbrainz_repo=mb_repo,
         integration=integration,
         mbid_resolution=mbid_resolution,

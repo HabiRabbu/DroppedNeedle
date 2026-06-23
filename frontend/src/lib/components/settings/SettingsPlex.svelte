@@ -306,7 +306,7 @@
 								{#if !form.testResult?.valid && !form.wasAlreadySecondaryEnabled}
 									Test and get a valid connection to enable
 								{:else}
-									Let users sign in to Musicseerr with their Plex account
+									Let users sign in to DroppedNeedle with their Plex account
 								{/if}
 							</p>
 						</div>

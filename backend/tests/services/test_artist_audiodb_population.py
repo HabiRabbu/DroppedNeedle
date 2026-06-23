@@ -42,7 +42,7 @@ def _make_service(
         audiodb_service = MagicMock()
     return ArtistService(
         mb_repo=MagicMock(),
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         wikidata_repo=MagicMock(),
         preferences_service=MagicMock(),
         memory_cache=MagicMock(),
@@ -76,30 +76,30 @@ class TestApplyAudioDBArtistImages:
         assert result.cutout_url == "https://cdn.example.com/cutout.png"
 
     @pytest.mark.asyncio
-    async def test_lidarr_fanart_not_overridden(self):
+    async def test_library_fanart_not_overridden(self):
         audiodb = MagicMock()
         audiodb.fetch_and_cache_artist_images = AsyncMock(return_value=SAMPLE_IMAGES)
         svc = _make_service(audiodb)
-        artist = _make_artist_info(fanart_url="https://lidarr.example.com/fanart.jpg")
+        artist = _make_artist_info(fanart_url="https://library.example.com/fanart.jpg")
 
         result = await svc._apply_audiodb_artist_images(
             artist, TEST_MBID, "Coldplay", allow_fetch=True,
         )
 
-        assert result.fanart_url == "https://lidarr.example.com/fanart.jpg"
+        assert result.fanart_url == "https://library.example.com/fanart.jpg"
 
     @pytest.mark.asyncio
-    async def test_lidarr_banner_not_overridden(self):
+    async def test_library_banner_not_overridden(self):
         audiodb = MagicMock()
         audiodb.fetch_and_cache_artist_images = AsyncMock(return_value=SAMPLE_IMAGES)
         svc = _make_service(audiodb)
-        artist = _make_artist_info(banner_url="https://lidarr.example.com/banner.jpg")
+        artist = _make_artist_info(banner_url="https://library.example.com/banner.jpg")
 
         result = await svc._apply_audiodb_artist_images(
             artist, TEST_MBID, "Coldplay", allow_fetch=True,
         )
 
-        assert result.banner_url == "https://lidarr.example.com/banner.jpg"
+        assert result.banner_url == "https://library.example.com/banner.jpg"
 
     @pytest.mark.asyncio
     async def test_fills_missing_fanart(self):

@@ -263,11 +263,11 @@ class TestNormalize:
         assert _normalize("OK Computer!") == "okcomputer"
 
 
-class TestLidarrAlbumMatching:
+class TestLibraryAlbumMatching:
     @pytest.mark.asyncio
     async def test_exact_match(self):
         service, _ = _make_service()
-        service._lidarr_album_index = {
+        service._library_album_index = {
             f"{_normalize('Buzz')}:{_normalize('NIKI')}": ("mbid-buzz", "mbid-niki"),
         }
         result = await service._resolve_album_mbid("Buzz", "NIKI")
@@ -276,7 +276,7 @@ class TestLidarrAlbumMatching:
     @pytest.mark.asyncio
     async def test_cleaned_name_match(self):
         service, _ = _make_service()
-        service._lidarr_album_index = {
+        service._library_album_index = {
             f"{_normalize('OK Computer')}:{_normalize('Radiohead')}": ("mbid-okc", "mbid-rh"),
         }
         result = await service._resolve_album_mbid("OK Computer (Remastered 2017)", "Radiohead")
@@ -285,17 +285,17 @@ class TestLidarrAlbumMatching:
     @pytest.mark.asyncio
     async def test_no_match_returns_none(self):
         service, _ = _make_service()
-        service._lidarr_album_index = {}
+        service._library_album_index = {}
         result = await service._resolve_album_mbid("Nonexistent", "Nobody")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_negative_cache_prevents_re_lookup(self):
         service, _ = _make_service()
-        service._lidarr_album_index = {}
+        service._library_album_index = {}
         result1 = await service._resolve_album_mbid("Missing", "Artist")
         assert result1 is None
-        service._lidarr_album_index = {
+        service._library_album_index = {
             f"{_normalize('Missing')}:{_normalize('Artist')}": ("mbid-late", "mbid-a"),
         }
         result2 = await service._resolve_album_mbid("Missing", "Artist")
@@ -308,11 +308,11 @@ class TestLidarrAlbumMatching:
         assert result is None
 
 
-class TestLidarrArtistMatching:
+class TestLibraryArtistMatching:
     @pytest.mark.asyncio
     async def test_exact_match(self):
         service, _ = _make_service()
-        service._lidarr_artist_index = {
+        service._library_artist_index = {
             _normalize("Radiohead"): "mbid-radiohead",
         }
         result = await service._resolve_artist_mbid("Radiohead")
@@ -321,7 +321,7 @@ class TestLidarrArtistMatching:
     @pytest.mark.asyncio
     async def test_no_match_returns_none(self):
         service, _ = _make_service()
-        service._lidarr_artist_index = {}
+        service._library_artist_index = {}
         result = await service._resolve_artist_mbid("Unknown Artist")
         assert result is None
 
@@ -355,7 +355,7 @@ def _make_service_with_cache() -> tuple[NavidromeLibraryService, MagicMock, Magi
 
 class TestWarmMbidCacheLifecycle:
     @pytest.mark.asyncio
-    async def test_builds_lidarr_index_resolves_albums_and_persists(self):
+    async def test_builds_library_index_resolves_albums_and_persists(self):
         service, repo, cache = _make_service_with_cache()
         cache.get_all_albums_for_matching = AsyncMock(return_value=[
             ("OK Computer", "Radiohead", "mbid-okc", "mbid-rh"),
@@ -371,7 +371,7 @@ class TestWarmMbidCacheLifecycle:
         cache.save_navidrome_artist_mbid_index.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_negative_cache_overridden_when_lidarr_match_exists(self):
+    async def test_negative_cache_overridden_when_library_match_exists(self):
         service, repo, cache = _make_service_with_cache()
         key = f"{_normalize('Buzz')}:{_normalize('NIKI')}"
         service._album_mbid_cache[key] = (None, 0.0)
@@ -387,10 +387,10 @@ class TestWarmMbidCacheLifecycle:
     @pytest.mark.asyncio
     async def test_persist_if_dirty_round_trip(self):
         service, repo, cache = _make_service_with_cache()
-        service._lidarr_album_index = {
+        service._library_album_index = {
             f"{_normalize('Album')}:{_normalize('Artist')}": ("mbid-a", "mbid-ar"),
         }
-        service._lidarr_artist_index = {_normalize("Artist"): "mbid-ar"}
+        service._library_artist_index = {_normalize("Artist"): "mbid-ar"}
         await service._resolve_album_mbid("Album", "Artist")
         await service._resolve_artist_mbid("Artist")
         assert service._dirty is True
@@ -402,7 +402,7 @@ class TestWarmMbidCacheLifecycle:
         assert saved_artists[_normalize("Artist")] == "mbid-ar"
 
     @pytest.mark.asyncio
-    async def test_disk_cache_loaded_when_lidarr_unavailable(self):
+    async def test_disk_cache_loaded_when_library_unavailable(self):
         service, repo, cache = _make_service_with_cache()
         cache.get_all_albums_for_matching = AsyncMock(return_value=[])
         key = f"{_normalize('Album')}:{_normalize('Artist')}"

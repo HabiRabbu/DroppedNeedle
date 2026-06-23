@@ -27,24 +27,6 @@ export function buildPlayQueueState(
 	};
 }
 
-export function buildPlayAlbumState(): {
-	playbackState: 'loading';
-	isSeekable: true;
-	isPlayerVisible: true;
-	queue: [];
-	currentIndex: 0;
-	shuffleOrder: [];
-} {
-	return {
-		playbackState: 'loading',
-		isSeekable: true,
-		isPlayerVisible: true,
-		queue: [],
-		currentIndex: 0,
-		shuffleOrder: []
-	};
-}
-
 export interface ToggleShuffleResult {
 	shuffleEnabled: boolean;
 	shuffleOrder: number[];
@@ -71,21 +53,6 @@ export function computeToggleShuffle(
 		};
 	}
 	return { shuffleEnabled: false, shuffleOrder: [] };
-}
-
-export function buildResetState() {
-	return {
-		nowPlaying: null as null,
-		playbackState: 'idle' as const,
-		isSeekable: true as const,
-		isPlayerVisible: false as const,
-		progress: 0,
-		duration: 0,
-		queue: [] as QueueItem[],
-		currentIndex: 0,
-		shuffleOrder: [] as number[],
-		shuffleEnabled: false
-	};
 }
 
 export function changeItemSource(

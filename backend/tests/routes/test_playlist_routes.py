@@ -11,6 +11,8 @@ from core.dependencies import get_playlist_service, get_jellyfin_library_service
 from core.exceptions import PlaylistNotFoundError, InvalidPlaylistDataError, ResourceNotFoundError, ValidationError
 from core.exception_handlers import resource_not_found_handler, validation_error_handler, general_exception_handler
 from repositories.playlist_repository import PlaylistRecord, PlaylistSummaryRecord, PlaylistTrackRecord
+from services.playlist_service import PlaylistDetailView, PlaylistSummaryView
+from tests.helpers import override_user_auth
 
 
 def _playlist(id="p-1", name="Test", cover_image_path=None) -> PlaylistRecord:
@@ -47,8 +49,10 @@ def mock_playlist_service():
     mock = AsyncMock()
     mock.create_playlist.return_value = _playlist()
     mock.get_playlist.return_value = _playlist()
-    mock.get_all_playlists.return_value = [_summary()]
-    mock.get_playlist_with_tracks.return_value = (_playlist(), [_track()])
+    mock.get_all_playlists.return_value = [PlaylistSummaryView(record=_summary(), is_owner=True)]
+    mock.get_playlist_with_tracks.return_value = PlaylistDetailView(
+        record=_playlist(), tracks=[_track()], is_owner=True,
+    )
     mock.update_playlist.return_value = _playlist()
     mock.update_playlist_with_detail.return_value = (_playlist(), [_track()])
     mock.delete_playlist.return_value = None
@@ -86,6 +90,7 @@ def client(mock_playlist_service, mock_jf_service, mock_local_service, mock_nd_s
     app.dependency_overrides[get_jellyfin_library_service] = lambda: mock_jf_service
     app.dependency_overrides[get_local_files_service] = lambda: mock_local_service
     app.dependency_overrides[get_navidrome_library_service] = lambda: mock_nd_service
+    override_user_auth(app)
     app.add_exception_handler(ResourceNotFoundError, resource_not_found_handler)
     app.add_exception_handler(ValidationError, validation_error_handler)
     app.add_exception_handler(Exception, general_exception_handler)

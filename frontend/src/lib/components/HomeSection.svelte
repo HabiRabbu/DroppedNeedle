@@ -7,17 +7,7 @@
 		HomeGenre
 	} from '$lib/types';
 	import type { Snippet } from 'svelte';
-	import {
-		ArrowRight,
-		X,
-		Check,
-		Bookmark,
-		Disc3,
-		Music2,
-		Tv,
-		Sparkles,
-		Search
-	} from 'lucide-svelte';
+	import { ArrowRight, X, Check, Disc3, Music2, Tv, Sparkles, Search } from 'lucide-svelte';
 	import { goto } from '$app/navigation';
 	import { albumHrefOrNull, artistHrefOrNull } from '$lib/utils/entityRoutes';
 	import { formatListenCount, formatListenedAt } from '$lib/utils/formatting';
@@ -172,7 +162,7 @@
 							href={artistHref ?? undefined}
 							data-sveltekit-preload-data={artistHref ? 'hover' : undefined}
 							class="card bg-base-100 w-full shadow-sm transition-all {artistHref
-								? 'cursor-pointer hover:scale-105 active:scale-95 hover:shadow-[0_0_20px_rgba(174,213,242,0.15)]'
+								? 'cursor-pointer hover:scale-105 active:scale-95 hover:glow-primary'
 								: 'cursor-default opacity-80'}"
 						>
 							<figure class="flex justify-center pt-4 relative">
@@ -207,7 +197,7 @@
 							this={albumHref ? 'a' : 'div'}
 							href={albumHref ?? undefined}
 							class="card bg-base-100 w-full shadow-sm transition-all group {albumHref
-								? 'cursor-pointer hover:scale-105 active:scale-95 hover:shadow-[0_0_20px_rgba(174,213,242,0.15)]'
+								? 'cursor-pointer hover:scale-105 active:scale-95 hover:glow-primary'
 								: 'cursor-default opacity-90'}"
 						>
 							<figure class="aspect-square overflow-hidden relative">
@@ -222,10 +212,6 @@
 								{#if item.in_library}
 									<div class="absolute top-2 left-2 z-20 badge badge-success badge-sm">
 										<Check class="w-3.5 h-3.5" />
-									</div>
-								{:else if item.monitored && !item.requested}
-									<div class="absolute top-2 left-2 z-20 badge badge-neutral badge-sm">
-										<Bookmark class="w-3.5 h-3.5" />
 									</div>
 								{/if}
 								{#if item.mbid && item.in_library}
@@ -258,9 +244,9 @@
 								{/if}
 							</div>
 						</svelte:element>
-						{#if item.mbid && (($integrationStore.lidarr && !item.in_library && !isItemRequested) || showPreview)}
+						{#if item.mbid && (($integrationStore.download_client && !item.in_library && !isItemRequested) || showPreview)}
 							<div class="flex items-center justify-center gap-1 mt-1 pb-1">
-								{#if $integrationStore.lidarr && !item.in_library && !isItemRequested}
+								{#if $integrationStore.download_client && !item.in_library && !isItemRequested}
 									<AlbumRequestButton
 										mbid={item.mbid}
 										artistName={item.artist_name ?? ''}
@@ -289,7 +275,7 @@
 							this={trackArtistHref ? 'a' : 'div'}
 							href={trackArtistHref ?? undefined}
 							class="card card-side bg-base-100 w-full shadow-sm transition-all {trackArtistHref
-								? 'cursor-pointer hover:shadow-[0_0_20px_rgba(174,213,242,0.15)] active:scale-95'
+								? 'cursor-pointer hover:glow-primary active:scale-95'
 								: 'cursor-default opacity-90'}"
 						>
 							<figure class="w-16 h-16 shrink-0">

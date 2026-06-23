@@ -24,10 +24,7 @@ from services.discover.queue_strategies import (
 )
 
 if TYPE_CHECKING:
-    from infrastructure.persistence.genre_index import GenreIndex
-    from services.album_discovery_service import AlbumDiscoveryService
-    from services.artist_discovery_service import ArtistDiscoveryService
-    from services.home_transformers import HomeDataTransformers
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +77,7 @@ class DiscoverRadioService:
                 )
 
         library_mbids = await self._mbid.get_library_artist_mbids(
-            self._integration.is_lidarr_configured() if self._integration else False
+            self._integration.is_library_configured() if self._integration else False
         )
 
         count = request.count or 10

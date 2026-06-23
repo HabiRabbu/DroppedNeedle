@@ -13,16 +13,24 @@ from api.v1.schemas.playlists import (
     PlaylistListResponse,
     PlaylistSummaryResponse,
     PlaylistTrackResponse,
+    RedactedPlaylist,
     RemoveTracksRequest,
     ReorderTrackRequest,
     ReorderTrackResponse,
     ResolveSourcesResponse,
+    SetPlaylistPublicRequest,
     UpdatePlaylistRequest,
     UpdateTrackRequest,
 )
 from core.dependencies import JellyfinLibraryServiceDep, LocalFilesServiceDep, NavidromeLibraryServiceDep, PlexLibraryServiceDep, PlaylistServiceDep
+from core.dependencies.type_aliases import CurrentUserDep
 from core.exceptions import PlaylistNotFoundError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
+from services.playlist_service import (
+    PlaylistSummaryView,
+    RedactedDetailView,
+    RedactedSummaryView,
+)
 
 router = APIRouter(
     route_class=MsgSpecRoute,
@@ -75,64 +83,33 @@ def _track_to_response(t) -> PlaylistTrackResponse:
     )
 
 
-@router.get("", response_model=PlaylistListResponse)
-async def list_playlists(
-    service: PlaylistServiceDep,
-) -> PlaylistListResponse:
-    summaries = await service.get_all_playlists()
-    return PlaylistListResponse(
-        playlists=[
-            PlaylistSummaryResponse(
-                id=s.id,
-                name=s.name,
-                track_count=s.track_count,
-                total_duration=s.total_duration,
-                cover_urls=[_normalize_cover_url(u) for u in s.cover_urls] if s.cover_urls else [],
-                custom_cover_url=_custom_cover_url(s.id, s.cover_image_path),
-                source_ref=s.source_ref,
-                created_at=s.created_at,
-                updated_at=s.updated_at,
-            )
-            for s in summaries
-        ]
+def _summary_view_to_response(
+    view: PlaylistSummaryView | RedactedSummaryView,
+) -> PlaylistSummaryResponse | RedactedPlaylist:
+    if isinstance(view, RedactedSummaryView):
+        return RedactedPlaylist(
+            id=view.id, track_count=view.track_count, owner_name=view.owner_name,
+        )
+    s = view.record
+    return PlaylistSummaryResponse(
+        id=s.id,
+        name=s.name,
+        track_count=s.track_count,
+        total_duration=s.total_duration,
+        cover_urls=[_normalize_cover_url(u) for u in s.cover_urls] if s.cover_urls else [],
+        custom_cover_url=_custom_cover_url(s.id, s.cover_image_path),
+        source_ref=s.source_ref,
+        created_at=s.created_at,
+        updated_at=s.updated_at,
+        is_public=s.is_public,
+        is_owner=view.is_owner,
+        owner_name=view.owner_name,
     )
 
 
-@router.post("/check-tracks", response_model=CheckTrackMembershipResponse)
-async def check_track_membership(
-    service: PlaylistServiceDep,
-    body: CheckTrackMembershipRequest = MsgSpecBody(CheckTrackMembershipRequest),
-) -> CheckTrackMembershipResponse:
-    tracks = [(t.track_name, t.artist_name, t.album_name) for t in body.tracks]
-    membership = await service.check_track_membership(tracks)
-    return CheckTrackMembershipResponse(membership=membership)
-
-
-@router.post("", response_model=PlaylistDetailResponse, status_code=201)
-async def create_playlist(
-    service: PlaylistServiceDep,
-    body: CreatePlaylistRequest = MsgSpecBody(CreatePlaylistRequest),
+def _detail_to_response(
+    playlist, tracks, *, is_owner: bool, owner_name: str | None,
 ) -> PlaylistDetailResponse:
-    playlist = await service.create_playlist(body.name)
-    return PlaylistDetailResponse(
-        id=playlist.id,
-        name=playlist.name,
-        custom_cover_url=_custom_cover_url(playlist.id, playlist.cover_image_path),
-        source_ref=playlist.source_ref,
-        tracks=[],
-        track_count=0,
-        total_duration=None,
-        created_at=playlist.created_at,
-        updated_at=playlist.updated_at,
-    )
-
-
-@router.get("/{playlist_id}", response_model=PlaylistDetailResponse)
-async def get_playlist(
-    playlist_id: str,
-    service: PlaylistServiceDep,
-) -> PlaylistDetailResponse:
-    playlist, tracks = await service.get_playlist_with_tracks(playlist_id)
     track_responses = [_track_to_response(t) for t in tracks]
     cover_urls = list(dict.fromkeys(_normalize_cover_url(t.cover_url) for t in tracks if t.cover_url))[:4]
     total_duration = sum(t.duration for t in tracks if t.duration)
@@ -147,6 +124,57 @@ async def get_playlist(
         total_duration=total_duration or None,
         created_at=playlist.created_at,
         updated_at=playlist.updated_at,
+        is_public=playlist.is_public,
+        is_owner=is_owner,
+        owner_name=owner_name,
+    )
+
+
+@router.get("", response_model=PlaylistListResponse)
+async def list_playlists(
+    service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
+) -> PlaylistListResponse:
+    views = await service.get_all_playlists(current_user)
+    return PlaylistListResponse(
+        playlists=[_summary_view_to_response(v) for v in views]
+    )
+
+
+@router.post("/check-tracks", response_model=CheckTrackMembershipResponse)
+async def check_track_membership(
+    service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
+    body: CheckTrackMembershipRequest = MsgSpecBody(CheckTrackMembershipRequest),
+) -> CheckTrackMembershipResponse:
+    tracks = [(t.track_name, t.artist_name, t.album_name) for t in body.tracks]
+    membership = await service.check_track_membership(tracks, user_id=current_user.id)
+    return CheckTrackMembershipResponse(membership=membership)
+
+
+@router.post("", response_model=PlaylistDetailResponse, status_code=201)
+async def create_playlist(
+    service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
+    body: CreatePlaylistRequest = MsgSpecBody(CreatePlaylistRequest),
+) -> PlaylistDetailResponse:
+    playlist = await service.create_playlist(body.name, user_id=current_user.id)
+    return _detail_to_response(playlist, [], is_owner=True, owner_name=None)
+
+
+@router.get("/{playlist_id}", response_model=PlaylistDetailResponse | RedactedPlaylist)
+async def get_playlist(
+    playlist_id: str,
+    service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
+) -> PlaylistDetailResponse | RedactedPlaylist:
+    view = await service.get_playlist_with_tracks(playlist_id, current_user)
+    if isinstance(view, RedactedDetailView):
+        return RedactedPlaylist(
+            id=view.id, track_count=view.track_count, owner_name=view.owner_name,
+        )
+    return _detail_to_response(
+        view.record, view.tracks, is_owner=view.is_owner, owner_name=view.owner_name,
     )
 
 
@@ -154,33 +182,34 @@ async def get_playlist(
 async def update_playlist(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
     body: UpdatePlaylistRequest = MsgSpecBody(UpdatePlaylistRequest),
 ) -> PlaylistDetailResponse:
-    playlist, tracks = await service.update_playlist_with_detail(playlist_id, name=body.name)
-    track_responses = [_track_to_response(t) for t in tracks]
-    cover_urls = list(dict.fromkeys(_normalize_cover_url(t.cover_url) for t in tracks if t.cover_url))[:4]
-    total_duration = sum(t.duration for t in tracks if t.duration)
-    return PlaylistDetailResponse(
-        id=playlist.id,
-        name=playlist.name,
-        cover_urls=cover_urls,
-        custom_cover_url=_custom_cover_url(playlist.id, playlist.cover_image_path),
-        source_ref=playlist.source_ref,
-        tracks=track_responses,
-        track_count=len(tracks),
-        total_duration=total_duration or None,
-        created_at=playlist.created_at,
-        updated_at=playlist.updated_at,
+    playlist, tracks = await service.update_playlist_with_detail(
+        playlist_id, current_user, name=body.name,
     )
+    return _detail_to_response(playlist, tracks, is_owner=True, owner_name=None)
 
 
 @router.delete("/{playlist_id}", response_model=StatusMessageResponse)
 async def delete_playlist(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
 ) -> StatusMessageResponse:
-    await service.delete_playlist(playlist_id)
+    await service.delete_playlist(playlist_id, current_user)
     return StatusMessageResponse(status="ok", message="Playlist deleted")
+
+
+@router.patch("/{playlist_id}/share", response_model=PlaylistSummaryResponse)
+async def set_playlist_visibility(
+    playlist_id: str,
+    service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
+    body: SetPlaylistPublicRequest = MsgSpecBody(SetPlaylistPublicRequest),
+) -> PlaylistSummaryResponse:
+    view = await service.set_public(playlist_id, current_user, body.is_public)
+    return _summary_view_to_response(view)
 
 
 @router.post(
@@ -191,6 +220,7 @@ async def delete_playlist(
 async def add_tracks(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
     body: AddTracksRequest = MsgSpecBody(AddTracksRequest),
 ) -> AddTracksResponse:
     track_dicts = [
@@ -212,7 +242,7 @@ async def add_tracks(
         }
         for t in body.tracks
     ]
-    created = await service.add_tracks(playlist_id, track_dicts, body.position)
+    created = await service.add_tracks(playlist_id, current_user, track_dicts, body.position)
     return AddTracksResponse(tracks=[_track_to_response(t) for t in created])
 
 
@@ -223,9 +253,10 @@ async def add_tracks(
 async def remove_tracks(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
     body: RemoveTracksRequest = MsgSpecBody(RemoveTracksRequest),
 ) -> StatusMessageResponse:
-    removed = await service.remove_tracks(playlist_id, body.track_ids)
+    removed = await service.remove_tracks(playlist_id, current_user, body.track_ids)
     return StatusMessageResponse(status="ok", message=f"{removed} track(s) removed")
 
 
@@ -237,8 +268,9 @@ async def remove_track(
     playlist_id: str,
     track_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
 ) -> StatusMessageResponse:
-    await service.remove_track(playlist_id, track_id)
+    await service.remove_track(playlist_id, current_user, track_id)
     return StatusMessageResponse(status="ok", message="Track removed")
 
 
@@ -251,9 +283,12 @@ async def remove_track(
 async def reorder_track(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
     body: ReorderTrackRequest = MsgSpecBody(ReorderTrackRequest),
 ) -> ReorderTrackResponse:
-    actual_position = await service.reorder_track(playlist_id, body.track_id, body.new_position)
+    actual_position = await service.reorder_track(
+        playlist_id, current_user, body.track_id, body.new_position,
+    )
     return ReorderTrackResponse(
         status="ok",
         message="Track reordered",
@@ -269,6 +304,7 @@ async def update_track(
     playlist_id: str,
     track_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
     jf_service: JellyfinLibraryServiceDep,
     local_service: LocalFilesServiceDep,
     nd_service: NavidromeLibraryServiceDep,
@@ -276,7 +312,7 @@ async def update_track(
     body: UpdateTrackRequest = MsgSpecBody(UpdateTrackRequest),
 ) -> PlaylistTrackResponse:
     result = await service.update_track_source(
-        playlist_id, track_id,
+        playlist_id, current_user, track_id,
         source_type=body.source_type,
         available_sources=body.available_sources,
         jf_service=jf_service,
@@ -294,13 +330,14 @@ async def update_track(
 async def resolve_sources(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
     jf_service: JellyfinLibraryServiceDep,
     local_service: LocalFilesServiceDep,
     nd_service: NavidromeLibraryServiceDep,
     plex_service: PlexLibraryServiceDep,
 ) -> ResolveSourcesResponse:
     sources = await service.resolve_track_sources(
-        playlist_id, jf_service=jf_service, local_service=local_service,
+        playlist_id, requesting=current_user, jf_service=jf_service, local_service=local_service,
         nd_service=nd_service, plex_service=plex_service,
     )
     return ResolveSourcesResponse(sources=sources)
@@ -310,6 +347,7 @@ async def resolve_sources(
 async def upload_cover(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
     cover_image: UploadFile = File(...),
 ) -> CoverUploadResponse:
     max_size = 2 * 1024 * 1024
@@ -327,7 +365,7 @@ async def upload_cover(
         chunks.append(chunk)
     data = b"".join(chunks)
     cover_url = await service.upload_cover(
-        playlist_id, data, cover_image.content_type or "",
+        playlist_id, current_user, data, cover_image.content_type or "",
     )
     return CoverUploadResponse(cover_url=cover_url)
 
@@ -336,8 +374,9 @@ async def upload_cover(
 async def get_cover(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
 ):
-    path = await service.get_cover_path(playlist_id)
+    path = await service.get_cover_path(playlist_id, current_user)
     if path is None:
         raise PlaylistNotFoundError("No cover found")
 
@@ -362,6 +401,7 @@ async def get_cover(
 async def remove_cover(
     playlist_id: str,
     service: PlaylistServiceDep,
+    current_user: CurrentUserDep,
 ) -> StatusMessageResponse:
-    await service.remove_cover(playlist_id)
+    await service.remove_cover(playlist_id, current_user)
     return StatusMessageResponse(status="ok", message="Cover removed")

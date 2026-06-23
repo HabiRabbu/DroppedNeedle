@@ -35,7 +35,7 @@ def parse_eta(eta_str: Optional[str]) -> Optional[datetime]:
 
 
 def extract_cover_url(album_data: dict) -> Optional[str]:
-    canonical_cover_url = release_group_cover_url(album_data.get("foreignAlbumId"), size=500)
+    canonical_cover_url = release_group_cover_url(album_data.get("musicbrainz_id"), size=500)
     if canonical_cover_url:
         return canonical_cover_url
 

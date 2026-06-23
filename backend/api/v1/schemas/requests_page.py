@@ -24,7 +24,7 @@ class ActiveRequestItem(AppStruct):
     download_state: str | None = None
     status_messages: list[StatusMessage] | None = None
     error_message: str | None = None
-    lidarr_queue_id: int | None = None
+    library_queue_id: int | None = None
     quality: str | None = None
     protocol: str | None = None
     download_client: str | None = None
@@ -83,3 +83,16 @@ class ActiveCountResponse(AppStruct):
 class ApprovalActionResponse(AppStruct):
     success: bool
     message: str
+
+
+class AutoDownloadApprovalItem(AppStruct):
+    user_id: str
+    artist_mbid: str
+    artist_name: str
+    requested_at: float  # epoch seconds
+    user_name: str | None = None
+
+
+class AutoDownloadApprovalsResponse(AppStruct):
+    items: list[AutoDownloadApprovalItem]
+    count: int

@@ -41,6 +41,8 @@ export interface NowPlaying {
 	albumName: string;
 	artistName: string;
 	coverUrl: string | null;
+	/** Raw remote cover URL (pre-proxy) so large displays reuse the browser-cached carousel image instead of cold-fetching covers. */
+	coverRemoteUrl?: string | null;
 	sourceType: SourceType;
 	discNumber?: number;
 	trackSourceId?: string;
@@ -70,6 +72,8 @@ export interface QueueItem {
 	albumId: string;
 	albumName: string;
 	coverUrl: string | null;
+	/** Raw remote cover URL (pre-proxy) so large displays reuse the browser-cached carousel image instead of cold-fetching covers. */
+	coverRemoteUrl?: string | null;
 	sourceType: SourceType;
 	artistId?: string;
 	streamUrl?: string;

@@ -1,6 +1,5 @@
 import time
 
-import msgspec
 
 from infrastructure.msgspec_fastapi import AppStruct
 
@@ -11,6 +10,9 @@ class NowPlayingRequest(AppStruct):
     album_name: str = ""
     duration_ms: int = 0
     mbid: str | None = None
+    # set by the inbound compat scrobble adapter; None for native callers
+    source: str | None = None
+    release_group_mbid: str | None = None
 
     def __post_init__(self) -> None:
         if self.duration_ms < 0:
@@ -24,6 +26,9 @@ class ScrobbleRequest(AppStruct):
     album_name: str = ""
     duration_ms: int = 0
     mbid: str | None = None
+    # set by the inbound compat scrobble adapter; None for native callers
+    source: str | None = None
+    release_group_mbid: str | None = None
 
     def __post_init__(self) -> None:
         now = int(time.time())

@@ -11,6 +11,22 @@ from services.preferences_service import PreferencesService
 logger = logging.getLogger(__name__)
 
 
+def resolve_source_value(
+    source: str | None, primary_source: str, lb_enabled: bool, lfm_enabled: bool
+) -> str:
+    """Per-user source resolution with no global preferences reads (Phase 5 / D1):
+    honour an explicit source, else the user's primary, else whatever is linked."""
+    if source in ("listenbrainz", "lastfm"):
+        resolved = source
+    else:
+        resolved = primary_source
+    if resolved == "listenbrainz" and not lb_enabled and lfm_enabled:
+        return "lastfm"
+    if resolved == "lastfm" and not lfm_enabled and lb_enabled:
+        return "listenbrainz"
+    return resolved
+
+
 class HomeIntegrationHelpers:
     def __init__(self, preferences_service: PreferencesService):
         self._preferences = preferences_service
@@ -23,9 +39,13 @@ class HomeIntegrationHelpers:
         jf_settings = self._preferences.get_jellyfin_connection()
         return jf_settings.enabled and bool(jf_settings.jellyfin_url) and bool(jf_settings.api_key)
 
-    def is_lidarr_configured(self) -> bool:
-        lidarr_connection = self._preferences.get_lidarr_connection()
-        return bool(lidarr_connection.lidarr_url) and bool(lidarr_connection.lidarr_api_key)
+    def is_download_client_configured(self) -> bool:
+        dc = self._preferences.get_download_client_settings()
+        return dc.enabled and bool(dc.url)
+
+    def is_library_configured(self) -> bool:
+        # The native library scanner is always present.
+        return True
 
     def is_youtube_enabled(self) -> bool:
         yt_settings = self._preferences.get_youtube_connection()
@@ -36,8 +56,8 @@ class HomeIntegrationHelpers:
         return yt_settings.enabled and yt_settings.api_enabled and yt_settings.has_valid_api_key()
 
     def is_local_files_enabled(self) -> bool:
-        lf_settings = self._preferences.get_local_files_connection()
-        return lf_settings.enabled and bool(lf_settings.music_path)
+        # Native engine always present; actual file presence is checked per-request via has_any_files().
+        return True
 
     def is_navidrome_enabled(self) -> bool:
         nd_settings = self._preferences.get_navidrome_connection()

@@ -1,0 +1,106 @@
+<script lang="ts">
+	import { Check, X } from 'lucide-svelte';
+	import { getLibraryScanScheduleQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import { saveLibraryScanSchedule } from '$lib/queries/library/LibraryMutations.svelte';
+	import { SCAN_FREQUENCY_OPTIONS } from '$lib/utils/scanFrequency';
+	import { toastStore } from '$lib/stores/toast';
+	import type { ScanFrequency } from '$lib/types';
+
+	const scheduleQuery = getLibraryScanScheduleQuery();
+	const save = saveLibraryScanSchedule();
+
+	let frequency = $state<ScanFrequency>('24hr');
+	let dailyTime = $state('03:00');
+	let seeded = $state(false);
+
+	$effect(() => {
+		const d = scheduleQuery.data;
+		if (d && !seeded) {
+			frequency = d.scan_frequency;
+			dailyTime = d.daily_scan_time ?? '03:00';
+			seeded = true;
+		}
+	});
+
+	const isDaily = $derived(frequency === 'daily');
+	const timezone = $derived(scheduleQuery.data?.server_timezone ?? '');
+	const timeChanged = $derived(isDaily && scheduleQuery.data?.daily_scan_time !== dailyTime);
+	const dirty = $derived(
+		seeded && (scheduleQuery.data?.scan_frequency !== frequency || timeChanged)
+	);
+	const lastScan = $derived(scheduleQuery.data?.last_scan ?? null);
+	const lastScanOk = $derived(scheduleQuery.data?.last_scan_success ?? true);
+
+	// Hide the legacy 5/10-minute options unless one is already selected.
+	const options = $derived(
+		SCAN_FREQUENCY_OPTIONS.filter(
+			(o) => !o.legacy || o.value === scheduleQuery.data?.scan_frequency
+		)
+	);
+
+	async function handleSave() {
+		try {
+			await save.mutateAsync({
+				scan_frequency: frequency,
+				daily_scan_time: dailyTime,
+				last_scan: scheduleQuery.data?.last_scan ?? null,
+				last_scan_success: scheduleQuery.data?.last_scan_success ?? true
+			});
+			toastStore.show({ message: 'Scan schedule saved', type: 'success' });
+		} catch (e) {
+			toastStore.show({
+				message: e instanceof Error ? e.message : 'Failed to save schedule',
+				type: 'error'
+			});
+		}
+	}
+
+	function formatLastScan(ts: number | null): string {
+		if (!ts) return 'Never';
+		return new Date(ts * 1000).toLocaleString();
+	}
+</script>
+
+<div class="space-y-3">
+	<div class="flex flex-wrap items-end gap-3">
+		<label class="form-control">
+			<div class="label py-1"><span class="label-text">Automatic scan frequency</span></div>
+			<select class="select select-bordered" bind:value={frequency} aria-label="Scan frequency">
+				{#each options as opt (opt.value)}
+					<option value={opt.value}>{opt.label}{opt.legacy ? ' (legacy)' : ''}</option>
+				{/each}
+			</select>
+		</label>
+		{#if isDaily}
+			<label class="form-control">
+				<div class="label py-1"><span class="label-text">Time of day</span></div>
+				<input
+					type="time"
+					class="input input-bordered"
+					bind:value={dailyTime}
+					aria-label="Daily scan time"
+				/>
+			</label>
+		{/if}
+		<button class="btn btn-primary" onclick={handleSave} disabled={!dirty || save.isPending}>
+			{#if save.isPending}<span class="loading loading-spinner loading-sm"></span>{/if}
+			Save
+		</button>
+	</div>
+	{#if isDaily}
+		<p class="text-xs text-base-content/60">
+			Scans every day at {dailyTime}{timezone ? ` (${timezone})` : ''}. If the app is offline at
+			that time, it scans the next time it starts.
+		</p>
+	{/if}
+	{#if lastScan != null}
+		<p class="flex items-center gap-1 text-xs text-base-content/60">
+			Last automatic scan: {formatLastScan(lastScan)}
+			{#if lastScanOk}
+				<Check class="h-3 w-3 text-success" />
+			{:else}
+				<X class="h-3 w-3 text-error" />
+			{/if}
+		</p>
+	{/if}
+</div>

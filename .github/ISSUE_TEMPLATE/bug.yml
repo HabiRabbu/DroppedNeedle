@@ -1,5 +1,5 @@
 name: "\U0001F41B Bug Report"
-description: Report a problem with MusicSeerr
+description: Report a problem with DroppedNeedle
 labels: ["bug"]
 body:
   - type: markdown
@@ -11,7 +11,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: MusicSeerr Version
+      label: DroppedNeedle Version
       description: Found in Settings or the bottom of the sidebar.
       placeholder: v1.0.0
     validations:
@@ -50,7 +50,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevant log output from `docker compose logs musicseerr`. This will be formatted as code automatically.
+      description: Relevant log output from `docker compose logs droppedneedle`. This will be formatted as code automatically.
       render: shell
   - type: dropdown
     id: deployment

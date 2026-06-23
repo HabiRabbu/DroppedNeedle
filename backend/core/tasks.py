@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from time import time
 from typing import TYPE_CHECKING, Optional
 from infrastructure.cache.memory_cache import CacheInterface
@@ -12,11 +13,13 @@ from services.preferences_service import PreferencesService
 from core.task_registry import TaskRegistry
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from services.album_service import AlbumService
+    from services.native.library_scanner import LibraryScanner
+    from services.native.download_orchestrator import DownloadOrchestrator
+    from infrastructure.persistence.scan_state_store import ScanStateStore
     from services.audiodb_image_service import AudioDBImageService
     from services.home_service import HomeService
-    from services.discover_service import DiscoverService
-    from services.discover_queue_manager import DiscoverQueueManager
     from services.artist_discovery_service import ArtistDiscoveryService
     from services.library_precache_service import LibraryPrecacheService
     from infrastructure.persistence import LibraryDB
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
     from infrastructure.persistence.mbid_store import MBIDStore
     from infrastructure.persistence.youtube_store import YouTubeStore
     from services.requests_page_service import RequestsPageService
+    from services.native.new_release_service import NewReleaseService
     from repositories.coverart_disk_cache import CoverDiskCache
 
 logger = logging.getLogger(__name__)
@@ -125,73 +129,182 @@ def start_disk_cache_cleanup_task(
     return task
 
 
-async def sync_library_periodically(
-    library_service: LibraryService,
-    preferences_service: PreferencesService
+_SCAN_FREQ_TO_SECONDS = {
+    "5min": 300,
+    "10min": 600,
+    "30min": 1800,
+    "1hr": 3600,
+    "6hr": 21600,
+    "12hr": 43200,
+    "24hr": 86400,
+    "3d": 259200,
+    "7d": 604800,
+}
+
+# Longest the scheduler sleeps in one go. Long waits are chopped into ticks so a
+# changed schedule (or a finished in-progress scan) is noticed within this window;
+# the final sub-tick sleep still lands exactly on the due moment.
+_SCHEDULER_TICK = 300
+
+
+def _parse_daily_time(value: str) -> tuple[int, int]:
+    """(hour, minute) from an "HH:MM" string, defaulting to 03:00 on anything odd."""
+    try:
+        hh, mm = value.split(":")
+        hour, minute = int(hh), int(mm)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except (ValueError, AttributeError):
+        pass
+    return 3, 0
+
+
+def _seconds_until_next_scan(
+    freq: str,
+    daily_scan_time: str,
+    last_scan_ts: float | None,
+    now: datetime,
+) -> float:
+    """Seconds to wait before the next scan is due. 0 means "overdue, run now" - which
+    is what lets a restart catch up an overdue scan instead of resetting the clock.
+
+    "daily" fires once at daily_scan_time each day (catching up if that moment already
+    passed today without a scan); the interval values fire on a rolling gap measured
+    from the last actual scan."""
+    if freq == "daily":
+        hour, minute = _parse_daily_time(daily_scan_time)
+        today_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now < today_at:
+            return (today_at - now).total_seconds()
+        already_scanned_today = (
+            last_scan_ts is not None and last_scan_ts >= today_at.timestamp()
+        )
+        if already_scanned_today:
+            return (today_at + timedelta(days=1) - now).total_seconds()
+        return 0.0
+
+    interval = _SCAN_FREQ_TO_SECONDS.get(freq, 86400)
+    if last_scan_ts is None:
+        return 0.0
+    return max(0.0, (last_scan_ts + interval) - now.timestamp())
+
+
+async def auto_scan_library_periodically(
+    scanner: "LibraryScanner",
+    scan_state: "ScanStateStore",
+    preferences_service: PreferencesService,
 ) -> None:
+    """Incremental native scan on the configured schedule. The next run is computed
+    from the last actual scan (so a restart catches up an overdue scan instead of
+    restarting the interval); a tick is skipped while a scan is already running, and a
+    failure never kills the loop."""
+    from pathlib import Path as _Path
+
+    logger.info("Auto-scan scheduler started")
     while True:
         try:
-            if not library_service._lidarr_repo.is_configured():
-                await asyncio.sleep(3600)
+            schedule = preferences_service.get_library_scan_schedule()
+            freq = schedule.scan_frequency
+            if freq == "manual":
+                await asyncio.sleep(_SCHEDULER_TICK)
                 continue
 
-            lidarr_settings = preferences_service.get_lidarr_settings()
-            sync_freq = lidarr_settings.sync_frequency
-            
-            if sync_freq == "manual":
-                await asyncio.sleep(3600)
+            state = await scan_state.get_state()
+            if state.get("status") == "scanning":
+                await asyncio.sleep(_SCHEDULER_TICK)
                 continue
-            
-            freq_to_seconds = {
-                "5min": 300,
-                "10min": 600,
-                "30min": 1800,
-                "1hr": 3600,
-                "6hr": 21600,
-                "12hr": 43200,
-                "24hr": 86400,
-                "3d": 259200,
-                "7d": 604800,
-            }
-            interval = freq_to_seconds.get(sync_freq, 86400)
-            
-            await asyncio.sleep(interval)
-            
-            sync_success = False
-            should_update_status = True
+
+            delay = _seconds_until_next_scan(
+                freq, schedule.daily_scan_time, state.get("started_at"), datetime.now()
+            )
+            if delay > 0:
+                await asyncio.sleep(min(delay, _SCHEDULER_TICK))
+                continue
+
+            paths = [
+                _Path(p)
+                for p in preferences_service.get_library_settings_raw().library_paths
+            ]
+            if not paths:
+                await asyncio.sleep(_SCHEDULER_TICK)
+                continue
+
+            logger.info("Auto-scan starting (schedule=%s)", freq)
+            success = True
             try:
-                result = await library_service.sync_library()
-                if result.status == "skipped":
-                    should_update_status = False
-                    continue
-                sync_success = True
-                
+                await scanner.scan(paths)
+                final = await scan_state.get_state()
+                success = final.get("status") != "error"
             except Exception as e:
-                logger.error("Auto-sync library call failed: %s", e, exc_info=True)
-                sync_success = False
-            
-            finally:
-                if should_update_status:
-                    lidarr_settings = preferences_service.get_lidarr_settings()
-                    updated_settings = clone_with_updates(lidarr_settings, {
-                        'last_sync': int(time()),
-                        'last_sync_success': sync_success
-                    })
-                    preferences_service.save_lidarr_settings(updated_settings)
-        
+                logger.error("Auto-scan failed: %s", e, exc_info=True)
+                success = False
+
+            schedule = preferences_service.get_library_scan_schedule()
+            preferences_service.save_library_scan_schedule(
+                clone_with_updates(
+                    schedule, {"last_scan": int(time()), "last_scan_success": success}
+                )
+            )
+            logger.info("Auto-scan finished (success=%s)", success)
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error("Library sync task failed: %s", e, exc_info=True)
+            logger.error("Auto-scan task failed: %s", e, exc_info=True)
             await asyncio.sleep(60)
 
 
-def start_library_sync_task(
-    library_service: LibraryService,
-    preferences_service: PreferencesService
+def start_library_auto_scan_task(
+    scanner: "LibraryScanner",
+    scan_state: "ScanStateStore",
+    preferences_service: PreferencesService,
 ) -> asyncio.Task:
-    task = asyncio.create_task(sync_library_periodically(library_service, preferences_service))
-    TaskRegistry.get_instance().register("library-sync", task)
+    task = asyncio.create_task(
+        auto_scan_library_periodically(scanner, scan_state, preferences_service)
+    )
+    TaskRegistry.get_instance().register("library-auto-scan", task)
+    return task
+
+
+def start_library_scan_resume_task(
+    scanner: "LibraryScanner",
+    library_paths: "list[Path]",
+) -> asyncio.Task:
+    """(AUD-3) Resume an interrupted native library scan on startup. Registered so
+    it is cancelled at shutdown like every other long-lived task."""
+
+    async def _resume() -> None:
+        try:
+            await scanner.startup_check(library_paths)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Library scan resume failed: %s", e, exc_info=True)
+
+    task = asyncio.create_task(_resume())
+    TaskRegistry.get_instance().register("library-scan-resume", task)
+    task.add_done_callback(
+        lambda t: logger.error("Library scan resume task error: %s", t.exception())
+        if not t.cancelled() and t.exception()
+        else None
+    )
+    return task
+
+
+def start_download_resume_task(orchestrator: "DownloadOrchestrator") -> asyncio.Task:
+    """(AUD-3) Resume in-progress / queued downloads on startup without blocking it;
+    the orchestrator dispatches each resumed task in the background."""
+
+    async def _resume() -> None:
+        try:
+            await orchestrator.startup_resume()
+        except Exception as e:  # noqa: BLE001
+            logger.error("Download resume failed: %s", e, exc_info=True)
+
+    task = asyncio.create_task(_resume())
+    TaskRegistry.get_instance().register("download-resume", task)
+    task.add_done_callback(
+        lambda t: logger.error("Download resume task error: %s", t.exception())
+        if not t.cancelled() and t.exception()
+        else None
+    )
     return task
 
 
@@ -237,42 +350,12 @@ async def warm_library_cache(
         logger.error("Library cache warming failed: %s", e, exc_info=True)
 
 
-async def warm_home_cache_periodically(
-    home_service: 'HomeService',
-    interval: int = 240
-) -> None:
-    await asyncio.sleep(10)
-
-    while True:
-        try:
-            for src in ("listenbrainz", "lastfm"):
-                try:
-                    await home_service.get_home_data(source=src)
-                except Exception as e:
-                    logger.error(
-                        "Home cache warming failed (source=%s): %s",
-                        src,
-                        e,
-                        exc_info=True,
-                    )
-        except asyncio.CancelledError:
-            break
-
-        await asyncio.sleep(interval)
-
-
-def start_home_cache_warming_task(home_service: 'HomeService') -> asyncio.Task:
-    task = asyncio.create_task(warm_home_cache_periodically(home_service))
-    TaskRegistry.get_instance().register("home-cache-warming", task)
-    return task
-
-
 async def warm_genre_cache_periodically(
     home_service: 'HomeService',
     interval: int = 21600,
 ) -> None:
-    from api.v1.schemas.home import HomeGenre
-
+    # Phase 5: Home/Discover are per-user, so there's no global home cache to read
+    # genre names from; derive top genres account-less from the shared library (D2).
     RETRY_INTERVAL = 60
 
     await asyncio.sleep(30)
@@ -280,27 +363,23 @@ async def warm_genre_cache_periodically(
     while True:
         warmed = 0
         try:
-            for src in ("listenbrainz", "lastfm"):
-                try:
-                    cached_home = await home_service.get_cached_home_data(source=src)
-                    if not cached_home or not cached_home.genre_list or not cached_home.genre_list.items:
-                        continue
-                    genre_names = [
-                        g.name for g in cached_home.genre_list.items[:20]
-                        if isinstance(g, HomeGenre)
-                    ]
-                    if genre_names:
+            genre_names = await home_service.get_library_genre_names()
+            if genre_names:
+                for src in ("listenbrainz", "lastfm"):
+                    try:
                         await home_service._genre.build_and_cache_genre_section(src, genre_names)
                         warmed += 1
-                except Exception as e:
-                    logger.error(
-                        "Genre cache warming failed (source=%s): %s",
-                        src,
-                        e,
-                        exc_info=True,
-                    )
+                    except Exception as e:
+                        logger.error(
+                            "Genre cache warming failed (source=%s): %s",
+                            src,
+                            e,
+                            exc_info=True,
+                        )
         except asyncio.CancelledError:
             break
+        except Exception as e:  # noqa: BLE001
+            logger.error("Genre cache warming failed: %s", e, exc_info=True)
 
         if warmed == 0:
             await asyncio.sleep(RETRY_INTERVAL)
@@ -318,64 +397,11 @@ def start_genre_cache_warming_task(home_service: 'HomeService') -> asyncio.Task:
     return task
 
 
-async def warm_discover_cache_periodically(
-    discover_service: 'DiscoverService',
-    interval: int = 43200,
-    queue_manager: 'DiscoverQueueManager | None' = None,
-    preferences_service: 'PreferencesService | None' = None,
-) -> None:
-    await asyncio.sleep(30)
-
-    while True:
-        try:
-            for src in ("listenbrainz", "lastfm"):
-                try:
-                    await discover_service.warm_cache(source=src)
-                except Exception as e:
-                    logger.error(
-                        "Discover cache warming failed (source=%s): %s",
-                        src,
-                        e,
-                        exc_info=True,
-                    )
-
-            if queue_manager and preferences_service:
-                try:
-                    adv = preferences_service.get_advanced_settings()
-                    if adv.discover_queue_auto_generate and adv.discover_queue_warm_cycle_build:
-                        resolved = discover_service.resolve_source(None)
-                        await queue_manager.start_build(resolved)
-                except Exception as e:
-                    logger.error("Discover queue pre-build failed: %s", e, exc_info=True)
-
-        except asyncio.CancelledError:
-            break
-
-        await asyncio.sleep(interval)
-
-
-def start_discover_cache_warming_task(
-    discover_service: 'DiscoverService',
-    queue_manager: 'DiscoverQueueManager | None' = None,
-    preferences_service: 'PreferencesService | None' = None,
-) -> asyncio.Task:
-    task = asyncio.create_task(
-        warm_discover_cache_periodically(
-            discover_service,
-            queue_manager=queue_manager,
-            preferences_service=preferences_service,
-        )
-    )
-    TaskRegistry.get_instance().register("discover-cache-warming", task)
-    return task
-
-
 async def warm_jellyfin_mbid_index(jellyfin_repo: 'JellyfinRepository') -> None:
-    from repositories.jellyfin_repository import JellyfinRepository as _JR
 
     await asyncio.sleep(8)
     try:
-        index = await jellyfin_repo.build_mbid_index()
+        await jellyfin_repo.build_mbid_index()
     except Exception as e:
         logger.error("Jellyfin MBID index warming failed: %s", e, exc_info=True)
 
@@ -390,7 +416,7 @@ async def warm_navidrome_mbid_cache() -> None:
             await service.warm_mbid_cache()
         except Exception as e:
             logger.error("Navidrome MBID cache warming failed: %s", e, exc_info=True)
-        await asyncio.sleep(14400)  # Re-warm every 4 hours
+        await asyncio.sleep(14400)
 
 
 async def warm_plex_mbid_cache() -> None:
@@ -430,7 +456,7 @@ async def warm_artist_discovery_cache_periodically(
                 await asyncio.sleep(interval)
                 continue
 
-            cached = await artist_discovery_service.precache_artist_discovery(
+            await artist_discovery_service.precache_artist_discovery(
                 mbids, delay=delay
             )
         except asyncio.CancelledError:
@@ -635,6 +661,40 @@ def start_request_status_sync_task(
     return task
 
 
+_FOLLOW_POLL_INTERVAL = 86400  # 24h, hardcoded for v1 (L2)
+_FOLLOW_POLL_INITIAL_DELAY = 300
+
+
+async def poll_followed_artists_new_releases(
+    new_release_service: 'NewReleaseService',
+    interval: int = _FOLLOW_POLL_INTERVAL,
+) -> None:
+    """Detect new releases for followed artists and auto-enqueue for approved
+    followers. Sleep-at-end so a slow run never overlaps the next tick; a failure
+    backs off and the loop only exits on shutdown (DD6)."""
+    await asyncio.sleep(_FOLLOW_POLL_INITIAL_DELAY)
+
+    while True:
+        try:
+            await new_release_service.run_poll()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("Follow new-release poll failed: %s", e, exc_info=True)
+
+        await asyncio.sleep(interval)
+
+
+def start_poll_new_releases_task(
+    new_release_service: 'NewReleaseService',
+) -> asyncio.Task:
+    task = asyncio.create_task(
+        poll_followed_artists_new_releases(new_release_service)
+    )
+    TaskRegistry.get_instance().register("follow-new-release-poll", task)
+    return task
+
+
 async def demote_orphaned_covers_periodically(
     cover_disk_cache: 'CoverDiskCache',
     library_db: 'LibraryDB',
@@ -657,7 +717,7 @@ async def demote_orphaned_covers_periodically(
                     valid_hashes.add(get_cache_filename(f"artist_{mbid}_{size}", "img"))
                 valid_hashes.add(get_cache_filename(f"artist_{mbid}", "img"))
 
-            demoted = await asyncio.to_thread(cover_disk_cache.demote_orphaned, valid_hashes)
+            await asyncio.to_thread(cover_disk_cache.demote_orphaned, valid_hashes)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -689,9 +749,9 @@ async def prune_stores_periodically(
     await asyncio.sleep(600)
     while True:
         try:
-            pruned_requests = await request_history.prune_old_terminal_requests(request_retention_days)
-            pruned_ignored = await mbid_store.prune_old_ignored_releases(ignored_retention_days)
-            orphaned_yt = await youtube_store.delete_orphaned_track_links()
+            await request_history.prune_old_terminal_requests(request_retention_days)
+            await mbid_store.prune_old_ignored_releases(ignored_retention_days)
+            await youtube_store.delete_orphaned_track_links()
         except asyncio.CancelledError:
             break
         except Exception as e:

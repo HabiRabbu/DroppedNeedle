@@ -195,7 +195,7 @@
 		{#if !album.musicbrainz_id}
 			<div
 				class="badge badge-sm badge-warning gap-1 opacity-80"
-				title="Not matched in Lidarr - search only"
+				title="Not matched in library - search only"
 			>
 				?
 			</div>

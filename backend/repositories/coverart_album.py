@@ -14,7 +14,7 @@ from core.exceptions import ClientDisconnectedError
 
 if TYPE_CHECKING:
     from services.audiodb_image_service import AudioDBImageService
-    from repositories.lidarr import LidarrRepository
+    from repositories.protocols.library import LibraryRepositoryProtocol
     from repositories.musicbrainz_repository import MusicBrainzRepository
     from repositories.jellyfin_repository import JellyfinRepository
 
@@ -58,14 +58,14 @@ class AlbumCoverFetcher:
         self,
         http_get_fn,
         write_cache_fn,
-        lidarr_repo: 'LidarrRepository' | None = None,
+        library_repo: 'LibraryRepositoryProtocol' | None = None,
         mb_repo: 'MusicBrainzRepository' | None = None,
         jellyfin_repo: 'JellyfinRepository' | None = None,
         audiodb_service: 'AudioDBImageService' | None = None,
     ):
         self._http_get = http_get_fn
         self._write_disk_cache = write_cache_fn
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._mb_repo = mb_repo
         self._jellyfin_repo = jellyfin_repo
         self._audiodb_service = audiodb_service
@@ -133,7 +133,7 @@ class AlbumCoverFetcher:
         size: int,
         priority: RequestPriority = RequestPriority.IMAGE_FETCH,
     ) -> tuple[bytes, str, str] | None:
-        result = await self._fetch_from_lidarr(release_group_id, file_path, size=size, priority=priority)
+        result = await self._fetch_from_library(release_group_id, file_path, size=size, priority=priority)
         if result:
             return result
         return await self._fetch_from_jellyfin(release_group_id, file_path, priority=priority)
@@ -172,7 +172,7 @@ class AlbumCoverFetcher:
             return (content, content_type, "audiodb")
         except ClientDisconnectedError:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return None
 
     async def _get_cover_from_best_release(
@@ -229,29 +229,29 @@ class AlbumCoverFetcher:
                 return (content, content_type, "cover-art-archive")
         except ClientDisconnectedError:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return None
         return None
 
-    async def _fetch_from_lidarr(
+    async def _fetch_from_library(
         self,
         release_group_id: str,
         file_path: Path,
         size: int | None = 500,
         priority: RequestPriority = RequestPriority.IMAGE_FETCH,
     ) -> tuple[bytes, str, str] | None:
-        if not self._lidarr_repo:
+        if not self._library_repo:
             return None
-        if not self._lidarr_repo.is_configured():
+        if not self._library_repo.is_configured():
             return None
         try:
-            image_url = await self._lidarr_repo.get_album_image_url(release_group_id, size=size)
+            image_url = await self._library_repo.get_album_image_url(release_group_id, size=size)
             if not image_url:
                 return None
             response = await self._http_get(
                 image_url,
                 priority,
-                source="lidarr",
+                source="library",
             )
             if response.status_code != 200:
                 return None
@@ -260,10 +260,10 @@ class AlbumCoverFetcher:
                 logger.warning(f"Non-image content-type from Lidarr album: {content_type}")
                 return None
             content = response.content
-            task = asyncio.create_task(self._write_disk_cache(file_path, content, content_type, {"source": "lidarr"}))
+            task = asyncio.create_task(self._write_disk_cache(file_path, content, content_type, {"source": "library"}))
             task.add_done_callback(_log_task_error)
-            return (content, content_type, "lidarr")
-        except Exception as e:  # noqa: BLE001
+            return (content, content_type, "library")
+        except Exception:  # noqa: BLE001
             return None
 
     async def _fetch_from_jellyfin(
@@ -299,7 +299,7 @@ class AlbumCoverFetcher:
             )
             task.add_done_callback(_log_task_error)
             return (content, content_type, "jellyfin")
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return None
 
     async def fetch_release_cover(
@@ -317,7 +317,7 @@ class AlbumCoverFetcher:
                 release_group_id = await self._mb_repo.get_release_group_id_from_release(release_id)
             except ClientDisconnectedError:
                 raise
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 pass
         result = None
         try:
@@ -359,7 +359,7 @@ class AlbumCoverFetcher:
                 return (content, content_type, "cover-art-archive")
         except ClientDisconnectedError:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
         return None
 
@@ -376,7 +376,7 @@ class AlbumCoverFetcher:
             release_group_id = await self._mb_repo.get_release_group_id_from_release(release_id)
 
         if release_group_id:
-            result = await self._fetch_from_lidarr(release_group_id, file_path, size=size_int, priority=priority)
+            result = await self._fetch_from_library(release_group_id, file_path, size=size_int, priority=priority)
             if result:
                 return result
             result = await self._fetch_from_jellyfin(release_group_id, file_path, priority=priority)

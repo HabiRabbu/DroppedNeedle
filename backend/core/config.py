@@ -20,26 +20,13 @@ class Settings(BaseSettings):
         extra="allow"
     )
     
-    lidarr_url: str = Field(default="http://lidarr:8686")
-    lidarr_api_key: str = Field(default="")
-    lidarr_timeout: float = Field(
-        default=30.0,
-        ge=5.0,
-        le=600.0,
-        description="HTTP read/write timeout in seconds for Lidarr API calls.",
-    )
-    
     jellyfin_url: str = Field(default="http://jellyfin:8096")
-    
+
     contact_email: str = Field(
-        default="contact@musicseerr.com",
+        default="contact@droppedneedle.com",
         description="Contact email for MusicBrainz API User-Agent. Override with your own if desired."
     )
-    
-    quality_profile_id: int = Field(default=1)
-    metadata_profile_id: int = Field(default=1)
-    root_folder_path: str = Field(default="/music")
-    
+
     port: int = Field(default=8688)
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")
@@ -54,7 +41,16 @@ class Settings(BaseSettings):
     cache_dir: Path = Field(default=Path("/app/cache"), description="Root directory for all cache files")
     library_db_path: Path = Field(default=Path("/app/cache/library.db"), description="SQLite library database path")
     cover_cache_max_size_mb: int = Field(default=500, description="Maximum cover cache size in MB")
-    queue_db_path: Path = Field(default=Path("/app/cache/queue.db"), description="SQLite queue database path")
+    slskd_downloads_path: Path = Field(
+        default=Path("/data/downloads/slskd"),
+        description="Mounted slskd downloads directory (read-write, same filesystem as the library); import source for completed downloads.",
+    )
+    download_client_concurrent_searches: int = Field(
+        default=1, description="Max concurrent slskd searches"
+    )
+    download_client_concurrent_enqueues: int = Field(
+        default=1, description="Max concurrent slskd enqueues (slskd permits only one - C3)"
+    )
     shutdown_grace_period: float = Field(default=10.0, description="Seconds to wait for tasks on shutdown")
     
     http_timeout: float = Field(default=10.0)
@@ -77,39 +73,32 @@ class Settings(BaseSettings):
             )
         return normalised
 
-    @field_validator("lidarr_url", "jellyfin_url")
+    @field_validator("jellyfin_url")
     @classmethod
     def validate_url(cls, v: str) -> str:
         return v.rstrip("/")
 
     @model_validator(mode='after')
     def validate_config(self) -> Self:
-        # Dynamically resolve paths relative to root_app_dir
         if self.cache_dir == Path("/app/cache"):
             self.cache_dir = self.root_app_dir / "cache"
         if self.library_db_path == Path("/app/cache/library.db"):
             self.library_db_path = self.cache_dir / "library.db"
-        if self.queue_db_path == Path("/app/cache/queue.db"):
-            self.queue_db_path = self.cache_dir / "queue.db"
         if self.config_file_path == Path("/app/config/config.json"):
             self.config_file_path = self.root_app_dir / "config" / "config.json"
 
         errors = []
         warnings = []
 
-        for url_field in ['lidarr_url', 'jellyfin_url']:
-            url = getattr(self, url_field, '')
-            if url and not url.startswith(('http://', 'https://')):
-                errors.append(f"{url_field} must start with http:// or https://")
+        url = getattr(self, 'jellyfin_url', '')
+        if url and not url.startswith(('http://', 'https://')):
+            errors.append("jellyfin_url must start with http:// or https://")
 
         if self.http_max_connections < self.http_max_keepalive * 2:
             warnings.append(
                 f"http_max_connections ({self.http_max_connections}) should be "
                 f"at least 2x http_max_keepalive ({self.http_max_keepalive})"
             )
-
-        if not self.lidarr_api_key:
-            warnings.append("LIDARR_API_KEY is not set - Lidarr features will not work")
 
         for warning in warnings:
             logger.warning(warning)
@@ -123,7 +112,7 @@ class Settings(BaseSettings):
     
     def get_user_agent(self) -> str:
         id_part = self.instance_id[:8] if self.instance_id else "unknown"
-        return f"Musicseerr/1.0 ({id_part}; {self.contact_email}; https://www.musicseerr.com)"
+        return f"DroppedNeedle/1.0 ({id_part}; {self.contact_email}; https://www.droppedneedle.com)"
 
     def load_from_file(self) -> None:
         if not self.config_file_path.exists():
@@ -158,13 +147,12 @@ class Settings(BaseSettings):
                     f"Config file type errors: {'; '.join(type_errors)}"
                 )
 
-            # Run field validators that TypeAdapter doesn't invoke
+            # field validators TypeAdapter doesn't invoke
             try:
-                for url_field in ('lidarr_url', 'jellyfin_url'):
-                    if url_field in validated_values:
-                        validated_values[url_field] = type(self).validate_url(
-                            validated_values[url_field]
-                        )
+                if 'jellyfin_url' in validated_values:
+                    validated_values['jellyfin_url'] = type(self).validate_url(
+                        validated_values['jellyfin_url']
+                    )
                 if 'log_level' in validated_values:
                     validated_values['log_level'] = type(self).validate_log_level(
                         validated_values['log_level']
@@ -172,10 +160,9 @@ class Settings(BaseSettings):
             except ValueError as e:
                 raise ConfigurationError(f"Config file validation error: {e}")
 
-            # Dry-run cross-field validation on merged candidate state
+            # cross-field validation on merged candidate state before mutating self
             self._validate_merged(validated_values)
 
-            # All validation passed; apply atomically.
             for key, value in validated_values.items():
                 setattr(self, key, value)
 
@@ -189,16 +176,15 @@ class Settings(BaseSettings):
             raise
 
     def _validate_merged(self, overrides: dict[str, object]) -> None:
-        """Validate cross-field constraints against candidate merged state without mutating self."""
+        """Cross-field validation against candidate merged state without mutating self."""
         errors = []
 
         def _get(field: str) -> object:
             return overrides.get(field, getattr(self, field))
 
-        for url_field in ('lidarr_url', 'jellyfin_url'):
-            url = _get(url_field)
-            if url and not str(url).startswith(('http://', 'https://')):
-                errors.append(f"{url_field} must start with http:// or https://")
+        url = _get('jellyfin_url')
+        if url and not str(url).startswith(('http://', 'https://')):
+            errors.append("jellyfin_url must start with http:// or https://")
 
         if errors:
             raise ConfigurationError(
@@ -208,21 +194,14 @@ class Settings(BaseSettings):
     def _create_default_config(self) -> None:
         self.config_file_path.parent.mkdir(parents=True, exist_ok=True)
         config_data = {
-            "lidarr_url": self.lidarr_url,
-            "lidarr_api_key": self.lidarr_api_key,
-            "lidarr_timeout": self.lidarr_timeout,
             "jellyfin_url": self.jellyfin_url,
             "contact_email": self.contact_email,
-            "quality_profile_id": self.quality_profile_id,
-            "metadata_profile_id": self.metadata_profile_id,
-            "root_folder_path": self.root_folder_path,
             "port": self.port,
             "audiodb_api_key": self.audiodb_api_key,
             "audiodb_premium": self.audiodb_premium,
             "user_preferences": {
                 "primary_types": ["album", "ep", "single"],
                 "secondary_types": ["studio"],
-                "release_statuses": ["official"],
             },
         }
         atomic_write_json(self.config_file_path, config_data)
@@ -237,14 +216,8 @@ class Settings(BaseSettings):
                 config_data = loaded if isinstance(loaded, dict) else {}
             
             config_data.update({
-                "lidarr_url": self.lidarr_url,
-                "lidarr_api_key": self.lidarr_api_key,
-                "lidarr_timeout": self.lidarr_timeout,
                 "jellyfin_url": self.jellyfin_url,
                 "contact_email": self.contact_email,
-                "quality_profile_id": self.quality_profile_id,
-                "metadata_profile_id": self.metadata_profile_id,
-                "root_folder_path": self.root_folder_path,
                 "port": self.port,
                 "audiodb_api_key": self.audiodb_api_key,
                 "audiodb_premium": self.audiodb_premium,
@@ -267,3 +240,44 @@ def get_settings() -> Settings:
         settings.load_from_file()
         _settings = settings
     return _settings
+
+
+_LEGACY_CONFIG_KEYS = (
+    "lidarr_url",
+    "lidarr_api_key",
+    "lidarr_timeout",
+    "quality_profile_id",
+    "metadata_profile_id",
+    "root_folder_path",
+)
+
+
+def migrate_legacy_config() -> None:
+    """One-time startup migration.
+
+    Removed Lidarr-era config keys are backed up into ``_legacy_lidarr`` (so Phase 3 can
+    seed the native library paths from ``root_folder_path``) and dropped from the active config.
+    Idempotent: a config with no legacy keys is left untouched.
+    """
+    path = get_settings().config_file_path
+    if not path.exists():
+        return
+    try:
+        config = read_json(path, default={})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Skipping legacy config migration (config unreadable): %s", e)
+        return
+    if not isinstance(config, dict) or not any(k in config for k in _LEGACY_CONFIG_KEYS):
+        return
+    config["_legacy_lidarr"] = {
+        "url": config.get("lidarr_url"),
+        "api_key": config.get("lidarr_api_key"),
+        "timeout": config.get("lidarr_timeout"),
+        "quality_profile_id": config.get("quality_profile_id"),
+        "metadata_profile_id": config.get("metadata_profile_id"),
+        "root_folder_path": config.get("root_folder_path"),
+    }
+    for key in _LEGACY_CONFIG_KEYS:
+        config.pop(key, None)
+    atomic_write_json(path, config)
+    logger.info("Migrated legacy config keys into _legacy_lidarr backup")

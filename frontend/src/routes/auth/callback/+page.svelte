@@ -34,7 +34,7 @@
 </script>
 
 <svelte:head>
-	<title>Signing in - Musicseerr</title>
+	<title>Signing in - DroppedNeedle</title>
 </svelte:head>
 
 <div class="min-h-screen bg-base-100 flex items-center justify-center p-4">

@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { Shield, Music, CircleAlert, TrendingUp, Sparkles, Library } from 'lucide-svelte';
+	import { Download, Music, CircleAlert, TrendingUp, Sparkles, Library } from 'lucide-svelte';
 	import HomeSection from '$lib/components/HomeSection.svelte';
 	import WeeklyExploration from '$lib/components/WeeklyExploration.svelte';
 	import ServicePromptCard from '$lib/components/ServicePromptCard.svelte';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import GenreGrid from '$lib/components/GenreGrid.svelte';
 	import SectionDivider from '$lib/components/SectionDivider.svelte';
 	import type {
@@ -16,6 +17,7 @@
 	import { removeQueueCachedData } from '$lib/utils/discoverQueueCache';
 	import { isDismissed } from '$lib/utils/dismissedPrompts';
 	import HomeSectionNowPlaying from '$lib/components/HomeSectionNowPlaying.svelte';
+	import HomeEntryCards from '$lib/components/HomeEntryCards.svelte';
 	import { getHomeQuery } from '$lib/queries/HomeQuery.svelte';
 	import type { PageProps } from './$types';
 	import { PersistedState } from 'runed';
@@ -39,7 +41,7 @@
 
 	function handleSourceChange(source: MusicSource) {
 		activeSource.current = source;
-		removeQueueCachedData();
+		removeQueueCachedData(authStore.user?.id ?? 'anon');
 	}
 
 	type PreGenreBlock =
@@ -147,13 +149,11 @@
 			(homeData?.genre_list?.items?.length ?? 0) > 0
 	);
 	let servicePrompts = $derived(homeData?.service_prompts || []);
-	let lidarrConfigured = $derived(homeData?.integration_status?.lidarr ?? true);
-	let lidarrPrompt = $derived(servicePrompts.find((p) => p.service === 'lidarr-connection'));
+	let downloadClientConfigured = $derived(homeData?.integration_status?.download_client ?? true);
+	let downloadClientPrompt = $derived(servicePrompts.find((p) => p.service === 'download-client'));
 
 	const getOtherPrompts = () => {
-		return servicePrompts.filter(
-			(p) => p.service !== 'lidarr-connection' && !isDismissed(p.service)
-		);
+		return servicePrompts.filter((p) => p.service !== 'download-client' && !isDismissed(p.service));
 	};
 	let otherPrompts = $derived(getOtherPrompts());
 
@@ -163,7 +163,7 @@
 </script>
 
 <svelte:head>
-	<title>Home - Musicseerr</title>
+	<title>Home - DroppedNeedle</title>
 </svelte:head>
 
 <div class="min-h-[calc(100vh-200px)]">
@@ -185,6 +185,10 @@
 		<SimpleSourceSwitcher currentSource={validSource} onSourceChange={handleSourceChange} />
 	</div>
 
+	<div class="mb-10 px-4 sm:mb-12 sm:px-6 lg:px-8">
+		<HomeEntryCards />
+	</div>
+
 	{#if homeQuery.error && !homeData}
 		<div class="mt-16 flex flex-col items-center justify-center px-4">
 			<CircleAlert class="mb-4 h-10 w-10 text-base-content/50" />
@@ -193,33 +197,33 @@
 		</div>
 	{:else}
 		<div class="space-y-10 px-4 sm:space-y-12 sm:px-6 lg:px-8">
-			{#if !lidarrConfigured && lidarrPrompt}
+			{#if !downloadClientConfigured && downloadClientPrompt}
 				<div
 					class="card bg-linear-to-br from-accent/20 via-accent/10 to-base-200 border-2 border-accent/40 shadow-xl relative overflow-hidden"
 				>
 					<div class="card-body items-center text-center py-12 stagger-fade-in">
 						<Music class="h-16 w-16 mb-4 animate-float text-accent" />
 						<h2 class="card-title text-3xl sm:text-4xl lg:text-5xl font-bold mb-2">
-							Welcome to <span class="text-primary">Musicseerr</span>!
+							Welcome to <span class="text-primary">DroppedNeedle</span>!
 						</h2>
 						<p class="text-base-content/70 max-w-lg mb-6">
-							Get started by connecting your Lidarr server. You need it to manage your library,
-							request albums, and keep track of your collection.
+							Get started by connecting a download client. You need it to request albums and tracks
+							for your library.
 						</p>
 						<div class="flex flex-wrap justify-center gap-2 mb-6">
-							{#each lidarrPrompt.features as feature (feature)}
+							{#each downloadClientPrompt.features as feature (feature)}
 								<span class="badge badge-accent badge-lg">{feature}</span>
 							{/each}
 						</div>
-						<a href="/settings?tab=lidarr-connection" class="btn btn-accent btn-lg gap-2">
-							<Shield class="h-5 w-5" />
-							Connect Lidarr
+						<a href="/settings" class="btn btn-accent btn-lg gap-2">
+							<Download class="h-5 w-5" />
+							Configure Download Client
 						</a>
 					</div>
 				</div>
 			{/if}
 
-			{#if otherPrompts.length > 0 && lidarrConfigured}
+			{#if otherPrompts.length > 0 && downloadClientConfigured}
 				<div class="space-y-3">
 					{#each otherPrompts as prompt, i (`prompt-${i}`)}
 						<ServicePromptCard {prompt} ondismiss={handlePromptDismiss} />
@@ -334,13 +338,22 @@
 				<div class="flex flex-col items-center justify-center py-12 sm:py-16">
 					<Music class="h-12 w-12 sm:h-16 sm:w-16 mb-4 sm:mb-6" />
 					<h2 class="mb-2 text-center text-3xl font-bold sm:text-4xl lg:text-5xl">
-						Welcome to <span class="text-primary">Musicseerr</span>
+						Welcome to <span class="text-primary">DroppedNeedle</span>
 					</h2>
-					<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
-						Your library looks empty. Add a few albums in Lidarr to get started, or connect more
-						services for recommendations.
-					</p>
-					<a href="/settings" class="btn btn-primary">Open settings</a>
+					{#if authStore.isAdmin}
+						<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+							Your library is empty. Add a library path and start a scan to fill it.
+						</p>
+						<div class="flex flex-wrap justify-center gap-2">
+							<a href="/settings?tab=library" class="btn btn-primary">Start scan</a>
+							<a href="/library" class="btn btn-ghost">Go to Library</a>
+						</div>
+					{:else}
+						<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+							Your library is being prepared. An admin is setting things up - check back soon.
+						</p>
+						<a href="/library" class="btn btn-ghost">Go to Library</a>
+					{/if}
 				</div>
 			{/if}
 		</div>

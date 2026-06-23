@@ -1,10 +1,10 @@
-"""Home page section builder methods — pure data transformation."""
+"""Home page section builders: pure data transformation, no I/O."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from api.v1.schemas.home import HomeSection, HomeGenre, ServicePrompt
+from api.v1.schemas.home import HomeSection, HomeTrack, ServicePrompt
 from api.v1.schemas.library import LibraryAlbum
 from services.home_transformers import HomeDataTransformers
 
@@ -19,8 +19,8 @@ class HomeSectionBuilders:
         return HomeSection(
             title="Recently Added",
             type="albums",
-            items=[self._transformers.lidarr_album_to_home(a) for a in recently_imported[:15]],
-            source="lidarr",
+            items=[self._transformers.library_album_to_home(a) for a in recently_imported[:15]],
+            source="library",
         )
 
     def build_library_artists_section(self, library_artists: list[dict]) -> HomeSection:
@@ -28,10 +28,10 @@ class HomeSectionBuilders:
             library_artists, key=lambda x: x.get("album_count", 0), reverse=True
         )[:15]
         items = [
-            a for a in (self._transformers.lidarr_artist_to_home(artist) for artist in sorted_artists)
+            a for a in (self._transformers.library_artist_to_home(artist) for artist in sorted_artists)
             if a is not None
         ]
-        return HomeSection(title="Your Artists", type="artists", items=items, source="lidarr")
+        return HomeSection(title="Your Artists", type="artists", items=items, source="library")
 
     def build_library_albums_section(self, library_albums: list[LibraryAlbum]) -> HomeSection:
         sorted_albums = sorted(
@@ -40,8 +40,8 @@ class HomeSectionBuilders:
         return HomeSection(
             title="Your Albums",
             type="albums",
-            items=[self._transformers.lidarr_album_to_home(a) for a in sorted_albums],
-            source="lidarr",
+            items=[self._transformers.library_album_to_home(a) for a in sorted_albums],
+            source="library",
         )
 
     def build_trending_artists_section(
@@ -60,24 +60,24 @@ class HomeSectionBuilders:
         )
 
     def build_popular_albums_section(
-        self, results: dict[str, Any], library_mbids: set[str], monitored_mbids: set[str] | None = None
+        self, results: dict[str, Any], library_mbids: set[str]
     ) -> HomeSection:
         albums = results.get("lb_trending_albums") or []
         return HomeSection(
             title="Popular Right Now",
             type="albums",
-            items=[self._transformers.lb_release_to_home(a, library_mbids, monitored_mbids) for a in albums[:15]],
+            items=[self._transformers.lb_release_to_home(a, library_mbids) for a in albums[:15]],
             source="listenbrainz" if albums else None,
         )
 
     def build_lb_user_top_albums_section(
-        self, results: dict[str, Any], library_mbids: set[str], monitored_mbids: set[str] | None = None
+        self, results: dict[str, Any], library_mbids: set[str]
     ) -> HomeSection | None:
         release_groups = results.get("lb_user_top_rgs") or []
         if not release_groups:
             return None
         items = [
-            self._transformers.lb_release_to_home(rg, library_mbids, monitored_mbids)
+            self._transformers.lb_release_to_home(rg, library_mbids)
             for rg in release_groups[:15]
         ]
         return HomeSection(
@@ -91,12 +91,11 @@ class HomeSectionBuilders:
         self, library_albums: list[LibraryAlbum], lb_genres: list | None = None
     ) -> HomeSection:
         genres = self._transformers.extract_genres_from_library(library_albums, lb_genres)
-        source = "listenbrainz" if lb_genres else ("lidarr" if library_albums else None)
+        source = "listenbrainz" if lb_genres else ("library" if library_albums else None)
         return HomeSection(title="Browse by Genre", type="genres", items=genres, source=source)
 
     def build_fresh_releases_section(
-        self, results: dict[str, Any], library_mbids: set[str],
-        monitored_mbids: set[str] | None = None,
+        self, results: dict[str, Any], library_mbids: set[str]
     ) -> HomeSection | None:
         releases = results.get("lb_fresh")
         if not releases:
@@ -104,7 +103,7 @@ class HomeSectionBuilders:
         return HomeSection(
             title="New From Artists You Follow",
             type="albums",
-            items=[self._transformers.lb_release_to_home(r, library_mbids, monitored_mbids) for r in releases[:15]],
+            items=[self._transformers.lb_release_to_home(r, library_mbids) for r in releases[:15]],
             source="listenbrainz",
         )
 
@@ -135,6 +134,26 @@ class HomeSectionBuilders:
             type="tracks",
             items=items,
             source="listenbrainz",
+        )
+
+    def build_play_history_recent_section(self, records: list[Any]) -> HomeSection | None:
+        if not records:
+            return None
+        items = [
+            HomeTrack(
+                name=r.track_name,
+                mbid=r.recording_mbid,
+                artist_name=r.artist_name,
+                album_name=r.album_name,
+                listened_at=r.played_at,
+            )
+            for r in records[:15]
+        ]
+        return HomeSection(
+            title="Recently Played",
+            type="tracks",
+            items=items,
+            source="local",
         )
 
     def build_listenbrainz_favorites_section(self, results: dict[str, Any]) -> HomeSection | None:
@@ -171,12 +190,12 @@ class HomeSectionBuilders:
         )
 
     def build_lastfm_top_albums_section(
-        self, results: dict[str, Any], library_mbids: set[str], monitored_mbids: set[str] | None = None
+        self, results: dict[str, Any], library_mbids: set[str]
     ) -> HomeSection:
         albums = results.get("lfm_top_albums") or []
         items = [
             a for a in (
-                self._transformers.lastfm_album_to_home(album, library_mbids, monitored_mbids)
+                self._transformers.lastfm_album_to_home(album, library_mbids)
                 for album in albums[:15]
             )
             if a is not None
@@ -245,18 +264,18 @@ class HomeSectionBuilders:
     @staticmethod
     def build_service_prompts(
         lb_enabled: bool,
-        lidarr_configured: bool = True,
+        download_client_configured: bool = True,
         lfm_enabled: bool = False,
     ) -> list[ServicePrompt]:
         prompts = []
-        if not lidarr_configured:
+        if not download_client_configured:
             prompts.append(ServicePrompt(
-                service="lidarr-connection",
-                title="Connect Lidarr",
-                description="Lidarr is required to manage your music library, request albums, and track your collection. Set up the connection to get started.",
+                service="download-client",
+                title="Connect a download client",
+                description="DroppedNeedle needs a download client (e.g. slskd) to fetch the albums and tracks you request. Add one in Settings to start downloading into your library.",
                 icon="🎶",
                 color="accent",
-                features=["Music library management", "Album requests", "Collection tracking", "Automatic imports"],
+                features=["Album & track requests", "Automatic downloads", "Direct-to-library imports", "Queue management"],
             ))
         if not lb_enabled and not lfm_enabled:
             prompts.append(ServicePrompt(

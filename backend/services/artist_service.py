@@ -4,16 +4,14 @@ import logging
 import msgspec
 from typing import Any, Optional, TYPE_CHECKING
 from api.v1.schemas.artist import ArtistInfo, ArtistExtendedInfo, ArtistReleases, ExternalLink, ReleaseItem
-from repositories.protocols import MusicBrainzRepositoryProtocol, LidarrRepositoryProtocol, WikidataRepositoryProtocol
+from repositories.protocols import MusicBrainzRepositoryProtocol, LibraryRepositoryProtocol, WikidataRepositoryProtocol
 from services.preferences_service import PreferencesService
 from services.artist_utils import (
-    detect_platform,
     extract_tags,
     extract_aliases,
     extract_life_span,
     extract_external_links,
     categorize_release_groups,
-    categorize_lidarr_albums,
     extract_wiki_info,
     build_base_artist_info,
 )
@@ -21,7 +19,7 @@ from infrastructure.cache.cache_keys import ARTIST_INFO_PREFIX
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cache.disk_cache import DiskMetadataCache
 from infrastructure.validators import validate_mbid
-from core.exceptions import ExternalServiceError, ResourceNotFoundError
+from core.exceptions import ResourceNotFoundError
 from services.audiodb_image_service import AudioDBImageService
 from repositories.audiodb_models import AudioDBArtistImages
 
@@ -35,7 +33,7 @@ class ArtistService:
     def __init__(
         self,
         mb_repo: MusicBrainzRepositoryProtocol,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         wikidata_repo: WikidataRepositoryProtocol,
         preferences_service: PreferencesService,
         memory_cache: CacheInterface,
@@ -45,7 +43,7 @@ class ArtistService:
         library_db: 'LibraryDB | None' = None,
     ):
         self._mb_repo = mb_repo
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._wikidata_repo = wikidata_repo
         self._preferences_service = preferences_service
         self._cache = memory_cache
@@ -67,10 +65,9 @@ class ArtistService:
             return set()
 
     async def _revalidate_library_status(self, artist_info: ArtistInfo) -> ArtistInfo:
-        """Re-evaluate in_library flags on a cached artist response using fresh LibraryDB data."""
         cache_mbids = await self._get_library_cache_mbids()
         try:
-            library_mbids = await self._lidarr_repo.get_library_mbids(include_release_ids=True)
+            library_mbids = await self._library_repo.get_library_mbids(include_release_ids=True)
         except Exception:  # noqa: BLE001
             library_mbids = set()
         all_mbids = library_mbids | cache_mbids
@@ -78,7 +75,6 @@ class ArtistService:
             return artist_info
 
         result = copy.deepcopy(artist_info)
-        changed = False
         for release_list in (result.albums, result.singles, result.eps):
             if not release_list:
                 continue
@@ -100,7 +96,6 @@ class ArtistService:
                         release.in_library = new_in_library
                         if new_in_library and release.requested:
                             release.requested = False
-                    changed = True
 
         artist_mbids = await self._get_library_artist_mbids()
         new_artist_in_library = result.musicbrainz_id and result.musicbrainz_id.lower() in artist_mbids
@@ -217,23 +212,7 @@ class ArtistService:
         library_artist_mbids: set[str] | None,
         library_album_mbids: dict[str, Any] | None,
     ) -> ArtistInfo:
-        lidarr_artist = await self._lidarr_repo.get_artist_details(artist_id) if self._lidarr_repo.is_configured() else None
-        use_lidarr_data = False
-        if lidarr_artist is not None:
-            artist_monitored = lidarr_artist.get("monitored", False)
-            has_albums_with_files = any(
-                a.get("statistics", {}).get("trackFileCount", 0) > 0
-                for a in (lidarr_artist.get("albums") or [])
-            )
-            use_lidarr_data = artist_monitored or has_albums_with_files
-        if use_lidarr_data and lidarr_artist:
-            artist_info = await self._build_artist_from_lidarr(artist_id, lidarr_artist, library_album_mbids)
-        else:
-            artist_info = await self._build_artist_from_musicbrainz(artist_id, library_artist_mbids, library_album_mbids)
-        if lidarr_artist is not None:
-            artist_info.in_lidarr = True
-            artist_info.monitored = lidarr_artist.get("monitored", False)
-            artist_info.auto_download = lidarr_artist.get("monitor_new_items", "none") == "all"
+        artist_info = await self._build_artist_from_musicbrainz(artist_id, library_artist_mbids, library_album_mbids)
         artist_info = await self._apply_audiodb_artist_images(
             artist_info, artist_id, artist_info.name,
             allow_fetch=False, is_monitored=artist_info.in_library,
@@ -241,154 +220,6 @@ class ArtistService:
         await self._save_artist_to_cache(artist_id, artist_info)
         return artist_info
 
-    async def set_artist_monitoring(
-        self, artist_mbid: str, *, monitored: bool, auto_download: bool = False,
-    ) -> dict[str, Any]:
-        if not self._lidarr_repo.is_configured():
-            raise ExternalServiceError("Lidarr is not configured")
-        monitor_new_items = "all" if (monitored and auto_download) else "none"
-        result = await self._lidarr_repo.update_artist_monitoring(
-            artist_mbid, monitored=monitored, monitor_new_items=monitor_new_items,
-        )
-        await self._cache.delete(f"{ARTIST_INFO_PREFIX}{artist_mbid}")
-        return result
-
-    async def get_artist_monitoring_status(self, artist_mbid: str) -> dict[str, Any]:
-        if not self._lidarr_repo.is_configured():
-            return {"in_lidarr": False, "monitored": False, "auto_download": False}
-        details = await self._lidarr_repo.get_artist_details(artist_mbid)
-        if details is None:
-            return {"in_lidarr": False, "monitored": False, "auto_download": False}
-        return {
-            "in_lidarr": True,
-            "monitored": details.get("monitored", False),
-            "auto_download": details.get("monitor_new_items", "none") == "all",
-        }
-
-    async def _build_artist_from_lidarr(
-        self,
-        artist_id: str,
-        lidarr_artist: dict[str, Any],
-        library_album_mbids: dict[str, Any] = None
-    ) -> ArtistInfo:
-        description = lidarr_artist.get("overview")
-        image = lidarr_artist.get("poster_url")
-        fanart_url = lidarr_artist.get("fanart_url")
-        banner_url = lidarr_artist.get("banner_url")
-
-        genres = lidarr_artist.get("genres", [])
-        
-        external_links = []
-        for link in lidarr_artist.get("links", []):
-            link_name = link.get("name", "")
-            link_url = link.get("url", "")
-            if link_url:
-                label, category = detect_platform(link_url, link_name.lower())
-                external_links.append(ExternalLink(type=link_name.lower(), url=link_url, label=label, category=category))
-        
-        need_musicbrainz = not description or not genres or not external_links
-
-        parallel_tasks: list[Any] = []
-        task_names: list[str] = []
-
-        if library_album_mbids is None:
-            parallel_tasks.append(self._lidarr_repo.get_library_mbids(include_release_ids=True))
-            task_names.append("library_mbids")
-        parallel_tasks.append(self._get_library_cache_mbids())
-        task_names.append("cache_mbids")
-        parallel_tasks.append(self._lidarr_repo.get_artist_albums(artist_id))
-        task_names.append("lidarr_albums")
-        parallel_tasks.append(self._lidarr_repo.get_requested_mbids())
-        task_names.append("requested_mbids")
-        if need_musicbrainz:
-            parallel_tasks.append(self._mb_repo.get_artist_by_id(artist_id))
-            task_names.append("mb_artist")
-
-        results = await asyncio.gather(*parallel_tasks, return_exceptions=True)
-        result_map = dict(zip(task_names, results))
-
-        if library_album_mbids is None:
-            lib_result = result_map.get("library_mbids")
-            library_album_mbids = lib_result if not isinstance(lib_result, Exception) and lib_result else {}
-        cache_result = result_map.get("cache_mbids")
-        cache_mbids = cache_result if not isinstance(cache_result, Exception) and cache_result else {}
-        library_album_mbids = library_album_mbids | cache_mbids
-        
-        req_result = result_map.get("requested_mbids")
-        requested_mbids = req_result if not isinstance(req_result, Exception) and req_result else set()
-
-        albums_result = result_map.get("lidarr_albums")
-        lidarr_albums = albums_result if not isinstance(albums_result, Exception) and albums_result else []
-        albums, singles, eps = self._categorize_lidarr_albums(lidarr_albums, library_album_mbids, requested_mbids=requested_mbids)
-        
-        aliases = []
-        life_span = None
-        artist_type = lidarr_artist.get("artist_type")
-        disambiguation = lidarr_artist.get("disambiguation")
-        country = None
-        release_group_count = len(lidarr_albums)
-        
-        if need_musicbrainz:
-            try:
-                mb_artist = result_map.get("mb_artist")
-                if isinstance(mb_artist, Exception):
-                    raise mb_artist
-                if mb_artist:
-                    if not description:
-                        mb_description, _ = await self._fetch_wikidata_info(mb_artist)
-                        description = mb_description
-                    
-                    if not genres:
-                        genres = extract_tags(mb_artist)
-
-                    if not external_links:
-                        external_links = self._build_external_links(mb_artist)
-
-                    aliases = extract_aliases(mb_artist)
-                    life_span = extract_life_span(mb_artist)
-                    country = mb_artist.get("country")
-                    
-                    if not artist_type:
-                        artist_type = mb_artist.get("type")
-                    if not disambiguation:
-                        disambiguation = mb_artist.get("disambiguation")
-                    
-                    release_group_count = mb_artist.get("release-group-count", release_group_count)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"MusicBrainz fallback failed for artist {artist_id[:8]}: {e}")
-        
-        return ArtistInfo(
-            name=lidarr_artist.get("name", "Unknown Artist"),
-            musicbrainz_id=artist_id,
-            disambiguation=disambiguation,
-            type=artist_type,
-            country=country,
-            life_span=life_span,
-            description=description,
-            image=image,
-            fanart_url=fanart_url,
-            banner_url=banner_url,
-            tags=genres,
-            aliases=aliases,
-            external_links=external_links,
-            in_library=True,
-            albums=albums,
-            singles=singles,
-            eps=eps,
-            release_group_count=release_group_count,
-        )
-    
-    def _categorize_lidarr_albums(
-        self,
-        lidarr_albums: list[dict[str, Any]],
-        library_album_mbids: set[str],
-        requested_mbids: set[str] | None = None,
-    ) -> tuple[list[ReleaseItem], list[ReleaseItem], list[ReleaseItem]]:
-        prefs = self._preferences_service.get_preferences()
-        included_primary_types = set(t.lower() for t in prefs.primary_types)
-        included_secondary_types = set(t.lower() for t in prefs.secondary_types)
-        return categorize_lidarr_albums(lidarr_albums, included_primary_types, included_secondary_types, library_album_mbids, requested_mbids=requested_mbids)
-    
     async def _build_artist_from_musicbrainz(
         self,
         artist_id: str,
@@ -397,11 +228,11 @@ class ArtistService:
         include_extended: bool = True,
         include_releases: bool = True,
     ) -> ArtistInfo:
-        mb_artist, library_mbids, album_mbids, requested_mbids, monitored_mbids = await self._fetch_artist_data(
+        mb_artist, library_mbids, album_mbids, requested_mbids = await self._fetch_artist_data(
             artist_id, library_artist_mbids, library_album_mbids
         )
         in_library = artist_id.lower() in library_mbids
-        albums, singles, eps = (await self._get_categorized_releases(mb_artist, album_mbids, requested_mbids, monitored_mbids)) if include_releases else ([], [], [])
+        albums, singles, eps = (await self._get_categorized_releases(mb_artist, album_mbids, requested_mbids)) if include_releases else ([], [], [])
         description, image = (await self._fetch_wikidata_info(mb_artist)) if include_extended else (None, None)
         info = build_base_artist_info(
             mb_artist, artist_id, in_library,
@@ -444,14 +275,13 @@ class ArtistService:
             self._artist_basic_in_flight.pop(artist_id, None)
 
     async def _refresh_library_flags(self, artist_info: ArtistInfo) -> None:
-        if not self._lidarr_repo.is_configured():
+        if not self._library_repo.is_configured():
             return
         try:
-            library_mbids, requested_mbids, monitored_mbids, artist_mbids = await asyncio.gather(
-                self._lidarr_repo.get_library_mbids(include_release_ids=False),
-                self._lidarr_repo.get_requested_mbids(),
-                self._lidarr_repo.get_monitored_no_files_mbids(),
-                self._lidarr_repo.get_artist_mbids(),
+            library_mbids, requested_mbids, artist_mbids = await asyncio.gather(
+                self._library_repo.get_library_mbids(include_release_ids=False),
+                self._library_repo.get_requested_mbids(),
+                self._library_repo.get_artist_mbids(),
             )
             for release_list in (artist_info.albums, artist_info.singles, artist_info.eps):
                 for rg in release_list:
@@ -460,22 +290,8 @@ class ArtistService:
                         continue
                     rg.in_library = rg_id in library_mbids
                     rg.requested = rg_id in requested_mbids and not rg.in_library
-                    rg.monitored = rg_id in monitored_mbids
             mbid_lower = artist_info.musicbrainz_id.lower()
-            is_in_artist_mbids = mbid_lower in artist_mbids
-            artist_info.in_library = is_in_artist_mbids
-            if is_in_artist_mbids:
-                try:
-                    lidarr_artist = await self._lidarr_repo.get_artist_details(artist_info.musicbrainz_id)
-                    if lidarr_artist is not None:
-                        artist_info.in_lidarr = True
-                        artist_info.monitored = lidarr_artist.get("monitored", False)
-                        artist_info.auto_download = lidarr_artist.get("monitor_new_items", "none") == "all"
-                    elif not artist_info.in_lidarr:
-                        artist_info.in_lidarr = True
-                except Exception:  # noqa: BLE001
-                    if not artist_info.in_lidarr:
-                        artist_info.in_lidarr = True
+            artist_info.in_library = mbid_lower in artist_mbids
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to refresh library flags: {e}")
 
@@ -538,21 +354,10 @@ class ArtistService:
         limit: int = 50
     ) -> ArtistReleases:
         try:
-            lidarr_artist = await self._lidarr_repo.get_artist_details(artist_id)
-            has_lidarr_data = False
-            if lidarr_artist is not None:
-                artist_monitored = lidarr_artist.get("monitored", False)
-                has_albums_with_files = any(
-                    a.get("statistics", {}).get("trackFileCount", 0) > 0
-                    for a in (lidarr_artist.get("albums") or [])
-                )
-                has_lidarr_data = artist_monitored or has_albums_with_files
-
-            album_mbids, requested_mbids, cache_mbids, monitored_mbids = await asyncio.gather(
-                self._lidarr_repo.get_library_mbids(include_release_ids=True),
-                self._lidarr_repo.get_requested_mbids(),
+            album_mbids, requested_mbids, cache_mbids = await asyncio.gather(
+                self._library_repo.get_library_mbids(include_release_ids=True),
+                self._library_repo.get_requested_mbids(),
                 self._get_library_cache_mbids(),
-                self._lidarr_repo.get_monitored_no_files_mbids(),
             )
             album_mbids = album_mbids | cache_mbids
 
@@ -560,31 +365,9 @@ class ArtistService:
             included_primary_types = set(t.lower() for t in prefs.primary_types)
             included_secondary_types = set(t.lower() for t in prefs.secondary_types)
 
-            if has_lidarr_data:
-                if offset == 0:
-                    lidarr_albums = await self._lidarr_repo.get_artist_albums(artist_id)
-                    albums, singles, eps = self._categorize_lidarr_albums(lidarr_albums, album_mbids, requested_mbids=requested_mbids)
-                    total_count = len(albums) + len(singles) + len(eps)
-                    return ArtistReleases(
-                        albums=albums,
-                        singles=singles,
-                        eps=eps,
-                        offset=0,
-                        limit=limit,
-                        returned_count=total_count,
-                        next_offset=None,
-                        has_more=False,
-                        source_total_count=None,
-                    )
-                return ArtistReleases(
-                    albums=[], singles=[], eps=[],
-                    offset=offset, limit=limit, returned_count=0,
-                    next_offset=None, has_more=False, source_total_count=None,
-                )
-
             return await self._filter_aware_release_page(
                 artist_id, offset, limit, album_mbids, requested_mbids,
-                included_primary_types, included_secondary_types, monitored_mbids,
+                included_primary_types, included_secondary_types,
             )
         except Exception as e:  # noqa: BLE001
             logger.error(f"Error fetching releases for artist {artist_id} at offset {offset}: {e}")
@@ -603,7 +386,6 @@ class ArtistService:
         requested_mbids: set[str],
         included_primary_types: set[str],
         included_secondary_types: set[str],
-        monitored_mbids: set[str] | None = None,
     ) -> ArtistReleases:
         if not included_primary_types:
             return ArtistReleases(
@@ -636,7 +418,7 @@ class ArtistService:
             temp_artist = {"release-group-list": release_groups}
             page_albums, page_singles, page_eps = categorize_release_groups(
                 temp_artist, album_mbids, included_primary_types,
-                included_secondary_types, requested_mbids, monitored_mbids,
+                included_secondary_types, requested_mbids,
             )
 
             for item in page_albums:
@@ -687,39 +469,33 @@ class ArtistService:
         artist_id: str,
         library_artist_mbids: set[str] = None,
         library_album_mbids: dict[str, Any] = None
-    ) -> tuple[dict, set[str], set[str], set[str], set[str]]:
+    ) -> tuple[dict, set[str], set[str], set[str]]:
         if library_artist_mbids is not None and library_album_mbids is not None:
             mb_artist = await self._mb_repo.get_artist_by_id(artist_id)
             library_mbids = library_artist_mbids
             album_mbids = library_album_mbids
-            requested_result, monitored_result = await asyncio.gather(
-                self._lidarr_repo.get_requested_mbids(),
-                self._lidarr_repo.get_monitored_no_files_mbids(),
-                return_exceptions=True,
-            )
-            requested_mbids = requested_result if not isinstance(requested_result, BaseException) else set()
-            monitored_mbids = monitored_result if not isinstance(monitored_result, BaseException) else set()
-            if isinstance(requested_result, BaseException):
-                logger.warning(f"Lidarr unavailable, proceeding without requested data: {requested_result}")
+            try:
+                requested_mbids = await self._library_repo.get_requested_mbids()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Lidarr unavailable, proceeding without requested data: {exc}")
+                requested_mbids = set()
         else:
-            mb_artist, *lidarr_results = await asyncio.gather(
+            mb_artist, *library_results = await asyncio.gather(
                 self._mb_repo.get_artist_by_id(artist_id),
-                self._lidarr_repo.get_artist_mbids(),
-                self._lidarr_repo.get_library_mbids(include_release_ids=True),
-                self._lidarr_repo.get_requested_mbids(),
-                self._lidarr_repo.get_monitored_no_files_mbids(),
+                self._library_repo.get_artist_mbids(),
+                self._library_repo.get_library_mbids(include_release_ids=True),
+                self._library_repo.get_requested_mbids(),
                 return_exceptions=True,
             )
             if isinstance(mb_artist, BaseException):
                 logger.error(f"Error fetching artist data for {artist_id}: {mb_artist}")
                 raise ResourceNotFoundError(f"Failed to fetch artist: {mb_artist}")
-            lidarr_failed = any(isinstance(r, BaseException) for r in lidarr_results)
-            if lidarr_failed:
+            library_failed = any(isinstance(r, BaseException) for r in library_results)
+            if library_failed:
                 logger.warning(f"Lidarr unavailable for artist {artist_id}, proceeding with MusicBrainz data only")
-            library_mbids = lidarr_results[0] if not isinstance(lidarr_results[0], BaseException) else set()
-            album_mbids = lidarr_results[1] if not isinstance(lidarr_results[1], BaseException) else set()
-            requested_mbids = lidarr_results[2] if not isinstance(lidarr_results[2], BaseException) else set()
-            monitored_mbids = lidarr_results[3] if not isinstance(lidarr_results[3], BaseException) else set()
+            library_mbids = library_results[0] if not isinstance(library_results[0], BaseException) else set()
+            album_mbids = library_results[1] if not isinstance(library_results[1], BaseException) else set()
+            requested_mbids = library_results[2] if not isinstance(library_results[2], BaseException) else set()
 
         cache_mbids = await self._get_library_cache_mbids()
         album_mbids = album_mbids | cache_mbids
@@ -727,7 +503,7 @@ class ArtistService:
         if not mb_artist:
             raise ResourceNotFoundError("Artist not found")
 
-        return mb_artist, library_mbids, album_mbids, requested_mbids, monitored_mbids
+        return mb_artist, library_mbids, album_mbids, requested_mbids
     
     def _build_external_links(self, mb_artist: dict[str, Any]) -> list[ExternalLink]:
         external_links_data = extract_external_links(mb_artist)
@@ -741,7 +517,6 @@ class ArtistService:
         mb_artist: dict[str, Any],
         album_mbids: set[str],
         requested_mbids: set[str] = None,
-        monitored_mbids: set[str] = None,
     ) -> tuple[list[ReleaseItem], list[ReleaseItem], list[ReleaseItem]]:
         prefs = self._preferences_service.get_preferences()
         included_primary_types = set(t.lower() for t in prefs.primary_types)
@@ -752,7 +527,6 @@ class ArtistService:
             included_primary_types,
             included_secondary_types,
             requested_mbids or set(),
-            monitored_mbids or set(),
         )
     
     async def _fetch_wikidata_info(self, mb_artist: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:

@@ -3,6 +3,11 @@
 	import type { Snippet } from 'svelte';
 	import { formatLastUpdated } from '$lib/utils/formatting';
 
+	interface Breadcrumb {
+		label: string;
+		href?: string;
+	}
+
 	interface Props {
 		title: Snippet;
 		subtitle: string;
@@ -12,7 +17,10 @@
 		isUpdating?: boolean;
 		lastUpdated?: Date | null;
 		refreshLabel?: string;
-		onRefresh: () => void;
+		breadcrumbs?: Breadcrumb[];
+		// when provided, replaces the default refresh button entirely
+		actions?: Snippet;
+		onRefresh?: () => void;
 	}
 
 	let {
@@ -24,6 +32,8 @@
 		isUpdating = false,
 		lastUpdated = null,
 		refreshLabel = 'Refresh',
+		breadcrumbs = [],
+		actions,
 		onRefresh
 	}: Props = $props();
 </script>
@@ -40,6 +50,18 @@
 	<div class="relative px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
 		<div class="flex items-start justify-between">
 			<div>
+				{#if breadcrumbs.length}
+					<nav class="mb-2 flex items-center gap-1 text-xs text-base-content/60">
+						{#each breadcrumbs as crumb, i (crumb.label)}
+							{#if crumb.href}
+								<a href={crumb.href} class="link link-hover">{crumb.label}</a>
+							{:else}
+								<span>{crumb.label}</span>
+							{/if}
+							{#if i < breadcrumbs.length - 1}<span class="opacity-50">/</span>{/if}
+						{/each}
+					</nav>
+				{/if}
 				<h1 class="mb-2 text-3xl font-bold sm:text-4xl lg:text-5xl">
 					{@render title()}
 				</h1>
@@ -48,25 +70,29 @@
 				</p>
 			</div>
 			<div class="flex items-center gap-2">
-				{#if isUpdating}
-					<span class="badge badge-ghost badge-sm gap-1">
-						<span class="loading loading-spinner loading-xs"></span>
-						Updating...
-					</span>
-				{:else if lastUpdated && !loading}
-					<span class="hidden text-xs text-base-content/50 sm:inline">
-						Updated {formatLastUpdated(lastUpdated)}
-					</span>
+				{#if actions}
+					{@render actions()}
+				{:else}
+					{#if isUpdating}
+						<span class="badge badge-ghost badge-sm gap-1">
+							<span class="loading loading-spinner loading-xs"></span>
+							Updating...
+						</span>
+					{:else if lastUpdated && !loading}
+						<span class="hidden text-xs text-base-content/50 sm:inline">
+							Updated {formatLastUpdated(lastUpdated)}
+						</span>
+					{/if}
+					<button
+						class="btn btn-sm btn-primary gap-1"
+						onclick={onRefresh}
+						disabled={refreshing || loading}
+						title={refreshLabel}
+					>
+						<RefreshCw class="h-4 w-4 {refreshing ? 'animate-spin' : ''}" />
+						<span class="hidden sm:inline">{refreshLabel}</span>
+					</button>
 				{/if}
-				<button
-					class="btn btn-sm btn-primary gap-1"
-					onclick={onRefresh}
-					disabled={refreshing || loading}
-					title={refreshLabel}
-				>
-					<RefreshCw class="h-4 w-4 {refreshing ? 'animate-spin' : ''}" />
-					<span class="hidden sm:inline">{refreshLabel}</span>
-				</button>
 			</div>
 		</div>
 	</div>

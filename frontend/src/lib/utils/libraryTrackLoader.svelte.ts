@@ -3,7 +3,7 @@ import { api } from '$lib/api/client';
 
 const BACKGROUND_BATCH_SIZE = 100;
 
-export interface TrackPageResponse<T> {
+interface TrackPageResponse<T> {
 	items: T[];
 	total: number;
 	offset: number;

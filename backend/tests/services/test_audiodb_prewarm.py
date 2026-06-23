@@ -51,7 +51,7 @@ def _make_precache_service(audiodb_svc=None, prefs=None, cover_repo=None):
     if cover_repo is None:
         cover_repo = AsyncMock()
     return LibraryPrecacheService(
-        lidarr_repo=AsyncMock(),
+        library_repo=AsyncMock(),
         cover_repo=cover_repo,
         preferences_service=prefs,
         sync_state_store=AsyncMock(),

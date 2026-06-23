@@ -5,15 +5,18 @@ from api.v1.schemas.requests_page import (
     ActiveCountResponse,
     ActiveRequestsResponse,
     ApprovalActionResponse,
+    AutoDownloadApprovalItem,
+    AutoDownloadApprovalsResponse,
     CancelRequestResponse,
     ClearHistoryResponse,
     RequestHistoryResponse,
     RetryRequestResponse,
 )
-from core.dependencies import get_requests_page_service
+from core.dependencies import get_follow_service, get_requests_page_service
 from core.dependencies.type_aliases import CurrentUserDep, CurrentAdminDep
 from infrastructure.validators import validate_mbid
 from infrastructure.msgspec_fastapi import MsgSpecRoute
+from services.follow_service import FollowService
 from services.requests_page_service import RequestsPageService
 
 router = APIRouter(route_class=MsgSpecRoute, prefix="/requests", tags=["requests-page"])
@@ -63,8 +66,9 @@ async def cancel_request(
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    user_id = None if current_user.role == "admin" else current_user.id
-    return await service.cancel_request(musicbrainz_id, user_id=user_id)
+    return await service.cancel_request(
+        musicbrainz_id, user_id=current_user.id, user_role=current_user.role
+    )
 
 
 @router.post("/retry/{musicbrainz_id}", response_model=RetryRequestResponse)
@@ -77,8 +81,9 @@ async def retry_request(
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    user_id = None if current_user.role == "admin" else current_user.id
-    return await service.retry_request(musicbrainz_id, user_id=user_id)
+    return await service.retry_request(
+        musicbrainz_id, user_id=current_user.id, user_role=current_user.role
+    )
 
 
 @router.delete("/history/{musicbrainz_id}", response_model=ClearHistoryResponse)
@@ -91,8 +96,9 @@ async def clear_history_item(
         musicbrainz_id = validate_mbid(musicbrainz_id, "album")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid MBID format")
-    user_id = None if current_user.role == "admin" else current_user.id
-    deleted = await service.clear_history_item(musicbrainz_id, user_id=user_id)
+    deleted = await service.clear_history_item(
+        musicbrainz_id, user_id=current_user.id, user_role=current_user.role
+    )
     return ClearHistoryResponse(success=deleted)
 
 
@@ -108,9 +114,11 @@ async def get_pending_approvals(
 async def get_pending_approval_count(
     _admin: CurrentAdminDep,
     service: RequestsPageService = Depends(get_requests_page_service),
+    follow_service: FollowService = Depends(get_follow_service),
 ):
     count = await service.get_pending_approval_count()
-    return ActiveCountResponse(count=count)
+    auto_download = await follow_service.list_pending_approvals()
+    return ActiveCountResponse(count=count + len(auto_download))
 
 
 @router.post("/approve/{musicbrainz_id}", response_model=ApprovalActionResponse)
@@ -139,3 +147,80 @@ async def reject_request(
         raise HTTPException(status_code=400, detail="Invalid MBID format")
     result = await service.reject_request(musicbrainz_id, admin.id, admin.display_name)
     return ApprovalActionResponse(success=result.success, message=result.message)
+
+
+@router.get("/auto-download-approvals", response_model=AutoDownloadApprovalsResponse)
+async def list_auto_download_approvals(
+    _admin: CurrentAdminDep,
+    follow_service: FollowService = Depends(get_follow_service),
+):
+    approvals = await follow_service.list_pending_approvals()
+    items = [
+        AutoDownloadApprovalItem(
+            user_id=a.user_id,
+            user_name=a.user_name,
+            artist_mbid=a.artist_mbid,
+            artist_name=a.artist_name,
+            requested_at=a.requested_at,
+        )
+        for a in approvals
+    ]
+    return AutoDownloadApprovalsResponse(items=items, count=len(items))
+
+
+def _validate_artist_mbid(artist_mbid: str) -> None:
+    try:
+        validate_mbid(artist_mbid)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid MBID format")
+
+
+@router.post(
+    "/auto-download-approvals/{user_id}/{artist_mbid}/approve",
+    response_model=ApprovalActionResponse,
+)
+async def approve_auto_download(
+    admin: CurrentAdminDep,
+    user_id: str,
+    artist_mbid: str,
+    follow_service: FollowService = Depends(get_follow_service),
+):
+    _validate_artist_mbid(artist_mbid)
+    ok = await follow_service.approve(user_id, artist_mbid, (admin.id, admin.display_name))
+    if not ok:
+        return ApprovalActionResponse(success=False, message="No matching approval found")
+    return ApprovalActionResponse(success=True, message="Auto-download approved")
+
+
+@router.post(
+    "/auto-download-approvals/{user_id}/{artist_mbid}/reject",
+    response_model=ApprovalActionResponse,
+)
+async def reject_auto_download(
+    admin: CurrentAdminDep,
+    user_id: str,
+    artist_mbid: str,
+    follow_service: FollowService = Depends(get_follow_service),
+):
+    _validate_artist_mbid(artist_mbid)
+    ok = await follow_service.reject(user_id, artist_mbid, (admin.id, admin.display_name))
+    if not ok:
+        return ApprovalActionResponse(success=False, message="No matching approval found")
+    return ApprovalActionResponse(success=True, message="Auto-download rejected")
+
+
+@router.post(
+    "/auto-download-approvals/{user_id}/{artist_mbid}/revoke",
+    response_model=ApprovalActionResponse,
+)
+async def revoke_auto_download(
+    admin: CurrentAdminDep,
+    user_id: str,
+    artist_mbid: str,
+    follow_service: FollowService = Depends(get_follow_service),
+):
+    _validate_artist_mbid(artist_mbid)
+    ok = await follow_service.revoke(user_id, artist_mbid, (admin.id, admin.display_name))
+    if not ok:
+        return ApprovalActionResponse(success=False, message="No matching approval found")
+    return ApprovalActionResponse(success=True, message="Auto-download revoked")

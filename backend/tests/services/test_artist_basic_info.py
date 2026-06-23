@@ -38,12 +38,11 @@ def _make_service(*, cached_artist: ArtistInfo | None = None) -> tuple[ArtistSer
     mb_repo = AsyncMock()
     mb_repo.get_artist_by_id = AsyncMock(return_value=_make_mb_artist())
 
-    lidarr_repo = MagicMock()
-    lidarr_repo.is_configured.return_value = False
-    lidarr_repo.get_library_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_monitored_no_files_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_artist_mbids = AsyncMock(return_value=set())
+    library_repo = MagicMock()
+    library_repo.is_configured.return_value = False
+    library_repo.get_library_mbids = AsyncMock(return_value=set())
+    library_repo.get_requested_mbids = AsyncMock(return_value=set())
+    library_repo.get_artist_mbids = AsyncMock(return_value=set())
 
     wikidata_repo = AsyncMock()
     wikidata_repo.get_wikidata_info = AsyncMock(
@@ -70,7 +69,7 @@ def _make_service(*, cached_artist: ArtistInfo | None = None) -> tuple[ArtistSer
 
     svc = ArtistService(
         mb_repo=mb_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         wikidata_repo=wikidata_repo,
         preferences_service=prefs,
         memory_cache=memory_cache,

@@ -14,12 +14,12 @@ type PlexAlbumsListData = {
 	total: number;
 };
 
-export const plexSidebarCache = createLocalStorageCache<PlexSidebarData>(
+const plexSidebarCache = createLocalStorageCache<PlexSidebarData>(
 	CACHE_KEYS.PLEX_SIDEBAR,
 	CACHE_TTL.PLEX_SIDEBAR
 );
 
-export const plexAlbumsListCache = createLocalStorageCache<PlexAlbumsListData>(
+const plexAlbumsListCache = createLocalStorageCache<PlexAlbumsListData>(
 	CACHE_KEYS.PLEX_ALBUMS_LIST,
 	CACHE_TTL.PLEX_ALBUMS_LIST,
 	{ maxEntries: 80 }

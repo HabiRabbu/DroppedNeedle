@@ -16,7 +16,7 @@
 
 	let libraryReleases = $derived(
 		releases
-			.filter((r) => libraryStore.isInLibrary(r.id) || r.in_library)
+			.filter((r) => libraryStore.isInLibrary(r.id) || (!$libraryStore.initialized && r.in_library))
 			.sort((a, b) => {
 				const ya = a.year ?? 0;
 				const yb = b.year ?? 0;
@@ -30,9 +30,8 @@
 			artist: artistName,
 			year: rg.year ?? null,
 			musicbrainz_id: rg.id,
-			in_library: libraryStore.isInLibrary(rg.id) || rg.in_library,
+			in_library: libraryStore.isInLibrary(rg.id) || (!$libraryStore.initialized && rg.in_library),
 			requested: rg.requested,
-			monitored: rg.monitored,
 			cover_url: null,
 			type_info: rg.type
 		};

@@ -11,7 +11,8 @@ const {
 	mockAlbumDiscoveryCache,
 	mockAlbumLastFmCache,
 	mockAlbumYouTubeCache,
-	mockAlbumSourceMatchCache
+	mockAlbumSourceMatchCache,
+	mockDownloadsData
 } = vi.hoisted(() => ({
 	mockGoto: vi.fn(),
 	mockPageFetch: vi.fn(),
@@ -21,7 +22,8 @@ const {
 	mockAlbumDiscoveryCache: { set: vi.fn() },
 	mockAlbumLastFmCache: { set: vi.fn() },
 	mockAlbumYouTubeCache: { get: vi.fn(), set: vi.fn() },
-	mockAlbumSourceMatchCache: { get: vi.fn(), set: vi.fn() }
+	mockAlbumSourceMatchCache: { get: vi.fn(), set: vi.fn() },
+	mockDownloadsData: { value: undefined as unknown }
 }));
 
 vi.mock('$app/environment', () => ({ browser: true }));
@@ -43,7 +45,8 @@ const integrationState = {
 	localfiles: true,
 	navidrome: true,
 	lastfm: false,
-	lidarr: true
+	download_client: true,
+	library: true
 };
 
 vi.mock('$lib/stores/integration', () => ({
@@ -87,6 +90,42 @@ vi.mock('$lib/utils/albumDetailCache', () => ({
 
 vi.mock('$lib/utils/serviceStatus', () => ({
 	extractServiceStatus: vi.fn()
+}));
+
+// Stub the library status query so the page renders without a QueryClientProvider.
+vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
+	getLibraryAlbumStatusQuery: () => ({ data: undefined, refetch: vi.fn() })
+}));
+
+// album-scoped downloads query: feed it per-test via mockDownloadsData so the page renders without
+// a QueryClientProvider (same approach as the library status query above)
+vi.mock('$lib/queries/downloads/DownloadQueries.svelte', () => ({
+	getAlbumDownloadsQuery: () => ({
+		get data() {
+			return mockDownloadsData.value;
+		},
+		refetch: vi.fn()
+	})
+}));
+
+vi.mock('$lib/queries/downloads/DownloadMutations.svelte', () => ({
+	cancelDownload: () => ({ mutate: vi.fn(), isPending: false }),
+	retryDownload: () => ({ mutate: vi.fn(), isPending: false }),
+	requestTrack: () => ({ mutate: vi.fn(), isPending: false })
+}));
+
+vi.mock('$lib/queries/downloads/DownloadSSE.svelte', () => ({
+	createDownloadStream: () => ({
+		state: { progress: null, status: null, done: false },
+		start: vi.fn(),
+		stop: vi.fn()
+	})
+}));
+
+// Stub only the rescan mutation factory so AlbumHeader renders without a QueryClientProvider; keep other exports intact.
+vi.mock('$lib/queries/library/LibraryMutations.svelte', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/queries/library/LibraryMutations.svelte')>()),
+	rescanAlbum: () => ({ mutateAsync: vi.fn(), isPending: false })
 }));
 
 vi.mock('$lib/utils/albumRequest', () => ({
@@ -169,8 +208,40 @@ vi.mock('$lib/player/launchLocalPlayback', () => ({ launchLocalPlayback: vi.fn()
 vi.mock('$lib/player/launchNavidromePlayback', () => ({ launchNavidromePlayback: vi.fn() }));
 
 import AlbumPage from './+page.svelte';
+import type { DownloadTask } from '$lib/types';
 
 const albumId = '3f3a6d95-326e-4384-80b0-0744f20f24ff';
+
+function makeTask(overrides: Partial<DownloadTask> = {}): DownloadTask {
+	return {
+		id: 'task-1',
+		user_id: 'user-1',
+		download_type: 'album',
+		release_group_mbid: albumId,
+		recording_mbid: null,
+		artist_name: 'Grimes',
+		album_title: 'Visions',
+		track_title: null,
+		year: 2012,
+		status: 'downloading',
+		progress_percent: 42,
+		total_size_bytes: 1000,
+		downloaded_bytes: 420,
+		files_total: 4,
+		files_completed: 1,
+		files_failed: 0,
+		source_username: 'peer',
+		search_job_id: 'job-1',
+		candidate_index: 0,
+		preflight_score: 0.9,
+		final_path: null,
+		error_message: null,
+		retry_count: 0,
+		created_at: 1,
+		updated_at: 2,
+		...overrides
+	};
+}
 
 function jsonResponse(payload: unknown, status = 200): Response {
 	return new Response(JSON.stringify(payload), {
@@ -184,6 +255,7 @@ describe('album detail page track rendering', () => {
 		mockGoto.mockReset();
 		mockPageFetch.mockReset();
 		mockHydrateDetailCacheEntry.mockReset();
+		mockDownloadsData.value = undefined;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock with generic cache type
 		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: any) => {
 			if (cache === mockAlbumBasicCache) {
@@ -456,5 +528,93 @@ describe('album detail page track rendering', () => {
 				([input]) => typeof input === 'string' && input.endsWith(`/api/v1/albums/${albumId}/tracks`)
 			)
 		).toBe(false);
+	});
+
+	it('shows the Pressing download strip while a download is in flight', async () => {
+		expect.assertions(2);
+		mockDownloadsData.value = {
+			items: [makeTask({ status: 'downloading' })],
+			page: 1,
+			page_size: 100
+		};
+
+		render(AlbumPage, {
+			props: { data: { albumId } }
+		} as Parameters<typeof render<typeof AlbumPage>>[1]);
+
+		await expect.element(page.getByText('Downloading')).toBeVisible();
+		// the old broken poller badge is gone for good
+		expect(page.getByText('Checking for sources…').elements()).toHaveLength(0);
+	});
+
+	it('shows no download strip for a settled album with no active download', async () => {
+		expect.assertions(2);
+		mockDownloadsData.value = { items: [], page: 1, page_size: 100 };
+
+		render(AlbumPage, {
+			props: { data: { albumId } }
+		} as Parameters<typeof render<typeof AlbumPage>>[1]);
+
+		await expect.element(page.getByText('Infinite ❤️ Without Fulfillment')).toBeVisible();
+		expect(page.getByText('Downloading').elements()).toHaveLength(0);
+	});
+
+	it('shows the per-track pressing vinyl for a downloading track', async () => {
+		expect.assertions(1);
+		// tracks need a recording_id for the per-track task to match
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock with generic cache type
+		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: any) => {
+			if (cache === mockAlbumBasicCache) {
+				onHydrate({
+					title: 'Visions',
+					musicbrainz_id: albumId,
+					artist_name: 'Grimes',
+					artist_id: 'artist-1',
+					in_library: false,
+					requested: false,
+					cover_url: null
+				});
+				return false;
+			}
+			if (cache === mockAlbumTracksCache) {
+				onHydrate({
+					tracks: [
+						{
+							position: 1,
+							disc_number: 1,
+							title: 'Infinite ❤️ Without Fulfillment',
+							length: 95327,
+							recording_id: 'rec-1'
+						}
+					],
+					total_tracks: 1,
+					total_length: 95327,
+					label: null,
+					barcode: null,
+					country: null
+				});
+				return false;
+			}
+			return true;
+		});
+		mockDownloadsData.value = {
+			items: [
+				makeTask({
+					id: 'task-track-1',
+					download_type: 'track',
+					recording_mbid: 'rec-1',
+					track_title: 'Infinite ❤️ Without Fulfillment',
+					status: 'downloading'
+				})
+			],
+			page: 1,
+			page_size: 100
+		};
+
+		render(AlbumPage, {
+			props: { data: { albumId } }
+		} as Parameters<typeof render<typeof AlbumPage>>[1]);
+
+		await expect.element(page.getByTitle('Downloading 42%')).toBeVisible();
 	});
 });

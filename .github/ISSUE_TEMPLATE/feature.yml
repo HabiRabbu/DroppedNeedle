@@ -1,5 +1,5 @@
 name: "\u2728 Feature Request"
-description: Suggest an idea for MusicSeerr
+description: Suggest an idea for DroppedNeedle
 labels: ["enhancement"]
 body:
   - type: markdown
@@ -12,7 +12,7 @@ body:
     id: description
     attributes:
       label: What would you like?
-      description: A clear description of what you want MusicSeerr to do. If this is related to a problem, describe the problem too.
+      description: A clear description of what you want DroppedNeedle to do. If this is related to a problem, describe the problem too.
     validations:
       required: true
   - type: textarea

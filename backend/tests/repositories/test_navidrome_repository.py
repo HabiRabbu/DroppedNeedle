@@ -65,7 +65,7 @@ class TestBuildAuthParams:
         params = repo._build_auth_params()
         assert params["u"] == "admin"
         assert params["v"] == "1.16.1"
-        assert params["c"] == "musicseerr"
+        assert params["c"] == "droppedneedle"
         assert params["f"] == "json"
 
     def test_token_is_correct_md5(self):

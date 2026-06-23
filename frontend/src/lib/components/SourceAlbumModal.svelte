@@ -33,6 +33,7 @@
 	import { Radio } from 'lucide-svelte';
 	import type {
 		JellyfinTrackInfo,
+		LocalAlbumMatch,
 		LocalTrackInfo,
 		NavidromeTrackInfo,
 		PlexTrackInfo,
@@ -114,7 +115,7 @@
 		if (sourceType === 'jellyfin') return (album as JellyfinAlbumSummary).jellyfin_id;
 		if (sourceType === 'navidrome') return (album as NavidromeAlbumSummary).navidrome_id;
 		if (sourceType === 'plex') return (album as PlexAlbumSummary).plex_id;
-		return String((album as LocalAlbumSummary).lidarr_album_id);
+		return (album as LocalAlbumSummary).musicbrainz_id;
 	}
 
 	function getMbid(): string | null {
@@ -176,11 +177,11 @@
 				plexTracks = detail.tracks ?? [];
 			} else {
 				const localAlbum = album as LocalAlbumSummary;
-				const data = await api.global.get<LocalTrackInfo[]>(
-					API.local.albumTracks(localAlbum.lidarr_album_id)
+				const match = await api.global.get<LocalAlbumMatch>(
+					API.local.albumMatch(localAlbum.musicbrainz_id)
 				);
 				if (id !== fetchId) return;
-				localTracks = data;
+				localTracks = match.tracks;
 			}
 		} catch (e) {
 			if (id === fetchId)
@@ -436,7 +437,7 @@
 			items.push({
 				label: 'Download Album',
 				icon: Download,
-				onclick: () => downloadFile(API.download.localAlbum(localAlbum.lidarr_album_id))
+				onclick: () => downloadFile(API.download.localAlbumByMbid(localAlbum.musicbrainz_id))
 			});
 		}
 		return items;

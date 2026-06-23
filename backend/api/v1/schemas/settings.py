@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 import msgspec
 
@@ -65,22 +65,41 @@ class LastFmAuthSessionResponse(AppStruct):
 class UserPreferences(AppStruct):
     primary_types: list[str] = msgspec.field(default_factory=lambda: ["album", "ep", "single"])
     secondary_types: list[str] = msgspec.field(default_factory=lambda: ["studio"])
-    release_statuses: list[str] = msgspec.field(default_factory=lambda: ["official"])
 
 
-class LidarrConnectionSettings(AppStruct):
-    lidarr_url: str = "http://lidarr:8686"
-    lidarr_api_key: str = ""
-    quality_profile_id: int = 1
-    metadata_profile_id: int = 1
-    root_folder_path: str = "/music"
+class DownloadClientConnectionSettings(AppStruct):
+    """slskd download client connection + quality/verification settings.
+
+    api_key is a Fernet-encrypted secret, masked on read, preserved on save when
+    the masked sentinel comes back unchanged.
+    """
+    enabled: bool = False
+    client_type: str = "slskd"
+    url: str = ""
+    api_key: str = ""
+    verify_downloads: bool = True
+    min_bitrate_kbps: int = 128  # deprecated: superseded by quality_min/max
+    quality_min: str = "mp3_320"
+    quality_max: str = "lossless"
+    flac_mp3_only: bool = True
+    preflight_score_auto_accept: float = 0.70
+    preflight_score_manual_min: float = 0.50
 
     def __post_init__(self) -> None:
-        self.lidarr_url = self.lidarr_url.rstrip("/")
-        if self.quality_profile_id < 1:
-            raise msgspec.ValidationError("quality_profile_id must be >= 1")
-        if self.metadata_profile_id < 1:
-            raise msgspec.ValidationError("metadata_profile_id must be >= 1")
+        # normalise a bare host (e.g. "slskd:5030") to a full URL; httpx rejects a
+        # schemeless URL
+        self.url = self.url.strip()
+        if self.url and not self.url.startswith(("http://", "https://")):
+            self.url = f"https://{self.url}"
+        self.url = self.url.rstrip("/")
+        # mirrors services.native.quality_tiers.TIER_KEYS (best -> worst); keep in sync
+        _rank = {k: r for r, k in enumerate(("low", "mp3_192", "mp3_256", "mp3_320", "lossless"))}
+        if self.quality_min not in _rank:
+            self.quality_min = "mp3_320"
+        if self.quality_max not in _rank:
+            self.quality_max = "lossless"
+        if _rank[self.quality_min] > _rank[self.quality_max]:
+            self.quality_min = self.quality_max
 
 
 class JellyfinConnectionSettings(AppStruct):
@@ -106,6 +125,28 @@ class OIDCConnectionSettings(AppStruct):
 OIDC_SECRET_MASK = "oidc****"
 NAVIDROME_PASSWORD_MASK = "********"
 PLEX_TOKEN_MASK = "plex****"
+ACOUSTID_KEY_MASK = "acoustid****"
+DOWNLOAD_CLIENT_API_KEY_MASK = "slskd****"
+
+# keep in sync with NamingTemplateEngine.DEFAULT (services/native/naming.py)
+DEFAULT_NAMING_TEMPLATE = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"
+
+
+class LibrarySettings(AppStruct):
+    """Native library config (lives in PreferencesService, not config.py).
+
+    acoustid_api_key is a Fernet-encrypted secret, masked on read, preserved on
+    save when the masked sentinel comes back unchanged.
+    """
+
+    library_paths: list[str] = msgspec.field(default_factory=lambda: ["/music"])
+    staging_path: str = ""
+    naming_template: str = DEFAULT_NAMING_TEMPLATE
+    acoustid_api_key: str = ""
+
+
+class LibraryPathRequest(AppStruct):
+    path: str
 
 
 class NavidromeConnectionSettings(AppStruct):
@@ -194,42 +235,33 @@ class HomeSettings(AppStruct):
 class LocalFilesConnectionSettings(AppStruct):
     enabled: bool = False
     music_path: str = "/music"
-    lidarr_root_path: str = "/music"
+    library_root_path: str = "/music"
 
 
-class LocalFilesVerifyResponse(AppStruct):
-    success: bool
-    message: str
-    track_count: int = 0
-
-
-class LidarrSettings(AppStruct):
+class LibrarySyncSettings(AppStruct):
     sync_frequency: Literal["manual", "5min", "10min", "30min", "1hr", "6hr", "12hr", "24hr", "3d", "7d"] = "24hr"
     last_sync: int | None = None
     last_sync_success: bool = True
 
 
-class LidarrProfileSummary(AppStruct):
-    id: int
-    name: str
+class LibraryScanScheduleSettings(AppStruct):
+    """Native automatic-scan schedule. The saved sync_frequency is migrated once
+    on first read. When scan_frequency is "daily" the scan runs once a day at
+    daily_scan_time (server-local HH:MM); the interval values run on a rolling gap
+    since the last scan."""
+
+    scan_frequency: Literal["manual", "5min", "10min", "30min", "1hr", "6hr", "12hr", "24hr", "3d", "7d", "daily"] = "24hr"
+    daily_scan_time: Annotated[str, msgspec.Meta(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")] = "03:00"
+    last_scan: int | None = None
+    last_scan_success: bool = True
 
 
-class LidarrRootFolderSummary(AppStruct):
-    id: str
-    path: str
+class LibraryScanScheduleResponse(LibraryScanScheduleSettings):
+    """GET payload: the persisted schedule plus the server's timezone label, so the
+    UI can show what "daily at HH:MM" is relative to. server_timezone is computed per
+    request and never persisted."""
 
-
-class LidarrVerifyResponse(AppStruct):
-    success: bool
-    message: str
-    quality_profiles: list[LidarrProfileSummary] = []
-    metadata_profiles: list[LidarrProfileSummary] = []
-    root_folders: list[LidarrRootFolderSummary] = []
-
-
-class LidarrMetadataProfileSummary(AppStruct):
-    id: int
-    name: str
+    server_timezone: str = ""
 
 
 class ScrobbleSettings(AppStruct):
@@ -246,7 +278,6 @@ _OFFICIAL_MB_CONCURRENT_SEARCHES = 6
 
 
 def is_official_musicbrainz(url: str) -> bool:
-    """Check if the URL points to the official MusicBrainz API."""
     from urllib.parse import urlparse
     try:
         parsed = urlparse(url.strip().rstrip("/"))
@@ -257,10 +288,8 @@ def is_official_musicbrainz(url: str) -> bool:
 
 
 class SecuritySettings(AppStruct):
-    # Password security
     hibp_check: bool = True
-    # Path to a local copy of the HIBP "Pwned Passwords" sorted-by-hash file.
-    # When set and the file exists, used instead of the API, no outbound calls.
+    # local HIBP "Pwned Passwords" file; when present, used instead of the API
     hibp_local_path: str = ""
 
     # HSTS: only enable when serving over HTTPS
@@ -288,9 +317,23 @@ class MusicBrainzConnectionSettings(AppStruct):
             raise msgspec.ValidationError("concurrent_searches must be between 1 and 30")
 
 
-class LidarrMetadataProfilePreferences(AppStruct):
-    profile_id: int
-    profile_name: str
-    primary_types: list[str] = []
-    secondary_types: list[str] = []
-    release_statuses: list[str] = []
+class ConnectAppsSettings(AppStruct):
+    """Inbound Connect Apps (Server of Servers) config. Non-secret; persisted
+    as a plain PreferencesService section. Both protocols default OFF."""
+
+    subsonic_enabled: bool = False
+    jellyfin_enabled: bool = False
+    transcoding_enabled: bool = True
+    transcode_default_format: Literal["mp3", "opus"] = "mp3"
+    transcode_max_bitrate_kbps: int = 320
+    advertise_server_name: str = "DroppedNeedle"
+    advertise_server_version: str = "10.10.6"
+    discover_mode: Literal["local-only", "lazy-mb", "use-scrobble-targets"] = "local-only"
+
+    def __post_init__(self) -> None:
+        if self.transcode_max_bitrate_kbps < 32 or self.transcode_max_bitrate_kbps > 1411:
+            raise msgspec.ValidationError(
+                "transcode_max_bitrate_kbps must be between 32 and 1411"
+            )
+
+

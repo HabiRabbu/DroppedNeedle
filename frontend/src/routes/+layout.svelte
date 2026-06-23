@@ -4,12 +4,15 @@
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { AUTH_FREE_PATHS } from '$lib/constants';
+	import { API, AUTH_FREE_PATHS } from '$lib/constants';
+	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/authStore.svelte';
+	import { logout } from '$lib/utils/logout';
 	import { migratePageSourceKeys } from '$lib/stores/musicSource';
 	import { errorModal } from '$lib/stores/errorModal';
 	import { libraryStore } from '$lib/stores/library';
 	import { integrationStore } from '$lib/stores/integration';
+	import { downloadsActivity } from '$lib/stores/downloadsActivity.svelte';
 	import { initCacheTTLs } from '$lib/stores/cacheTtl';
 	import { playerStore } from '$lib/stores/player.svelte';
 	import { launchYouTubePlayback } from '$lib/player/launchYouTubePlayback';
@@ -36,11 +39,11 @@
 	import DegradedBanner from '$lib/components/DegradedBanner.svelte';
 	import VersionOverlays from '$lib/components/VersionOverlays.svelte';
 	import SearchSuggestions from '$lib/components/SearchSuggestions.svelte';
+	import Footer from '$lib/components/Footer.svelte';
 	import type { SuggestResult } from '$lib/types';
 	import { onMount, onDestroy } from 'svelte';
 	import { cancelPendingImages } from '$lib/utils/lazyImage';
 	import { abortAllPageRequests } from '$lib/utils/navigationAbort';
-	import { requestCountStore } from '$lib/stores/requestCountStore.svelte';
 	import { pendingApprovalCountStore } from '$lib/stores/pendingApprovalCountStore.svelte';
 	import { nowPlayingMerged } from '$lib/stores/nowPlayingMerged.svelte';
 	import { nowPlayingStore } from '$lib/stores/nowPlayingSessions.svelte';
@@ -63,14 +66,19 @@
 		ListMusic,
 		ArrowUpCircle,
 		LogOut,
-		ShieldCheck
+		ShieldCheck,
+		Disc3,
+		Heart
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 	import QueryProvider from '$lib/queries/QueryProvider.svelte';
+	import { createFollowingEvents } from '$lib/queries/following/FollowingEvents';
 
 	migratePageSourceKeys();
 
 	let { children }: { children: Snippet } = $props();
+
+	const followingEvents = createFollowingEvents();
 
 	let query = $state('');
 	let audioElement = $state<HTMLAudioElement | undefined>(undefined);
@@ -148,9 +156,10 @@
 			void imageSettingsStore.load();
 			void restorePlayerSession();
 			void scrobbleManager.init();
-			requestCountStore.startPolling();
 			if (authStore.isAdmin) pendingApprovalCountStore.startPolling();
+			if (authStore.isAuthenticated) followingEvents.start();
 			syncStatus.connect();
+			downloadsActivity.start();
 		});
 		integrationStore.ensureLoaded().then(() => {
 			nowPlayingStore.start();
@@ -164,8 +173,9 @@
 		if (browser) {
 			document.removeEventListener('keydown', handleGlobalKeydown);
 		}
-		requestCountStore.stopPolling();
 		pendingApprovalCountStore.stopPolling();
+		followingEvents.stop();
+		downloadsActivity.stop();
 		syncStatus.disconnect();
 		nowPlayingStore.stop();
 		unregisterPlaylistModal();
@@ -254,24 +264,38 @@
 	}
 
 	const integrations = fromStore(integrationStore);
-	const lidarrConfigured = $derived(integrations.current.lidarr || !integrations.current.loaded);
-	// Lidarr-backed nav (Library, Playlists, Requests) shows greyed + non-clickable until Lidarr is connected.
-	const lidarrDisabled = $derived(!lidarrConfigured);
+	const downloadClientConfigured = $derived(
+		integrations.current.download_client || !integrations.current.loaded
+	);
+	const localPlaying = $derived(
+		playerStore.isPlaying && playerStore.nowPlaying?.sourceType === 'local'
+	);
 	const showAppShell = $derived(!AUTH_FREE_PATHS.some((p) => page.url.pathname.startsWith(p)));
 
-	async function handleLogout() {
-		try {
-			await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' });
-		} catch {
-			// ignore
-		}
-		authStore.clear();
-		goto('/login');
-	}
+	// raw poll: QueryClient context lives below this component, so TanStack isn't available here
+	let libraryScanActive = $state(false);
+	$effect(() => {
+		if (!showAppShell) return;
+		let cancelled = false;
+		const poll = async () => {
+			try {
+				const s = await api.global.get<{ status: string }>(API.library.scanStatus());
+				if (!cancelled) libraryScanActive = s.status === 'scanning';
+			} catch {
+				/* ignore - nav dot is best-effort */
+			}
+		};
+		void poll();
+		const timer = setInterval(poll, 5000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	});
 </script>
 
 <QueryProvider>
-	<div data-theme="musicseerr" class="musicseerr-app-shell">
+	<div data-theme="droppedneedle" class="droppedneedle-app-shell">
 		{#if showNavigationProgress}
 			<div class="fixed top-0 left-0 right-0 z-120 pointer-events-none">
 				<progress class="progress progress-primary w-full h-1"></progress>
@@ -287,12 +311,12 @@
 
 				<div class="drawer-content flex min-w-0 flex-col">
 					<div
-						class="musicseerr-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50"
+						class="droppedneedle-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50"
 					>
 						<div class="navbar-start w-auto">
 							<a href="/" class="btn btn-ghost px-2 max-xs:hidden sm:px-4" aria-label="Home">
-								<img src="/logo_wide.png" alt="Musicseerr" class="h-8 hidden sm:block" />
-								<img src="/logo_icon.png" alt="Musicseerr" class="h-8 block sm:hidden" />
+								<img src="/logo_wide.png" alt="DroppedNeedle" class="h-8 hidden sm:block" />
+								<img src="/logo_icon.png" alt="DroppedNeedle" class="h-8 block sm:hidden" />
 							</a>
 						</div>
 						<div class="navbar-center min-w-0 grow justify-center px-1 sm:px-4">
@@ -307,16 +331,25 @@
 						</div>
 						<div class="navbar-end w-auto pr-1 sm:pr-2">
 							<a href="/profile" class="btn btn-ghost btn-circle btn-md" aria-label="Profile">
-								<UserRound class="h-6 w-6" />
+								{#if authStore.user?.avatar_url}
+									<img
+										src={authStore.user.avatar_url}
+										alt="Profile"
+										class="h-7 w-7 rounded-full object-cover"
+									/>
+								{:else}
+									<UserRound class="h-6 w-6" />
+								{/if}
 							</a>
 						</div>
 					</div>
 
 					<div
-						class="musicseerr-main-content flex-1"
-						class:musicseerr-player-visible={playerStore.isPlayerVisible}
+						class="droppedneedle-main-content flex-1"
+						class:droppedneedle-player-visible={playerStore.isPlayerVisible}
 					>
 						{@render children()}
+						<Footer />
 					</div>
 				</div>
 
@@ -364,18 +397,13 @@
 
 							<li>
 								<a
-									href={lidarrDisabled ? undefined : '/library'}
-									aria-disabled={lidarrDisabled ? 'true' : undefined}
+									href="/library"
 									class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-									class:tooltip={lidarrDisabled}
-									class:tooltip-right={lidarrDisabled}
-									class:opacity-40={lidarrDisabled}
-									class:cursor-not-allowed={lidarrDisabled}
-									data-tip={lidarrDisabled ? 'Connect Lidarr in Settings to enable' : 'Library'}
+									data-tip="Library"
 								>
 									<div class="relative">
 										<Menu class="h-6 w-6" />
-										{#if syncStatus.isActive}
+										{#if syncStatus.isActive || libraryScanActive}
 											<span
 												class="absolute -top-1 -right-1 badge badge-primary badge-xs w-2.5 h-2.5 p-0 animate-pulse"
 												aria-label="Library sync in progress"
@@ -388,21 +416,52 @@
 
 							<li>
 								<a
-									href={lidarrDisabled ? undefined : '/playlists'}
-									aria-disabled={lidarrDisabled ? 'true' : undefined}
+									href="/downloads"
 									class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-									class:tooltip={lidarrDisabled}
-									class:tooltip-right={lidarrDisabled}
-									class:opacity-40={lidarrDisabled}
-									class:cursor-not-allowed={lidarrDisabled}
-									class:menu-active={!lidarrDisabled && isNavActive('/playlists')}
-									aria-current={!lidarrDisabled && isNavActive('/playlists') ? 'page' : undefined}
-									data-tip={lidarrDisabled ? 'Connect Lidarr in Settings to enable' : 'Playlists'}
+									data-tip="Downloads"
 								>
-									<ListMusic class="h-6 w-6" />
-									<span class="is-drawer-close:hidden">Playlists</span>
+									<div class="relative">
+										<Download class="h-6 w-6" />
+										{#if downloadsActivity.isActive}
+											<span
+												class="absolute -top-1.5 -right-2 badge badge-primary badge-xs h-4 min-w-4 animate-pulse px-1"
+												aria-label="{downloadsActivity.count} active downloads"
+											>
+												{downloadsActivity.count}
+											</span>
+										{/if}
+									</div>
+									<span class="is-drawer-close:hidden">Downloads</span>
 								</a>
 							</li>
+
+							<li>
+								<a
+									href="/following"
+									class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
+									class:menu-active={isNavActive('/following')}
+									aria-current={isNavActive('/following') ? 'page' : undefined}
+									data-tip="Following"
+								>
+									<Heart class="h-6 w-6" />
+									<span class="is-drawer-close:hidden">Following</span>
+								</a>
+							</li>
+
+							{#if downloadClientConfigured}
+								<li>
+									<a
+										href="/playlists"
+										class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
+										class:menu-active={isNavActive('/playlists')}
+										aria-current={isNavActive('/playlists') ? 'page' : undefined}
+										data-tip="Playlists"
+									>
+										<ListMusic class="h-6 w-6" />
+										<span class="is-drawer-close:hidden">Playlists</span>
+									</a>
+								</li>
+							{/if}
 
 							{#if integrations.current.loaded}
 								<div class="divider my-0"></div>
@@ -528,12 +587,19 @@
 										class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
 										data-tip="Local Files"
 									>
-										<Headphones class="h-6 w-6 text-accent" />
+										<div class="relative inline-flex">
+											<Headphones class="h-6 w-6 text-accent" />
+											{#if localPlaying}
+												<span class="absolute -top-1 -right-1" aria-label="Playing local files">
+													<Disc3 class="vinyl-spin h-3 w-3 text-accent" />
+												</span>
+											{/if}
+										</div>
 										<span class="is-drawer-close:hidden">Local Files</span>
 									</a>
 								</li>
 							{:else if integrations.current.loaded && authStore.isAdmin}
-								<SidebarServiceHint label="Local Files" settingsTab="local-files">
+								<SidebarServiceHint label="Local Files" settingsTab="library">
 									{#snippet icon()}<Headphones class="h-6 w-6 text-accent" />{/snippet}
 								</SidebarServiceHint>
 							{/if}
@@ -542,30 +608,22 @@
 								<SidebarVisualiser />
 							{/if}
 
-							<div class="divider my-0"></div>
-							<li>
-								<a
-									href={lidarrDisabled ? undefined : '/requests'}
-									aria-disabled={lidarrDisabled ? 'true' : undefined}
-									class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-									class:tooltip={lidarrDisabled}
-									class:tooltip-right={lidarrDisabled}
-									class:opacity-40={lidarrDisabled}
-									class:cursor-not-allowed={lidarrDisabled}
-									data-tip={lidarrDisabled ? 'Connect Lidarr in Settings to enable' : 'Requests'}
-								>
-									<div class="relative">
+							{#if downloadClientConfigured || authStore.isAdmin}
+								<div class="divider my-0"></div>
+							{/if}
+
+							{#if downloadClientConfigured}
+								<li>
+									<a
+										href="/requests"
+										class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
+										data-tip="Requests"
+									>
 										<Download class="h-6 w-6" />
-										{#if requestCountStore.count > 0}
-											<span
-												class="absolute -top-2 -right-2 badge badge-info badge-xs w-4 h-4 p-0 text-[10px] font-bold"
-												>{requestCountStore.count}</span
-											>
-										{/if}
-									</div>
-									<span class="is-drawer-close:hidden">Requests</span>
-								</a>
-							</li>
+										<span class="is-drawer-close:hidden">Requests</span>
+									</a>
+								</li>
+							{/if}
 
 							{#if authStore.isAdmin}
 								<li>
@@ -612,7 +670,7 @@
 							{/if}
 							<div class="is-drawer-close:tooltip is-drawer-close:tooltip-right" data-tip="Log out">
 								<button
-									onclick={() => void handleLogout()}
+									onclick={() => void logout()}
 									class="btn btn-ghost btn-circle"
 									aria-label="Log out"
 								>
@@ -635,10 +693,10 @@
 			{@render children()}
 		{/if}
 
-		<nav class="musicseerr-bottom-nav md:hidden" aria-label="Primary navigation">
+		<nav class="droppedneedle-bottom-nav md:hidden" aria-label="Primary navigation">
 			<a
 				href="/"
-				class="musicseerr-bottom-nav__item"
+				class="droppedneedle-bottom-nav__item"
 				class:active={currentPath === '/'}
 				aria-current={currentPath === '/' ? 'page' : undefined}
 			>
@@ -647,7 +705,7 @@
 			</a>
 			<a
 				href="/discover"
-				class="musicseerr-bottom-nav__item"
+				class="droppedneedle-bottom-nav__item"
 				class:active={isNavActive('/discover')}
 				aria-current={isNavActive('/discover') ? 'page' : undefined}
 			>
@@ -656,7 +714,7 @@
 			</a>
 			<button
 				type="button"
-				class="musicseerr-bottom-nav__item"
+				class="droppedneedle-bottom-nav__item"
 				class:active={isNavActive('/search')}
 				onclick={() => (document.getElementById('search_modal') as HTMLDialogElement)?.showModal()}
 				aria-current={isNavActive('/search') ? 'page' : undefined}
@@ -665,30 +723,27 @@
 				<span>Search</span>
 			</button>
 			<a
-				href={lidarrDisabled ? undefined : '/library'}
-				aria-disabled={lidarrDisabled ? 'true' : undefined}
-				class="musicseerr-bottom-nav__item"
-				class:active={!lidarrDisabled && isNavActive('/library')}
-				class:opacity-40={lidarrDisabled}
-				class:pointer-events-none={lidarrDisabled}
-				aria-current={!lidarrDisabled && isNavActive('/library') ? 'page' : undefined}
+				href="/library"
+				class="droppedneedle-bottom-nav__item"
+				class:active={isNavActive('/library')}
+				aria-current={isNavActive('/library') ? 'page' : undefined}
 			>
 				<Menu />
 				<span>Library</span>
-				{#if syncStatus.isActive}
-					<span class="musicseerr-bottom-nav__badge" aria-label="Library sync in progress"></span>
+				{#if syncStatus.isActive || libraryScanActive}
+					<span class="droppedneedle-bottom-nav__badge" aria-label="Library sync in progress"></span>
 				{/if}
 			</a>
 			<a
 				href={versionUpdateAvailable ? '/settings?tab=about' : '/settings'}
-				class="musicseerr-bottom-nav__item"
+				class="droppedneedle-bottom-nav__item"
 				class:active={isNavActive('/settings')}
 				aria-current={isNavActive('/settings') ? 'page' : undefined}
 			>
 				<Settings />
 				<span>Settings</span>
 				{#if versionUpdateAvailable}
-					<span class="musicseerr-bottom-nav__badge" aria-label="Update available">
+					<span class="droppedneedle-bottom-nav__badge" aria-label="Update available">
 						<ArrowUpCircle class="h-3 w-3" />
 					</span>
 				{/if}
@@ -769,8 +824,8 @@
 
 		{#if playbackToast.visible}
 			<div
-				class="musicseerr-playback-toast fixed z-50 left-1/2 -translate-x-1/2 transition-all duration-300"
-				class:musicseerr-playback-toast--player={playerStore.isPlayerVisible}
+				class="droppedneedle-playback-toast fixed z-50 left-1/2 -translate-x-1/2 transition-all duration-300"
+				class:droppedneedle-playback-toast--player={playerStore.isPlayerVisible}
 			>
 				<div
 					class="alert {playbackToast.type === 'error'

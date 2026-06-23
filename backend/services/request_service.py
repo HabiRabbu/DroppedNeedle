@@ -1,30 +1,34 @@
 import logging
 from datetime import datetime, timezone
-from repositories.protocols import LidarrRepositoryProtocol
-from infrastructure.queue.request_queue import RequestQueue
+from typing import TYPE_CHECKING
 from infrastructure.persistence.request_history import RequestHistoryStore
 from api.v1.schemas.request import (
     BatchCancelResponse,
     BatchRequestResponse,
-    QueueStatusResponse,
     RequestAcceptedResponse,
 )
 from core.exceptions import ExternalServiceError
+from services.native.download_service import ALREADY_IN_LIBRARY
+
+if TYPE_CHECKING:
+    from services.native.download_service import DownloadService
 
 logger = logging.getLogger(__name__)
 
 
 class RequestService:
+    """The approval gate. The actual download runs through ``DownloadService``: a
+    'user'-role request waits for admin approval; 'trusted'/'admin' auto-approve and
+    dispatch the native pipeline immediately, linking the new ``download_task_id``."""
+
     def __init__(
         self,
-        lidarr_repo: LidarrRepositoryProtocol,
-        request_queue: RequestQueue,
         request_history: RequestHistoryStore,
+        download_service: "DownloadService",
     ):
-        self._lidarr_repo = lidarr_repo
-        self._request_queue = request_queue
         self._request_history = request_history
-    
+        self._download_service = download_service
+
     async def request_album(
         self,
         musicbrainz_id: str,
@@ -41,9 +45,6 @@ class RequestService:
         if user_role is None:
             raise ExternalServiceError("User role is required to submit a request.")
 
-        if not self._lidarr_repo.is_configured():
-            raise ExternalServiceError("Lidarr isn't configured. Add an API key in Settings before requesting albums.")
-
         needs_approval = user_role == "user"
         initial_status = "awaiting_approval" if needs_approval else "pending"
 
@@ -54,7 +55,6 @@ class RequestService:
                     await self._request_history.async_update_monitoring_flags(
                         musicbrainz_id, monitor_artist=True, auto_download_artist=auto_download_artist,
                     )
-                await self._request_queue.enqueue(musicbrainz_id)
                 return RequestAcceptedResponse(
                     success=True,
                     message="Request already in progress",
@@ -93,17 +93,18 @@ class RequestService:
                 status="awaiting_approval",
             )
 
+        # auto-approve (trusted/admin): dispatch the native pipeline and link the
+        # request to its task; the 'already_in_library' sentinel is guarded
         try:
-            enqueued = await self._request_queue.enqueue(musicbrainz_id)
-            if not enqueued:
-                return RequestAcceptedResponse(
-                    success=True,
-                    message="Request already in queue",
-                    musicbrainz_id=musicbrainz_id,
-                    status="pending",
-                )
+            task_id = await self._download_service.request_album(
+                user_id=user_id or "",
+                release_group_mbid=musicbrainz_id,
+                artist_name=artist or "Unknown",
+                album_title=album or "Unknown",
+                year=year,
+            )
         except Exception as e:  # noqa: BLE001
-            logger.error("Failed to enqueue album %s: %s", musicbrainz_id, e)
+            logger.error("Failed to dispatch download for %s: %s", musicbrainz_id, e)
             try:
                 await self._request_history.async_update_status(
                     musicbrainz_id, "failed",
@@ -111,8 +112,17 @@ class RequestService:
                 )
             except Exception:  # noqa: BLE001
                 pass
-            raise ExternalServiceError(f"Failed to enqueue request: {e}")
+            raise ExternalServiceError(f"Failed to start download: {e}")
 
+        if task_id == ALREADY_IN_LIBRARY:
+            return RequestAcceptedResponse(
+                success=True,
+                message="Album is already in the library",
+                musicbrainz_id=musicbrainz_id,
+                status="pending",
+            )
+
+        await self._request_history.async_update_download_task_id(musicbrainz_id, task_id)
         return RequestAcceptedResponse(
             success=True,
             message="Request accepted",
@@ -129,12 +139,8 @@ class RequestService:
         user_role: str | None = None,
         requested_by_name: str | None = None,
     ) -> BatchRequestResponse:
-        """Request multiple albums at once. Returns counts of requested, skipped, and overflow."""
         if user_role is None:
             raise ExternalServiceError("User role is required to submit a request.")
-
-        if not self._lidarr_repo.is_configured():
-            raise ExternalServiceError("Lidarr isn't configured. Add an API key in Settings before requesting albums.")
 
         needs_approval = user_role == "user"
         initial_status = "awaiting_approval" if needs_approval else "pending"
@@ -167,20 +173,44 @@ class RequestService:
             if needs_approval:
                 return BatchRequestResponse(
                     success=True,
-                    message=f"Batch request submitted, awaiting admin approval",
+                    message="Batch request submitted, awaiting admin approval",
                     requested=len(new_items),
                     skipped=skipped,
                 )
 
-            mbids = [item["musicbrainz_id"] for item in new_items]
-            enqueued, overflow = await self._request_queue.enqueue_many(mbids)
+            # auto-approve: dispatch each item through the native pipeline (mirrors
+            # single request_album). slskd search is serialized client-side, so there's
+            # no queue cap (overflow is always 0).
+            dispatched = 0
+            for item in new_items:
+                mbid = item["musicbrainz_id"]
+                try:
+                    task_id = await self._download_service.request_album(
+                        user_id=user_id or "",
+                        release_group_mbid=mbid,
+                        artist_name=item.get("artist_name") or "Unknown",
+                        album_title=item.get("album_title") or "Unknown",
+                        year=item.get("year"),
+                    )
+                except Exception as e:  # noqa: BLE001 - one bad item must not sink the batch
+                    logger.error("Batch download dispatch failed for %s: %s", mbid, e)
+                    try:
+                        await self._request_history.async_update_status(
+                            mbid, "failed", completed_at=datetime.now(timezone.utc).isoformat()
+                        )
+                    except Exception:  # noqa: BLE001 - status write must not sink the batch
+                        logger.error("Failed to mark batch item %s failed", mbid)
+                    continue
+                if task_id != ALREADY_IN_LIBRARY:
+                    await self._request_history.async_update_download_task_id(mbid, task_id)
+                dispatched += 1
 
             return BatchRequestResponse(
                 success=True,
-                message=f"Batch request accepted: {enqueued} enqueued",
-                requested=enqueued + overflow,
+                message=f"Batch request accepted: {dispatched} started",
+                requested=dispatched,
                 skipped=skipped,
-                overflow=overflow,
+                overflow=0,
             )
         except ExternalServiceError:
             raise
@@ -189,24 +219,32 @@ class RequestService:
             raise ExternalServiceError(f"Batch request failed: {e}")
 
     async def cancel_batch(
-        self, musicbrainz_ids: list[str], user_id: str | None = None
+        self, musicbrainz_ids: list[str], user_id: str | None = None,
+        user_role: str | None = None,
     ) -> BatchCancelResponse:
-        """Cancel multiple requests. Uses RequestQueue.cancel() for each.
-
-        When ``user_id`` is provided (non-admin caller), only requests owned by
-        that user are cancelled; others are counted as failed without revealing
-        whether they exist, mirroring the single-cancel ownership check.
-        """
+        # non-admin (user_id set): only own requests cancelled, others counted failed
+        # without revealing existence; user_id is None is the admin path (cancel any)
+        is_admin = user_role == "admin" or user_id is None
         cancelled = 0
         failed = 0
         for mbid in musicbrainz_ids:
             try:
-                if user_id is not None:
-                    record = await self._request_history.async_get_record(mbid)
-                    if record is None or record.user_id != user_id:
-                        failed += 1
-                        continue
-                await self._request_queue.cancel(mbid)
+                record = await self._request_history.async_get_record(mbid)
+                if not is_admin and (record is None or record.user_id != user_id):
+                    failed += 1
+                    continue
+                # best-effort: a missing/non-cancellable task must not block marking
+                if record is not None and record.download_task_id:
+                    try:
+                        await self._download_service.cancel_task(
+                            record.download_task_id,
+                            record.user_id or user_id or "",
+                            "admin" if is_admin else "user",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Batch cancel: native task cancel failed for %s: %s", mbid, exc
+                        )
                 now_iso = datetime.now(timezone.utc).isoformat()
                 await self._request_history.async_update_status(
                     mbid, "cancelled", completed_at=now_iso,
@@ -219,13 +257,4 @@ class RequestService:
             cancelled=cancelled,
             failed=failed,
             message=f"Cancelled {cancelled} requests" + (f", {failed} failed" if failed else ""),
-        )
-
-    def get_queue_status(self) -> QueueStatusResponse:
-        status = self._request_queue.get_status()
-        return QueueStatusResponse(
-            queue_size=status["queue_size"],
-            processing=status["processing"],
-            active_workers=status.get("active_workers", 0),
-            max_workers=status.get("max_workers", 1),
         )

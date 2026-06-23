@@ -28,19 +28,21 @@ def _make_search_result(
     )
 
 
-def _make_preferences(secondary_types: list[str] | None = None) -> MagicMock:
+def _make_preferences(
+    secondary_types: list[str] | None = None,
+    primary_types: list[str] | None = None,
+) -> MagicMock:
     prefs = MagicMock()
     prefs.secondary_types = secondary_types or []
+    prefs.primary_types = primary_types or ["album", "single", "ep", "broadcast", "other"]
     return prefs
 
 
 def _make_service(
     grouped: dict[str, list[SearchResult]] | None = None,
     library_mbids: set[str] | None = None,
-    queue_items: list | None = None,
     mb_error: Exception | None = None,
-    lidarr_library_error: Exception | None = None,
-    lidarr_queue_error: Exception | None = None,
+    library_error: Exception | None = None,
 ) -> SearchService:
     mb_repo = MagicMock()
     if mb_error:
@@ -48,18 +50,11 @@ def _make_service(
     else:
         mb_repo.search_grouped = AsyncMock(return_value=grouped or {"artists": [], "albums": []})
 
-    lidarr_repo = MagicMock()
-    if lidarr_library_error:
-        lidarr_repo.get_library_mbids = AsyncMock(side_effect=lidarr_library_error)
+    library_repo = MagicMock()
+    if library_error:
+        library_repo.get_library_mbids = AsyncMock(side_effect=library_error)
     else:
-        lidarr_repo.get_library_mbids = AsyncMock(return_value=library_mbids or set())
-
-    if lidarr_queue_error:
-        lidarr_repo.get_queue = AsyncMock(side_effect=lidarr_queue_error)
-    else:
-        lidarr_repo.get_queue = AsyncMock(return_value=queue_items or [])
-
-    lidarr_repo.get_monitored_no_files_mbids = AsyncMock(return_value=set())
+        library_repo.get_library_mbids = AsyncMock(return_value=library_mbids or set())
 
     coverart_repo = MagicMock()
     preferences_service = MagicMock()
@@ -67,7 +62,7 @@ def _make_service(
 
     return SearchService(
         mb_repo=mb_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         coverart_repo=coverart_repo,
         preferences_service=preferences_service,
     )
@@ -160,7 +155,7 @@ async def test_suggest_truncates_to_limit():
 
 
 @pytest.mark.asyncio
-async def test_suggest_lidarr_failure_returns_default_flags():
+async def test_suggest_library_failure_returns_default_flags():
     artists = [_make_search_result("artist", "Muse", score=90)]
     albums = [
         _make_search_result("album", "Absolution", score=85, artist="Muse",
@@ -168,8 +163,7 @@ async def test_suggest_lidarr_failure_returns_default_flags():
     ]
     svc = _make_service(
         grouped={"artists": artists, "albums": albums},
-        lidarr_library_error=Exception("Lidarr unavailable"),
-        lidarr_queue_error=Exception("Lidarr unavailable"),
+        library_error=Exception("library unavailable"),
     )
 
     result = await svc.suggest(query="muse", limit=5)
@@ -223,28 +217,7 @@ async def test_suggest_in_library_flag():
 
 
 @pytest.mark.asyncio
-async def test_suggest_requested_flag():
-    albums = [
-        _make_search_result("album", "Absolution", score=85, artist="Muse",
-                            musicbrainz_id="album-q-1"),
-    ]
-    queue_item = MagicMock()
-    queue_item.musicbrainz_id = "album-q-1"
-    svc = _make_service(
-        grouped={"artists": [], "albums": albums},
-        queue_items=[queue_item],
-    )
-
-    result = await svc.suggest(query="absolution", limit=5)
-
-    assert len(result.results) == 1
-    assert result.results[0].in_library is False
-    assert result.results[0].requested is True
-
-
-@pytest.mark.asyncio
 async def test_suggest_whitespace_only_query_returns_empty():
-    """Whitespace-padded query that becomes too short after strip returns empty."""
     svc = _make_service(grouped={"artists": [], "albums": []})
 
     result = await svc.suggest(query="  a  ", limit=5)
@@ -256,7 +229,6 @@ async def test_suggest_whitespace_only_query_returns_empty():
 
 @pytest.mark.asyncio
 async def test_suggest_single_char_after_strip_returns_empty():
-    """Single-char query after stripping returns empty without calling MusicBrainz."""
     svc = _make_service(grouped={"artists": [], "albums": []})
 
     result = await svc.suggest(query="x", limit=5)
@@ -268,7 +240,6 @@ async def test_suggest_single_char_after_strip_returns_empty():
 
 @pytest.mark.asyncio
 async def test_suggest_case_insensitive_alphabetical_tiebreak():
-    """Alphabetical tiebreak is case-insensitive: 'alpha' before 'Bravo'."""
     artists = [
         _make_search_result("artist", "Bravo", score=80),
         _make_search_result("artist", "alpha", score=80),
@@ -284,7 +255,6 @@ async def test_suggest_case_insensitive_alphabetical_tiebreak():
 
 @pytest.mark.asyncio
 async def test_suggest_deduplication_single_mb_call():
-    """Concurrent suggest calls with same normalized query produce only one MusicBrainz call."""
     artists = [_make_search_result("artist", "Muse", score=90)]
 
     call_event = asyncio.Event()
@@ -299,10 +269,9 @@ async def test_suggest_deduplication_single_mb_call():
     mb_repo = MagicMock()
     mb_repo.search_grouped = slow_search_grouped
 
-    lidarr_repo = MagicMock()
-    lidarr_repo.get_library_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_queue = AsyncMock(return_value=[])
-    lidarr_repo.get_monitored_no_files_mbids = AsyncMock(return_value=set())
+    library_repo = MagicMock()
+    library_repo.get_library_mbids = AsyncMock(return_value=set())
+    library_repo.get_queue = AsyncMock(return_value=[])
 
     coverart_repo = MagicMock()
     preferences_service = MagicMock()
@@ -310,7 +279,7 @@ async def test_suggest_deduplication_single_mb_call():
 
     svc = SearchService(
         mb_repo=mb_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         coverart_repo=coverart_repo,
         preferences_service=preferences_service,
     )

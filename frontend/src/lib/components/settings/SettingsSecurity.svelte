@@ -267,7 +267,7 @@
 				<div class="alert alert-warning alert-soft text-sm">
 					<CircleAlert class="h-4 w-4 shrink-0" />
 					<span>
-						<strong>Only enable if you are serving Musicseerr over HTTPS.</strong> Enabling HSTS on a
+						<strong>Only enable if you are serving DroppedNeedle over HTTPS.</strong> Enabling HSTS on a
 						plain HTTP install will lock users out until the HSTS header expires in their browser.
 					</span>
 				</div>
@@ -452,7 +452,7 @@
 							type="url"
 							bind:value={oidcForm.data.redirect_uri}
 							class="input input-bordered w-full"
-							placeholder="https://musicseerr.example.com/auth/callback"
+							placeholder="https://droppedneedle.example.com/auth/callback"
 						/>
 						<p class="text-xs text-base-content/50 mt-1.5 ml-1">
 							Register this exact URL as a redirect/callback URI with your provider.
@@ -503,7 +503,7 @@
 									{:else if !oidcForm.testResult?.valid && !oidcForm.wasAlreadyEnabled}
 										Test and get a valid connection to enable
 									{:else}
-										Let users sign in to Musicseerr with this SSO provider
+										Let users sign in to DroppedNeedle with this SSO provider
 									{/if}
 								</p>
 							</div>

@@ -39,7 +39,6 @@ def _make_prefs(primary_types: list[str] | None = None, secondary_types: list[st
 def _make_service(
     *,
     mb_release_pages: list[tuple[list[dict], int]] | None = None,
-    lidarr_artist: dict | None = None,
     prefs: MagicMock | None = None,
 ) -> ArtistService:
     mb_repo = AsyncMock()
@@ -48,13 +47,11 @@ def _make_service(
     else:
         mb_repo.get_artist_release_groups = AsyncMock(return_value=([], 0))
 
-    lidarr_repo = MagicMock()
-    lidarr_repo.is_configured.return_value = False
-    lidarr_repo.get_artist_details = AsyncMock(return_value=lidarr_artist)
-    lidarr_repo.get_library_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_monitored_no_files_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_artist_mbids = AsyncMock(return_value=set())
+    library_repo = MagicMock()
+    library_repo.is_configured.return_value = False
+    library_repo.get_library_mbids = AsyncMock(return_value=set())
+    library_repo.get_requested_mbids = AsyncMock(return_value=set())
+    library_repo.get_artist_mbids = AsyncMock(return_value=set())
 
     wikidata_repo = AsyncMock()
 
@@ -68,7 +65,7 @@ def _make_service(
 
     return ArtistService(
         mb_repo=mb_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         wikidata_repo=wikidata_repo,
         preferences_service=prefs or _make_prefs(),
         memory_cache=memory_cache,
@@ -170,34 +167,6 @@ class TestFilterAwarePagination:
         assert result.source_total_count == 0
 
     @pytest.mark.asyncio
-    async def test_lidarr_library_artist_single_page(self):
-        lidarr_albums = [
-            {"mbid": "rg-1", "title": "Lib Album", "album_type": "Album", "release_date": "2020-01-01", "year": 2020, "track_file_count": 5, "secondary_types": []},
-        ]
-        svc = _make_service(lidarr_artist={"monitored": True})
-
-        lidarr_repo = svc._lidarr_repo
-        lidarr_repo.get_artist_albums = AsyncMock(return_value=lidarr_albums)
-        lidarr_repo.get_library_mbids = AsyncMock(return_value={"rg-1"})
-        lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
-
-        result = await svc.get_artist_releases(ARTIST_MBID, offset=0, limit=50)
-
-        assert result.returned_count == 1
-        assert result.has_more is False
-        assert result.next_offset is None
-
-    @pytest.mark.asyncio
-    async def test_lidarr_library_artist_offset_gt_zero_returns_empty(self):
-        svc = _make_service(lidarr_artist={"monitored": True})
-
-        result = await svc.get_artist_releases(ARTIST_MBID, offset=50, limit=50)
-
-        assert result.returned_count == 0
-        assert result.has_more is False
-        assert result.next_offset is None
-
-    @pytest.mark.asyncio
     async def test_offset_reflects_client_param(self):
         rg = _make_release_group("rg-1", "Album 1", "Album")
         svc = _make_service(mb_release_pages=[([rg], 1)])
@@ -245,7 +214,7 @@ class TestFilterAwarePagination:
     @pytest.mark.asyncio
     async def test_exception_returns_empty_page(self):
         svc = _make_service()
-        svc._lidarr_repo.get_artist_details = AsyncMock(side_effect=RuntimeError("boom"))
+        svc._library_repo.get_library_mbids = AsyncMock(side_effect=RuntimeError("boom"))
 
         result = await svc.get_artist_releases(ARTIST_MBID, offset=0, limit=50)
 

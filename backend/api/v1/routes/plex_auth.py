@@ -30,7 +30,7 @@ async def create_plex_pin(
         auth_url = (
             f"https://app.plex.tv/auth#?clientID={client_id}"
             f"&code={pin.code}"
-            f"&context%5Bdevice%5D%5Bproduct%5D=MusicSeerr"
+            f"&context%5Bdevice%5D%5Bproduct%5D=DroppedNeedle"
         )
         return PlexOAuthPinResponse(
             pin_id=pin.id,

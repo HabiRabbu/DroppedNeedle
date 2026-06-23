@@ -4,7 +4,7 @@
 		type MusicSource,
 		type MusicSourcePage
 	} from '$lib/stores/musicSource';
-	import { integrationStore } from '$lib/stores/integration';
+	import { getConnectionsQuery } from '$lib/queries/connections/ConnectionsQuery.svelte';
 	import { fromStore } from 'svelte/store';
 
 	interface Props {
@@ -15,19 +15,20 @@
 	let { pageKey, onSourceChange }: Props = $props();
 
 	const sourceState = fromStore(musicSourceStore);
-	const integrationState = fromStore(integrationStore);
+	// only offer the toggle when this user has linked both lb and lastfm
+	const connectionsQuery = getConnectionsQuery();
+	const connections = $derived(connectionsQuery.data?.connections ?? []);
 
 	let switching = $state(false);
 	let currentSource = $state<MusicSource>('listenbrainz');
 
-	let lbEnabled = $derived(integrationState.current.listenbrainz);
-	let lfmEnabled = $derived(integrationState.current.lastfm);
+	let lbEnabled = $derived(connections.some((c) => c.service === 'listenbrainz'));
+	let lfmEnabled = $derived(connections.some((c) => c.service === 'lastfm'));
 	let showSwitcher = $derived(lbEnabled && lfmEnabled);
 
 	$effect(() => {
-		// TODO should be refactored
 		// eslint-disable-next-line @typescript-eslint/no-unused-expressions
-		sourceState.current.source; // Reactivity
+		sourceState.current.source; // touch for reactivity
 		currentSource = musicSourceStore.getPageSource(pageKey);
 	});
 

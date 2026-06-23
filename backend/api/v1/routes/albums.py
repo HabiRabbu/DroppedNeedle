@@ -9,9 +9,10 @@ from services.album_service import AlbumService
 from services.album_discovery_service import AlbumDiscoveryService
 from services.album_enrichment_service import AlbumEnrichmentService
 from services.navidrome_library_service import NavidromeLibraryService
+from middleware import CurrentUserDep
 from infrastructure.validators import is_unknown_mbid
 from infrastructure.degradation import try_get_degradation_context
-from infrastructure.msgspec_fastapi import AppStruct, MsgSpecBody, MsgSpecRoute
+from infrastructure.msgspec_fastapi import MsgSpecRoute
 
 import msgspec.structs
 import msgspec
@@ -38,7 +39,7 @@ async def get_album(
         if ctx is not None and ctx.has_degradation():
             result = msgspec.structs.replace(result, service_status=ctx.degraded_summary())
         return result
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid album request"
@@ -51,7 +52,6 @@ async def refresh_album(
     album_service: AlbumService = Depends(get_album_service),
     navidrome_service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ):
-    """Clear all caches for an album and return fresh data."""
     if is_unknown_mbid(album_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -76,7 +76,6 @@ async def get_album_basic(
     background_tasks: BackgroundTasks,
     album_service: AlbumService = Depends(get_album_service)
 ):
-    """Get minimal album info for fast initial load - no tracks."""
     if await request.is_disconnected():
         raise ClientDisconnectedError("Client disconnected")
     
@@ -90,7 +89,7 @@ async def get_album_basic(
         result = await album_service.get_album_basic_info(album_id)
         background_tasks.add_task(album_service.warm_full_album_cache, album_id)
         return result
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid album request"
@@ -103,7 +102,6 @@ async def get_album_tracks(
     request: Request,
     album_service: AlbumService = Depends(get_album_service)
 ):
-    """Get track list and extended details - loaded asynchronously."""
     if await request.is_disconnected():
         raise ClientDisconnectedError("Client disconnected")
     
@@ -115,7 +113,7 @@ async def get_album_tracks(
     
     try:
         return await album_service.get_album_tracks_info(album_id)
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid album request"
@@ -125,17 +123,17 @@ async def get_album_tracks(
 @router.get("/{album_id}/similar", response_model=SimilarAlbumsResponse)
 async def get_similar_albums(
     album_id: str,
+    current_user: CurrentUserDep,
     artist_id: str = Query(..., description="Artist MBID for similarity lookup"),
     count: int = Query(default=10, ge=1, le=30),
     discovery_service: AlbumDiscoveryService = Depends(get_album_discovery_service)
 ):
-    """Get albums from similar artists."""
     if is_unknown_mbid(album_id) or is_unknown_mbid(artist_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or unknown album/artist ID"
         )
-    return await discovery_service.get_similar_albums(album_id, artist_id, count)
+    return await discovery_service.get_similar_albums(album_id, artist_id, count, user_id=current_user.id)
 
 
 @router.get("/{album_id}/more-by-artist", response_model=MoreByArtistResponse)
@@ -145,51 +143,12 @@ async def get_more_by_artist(
     count: int = Query(default=10, ge=1, le=30),
     discovery_service: AlbumDiscoveryService = Depends(get_album_discovery_service)
 ):
-    """Get other albums by the same artist."""
     if is_unknown_mbid(artist_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or unknown artist ID"
         )
     return await discovery_service.get_more_by_artist(artist_id, album_id, count)
-
-
-class MonitorRequest(AppStruct):
-    monitored: bool
-
-
-@router.put("/{album_id}/monitor")
-async def set_album_monitored(
-    album_id: str,
-    body: MonitorRequest = MsgSpecBody(MonitorRequest),
-    album_service: AlbumService = Depends(get_album_service),
-):
-    if is_unknown_mbid(album_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid or unknown album ID: {album_id}"
-        )
-    try:
-        success = await album_service.set_album_monitored(album_id, body.monitored)
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Album not found in Lidarr: {album_id}"
-            )
-        return {"success": True}
-    except HTTPException:
-        raise
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid album request"
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"Failed to update monitoring status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update monitoring status"
-        )
 
 
 @router.get("/{album_id}/lastfm", response_model=LastFmAlbumEnrichment)

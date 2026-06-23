@@ -4,12 +4,7 @@ import type { HomeResponse } from '$lib/types';
 
 const homeCache = createLocalStorageCache<HomeResponse>(CACHE_KEYS.HOME_CACHE, CACHE_TTL.HOME);
 
-export const getHomeCachedData = homeCache.get;
-export const setHomeCachedData = homeCache.set;
-export const isHomeCacheStale = homeCache.isStale;
 export const updateHomeCacheTTL = homeCache.updateTTL;
-
-export { formatLastUpdated } from '$lib/utils/formatting';
 
 export function getGreeting(): string {
 	const hour = new Date().getHours();

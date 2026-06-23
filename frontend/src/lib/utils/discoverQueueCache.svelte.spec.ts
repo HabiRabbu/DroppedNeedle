@@ -8,6 +8,9 @@ import {
 	updateDiscoverQueueCacheTTL
 } from './discoverQueueCache';
 
+const USER_A = 'user-a';
+const USER_B = 'user-b';
+
 describe('discoverQueueCache', () => {
 	beforeEach(() => {
 		localStorage.clear();
@@ -45,10 +48,11 @@ describe('discoverQueueCache', () => {
 				currentIndex: 0,
 				queueId: 'queue-1'
 			},
+			USER_A,
 			'listenbrainz'
 		);
 
-		const cached = getQueueCachedData('listenbrainz');
+		const cached = getQueueCachedData(USER_A, 'listenbrainz');
 		expect(cached).not.toBeNull();
 		expect(cached?.data.items[0].enrichment?.release_date).toBe('1970-01-01');
 		expect(cached?.data.queueId).toBe('queue-1');
@@ -64,13 +68,14 @@ describe('discoverQueueCache', () => {
 				currentIndex: 0,
 				queueId: 'queue-2'
 			},
+			USER_A,
 			'lastfm'
 		);
 
 		vi.spyOn(Date, 'now').mockReturnValue(1200);
-		const cached = getQueueCachedData('lastfm');
+		const cached = getQueueCachedData(USER_A, 'lastfm');
 		expect(cached).toBeNull();
-		expect(localStorage.getItem(`${CACHE_KEYS.DISCOVER_QUEUE}_lastfm`)).toBeNull();
+		expect(localStorage.getItem(`${CACHE_KEYS.DISCOVER_QUEUE}_${USER_A}:lastfm`)).toBeNull();
 	});
 
 	it('emits cache change events for same-tab updates', () => {
@@ -86,12 +91,32 @@ describe('discoverQueueCache', () => {
 				currentIndex: 0,
 				queueId: 'queue-3'
 			},
+			USER_A,
 			'listenbrainz'
 		);
-		removeQueueCachedData('listenbrainz');
+		removeQueueCachedData(USER_A, 'listenbrainz');
 		unsubscribe();
 
 		expect(sources).toHaveLength(2);
 		expect(sources).toEqual(['listenbrainz', 'listenbrainz']);
+	});
+
+	it('isolates cache entries per user (no cross-user leak)', () => {
+		expect.assertions(3);
+		setQueueCachedData(
+			{ items: [], currentIndex: 0, queueId: 'queue-a' },
+			USER_A,
+			'listenbrainz'
+		);
+		setQueueCachedData(
+			{ items: [], currentIndex: 0, queueId: 'queue-b' },
+			USER_B,
+			'listenbrainz'
+		);
+
+		expect(getQueueCachedData(USER_A, 'listenbrainz')?.data.queueId).toBe('queue-a');
+		expect(getQueueCachedData(USER_B, 'listenbrainz')?.data.queueId).toBe('queue-b');
+		// User B has no entry for a source only user A wrote.
+		expect(getQueueCachedData(USER_B, 'lastfm')).toBeNull();
 	});
 });

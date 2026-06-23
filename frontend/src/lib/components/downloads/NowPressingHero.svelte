@@ -1,0 +1,86 @@
+<script lang="ts">
+	import { createDownloadStream } from '$lib/queries/downloads/DownloadSSE.svelte';
+	import { derivedDownloadStatus } from '$lib/queries/downloads/downloadStatus';
+	import type { DownloadTask } from '$lib/types';
+
+	import DownloadProgressBar from './DownloadProgressBar.svelte';
+	import DownloadStatusBadge from './DownloadStatusBadge.svelte';
+	import VinylProgress from './VinylProgress.svelte';
+
+	let { task }: { task: DownloadTask } = $props();
+
+	const stream = createDownloadStream();
+	$effect(() => {
+		if (task.status === 'downloading' || task.status === 'processing') {
+			stream.start(task.id);
+			return () => stream.stop();
+		}
+		stream.stop();
+	});
+
+	const derivedStatus = $derived(derivedDownloadStatus(task));
+	const isSearchingState = $derived(derivedStatus === 'searching');
+	const progress = $derived(stream.state.progress);
+	const livePct = $derived(progress?.progress_percent ?? task.progress_percent);
+	const showBar = $derived(task.status === 'downloading' || task.status === 'processing');
+</script>
+
+<section
+	class="now-pressing relative overflow-hidden rounded-3xl border border-base-content/10 bg-base-200/40 p-5 backdrop-blur-sm sm:p-6"
+	aria-label="Now pressing"
+>
+	<div class="now-pressing-glow" aria-hidden="true"></div>
+	<p class="relative mb-4 text-[11px] font-bold uppercase tracking-[0.18em] text-base-content/45">
+		Now pressing
+	</p>
+	<div class="relative flex items-center gap-5">
+		<VinylProgress percent={livePct} spinning indeterminate={isSearchingState} size={120} />
+		<div class="min-w-0 flex-1">
+			<h2 class="truncate text-xl font-black tracking-tight sm:text-2xl">{task.album_title}</h2>
+			<p class="truncate text-sm text-base-content/60">
+				{task.artist_name}{#if task.year}<span class="text-base-content/30">
+						·
+					</span>{task.year}{/if}
+			</p>
+			<div class="mt-2"><DownloadStatusBadge {task} /></div>
+			{#if showBar}
+				<div class="mt-3 max-w-md">
+					<DownloadProgressBar
+						percent={livePct}
+						bytesDownloaded={progress?.bytes_downloaded ?? task.downloaded_bytes}
+						bytesTotal={progress?.bytes_total ?? task.total_size_bytes ?? 0}
+						filesCompleted={progress?.files_completed ?? task.files_completed}
+						filesTotal={progress?.files_total ?? task.files_total}
+					/>
+				</div>
+			{/if}
+		</div>
+	</div>
+</section>
+
+<style>
+	.now-pressing {
+		--hero-glow-color: var(--color-primary-rgb);
+		animation: hero-glow 4s ease-in-out infinite;
+	}
+	.now-pressing-glow {
+		position: absolute;
+		top: -4rem;
+		right: -3rem;
+		height: 16rem;
+		width: 16rem;
+		border-radius: 9999px;
+		background: radial-gradient(
+			circle,
+			oklch(from var(--color-primary) l c h / 0.18),
+			transparent 70%
+		);
+		filter: blur(40px);
+		pointer-events: none;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.now-pressing {
+			animation: none;
+		}
+	}
+</style>

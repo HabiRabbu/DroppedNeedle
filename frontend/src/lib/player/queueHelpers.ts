@@ -2,6 +2,7 @@ import type { QueueItem, SourceType } from '$lib/player/types';
 import type {
 	JellyfinTrackInfo,
 	LocalTrackInfo,
+	NativeTrackListItem,
 	NavidromeTrackInfo,
 	PlexTrackInfo,
 	YouTubeTrackLink
@@ -209,6 +210,7 @@ export function buildQueueItemsFromLocal(tracks: LocalTrackInfo[], meta: TrackMe
 		albumId: meta.albumId,
 		albumName: meta.albumName,
 		coverUrl: normalizedCoverUrl,
+		coverRemoteUrl: meta.coverUrl,
 		sourceType: 'local' as const,
 		artistId: meta.artistId,
 		streamUrl: API.stream.local(t.track_file_id),
@@ -319,6 +321,25 @@ export function buildDiscoveryQueueFromNavidrome(tracks: NavidromeTrackInfo[]): 
 		format: normalizeCodec(t.codec),
 		availableSources: ['navidrome'] as SourceType[],
 		duration: t.duration_seconds
+	}));
+}
+
+export function buildDiscoveryQueueFromLocal(tracks: NativeTrackListItem[]): QueueItem[] {
+	return tracks.map((t) => ({
+		trackSourceId: t.track_file_id,
+		trackName: t.title,
+		artistName: t.artist_name,
+		trackNumber: t.track_number,
+		discNumber: normalizeDiscNumber(t.disc_number),
+		albumId: t.album_mbid ?? '',
+		albumName: t.album_name,
+		coverUrl: getCoverUrl(t.cover_url, t.album_mbid ?? ''),
+		coverRemoteUrl: t.cover_url ?? null,
+		sourceType: 'local' as const,
+		streamUrl: API.stream.local(t.track_file_id),
+		format: (t.format ?? '').toLowerCase(),
+		availableSources: ['local'] as SourceType[],
+		duration: t.duration_seconds ?? undefined
 	}));
 }
 

@@ -12,7 +12,7 @@ from services.precache.orchestrator import LibraryPrecacheService
 class TestPhaseConstruction:
     def test_artist_phase_constructs(self):
         phase = ArtistPhase(
-            lidarr_repo=AsyncMock(),
+            library_repo=AsyncMock(),
             cover_repo=AsyncMock(),
             preferences_service=MagicMock(),
             genre_index=AsyncMock(),
@@ -38,7 +38,7 @@ class TestPhaseConstruction:
 
     def test_orchestrator_constructs_and_creates_phases(self):
         svc = LibraryPrecacheService(
-            lidarr_repo=AsyncMock(),
+            library_repo=AsyncMock(),
             cover_repo=AsyncMock(),
             preferences_service=MagicMock(),
             sync_state_store=AsyncMock(),
@@ -56,7 +56,7 @@ class TestOrchestratorDelegation:
         cover_repo = MagicMock()
         cover_repo.cache_dir = tmp_path
         svc = LibraryPrecacheService(
-            lidarr_repo=AsyncMock(),
+            library_repo=AsyncMock(),
             cover_repo=cover_repo,
             preferences_service=MagicMock(),
             sync_state_store=AsyncMock(),
@@ -74,7 +74,7 @@ class TestOrchestratorDelegation:
         audiodb_svc.get_cached_album_images = AsyncMock(return_value=None)
 
         svc = LibraryPrecacheService(
-            lidarr_repo=AsyncMock(),
+            library_repo=AsyncMock(),
             cover_repo=AsyncMock(),
             preferences_service=MagicMock(),
             sync_state_store=AsyncMock(),

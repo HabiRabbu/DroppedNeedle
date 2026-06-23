@@ -1,0 +1,332 @@
+"""Tests for FileProcessor: verify_downloaded_file (Phase 3) + process_downloaded
+(Phase 7 import pipeline)."""
+
+import shutil
+import threading
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from infrastructure.audio.tagger import AudioTagger
+from infrastructure.persistence.library_db import LibraryDB
+from models.audio import FingerprintResult
+from models.download_manifest import DownloadManifest, ExpectedFile
+from services.native.file_processor import (
+    DOWNLOADS_MOUNT_UNAVAILABLE,
+    FileProcessor,
+    VerifyStatus,
+)
+from services.native.library_manager import LibraryManager
+from services.native.naming import NamingTemplateEngine
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "library"
+# flac_full_01.flac was generated with title="Airbag", artist="Radiohead".
+_FLAC = FIXTURES / "flac_full_01.flac"
+_TEMPLATE = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"
+
+
+@pytest.fixture
+def processor() -> FileProcessor:
+    return FileProcessor(AudioTagger())
+
+
+def test_valid_file_matching_expectations_passes(processor):
+    result = processor.verify_downloaded_file(_FLAC, title="Airbag", artist="Radiohead")
+    assert result.status == VerifyStatus.PASS
+    assert result.passed is True
+
+
+def test_no_expectations_verifies_readability_only(processor):
+    assert processor.verify_downloaded_file(_FLAC).passed is True
+
+
+def test_missing_file_fails(processor, tmp_path):
+    result = processor.verify_downloaded_file(tmp_path / "nope.flac")
+    assert result.status == VerifyStatus.FAIL
+    assert result.reason == "file not found"
+
+
+def test_unreadable_file_fails(processor, tmp_path):
+    junk = tmp_path / "junk.flac"
+    junk.write_bytes(b"not audio")
+    result = processor.verify_downloaded_file(junk)
+    assert result.status == VerifyStatus.FAIL
+    assert result.reason == "tags unreadable"
+
+
+def test_title_mismatch_fails(processor):
+    result = processor.verify_downloaded_file(_FLAC, title="Wrong Title")
+    assert result.status == VerifyStatus.FAIL
+    assert result.reason == "title mismatch"
+
+
+def test_match_is_case_insensitive(processor):
+    assert processor.verify_downloaded_file(_FLAC, artist="radiohead").passed is True
+
+
+def test_artist_mismatch_fails(processor):
+    result = processor.verify_downloaded_file(_FLAC, artist="Wrong Artist")
+    assert result.status == VerifyStatus.FAIL
+    assert result.reason == "artist mismatch"
+
+
+def test_album_mismatch_fails(processor):
+    result = processor.verify_downloaded_file(_FLAC, album="Wrong Album")
+    assert result.status == VerifyStatus.FAIL
+    assert result.reason == "album mismatch"
+
+
+def test_track_number_mismatch_fails(processor):
+    result = processor.verify_downloaded_file(_FLAC, track_number=999)
+    assert result.status == VerifyStatus.FAIL
+    assert result.reason == "track number mismatch"
+
+
+class _StubClient:
+    def __init__(self, downloads_root: Path) -> None:
+        self._root = downloads_root
+        self.cancel = MagicMock()  # asserted NEVER called by FileProcessor (DEC-1)
+
+    async def get_file_path(self, username: str, remote_filename: str):
+        return self._root / remote_filename.replace("\\", "/").lstrip("/")
+
+
+def _place(downloads: Path, rel: str) -> None:
+    dest = downloads / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(_FLAC, dest)
+
+
+def _manifest(*files: ExpectedFile, task_id="t1", rg="rg-1") -> DownloadManifest:
+    return DownloadManifest(
+        task_id=task_id,
+        source_username="peer",
+        release_group_mbid=rg,
+        artist_name="Radiohead",
+        album_title="OK Computer",
+        naming_template=_TEMPLATE,
+        target_files=list(files),
+        year=1997,
+    )
+
+
+def _make_processor(tmp_path: Path, *, downloads=None, fingerprinter=None, verify=True):
+    downloads = downloads or (tmp_path / "downloads")
+    downloads.mkdir(parents=True, exist_ok=True)
+    library = tmp_path / "library"
+    library.mkdir(parents=True, exist_ok=True)
+    manager = LibraryManager(
+        LibraryDB(db_path=tmp_path / "library.db", write_lock=threading.Lock())
+    )
+    client = _StubClient(downloads)
+    fp = FileProcessor(
+        AudioTagger(),
+        naming_engine=NamingTemplateEngine(),
+        library_manager=manager,
+        library_paths=[library],
+        client=client,
+        slskd_downloads_path=downloads,
+        fingerprinter=fingerprinter,
+        verify_downloads=verify,
+    )
+    return fp, manager, client, library, downloads
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_imports_and_moves(tmp_path: Path):
+    fp, manager, client, library, downloads = _make_processor(tmp_path)
+    _place(downloads, "Radiohead - OK Computer/01 Airbag.flac")
+    manifest = _manifest(ExpectedFile(filename="Radiohead - OK Computer/01 Airbag.flac", size=1))
+
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1
+    assert result.failed == []
+    moved = Path(result.succeeded[0])
+    assert moved.exists()
+    # source moved out of the download dir (no leftover)
+    assert not (downloads / "Radiohead - OK Computer/01 Airbag.flac").exists()
+    # tags written from the manifest
+    tag, _ = AudioTagger().read_tags(moved)
+    assert tag.album == "OK Computer"
+    assert tag.musicbrainz_release_group_id == "rg-1"
+    assert await manager.has_album("rg-1") is True
+    # DEC-1: FileProcessor never touches slskd transfers
+    client.cancel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_duration_mismatch_quarantines(tmp_path: Path):
+    fp, _manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
+    _place(downloads, "A/track.flac")
+    # expected 500s but the fixture is a few seconds -> mismatch
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1, duration=500.0))
+
+    result = await fp.process_downloaded(manifest)
+
+    assert result.succeeded == []
+    assert len(result.failed) == 1
+    assert result.failed[0].reason == "duration_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_continue_on_failure(tmp_path: Path):
+    fp, _manager, _client, library, downloads = _make_processor(tmp_path, verify=False)
+    _place(downloads, "A/good.flac")
+    manifest = _manifest(
+        ExpectedFile(filename="A/good.flac", size=1),
+        ExpectedFile(filename="A/missing.flac", size=1),  # never placed
+    )
+
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1  # the good file imported despite the bad one
+    assert len(result.failed) == 1
+    assert result.failed[0].filename == "A/missing.flac"
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_import_error_is_per_file(tmp_path: Path):
+    """A move/tag/DB error during the mutating phase fails THAT file (reason
+    import-failed, not a quarantine reason) and the batch continues - it must not
+    abort and orphan files already imported earlier in the loop."""
+    import msgspec
+
+    fp, manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
+    _place(downloads, "A/good.flac")
+    _place(downloads, "A/bad.flac")
+    # Distinct titles -> distinct library targets (no same-target collision) and a
+    # stable signal for the flaky tagger now that tags are written on the staged copy.
+    tagger = AudioTagger()
+    for rel, title in (("A/good.flac", "Good Track"), ("A/bad.flac", "Bad Track")):
+        existing, _ = tagger.read_tags(downloads / rel)
+        tagger.write_mb_tags(downloads / rel, msgspec.structs.replace(existing, title=title))
+
+    real_write = AudioTagger().write_mb_tags
+    def flaky_write(path, tag):
+        if tag.title == "Bad Track":
+            raise OSError("disk full")
+        return real_write(path, tag)
+    fp._tagger.write_mb_tags = flaky_write
+
+    manifest = _manifest(
+        ExpectedFile(filename="A/good.flac", size=1),
+        ExpectedFile(filename="A/bad.flac", size=1),
+    )
+
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1   # good file imported despite the bad one
+    assert len(result.failed) == 1
+    assert result.failed[0].filename == "A/bad.flac"
+    from services.native.file_processor import IMPORT_FAILED, QUARANTINE_REASONS
+    assert result.failed[0].reason == IMPORT_FAILED
+    assert IMPORT_FAILED not in QUARANTINE_REASONS   # a local I/O error must not blacklist the peer
+    assert await manager.has_album("rg-1") is True
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_cross_mount_copies(tmp_path: Path, monkeypatch):
+    """slskd's dir and the library are often SEPARATE mounts (Docker volumes) where
+    os.replace raises EXDEV. The importer must fall back to copy, still import the
+    file, and remove the slskd source (no leftover / doubled storage)."""
+    import errno
+    import os as _os
+
+    fp, manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
+    _place(downloads, "A/track.flac")
+    src = downloads / "A/track.flac"
+
+    real_replace = _os.replace
+    def fake_replace(a, b):
+        # only the source -> staging move (out of the downloads dir) is "cross-mount"
+        if str(a).startswith(str(downloads)):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(a, b)
+    monkeypatch.setattr(_os, "replace", fake_replace)
+
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1))
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1
+    assert Path(result.succeeded[0]).exists()
+    assert not src.exists()              # slskd source removed after the cross-mount copy
+    assert await manager.has_album("rg-1") is True
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_mount_unavailable(tmp_path: Path):
+    missing_mount = tmp_path / "nope"  # never created
+    fp, _manager, _client, _library, _downloads = _make_processor(
+        tmp_path, downloads=tmp_path / "real", verify=False
+    )
+    fp._slskd_downloads_path = missing_mount
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1))
+
+    result = await fp.process_downloaded(manifest)
+
+    assert result.succeeded == []
+    assert result.failed[0].reason == DOWNLOADS_MOUNT_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_fingerprint_mismatch(tmp_path: Path):
+    fingerprinter = MagicMock()
+    fingerprinter.fingerprint = AsyncMock(
+        return_value=FingerprintResult(status="pass", score=0.95, release_group_ids=["other-rg"])
+    )
+    fp, _manager, _client, _library, downloads = _make_processor(
+        tmp_path, fingerprinter=fingerprinter, verify=True
+    )
+    _place(downloads, "A/track.flac")
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1), rg="rg-1")
+
+    result = await fp.process_downloaded(manifest)
+
+    assert result.succeeded == []
+    assert result.failed[0].reason == "fingerprint_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_fingerprint_failopen_when_disabled(tmp_path: Path):
+    fingerprinter = MagicMock()
+    fingerprinter.fingerprint = AsyncMock(return_value=FingerprintResult(status="disabled"))
+    fp, manager, _client, _library, downloads = _make_processor(
+        tmp_path, fingerprinter=fingerprinter, verify=True
+    )
+    _place(downloads, "A/track.flac")
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1))
+
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1   # disabled fingerprint never blocks the import
+    assert await manager.has_album("rg-1") is True
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_crash_idempotency(tmp_path: Path):
+    fp, manager, _client, library, downloads = _make_processor(tmp_path, verify=False)
+    # Simulate a prior run: a library row already exists for this task + remote file,
+    # but the source has been moved out of the download dir (gone).
+    tag, info = AudioTagger().read_tags(_FLAC)
+    existing_path = library / "Radiohead" / "OK Computer (1997)" / "already.flac"
+    existing_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(_FLAC, existing_path)
+    await manager.upsert_file(
+        existing_path, tag, info,
+        release_group_mbid="rg-1", source="download",
+        download_task_id="t1", source_path=str(downloads / "A/track.flac"),
+    )
+    # the album folder remains after the prior run moved the file out; the file is gone
+    (downloads / "A").mkdir(parents=True, exist_ok=True)
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1))  # source not placed
+
+    result = await fp.process_downloaded(manifest)
+
+    # reconciled as already-imported: counted success, no failure, no duplicate
+    assert result.failed == []
+    assert len(result.succeeded) == 1
+    assert Path(result.succeeded[0]) == existing_path
+    rows = await manager.get_file_rows_for_album("rg-1")
+    assert len(rows) == 1

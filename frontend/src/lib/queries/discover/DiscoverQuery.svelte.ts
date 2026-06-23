@@ -1,15 +1,16 @@
 import { api } from '$lib/api/client';
 import { API, CACHE_TTL } from '$lib/constants';
+import { authStore } from '$lib/stores/authStore.svelte';
 import type { MusicSource } from '$lib/stores/musicSource';
 import type { DiscoverResponse, HomeSection, PlaylistSuggestionsResponse } from '$lib/types';
 import { createQuery, queryOptions } from '@tanstack/svelte-query';
 import type { Getter } from 'runed';
 import { DiscoverQueryKeyFactory } from './DiscoverQueryKeyFactory';
 
-export const getDiscoverQueryOptions = (source: MusicSource) =>
+export const getDiscoverQueryOptions = (userId: string | null | undefined, source: MusicSource) =>
 	queryOptions({
 		staleTime: CACHE_TTL.DISCOVER,
-		queryKey: DiscoverQueryKeyFactory.discover(source),
+		queryKey: DiscoverQueryKeyFactory.discover(userId, source),
 		queryFn: ({ signal }) =>
 			api.global.get<DiscoverResponse>(API.discover(source), {
 				signal
@@ -19,7 +20,7 @@ export const getDiscoverQueryOptions = (source: MusicSource) =>
 export const getDiscoverQuery = (getSource: Getter<MusicSource>) =>
 	createQuery(() => ({
 		staleTime: CACHE_TTL.DISCOVER,
-		queryKey: DiscoverQueryKeyFactory.discover(getSource()),
+		queryKey: DiscoverQueryKeyFactory.discover(authStore.user?.id, getSource()),
 		queryFn: ({ signal }) =>
 			api.global.get<DiscoverResponse>(API.discover(getSource()), {
 				signal
@@ -34,6 +35,7 @@ export const getRadioQuery = (
 	createQuery(() => ({
 		staleTime: CACHE_TTL.DISCOVER,
 		queryKey: DiscoverQueryKeyFactory.radio(
+			authStore.user?.id,
 			getParams().seedType,
 			getParams().seedId,
 			getParams().source
@@ -62,6 +64,7 @@ export const getPlaylistSuggestionsQuery = (
 	createQuery(() => ({
 		staleTime: CACHE_TTL.DISCOVER,
 		queryKey: DiscoverQueryKeyFactory.playlistSuggestions(
+			authStore.user?.id,
 			getParams().playlistId,
 			getParams().source
 		),

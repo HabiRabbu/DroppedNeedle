@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'musicseerr-dismissed-prompts';
+const STORAGE_KEY = 'droppedneedle-dismissed-prompts';
 
 const isBrowser = typeof localStorage !== 'undefined';
 

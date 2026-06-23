@@ -105,45 +105,6 @@ class TestProgressClamp:
         assert progress.progress_percent <= 100
 
 
-class TestSkippedAutoSync:
-    """Skipped auto-sync must not flip last_sync_success to False."""
-
-    @pytest.mark.asyncio
-    async def test_skipped_sync_does_not_update_status(self):
-        from core.tasks import sync_library_periodically
-        from api.v1.schemas.library import SyncLibraryResponse
-
-        mock_lib = AsyncMock()
-        mock_lib._lidarr_repo = MagicMock()
-        mock_lib._lidarr_repo.is_configured.return_value = True
-        mock_lib.sync_library.return_value = SyncLibraryResponse(
-            status="skipped", artists=0, albums=0
-        )
-
-        mock_prefs = MagicMock()
-        lidarr_settings = MagicMock()
-        lidarr_settings.sync_frequency = "5min"
-        mock_prefs.get_lidarr_settings.return_value = lidarr_settings
-
-        call_count = 0
-
-        original_sleep = asyncio.sleep
-        async def fake_sleep(duration):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
-                raise asyncio.CancelledError()
-            await original_sleep(0)
-
-        with patch('asyncio.sleep', side_effect=fake_sleep):
-            try:
-                await sync_library_periodically(mock_lib, mock_prefs)
-            except asyncio.CancelledError:
-                pass
-
-        mock_prefs.save_lidarr_settings.assert_not_called()
-
-
 class TestCancelSync:
     """Cancel endpoint and cancellation behavior."""
 

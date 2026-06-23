@@ -13,7 +13,7 @@
 
 <a
 	href={artistHref(artist.musicbrainz_id)}
-	class="card bg-base-100 w-full shadow-sm shrink-0 transition-all hover:scale-105 hover:shadow-[0_0_20px_rgba(174,213,242,0.15)] group relative"
+	class="card bg-base-100 w-full shadow-sm shrink-0 transition-all hover:scale-105 hover:glow-primary group relative"
 	aria-label="Open {artist.title}"
 >
 	<ArtistCardDownloadButton artistName={artist.title} artistMbid={artist.musicbrainz_id} />

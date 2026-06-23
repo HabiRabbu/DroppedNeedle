@@ -18,6 +18,9 @@ from repositories.protocols import (
     LastFmRepositoryProtocol,
 )
 from repositories.listenbrainz_models import ListenBrainzArtist
+from services.home.integration_helpers import resolve_source_value
+from services.per_user_client_factory import PerUserClientFactory
+from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
 from services.discover.integration_helpers import IntegrationHelpers
 from services.discover.mbid_resolution_service import MbidResolutionService
 from services.discover.queue_strategies import (
@@ -45,6 +48,8 @@ class DiscoverQueueService:
         library_db: LibraryDB | None = None,
         mbid_store: MBIDStore | None = None,
         lastfm_repo: LastFmRepositoryProtocol | None = None,
+        client_factory: PerUserClientFactory | None = None,
+        listening_prefs_store: UserListeningPrefsStore | None = None,
     ) -> None:
         self._lb_repo = listenbrainz_repo
         self._jf_repo = jellyfin_repo
@@ -54,27 +59,44 @@ class DiscoverQueueService:
         self._library_db = library_db
         self._mbid_store = mbid_store
         self._lfm_repo = lastfm_repo
+        self._client_factory = client_factory
+        self._prefs_store = listening_prefs_store
 
-    async def build_queue(self, count: int | None = None, source: str | None = None) -> DiscoverQueueResponse:
+    async def _resolve_user_music(self, user_id: str, source: str | None):
+        lb_client = lfm_client = None
+        lb_username = lfm_username = None
+        if self._client_factory:
+            lb_client = await self._client_factory.resolve_listenbrainz(user_id)
+            lfm_client = await self._client_factory.resolve_lastfm(user_id)
+            lb_username = await self._client_factory.resolve_listenbrainz_username(user_id)
+            lfm_username = await self._client_factory.resolve_lastfm_username(user_id)
+        primary_source = "listenbrainz"
+        if self._prefs_store:
+            primary_source = (await self._prefs_store.get(user_id)).primary_music_source
+        lb_enabled = lb_client is not None
+        lfm_enabled = lfm_client is not None
+        resolved = resolve_source_value(source, primary_source, lb_enabled, lfm_enabled)
+        return lb_client, lfm_client, lb_username, lfm_username, lb_enabled, lfm_enabled, resolved
+
+    async def build_queue(
+        self, user_id: str, count: int | None = None, source: str | None = None
+    ) -> DiscoverQueueResponse:
         qs = self._integration.get_queue_settings()
         if count is None:
             count = qs.queue_size
-        resolved_source = self._integration.resolve_source(source)
-        lb_enabled = self._integration.is_listenbrainz_enabled()
+        (lb_client, _lfm_client, username, lfm_username,
+         lb_enabled, lfm_enabled, resolved_source) = await self._resolve_user_music(user_id, source)
         jf_enabled = self._integration.is_jellyfin_enabled()
-        lidarr_configured = self._integration.is_lidarr_configured()
-        lfm_enabled = self._integration.is_lastfm_enabled()
-        username = self._integration.get_listenbrainz_username()
-        lfm_username = self._integration.get_lastfm_username()
+        library_configured = self._integration.is_library_configured()
 
         ignored_mbids: set[str] = set()
         if self._mbid_store:
             try:
-                ignored_mbids = await self._mbid_store.get_ignored_release_mbids()
+                ignored_mbids = await self._mbid_store.get_ignored_release_mbids(user_id)
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to load ignored release MBIDs from cache")
 
-        library_album_mbids = await self._mbid.get_library_album_mbids(lidarr_configured)
+        library_album_mbids = await self._mbid.get_library_album_mbids(library_configured)
         listened_release_group_mbids = await self._mbid.get_user_listened_release_group_mbids(
             lb_enabled,
             username,
@@ -89,6 +111,7 @@ class DiscoverQueueService:
                 resolved_source=resolved_source,
                 lfm_enabled=lfm_enabled,
                 lfm_username=lfm_username,
+                lb_client=lb_client,
             )
         else:
             items = await self._build_anonymous_queue(
@@ -108,9 +131,12 @@ class DiscoverQueueService:
         resolved_source: str = "listenbrainz",
         lfm_enabled: bool = False,
         lfm_username: str | None = None,
+        lb_client: Any = None,
     ) -> list[ListenBrainzArtist]:
         seeds: list[ListenBrainzArtist] = []
         seen_mbids: set[str] = set()
+        # LB top-artists rely on the client's own identity, so use the per-user client.
+        seed_lb_repo = lb_client or self._lb_repo
 
         if resolved_source == "lastfm" and lfm_enabled and lfm_username and self._lfm_repo:
             try:
@@ -134,11 +160,12 @@ class DiscoverQueueService:
                 logger.warning("Failed to get Last.fm seed artists: %s", e)
 
         if resolved_source != "lastfm" and len(seeds) < 3 and lb_enabled and username:
-            for range_ in ("this_week", "this_month"):
+            # Prefer recent listening, fall back to broader windows for quiet-but-real history.
+            for range_ in ("this_week", "this_month", "this_year", "all_time"):
                 if len(seeds) >= 3:
                     break
                 try:
-                    artists = await self._lb_repo.get_user_top_artists(count=10, range_=range_)
+                    artists = await seed_lb_repo.get_user_top_artists(count=10, range_=range_)
                     for a in artists:
                         if len(seeds) >= 3:
                             break
@@ -186,8 +213,8 @@ class DiscoverQueueService:
                 logger.warning("Failed to load album MBIDs from library cache for validation")
         if not library_mbids:
             try:
-                lidarr_configured = self._integration.is_lidarr_configured()
-                if lidarr_configured:
+                library_configured = self._integration.is_library_configured()
+                if library_configured:
                     library_mbids = await self._mbid.get_library_album_mbids(True)
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to load album MBIDs from Lidarr for validation")
@@ -197,16 +224,16 @@ class DiscoverQueueService:
         return [m for m in mbids if m.lower() in lowered_library]
 
     async def ignore_release(
-        self, release_group_mbid: str, artist_mbid: str, release_name: str, artist_name: str
+        self, user_id: str, release_group_mbid: str, artist_mbid: str, release_name: str, artist_name: str
     ) -> None:
         if self._mbid_store:
             await self._mbid_store.add_ignored_release(
-                release_group_mbid, artist_mbid, release_name, artist_name
+                user_id, release_group_mbid, artist_mbid, release_name, artist_name
             )
 
-    async def get_ignored_releases(self) -> list[DiscoverIgnoredRelease]:
+    async def get_ignored_releases(self, user_id: str) -> list[DiscoverIgnoredRelease]:
         if self._mbid_store:
-            rows = await self._mbid_store.get_ignored_releases()
+            rows = await self._mbid_store.get_ignored_releases(user_id)
             return [DiscoverIgnoredRelease(**row) for row in rows]
         return []
 
@@ -372,12 +399,14 @@ class DiscoverQueueService:
         resolved_source: str = "listenbrainz",
         lfm_enabled: bool = False,
         lfm_username: str | None = None,
+        lb_client: Any = None,
     ) -> list[DiscoverQueueItemLight]:
         seed_artists = await self._get_seed_artists(
             lb_enabled, username, jf_enabled,
             resolved_source=resolved_source,
             lfm_enabled=lfm_enabled,
             lfm_username=lfm_username,
+            lb_client=lb_client,
         )
         if not seed_artists:
             return await self._build_anonymous_queue(

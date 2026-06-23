@@ -6,7 +6,9 @@
 	import { CACHE_KEYS, CACHE_TTL } from '$lib/constants';
 	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 	import { createLocalStorageCache } from '$lib/utils/localStorageCache';
+	import { overviewCacheSuffix } from '$lib/utils/timeRangeCache';
 	import { isAbortError } from '$lib/utils/errorHandling';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { api } from '$lib/api/client';
 	import TimeRangeCard from './TimeRangeCard.svelte';
 	import { getTimeRangeFallbackPath } from '$lib/utils/timeRangeFallback';
@@ -73,9 +75,8 @@
 	);
 
 	function getOverviewCacheSuffix(): string {
-		const encodedEndpoint = encodeURIComponent(endpoint);
-		const sourceKey = source ?? 'none';
-		return `${itemType}:${sourceKey}:${encodedEndpoint}`;
+		// Scope per user; this localStorage cache isn't covered by the TanStack reset, so it could leak across users.
+		return overviewCacheSuffix(authStore.user?.id, itemType, source, endpoint);
 	}
 
 	function abortInFlightRequests() {

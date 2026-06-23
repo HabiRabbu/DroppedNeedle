@@ -11,6 +11,8 @@ from core.exceptions import (
     ValidationError,
     ConfigurationError,
     ClientDisconnectedError,
+    PermissionDeniedError,
+    ConflictError,
 )
 from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
 from infrastructure.resilience.retry import CircuitOpenError
@@ -19,11 +21,12 @@ from models.error import (
     VALIDATION_ERROR,
     NOT_FOUND,
     EXTERNAL_SERVICE_UNAVAILABLE,
-    SERVICE_UNAVAILABLE,
     CONFIGURATION_ERROR,
     SOURCE_RESOLUTION_ERROR,
     INTERNAL_ERROR,
     CIRCUIT_BREAKER_OPEN,
+    FORBIDDEN,
+    CONFLICT,
     STATUS_TO_CODE,
 )
 
@@ -58,6 +61,16 @@ async def validation_error_handler(request: Request, exc: ValidationError) -> Ms
 async def configuration_error_handler(request: Request, exc: ConfigurationError) -> MsgSpecJSONResponse:
     logger.warning("Configuration error: %s - %s %s", exc, request.method, request.url.path)
     return error_response(status.HTTP_400_BAD_REQUEST, CONFIGURATION_ERROR, str(exc))
+
+
+async def permission_denied_handler(request: Request, exc: PermissionDeniedError) -> MsgSpecJSONResponse:
+    logger.warning("Permission denied: %s - %s %s", exc, request.method, request.url.path)
+    return error_response(status.HTTP_403_FORBIDDEN, FORBIDDEN, str(exc))
+
+
+async def conflict_error_handler(request: Request, exc: ConflictError) -> MsgSpecJSONResponse:
+    logger.warning("Conflict: %s - %s %s", exc, request.method, request.url.path)
+    return error_response(status.HTTP_409_CONFLICT, CONFLICT, str(exc))
 
 
 async def source_resolution_error_handler(request: Request, exc: SourceResolutionError) -> MsgSpecJSONResponse:

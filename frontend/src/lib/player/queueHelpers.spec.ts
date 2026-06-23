@@ -13,7 +13,7 @@ vi.mock('$lib/utils/errorHandling', () => ({
 	getCoverUrl: (url: string | null, albumId: string) => url ?? `/cover/${albumId}`
 }));
 
-import type { JellyfinTrackInfo, LocalTrackInfo } from '$lib/types';
+import type { JellyfinTrackInfo, LocalTrackInfo, NativeTrackListItem } from '$lib/types';
 import type { PlaylistTrack } from '$lib/api/playlists';
 import type { TrackMeta, TrackSourceData } from './queueHelpers';
 import {
@@ -22,6 +22,7 @@ import {
 	buildQueueItem,
 	buildQueueItemsFromJellyfin,
 	buildQueueItemsFromLocal,
+	buildDiscoveryQueueFromLocal,
 	buildQueueItemFromYouTube,
 	compareDiscTrack,
 	getDiscTrackKey,
@@ -37,7 +38,7 @@ const baseMeta: TrackMeta = {
 };
 
 const localTrack: LocalTrackInfo = {
-	track_file_id: 42,
+	track_file_id: '42',
 	title: 'Local Song',
 	track_number: 1,
 	format: 'FLAC',
@@ -311,6 +312,48 @@ describe('buildQueueItemsFromLocal', () => {
 		const track: LocalTrackInfo = { ...localTrack, duration_seconds: null };
 		const items = buildQueueItemsFromLocal([track], baseMeta);
 		expect(items[0].duration).toBeUndefined();
+	});
+});
+
+describe('buildDiscoveryQueueFromLocal', () => {
+	const nativeTrack: NativeTrackListItem = {
+		track_file_id: 'file-7',
+		title: 'Flat Song',
+		album_name: 'Cross Album',
+		artist_name: 'Flat Artist',
+		album_mbid: 'rg-9',
+		cover_url: '/art.jpg',
+		format: 'FLAC',
+		track_number: 3,
+		disc_number: 2,
+		duration_seconds: 200
+	};
+
+	it('carries per-row album/artist/cover context and a local stream url', () => {
+		expect.assertions(11);
+		const [item] = buildDiscoveryQueueFromLocal([nativeTrack]);
+		expect(item.trackSourceId).toBe('file-7');
+		expect(item.trackName).toBe('Flat Song');
+		expect(item.artistName).toBe('Flat Artist');
+		expect(item.albumName).toBe('Cross Album');
+		expect(item.albumId).toBe('rg-9');
+		expect(item.sourceType).toBe('local');
+		expect(item.streamUrl).toBe('/api/v1/stream/local/file-7');
+		expect(item.coverUrl).toBe('/art.jpg');
+		expect(item.format).toBe('flac');
+		expect(item.discNumber).toBe(2);
+		expect(item.duration).toBe(200);
+	});
+
+	it('falls back to a generated cover, empty albumId and disc 1 when fields are missing', () => {
+		expect.assertions(4);
+		const [item] = buildDiscoveryQueueFromLocal([
+			{ ...nativeTrack, album_mbid: null, cover_url: null, disc_number: 0, duration_seconds: null }
+		]);
+		expect(item.albumId).toBe('');
+		expect(item.coverUrl).toBe('/cover/'); // mock getCoverUrl(null, '')
+		expect(item.discNumber).toBe(1);
+		expect(item.duration).toBeUndefined();
 	});
 });
 

@@ -16,6 +16,8 @@ from infrastructure.cache.cache_keys import (
     MB_RELEASE_TO_RG_PREFIX,
     MB_RELEASE_REC_PREFIX,
     MB_RECORDING_PREFIX,
+    MB_RECORDING_SEARCH_PREFIX,
+    MB_RECORDING_TO_RG_PREFIX,
 )
 from infrastructure.queue.priority_queue import RequestPriority
 from repositories.musicbrainz_base import (
@@ -47,6 +49,36 @@ class _ReleaseGroupSearchPayload(msgspec.Struct):
 class _ReleaseLookupPayload(msgspec.Struct):
     release_group: dict[str, Any] = msgspec.field(name="release-group", default_factory=dict)
     media: list[dict[str, Any]] = msgspec.field(default_factory=list)
+
+
+class _RecordingReleaseGroupPayload(msgspec.Struct):
+    # A recording lookup with inc=releases+release-groups returns a `releases`
+    # list, each release carrying its `release-group` sub-object.
+    releases: list[dict[str, Any]] = msgspec.field(default_factory=list)
+
+
+class _RecordingSearchPayload(msgspec.Struct):
+    recordings: list[dict[str, Any]] = msgspec.field(default_factory=list)
+
+
+class RecordingReleaseGroup(msgspec.Struct):
+    """A release group a searched recording appears on."""
+
+    release_group_mbid: str
+    release_group_title: str
+    release_mbid: str | None
+    primary_type: str | None
+    secondary_types: tuple[str, ...]
+
+
+class RecordingMatch(msgspec.Struct):
+    """A recording-search candidate with the release groups it belongs to."""
+
+    recording_mbid: str
+    title: str
+    artist: str | None
+    score: int
+    release_groups: list[RecordingReleaseGroup]
 
 
 def _rg_priority(rg: dict) -> int:
@@ -85,9 +117,13 @@ class MusicBrainzAlbumMixin:
     def _map_release_group_to_result(
         self,
         rg: dict[str, Any],
-        included_secondary_types: set[str] | None = None
+        included_secondary_types: set[str] | None = None,
+        include_all_types: bool = False,
+        included_primary_types: set[str] | None = None,
     ) -> SearchResult | None:
-        if not should_include_release(rg, included_secondary_types):
+        if not include_all_types and not should_include_release(
+            rg, included_secondary_types, included_primary_types
+        ):
             return None
 
         primary_type = rg.get("primary-type", "")
@@ -114,9 +150,13 @@ class MusicBrainzAlbumMixin:
         query: str,
         limit: int = 10,
         offset: int = 0,
-        included_secondary_types: set[str] | None = None
+        included_secondary_types: set[str] | None = None,
+        include_all_types: bool = False,
+        included_primary_types: set[str] | None = None,
     ) -> list[SearchResult]:
-        cache_key = mb_album_search_key(query, limit, offset, included_secondary_types)
+        cache_key = mb_album_search_key(query, limit, offset, included_secondary_types, included_primary_types)
+        if include_all_types:
+            cache_key = f"{cache_key}:all"
 
         cached = await self._cache.get(cache_key)
         if cached is not None:
@@ -140,7 +180,9 @@ class MusicBrainzAlbumMixin:
 
             results = []
             for rg in release_groups:
-                mapped = self._map_release_group_to_result(rg, included_secondary_types)
+                mapped = self._map_release_group_to_result(
+                    rg, included_secondary_types, include_all_types, included_primary_types
+                )
                 if mapped:
                     results.append(mapped)
                 if len(results) >= limit:
@@ -328,6 +370,118 @@ class MusicBrainzAlbumMixin:
             return rg_id
         except Exception as e:  # noqa: BLE001
             _record_mb_degradation(f"release-to-rg lookup failed: {e}")
+            await self._cache.set(cache_key, "", ttl_seconds=3600)
+            return None
+
+    async def search_recordings(
+        self,
+        artist: str,
+        title: str,
+        limit: int = 8,
+    ) -> list["RecordingMatch"]:
+        """Search MusicBrainz recordings by track title + artist, returning each candidate with its release groups."""
+        artist = artist.replace('"', "").strip()
+        title = title.replace('"', "").strip()
+        if not artist or not title:
+            return []
+        cache_key = f"{MB_RECORDING_SEARCH_PREFIX}{artist.lower()}|{title.lower()}:{limit}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await mb_api_get(
+                "/recording",
+                params={
+                    "query": f'recording:"{title}" AND artist:"{artist}"',
+                    "limit": limit,
+                },
+                priority=RequestPriority.USER_INITIATED,
+                decode_type=_RecordingSearchPayload,
+            )
+            matches: list[RecordingMatch] = []
+            for rec in result.recordings:
+                rec_id = rec.get("id")
+                if not rec_id:
+                    continue
+                groups: list[RecordingReleaseGroup] = []
+                seen: set[str] = set()
+                for rel in rec.get("releases") or []:
+                    rg = rel.get("release-group") or {}
+                    rg_id = rg.get("id")
+                    if not rg_id or rg_id in seen:
+                        continue
+                    seen.add(rg_id)
+                    groups.append(
+                        RecordingReleaseGroup(
+                            release_group_mbid=rg_id,
+                            release_group_title=rg.get("title", ""),
+                            release_mbid=rel.get("id"),
+                            primary_type=rg.get("primary-type"),
+                            secondary_types=tuple(rg.get("secondary-types") or ()),
+                        )
+                    )
+                matches.append(
+                    RecordingMatch(
+                        recording_mbid=rec_id,
+                        title=rec.get("title", ""),
+                        artist=extract_artist_name(rec),
+                        score=get_score(rec),
+                        release_groups=groups,
+                    )
+                )
+
+            advanced_settings = self._preferences_service.get_advanced_settings()
+            await self._cache.set(cache_key, matches, ttl_seconds=advanced_settings.cache_ttl_search)
+            return matches
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"MusicBrainz recording search failed: {e}")
+            _record_mb_degradation(f"recording search failed: {e}")
+            return []
+
+    async def resolve_recording_to_release_group(
+        self,
+        recording_mbid: str,
+    ) -> str | None:
+        """Resolve an AcoustID recording MBID to its best release-group MBID.
+
+        Uses ``inc=releases+release-groups`` (verified against the live API - a
+        bare ``inc=release-groups`` on a recording returns no groups). The best
+        of the recording's release groups is chosen by the same Album > EP >
+        Single / penalise-secondary-types heuristic used elsewhere. Tier 3 of the
+        scanner's tiered identification (AcoustID -> recording -> release group).
+        """
+        if not recording_mbid:
+            return None
+        cache_key = f"{MB_RECORDING_TO_RG_PREFIX}{recording_mbid}"
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached if cached != "" else None
+
+        return await mb_deduplicator.dedupe(
+            cache_key,
+            lambda: self._fetch_recording_release_group(recording_mbid, cache_key),
+        )
+
+    async def _fetch_recording_release_group(
+        self,
+        recording_mbid: str,
+        cache_key: str,
+    ) -> str | None:
+        try:
+            result = await mb_api_get(
+                f"/recording/{recording_mbid}",
+                params={"inc": "releases+release-groups"},
+                priority=RequestPriority.BACKGROUND_SYNC,
+                decode_type=_RecordingReleaseGroupPayload,
+            )
+            best = _pick_best_release_group(result.releases)
+            rg_id = best[0] if best else None
+            await self._cache.set(cache_key, rg_id or "", ttl_seconds=86400)
+            return rg_id
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to resolve recording {recording_mbid} to release group: {e}")
+            _record_mb_degradation(f"recording-to-rg lookup failed: {e}")
             await self._cache.set(cache_key, "", ttl_seconds=3600)
             return None
 

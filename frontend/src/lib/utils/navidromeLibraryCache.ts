@@ -14,12 +14,12 @@ type NavidromeAlbumsListData = {
 	total: number;
 };
 
-export const navidromeSidebarCache = createLocalStorageCache<NavidromeSidebarData>(
+const navidromeSidebarCache = createLocalStorageCache<NavidromeSidebarData>(
 	CACHE_KEYS.NAVIDROME_SIDEBAR,
 	CACHE_TTL.NAVIDROME_SIDEBAR
 );
 
-export const navidromeAlbumsListCache = createLocalStorageCache<NavidromeAlbumsListData>(
+const navidromeAlbumsListCache = createLocalStorageCache<NavidromeAlbumsListData>(
 	CACHE_KEYS.NAVIDROME_ALBUMS_LIST,
 	CACHE_TTL.NAVIDROME_ALBUMS_LIST,
 	{ maxEntries: 80 }
@@ -28,9 +28,7 @@ export const navidromeAlbumsListCache = createLocalStorageCache<NavidromeAlbumsL
 export const getNavidromeSidebarCachedData = navidromeSidebarCache.get;
 export const setNavidromeSidebarCachedData = navidromeSidebarCache.set;
 export const isNavidromeSidebarCacheStale = navidromeSidebarCache.isStale;
-export const updateNavidromeSidebarCacheTTL = navidromeSidebarCache.updateTTL;
 
 export const getNavidromeAlbumsListCachedData = navidromeAlbumsListCache.get;
 export const setNavidromeAlbumsListCachedData = navidromeAlbumsListCache.set;
 export const isNavidromeAlbumsListCacheStale = navidromeAlbumsListCache.isStale;
-export const updateNavidromeAlbumsListCacheTTL = navidromeAlbumsListCache.updateTTL;

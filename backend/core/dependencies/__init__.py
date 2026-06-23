@@ -1,8 +1,6 @@
-"""Dependency injection providers for the MusicSeerr backend.
+"""Dependency injection providers.
 
-This package replaces the former monolithic ``core/dependencies.py``.
-All public names are re-exported here so that existing imports like
-``from core.dependencies import get_home_service`` continue to work.
+Re-exported here so ``from core.dependencies import X`` keeps working.
 """
 
 from .auth_providers import (  # noqa: F401
@@ -21,6 +19,7 @@ from .cache_providers import (  # noqa: F401
     get_youtube_store,
     get_mbid_store,
     get_sync_state_store,
+    get_scan_state_store,
     get_persistence_write_lock,
     get_preferences_service,
     get_cache_service,
@@ -28,7 +27,7 @@ from .cache_providers import (  # noqa: F401
 )
 
 from .repo_providers import (  # noqa: F401
-    get_lidarr_repository,
+    get_library_repository,
     get_musicbrainz_repository,
     get_wikidata_repository,
     get_listenbrainz_repository,
@@ -43,15 +42,34 @@ from .repo_providers import (  # noqa: F401
     get_lastfm_repository,
     get_playlist_repository,
     get_request_history_store,
+    get_user_connections_store,
+    get_user_listening_prefs_store,
+    get_play_history_store,
+    get_follow_store,
     get_github_repository,
+    get_download_store,
+    get_slskd_client,
+    get_slskd_repository,
+    build_slskd_repository,
+    get_download_client_repository,
 )
 
 from .service_providers import (  # noqa: F401
+    get_audio_tagger,
+    get_naming_template_engine,
+    get_musicbrainz_matcher,
+    get_album_identifier,
+    get_audio_fingerprinter,
+    get_library_manager,
+    get_library_scanner,
+    get_file_processor,
+    get_sse_publisher,
     get_search_service,
     get_search_enrichment_service,
     get_artist_service,
+    get_follow_service,
+    get_new_release_service,
     get_album_service,
-    get_request_queue,
     get_request_service,
     get_requests_page_service,
     get_playlist_service,
@@ -67,6 +85,7 @@ from .service_providers import (  # noqa: F401
     get_album_discovery_service,
     get_youtube_service,
     get_lastfm_auth_service,
+    get_per_user_client_factory,
     get_scrobble_service,
     get_discover_service,
     get_discover_queue_manager,
@@ -78,6 +97,11 @@ from .service_providers import (  # noqa: F401
     get_plex_library_service,
     get_plex_playback_service,
     get_version_service,
+    get_album_preflight_scorer,
+    get_track_matcher,
+    get_download_manifest_codec,
+    get_download_orchestrator,
+    get_download_service,
 )
 
 from .type_aliases import (  # noqa: F401
@@ -85,7 +109,7 @@ from .type_aliases import (  # noqa: F401
     CacheDep,
     DiskCacheDep,
     PreferencesServiceDep,
-    LidarrRepositoryDep,
+    LibraryRepositoryDep,
     MusicBrainzRepositoryDep,
     WikidataRepositoryDep,
     ListenBrainzRepositoryDep,
@@ -95,7 +119,6 @@ from .type_aliases import (  # noqa: F401
     SearchEnrichmentServiceDep,
     ArtistServiceDep,
     AlbumServiceDep,
-    RequestQueueDep,
     RequestServiceDep,
     LibraryServiceDep,
     StatusServiceDep,
@@ -131,6 +154,20 @@ from .type_aliases import (  # noqa: F401
     CurrentUserDep,
     CurrentAdminDep,
     CurrentTokenDep,
+)
+
+from .compat_providers import (  # noqa: F401
+    get_app_password_store,
+    get_app_password_service,
+    get_favorites_store,
+    get_favorites_service,
+    get_compat_id_map_store,
+    get_compat_id_map_service,
+    get_library_view_service,
+    get_compat_scrobble_adapter,
+    get_compat_discover_service,
+    get_transcode_semaphore,
+    get_transcode_service,
 )
 
 from .cleanup import (  # noqa: F401

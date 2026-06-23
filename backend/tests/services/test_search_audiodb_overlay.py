@@ -1,12 +1,3 @@
-"""Integration tests for SearchService AudioDB cache overlay.
-
-Covers the search/list cache-only overlay identified in Phase 3 peer review:
-- Artist search results populated with cached AudioDB thumb/fanart/banner
-- Album search results populated with cached AudioDB album_thumb_url
-- Cache miss leaves fields as None
-- Exception safety: overlay errors do not break search
-"""
-
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -53,19 +44,15 @@ def _album_result(**overrides) -> SearchResult:
 
 def _search_service(audiodb=None) -> SearchService:
     mb_repo = MagicMock()
-    lidarr_repo = MagicMock()
-    lidarr_repo.get_library_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_queue = AsyncMock(return_value=[])
-    lidarr_repo.get_monitored_no_files_mbids = AsyncMock(return_value=set())
+    library_repo = MagicMock()
+    library_repo.get_library_mbids = AsyncMock(return_value=set())
     coverart_repo = MagicMock()
     prefs = MagicMock()
     prefs.get_preferences.return_value = MagicMock(secondary_types=[])
-    return SearchService(mb_repo, lidarr_repo, coverart_repo, prefs, audiodb)
+    return SearchService(mb_repo, library_repo, coverart_repo, prefs, audiodb)
 
 
 class TestSearchAudioDBOverlayArtist:
-    """Artist search results should receive cached AudioDB images."""
-
     @pytest.mark.asyncio
     async def test_artist_gets_cached_thumb_fanart_banner(self):
         audiodb = MagicMock()
@@ -120,8 +107,6 @@ class TestSearchAudioDBOverlayArtist:
 
 
 class TestSearchAudioDBOverlayAlbum:
-    """Album search results should receive cached AudioDB album_thumb_url."""
-
     @pytest.mark.asyncio
     async def test_album_gets_cached_thumb(self):
         audiodb = MagicMock()
@@ -169,8 +154,6 @@ class TestSearchAudioDBOverlayAlbum:
 
 
 class TestSearchAudioDBOverlayMixed:
-    """Mixed artist+album results and edge cases."""
-
     @pytest.mark.asyncio
     async def test_mixed_results_overlay(self):
         audiodb = MagicMock()
@@ -231,8 +214,6 @@ class TestSearchAudioDBOverlayMixed:
 
 
 class TestSearchMethodIntegration:
-    """Verify the overlay is wired into the search() method."""
-
     @pytest.mark.asyncio
     async def test_search_calls_overlay(self):
         audiodb = MagicMock()

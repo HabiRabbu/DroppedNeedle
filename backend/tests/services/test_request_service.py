@@ -7,23 +7,26 @@ from core.exceptions import ExternalServiceError
 from services.request_service import RequestService
 
 
-def _make_service(queue_add_result: dict | None = None) -> tuple[RequestService, MagicMock, MagicMock]:
-    lidarr_repo = MagicMock()
-    request_queue = MagicMock()
+def _make_service() -> tuple[RequestService, MagicMock, MagicMock]:
     request_history = MagicMock()
+    download_service = MagicMock()
 
-    request_queue.enqueue = AsyncMock(return_value=True)
-    request_queue.get_status = MagicMock(return_value={"queue_size": 0, "processing": False})
     request_history.async_record_request = AsyncMock()
     request_history.async_get_record = AsyncMock(return_value=None)
+    request_history.async_update_status = AsyncMock()
+    request_history.async_update_download_task_id = AsyncMock()
+    request_history.async_bulk_record_requests = AsyncMock()
+    request_history.async_get_active_mbids = AsyncMock(return_value=set())
+    download_service.request_album = AsyncMock(return_value="task-1")
+    download_service.cancel_task = AsyncMock()
 
-    service = RequestService(lidarr_repo, request_queue, request_history)
-    return service, request_queue, request_history
+    service = RequestService(request_history, download_service)
+    return service, request_history, download_service
 
 
 @pytest.mark.asyncio
-async def test_request_album_records_history_and_returns_response():
-    service, request_queue, request_history = _make_service()
+async def test_request_album_dispatches_download_and_links_task():
+    service, request_history, download_service = _make_service()
 
     response = await service.request_album(
         "rg-123", artist="Fallback Artist", album="Fallback Album", year=2024, user_role="admin"
@@ -34,7 +37,8 @@ async def test_request_album_records_history_and_returns_response():
     assert response.musicbrainz_id == "rg-123"
     assert response.status == "pending"
 
-    request_queue.enqueue.assert_awaited_once_with("rg-123")
+    download_service.request_album.assert_awaited_once()
+    request_history.async_update_download_task_id.assert_awaited_once_with("rg-123", "task-1")
     request_history.async_record_request.assert_awaited_once()
     kwargs = request_history.async_record_request.await_args.kwargs
     assert kwargs["artist_name"] == "Fallback Artist"
@@ -42,48 +46,104 @@ async def test_request_album_records_history_and_returns_response():
 
 
 @pytest.mark.asyncio
+async def test_request_album_user_role_awaits_approval_without_dispatch():
+    service, request_history, download_service = _make_service()
+
+    response = await service.request_album("rg-123", user_role="user")
+
+    assert response.status == "awaiting_approval"
+    download_service.request_album.assert_not_awaited()
+    request_history.async_update_download_task_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_request_album_already_in_library_not_linked_as_task_id():
+    service, request_history, download_service = _make_service()
+    download_service.request_album = AsyncMock(return_value="already_in_library")
+
+    response = await service.request_album("rg-123", user_role="admin")
+
+    assert response.success is True
+    assert response.message == "Album is already in the library"
+    request_history.async_update_download_task_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_request_album_wraps_errors():
-    service, request_queue, _ = _make_service()
-    request_queue.enqueue = AsyncMock(side_effect=RuntimeError("boom"))
+    service, _request_history, download_service = _make_service()
+    download_service.request_album = AsyncMock(side_effect=RuntimeError("boom"))
 
     with pytest.raises(ExternalServiceError):
         await service.request_album("rg-123", user_role="admin")
 
 
-def test_get_queue_status_returns_schema():
-    service, request_queue, _ = _make_service()
-    request_queue.get_status.return_value = {"queue_size": 3, "processing": True}
+@pytest.mark.asyncio
+async def test_request_batch_dispatches_each_and_links():
+    service, request_history, download_service = _make_service()
+    items = [
+        {"musicbrainz_id": "rg-1", "artist_name": "A", "album_title": "B", "year": 2020},
+        {"musicbrainz_id": "rg-2", "artist_name": "C", "album_title": "D", "year": 2021},
+    ]
+    download_service.request_album = AsyncMock(side_effect=["task-1", "task-2"])
 
-    status = service.get_queue_status()
+    resp = await service.request_batch(items, user_role="admin", user_id="u1")
 
-    assert status.queue_size == 3
-    assert status.processing is True
+    assert resp.requested == 2
+    assert resp.overflow == 0
+    assert download_service.request_album.await_count == 2
+    request_history.async_bulk_record_requests.assert_awaited_once()
+    linked = {c.args[0]: c.args[1] for c in request_history.async_update_download_task_id.await_args_list}
+    assert linked == {"rg-1": "task-1", "rg-2": "task-2"}
 
 
 @pytest.mark.asyncio
-async def test_cancel_batch_admin_cancels_all_without_ownership_lookup():
-    service, request_queue, request_history = _make_service()
-    request_queue.cancel = AsyncMock(return_value=True)
-    request_history.async_update_status = AsyncMock()
+async def test_request_batch_user_role_awaits_approval_without_dispatch():
+    service, _request_history, download_service = _make_service()
+    items = [{"musicbrainz_id": "rg-1", "artist_name": "A", "album_title": "B", "year": 2020}]
 
-    response = await service.cancel_batch(["rg-1", "rg-2"], user_id=None)
+    resp = await service.request_batch(items, user_role="user", user_id="u1")
+
+    assert "approval" in resp.message.lower()
+    download_service.request_album.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_batch_admin_cancels_all():
+    service, request_history, download_service = _make_service()
+    request_history.async_update_status = AsyncMock()
+    request_history.async_get_record = AsyncMock(
+        return_value=SimpleNamespace(user_id="bob", download_task_id=None)
+    )
+
+    response = await service.cancel_batch(["rg-1", "rg-2"], user_id=None, user_role="admin")
 
     assert response.cancelled == 2
     assert response.failed == 0
     assert response.success is True
-    # Admins bypass user scoping, so ownership is never looked up.
-    request_history.async_get_record.assert_not_awaited()
-    assert request_queue.cancel.await_count == 2
+    download_service.cancel_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_batch_cancels_linked_native_task():
+    service, request_history, download_service = _make_service()
+    request_history.async_update_status = AsyncMock()
+    request_history.async_get_record = AsyncMock(
+        return_value=SimpleNamespace(user_id="alice", download_task_id="task-9")
+    )
+
+    response = await service.cancel_batch(["rg-mine"], user_id="alice")
+
+    assert response.cancelled == 1
+    download_service.cancel_task.assert_awaited_once_with("task-9", "alice", "user")
 
 
 @pytest.mark.asyncio
 async def test_cancel_batch_user_only_cancels_owned_requests():
-    service, request_queue, request_history = _make_service()
-    request_queue.cancel = AsyncMock(return_value=True)
+    service, request_history, download_service = _make_service()
     request_history.async_update_status = AsyncMock()
     records = {
-        "rg-mine": SimpleNamespace(user_id="alice"),
-        "rg-theirs": SimpleNamespace(user_id="bob"),
+        "rg-mine": SimpleNamespace(user_id="alice", download_task_id=None),
+        "rg-theirs": SimpleNamespace(user_id="bob", download_task_id=None),
     }
     request_history.async_get_record = AsyncMock(side_effect=lambda mbid: records.get(mbid))
 
@@ -91,14 +151,12 @@ async def test_cancel_batch_user_only_cancels_owned_requests():
 
     assert response.cancelled == 1
     assert response.failed == 1
-    # Only the request owned by alice is actually cancelled.
-    request_queue.cancel.assert_awaited_once_with("rg-mine")
+    download_service.cancel_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_cancel_batch_user_missing_record_counts_as_failed():
-    service, request_queue, request_history = _make_service()
-    request_queue.cancel = AsyncMock(return_value=True)
+    service, request_history, _download = _make_service()
     request_history.async_update_status = AsyncMock()
     request_history.async_get_record = AsyncMock(return_value=None)
 
@@ -107,4 +165,3 @@ async def test_cancel_batch_user_missing_record_counts_as_failed():
     assert response.cancelled == 0
     assert response.failed == 1
     assert response.success is False
-    request_queue.cancel.assert_not_awaited()

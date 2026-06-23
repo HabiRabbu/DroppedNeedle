@@ -2,10 +2,9 @@ from infrastructure.msgspec_fastapi import AppStruct
 from infrastructure.validators import sanitize_optional_string
 
 
-class LibraryAlbum(AppStruct, rename={"musicbrainz_id": "foreignAlbumId"}):
+class LibraryAlbum(AppStruct):
     artist: str
     album: str
-    monitored: bool
     year: int | None = None
     quality: str | None = None
     cover_url: str | None = None
@@ -23,7 +22,6 @@ class LibraryAlbum(AppStruct, rename={"musicbrainz_id": "foreignAlbumId"}):
 class LibraryGroupedAlbum(AppStruct):
     title: str | None = None
     year: int | None = None
-    monitored: bool = False
     cover_url: str | None = None
 
 

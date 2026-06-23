@@ -27,10 +27,10 @@ def _make_prefs() -> MagicMock:
     jf.jellyfin_url = ""
     jf.api_key = ""
     prefs.get_jellyfin_connection.return_value = jf
-    lidarr = MagicMock()
-    lidarr.lidarr_url = ""
-    lidarr.lidarr_api_key = ""
-    prefs.get_lidarr_connection.return_value = lidarr
+    download_client = MagicMock()
+    download_client.enabled = False
+    download_client.url = ""
+    prefs.get_download_client_settings.return_value = download_client
     yt = MagicMock()
     yt.enabled = False
     yt.api_key = ""
@@ -49,7 +49,7 @@ def _make_service(
     service = DiscoverService(
         listenbrainz_repo=AsyncMock(),
         jellyfin_repo=AsyncMock(),
-        lidarr_repo=AsyncMock(),
+        library_repo=AsyncMock(),
         musicbrainz_repo=mb_repo,
         preferences_service=_make_prefs(),
         memory_cache=memory_cache,

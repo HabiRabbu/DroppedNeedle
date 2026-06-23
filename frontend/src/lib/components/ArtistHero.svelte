@@ -6,9 +6,8 @@
 	import { extractDominantColor, DEFAULT_GRADIENT } from '$lib/utils/colors';
 	import { appendAudioDBSizeSuffix } from '$lib/utils/imageSuffix';
 	import { imageSettingsStore } from '$lib/stores/imageSettings';
-	import { getValidPendingMonitor, monitoredArtistsStore } from '$lib/stores/monitoredArtists';
 	import ArtistLinks from './ArtistLinks.svelte';
-	import ArtistMonitoringToggle from './ArtistMonitoringToggle.svelte';
+	import FollowControl from './FollowControl.svelte';
 	import BackButton from './BackButton.svelte';
 	import HeroBackdrop from './HeroBackdrop.svelte';
 	import { getApiUrl } from '$lib/api/api-utils';
@@ -25,11 +24,6 @@
 	let heroGradient = $state(DEFAULT_GRADIENT);
 	let heroImageLoaded = $state(false);
 	let avatarRemoteError = $state(false);
-
-	let pendingMonitor = $derived.by(() =>
-		getValidPendingMonitor($monitoredArtistsStore, artist.musicbrainz_id)
-	);
-	let showMonitoring = $derived(artist.in_lidarr || !!pendingMonitor);
 
 	let useRemoteAvatar = $derived(artist.thumb_url && $imageSettingsStore.directRemoteImagesEnabled);
 	let resolvedRemoteAvatar = $derived(
@@ -84,7 +78,7 @@
 	/>
 
 	<div class="relative z-10 px-4 sm:px-8 lg:px-12 pt-6 pb-8 sm:pt-8 sm:pb-12">
-		{#if onrefresh && artist.in_lidarr}
+		{#if onrefresh && artist.in_library}
 			<button
 				class="absolute top-3 right-3 btn btn-sm btn-ghost btn-circle z-20"
 				onclick={onrefresh}
@@ -113,11 +107,11 @@
 										viewBox="0 0 200 200"
 										class="w-full h-full"
 									>
-										<rect fill="oklch(var(--n))" width="200" height="200" />
-										<circle cx="100" cy="80" r="30" fill="oklch(var(--nc))" />
+										<rect fill="var(--color-neutral)" width="200" height="200" />
+										<circle cx="100" cy="80" r="30" fill="var(--color-neutral-content)" />
 										<path
 											d="M60 120 Q100 140 140 120 L140 160 Q100 180 60 160 Z"
-											fill="oklch(var(--nc))"
+											fill="var(--color-neutral-content)"
 										/>
 									</svg>
 								</div>
@@ -173,7 +167,7 @@
 						</span>
 					{/if}
 					<h1
-						class="text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold text-base-content mt-1 mb-2 break-words"
+						class="hero-title text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold text-base-content mt-1 mb-2 break-words"
 					>
 						{artist.name}
 					</h1>
@@ -185,24 +179,9 @@
 						<ArtistLinks links={validLinks} />
 					{/if}
 
-					{#if showMonitoring}
-						<div class="mt-3">
-							<ArtistMonitoringToggle
-								artistMbid={artist.musicbrainz_id}
-								monitored={pendingMonitor && !artist.in_lidarr
-									? pendingMonitor.monitored
-									: (artist.monitored ?? false)}
-								autoDownload={pendingMonitor && !artist.in_lidarr
-									? pendingMonitor.autoDownload
-									: (artist.auto_download ?? false)}
-								disabled={!!pendingMonitor && !artist.in_lidarr}
-								on:change={(e) => {
-									artist.monitored = e.detail.monitored;
-									artist.auto_download = e.detail.autoDownload;
-								}}
-							/>
-						</div>
-					{/if}
+					<div class="mt-3">
+						<FollowControl artistMbid={artist.musicbrainz_id} />
+					</div>
 				</div>
 			</div>
 		</div>

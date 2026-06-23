@@ -276,9 +276,6 @@
 						{#if result.requested}
 							<span class="badge badge-sm badge-warning">Requested</span>
 						{/if}
-						{#if result.monitored && !result.in_library && !result.requested}
-							<span class="badge badge-sm badge-neutral">Monitored</span>
-						{/if}
 					</div>
 				</li>
 			{/each}

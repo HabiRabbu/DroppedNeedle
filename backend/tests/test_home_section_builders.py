@@ -1,5 +1,3 @@
-"""Tests for HomeSectionBuilders — verify section shapes."""
-
 from unittest.mock import MagicMock
 
 from api.v1.schemas.home import HomeSection, ServicePrompt
@@ -9,8 +7,8 @@ from services.home.section_builders import HomeSectionBuilders
 
 def _make_builders():
     transformers = MagicMock()
-    transformers.lidarr_album_to_home.side_effect = lambda a: {"album": a.album}
-    transformers.lidarr_artist_to_home.side_effect = lambda a: {"name": a.get("name")} if a.get("name") else None
+    transformers.library_album_to_home.side_effect = lambda a: {"album": a.album}
+    transformers.library_artist_to_home.side_effect = lambda a: {"name": a.get("name")} if a.get("name") else None
     return HomeSectionBuilders(transformers)
 
 
@@ -18,14 +16,14 @@ class TestBuildRecentlyAdded:
     def test_returns_home_section(self):
         b = _make_builders()
         albums = [
-            LibraryAlbum(artist="A", album=f"Album{i}", monitored=True)
+            LibraryAlbum(artist="A", album=f"Album{i}")
             for i in range(20)
         ]
         section = b.build_recently_added_section(albums)
         assert isinstance(section, HomeSection)
         assert section.title == "Recently Added"
         assert section.type == "albums"
-        assert len(section.items) == 15  # capped at 15
+        assert len(section.items) == 15
 
 
 class TestBuildLibraryArtists:
@@ -45,23 +43,23 @@ class TestBuildServicePrompts:
     def test_no_prompts_when_all_enabled(self):
         b = _make_builders()
         prompts = b.build_service_prompts(
-            lb_enabled=True, lidarr_configured=True, lfm_enabled=True
+            lb_enabled=True, download_client_configured=True, lfm_enabled=True
         )
         assert prompts == []
 
     def test_all_prompts_when_nothing_enabled(self):
         b = _make_builders()
         prompts = b.build_service_prompts(
-            lb_enabled=False, lidarr_configured=False, lfm_enabled=False
+            lb_enabled=False, download_client_configured=False, lfm_enabled=False
         )
         assert len(prompts) > 0
         services = {p.service for p in prompts}
-        assert "lidarr-connection" in services
+        assert "download-client" in services
 
     def test_prompts_are_service_prompt_type(self):
         b = _make_builders()
         prompts = b.build_service_prompts(
-            lb_enabled=False, lidarr_configured=False, lfm_enabled=False
+            lb_enabled=False, download_client_configured=False, lfm_enabled=False
         )
         for p in prompts:
             assert isinstance(p, ServicePrompt)
@@ -76,7 +74,7 @@ class TestBuildGenreList:
         ]
         b = HomeSectionBuilders(transformers)
         albums = [
-            LibraryAlbum(artist="A", album="X", monitored=True),
+            LibraryAlbum(artist="A", album="X"),
         ]
         section = b.build_genre_list_section(albums)
         assert isinstance(section, HomeSection)

@@ -9,10 +9,9 @@ from fastapi import Depends
 from core.config import Settings, get_settings
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cache.disk_cache import DiskMetadataCache
-from infrastructure.queue.request_queue import RequestQueue
 from infrastructure.persistence.request_history import RequestHistoryStore
-from middleware import CurrentUserDep, CurrentAdminDep, CurrentTokenDep
-from repositories.lidarr import LidarrRepository
+from middleware import CurrentUserDep as CurrentUserDep, CurrentAdminDep as CurrentAdminDep, CurrentTokenDep as CurrentTokenDep
+from repositories.protocols import LibraryRepositoryProtocol
 from repositories.musicbrainz_repository import MusicBrainzRepository
 from repositories.wikidata_repository import WikidataRepository
 from repositories.listenbrainz_repository import ListenBrainzRepository
@@ -63,7 +62,7 @@ from .cache_providers import (
     get_cache_status_service,
 )
 from .repo_providers import (
-    get_lidarr_repository,
+    get_library_repository,
     get_musicbrainz_repository,
     get_wikidata_repository,
     get_listenbrainz_repository,
@@ -82,7 +81,6 @@ from .service_providers import (
     get_search_enrichment_service,
     get_artist_service,
     get_album_service,
-    get_request_queue,
     get_request_service,
     get_requests_page_service,
     get_playlist_service,
@@ -113,7 +111,7 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 CacheDep = Annotated[CacheInterface, Depends(get_cache)]
 DiskCacheDep = Annotated[DiskMetadataCache, Depends(get_disk_cache)]
 PreferencesServiceDep = Annotated[PreferencesService, Depends(get_preferences_service)]
-LidarrRepositoryDep = Annotated[LidarrRepository, Depends(get_lidarr_repository)]
+LibraryRepositoryDep = Annotated[LibraryRepositoryProtocol, Depends(get_library_repository)]
 MusicBrainzRepositoryDep = Annotated[MusicBrainzRepository, Depends(get_musicbrainz_repository)]
 WikidataRepositoryDep = Annotated[WikidataRepository, Depends(get_wikidata_repository)]
 ListenBrainzRepositoryDep = Annotated[ListenBrainzRepository, Depends(get_listenbrainz_repository)]
@@ -123,7 +121,6 @@ SearchServiceDep = Annotated[SearchService, Depends(get_search_service)]
 SearchEnrichmentServiceDep = Annotated[SearchEnrichmentService, Depends(get_search_enrichment_service)]
 ArtistServiceDep = Annotated[ArtistService, Depends(get_artist_service)]
 AlbumServiceDep = Annotated[AlbumService, Depends(get_album_service)]
-RequestQueueDep = Annotated[RequestQueue, Depends(get_request_queue)]
 RequestServiceDep = Annotated[RequestService, Depends(get_request_service)]
 LibraryServiceDep = Annotated[LibraryService, Depends(get_library_service)]
 StatusServiceDep = Annotated[StatusService, Depends(get_status_service)]

@@ -1,4 +1,4 @@
-"""Tests for HomeIntegrationHelpers — all 8 integration checks + resolve_source."""
+"""Tests for HomeIntegrationHelpers - all 8 integration checks + resolve_source."""
 
 import pytest
 from unittest.mock import MagicMock
@@ -21,10 +21,10 @@ def _make_prefs(**overrides):
     jf.api_key = overrides.get("jf_api_key", "")
     prefs.get_jellyfin_connection.return_value = jf
 
-    lidarr = MagicMock()
-    lidarr.lidarr_url = overrides.get("lidarr_url", "")
-    lidarr.lidarr_api_key = overrides.get("lidarr_api_key", "")
-    prefs.get_lidarr_connection.return_value = lidarr
+    dc = MagicMock()
+    dc.enabled = overrides.get("dc_enabled", False)
+    dc.url = overrides.get("dc_url", "")
+    prefs.get_download_client_settings.return_value = dc
 
     yt = MagicMock()
     yt.enabled = overrides.get("yt_enabled", False)
@@ -78,15 +78,19 @@ class TestIntegrationFlags:
         )
         assert h.is_jellyfin_enabled() is False
 
-    def test_lidarr_configured(self):
+    def test_download_client_configured(self):
         h = HomeIntegrationHelpers(
-            _make_prefs(lidarr_url="http://l", lidarr_api_key="k")
+            _make_prefs(dc_enabled=True, dc_url="http://slskd")
         )
-        assert h.is_lidarr_configured() is True
+        assert h.is_download_client_configured() is True
 
-    def test_lidarr_not_configured(self):
+    def test_download_client_not_configured(self):
         h = HomeIntegrationHelpers(_make_prefs())
-        assert h.is_lidarr_configured() is False
+        assert h.is_download_client_configured() is False
+
+    def test_library_always_configured(self):
+        h = HomeIntegrationHelpers(_make_prefs())
+        assert h.is_library_configured() is True
 
     def test_youtube_enabled(self):
         h = HomeIntegrationHelpers(_make_prefs(yt_enabled=True))
@@ -98,10 +102,9 @@ class TestIntegrationFlags:
         )
         assert h.is_youtube_api_enabled() is True
 
-    def test_local_files_enabled(self):
-        h = HomeIntegrationHelpers(
-            _make_prefs(lf_enabled=True, lf_music_path="/music")
-        )
+    def test_local_files_capability_always_present(self):
+        # Native library engine is always present; actual files refined per-request via has_any_files().
+        h = HomeIntegrationHelpers(_make_prefs())
         assert h.is_local_files_enabled() is True
 
     def test_navidrome_enabled(self):

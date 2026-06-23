@@ -137,7 +137,7 @@ class TestInstanceId:
         )
         ua = settings.get_user_agent()
         assert "a1b2c3d4" in ua
-        assert "Musicseerr/1.0" in ua
+        assert "DroppedNeedle/1.0" in ua
 
     def test_user_agent_unknown_when_no_instance_id(self, tmp_path):
         from core.config import Settings

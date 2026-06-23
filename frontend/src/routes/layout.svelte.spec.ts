@@ -95,8 +95,7 @@ vi.mock('$lib/utils/lazyImage', () => ({
 vi.mock('$lib/utils/requestsApi', () => ({
 	fetchActiveRequestCount: vi.fn().mockResolvedValue(0),
 	fetchActiveRequests: vi.fn().mockResolvedValue({ items: [] }),
-	fetchRequestHistory: vi.fn().mockResolvedValue({ items: [], total: 0 }),
-	notifyRequestCountChanged: vi.fn()
+	fetchRequestHistory: vi.fn().mockResolvedValue({ items: [], total: 0 })
 }));
 vi.mock('$lib/utils/navigationProgress', () => ({
 	createNavigationProgressController: vi.fn(() => ({
@@ -124,7 +123,8 @@ vi.mock('$lib/components/YouTubeIcon.svelte', () => {
 import Layout from './+layout.svelte';
 
 type IntegrationState = {
-	lidarr: boolean;
+	download_client: boolean;
+	library: boolean;
 	jellyfin: boolean;
 	listenbrainz: boolean;
 	youtube: boolean;
@@ -134,7 +134,8 @@ type IntegrationState = {
 };
 
 const integrationState: IntegrationState = {
-	lidarr: false,
+	download_client: false,
+	library: true,
 	jellyfin: false,
 	listenbrainz: false,
 	youtube: false,
@@ -157,7 +158,8 @@ describe('+layout.svelte sidebar', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		Object.assign(integrationState, {
-			lidarr: false,
+			download_client: false,
+			library: true,
 			jellyfin: false,
 			listenbrainz: false,
 			youtube: false,
@@ -167,19 +169,25 @@ describe('+layout.svelte sidebar', () => {
 		});
 	});
 
-	it('does not render "Playlists" link in the sidebar when Lidarr is unavailable', async () => {
+	it('does not render "Playlists" link in the sidebar when the download client is unavailable', async () => {
 		renderLayout();
 		await expect.element(page.getByText('Playlists')).not.toBeInTheDocument();
 	});
 
-	it('renders "Playlists" link in the sidebar when Lidarr is available', async () => {
-		integrationState.lidarr = true;
+	it('renders "Playlists" link in the sidebar when the download client is available', async () => {
+		integrationState.download_client = true;
 		renderLayout();
 		await expect.element(page.getByText('Playlists')).toBeInTheDocument();
 	});
 
+	it('always renders "Library" link in the sidebar', async () => {
+		renderLayout();
+		// "Library" renders in both the desktop sidebar (first in DOM) and the mobile bottom nav, so scope to the first match for the sidebar link
+		await expect.element(page.getByText('Library').first()).toBeInTheDocument();
+	});
+
 	it('Playlists link navigates to /playlists', async () => {
-		integrationState.lidarr = true;
+		integrationState.download_client = true;
 		renderLayout();
 		const link = page.getByText('Playlists');
 		const anchor = link.element().closest('a');
@@ -188,7 +196,7 @@ describe('+layout.svelte sidebar', () => {
 	});
 
 	it('Playlists link has tooltip data attribute', async () => {
-		integrationState.lidarr = true;
+		integrationState.download_client = true;
 		renderLayout();
 		const link = page.getByText('Playlists');
 		const anchor = link.element().closest('a');

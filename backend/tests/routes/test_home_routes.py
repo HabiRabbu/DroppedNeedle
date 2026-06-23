@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.v1.routes.home import router
+from api.v1.schemas.home import HomeIntegrationStatus
 from core.dependencies import get_home_charts_service, get_home_service
 
 
@@ -67,6 +68,48 @@ def client(mock_home_service, mock_charts_service):
     app.dependency_overrides[get_home_service] = lambda: mock_home_service
     app.dependency_overrides[get_home_charts_service] = lambda: mock_charts_service
     return TestClient(app)
+
+
+def _make_status(localfiles: bool) -> HomeIntegrationStatus:
+    return HomeIntegrationStatus(
+        listenbrainz=False, jellyfin=False, download_client=False, library=True,
+        youtube=False, youtube_api=False, lastfm=False, navidrome=False, plex=False,
+        localfiles=localfiles,
+    )
+
+
+class TestIntegrationStatusGating:
+    """localfiles must reflect whether the native library actually has files,
+    not the sync capability flag - this gates the Local Files tab + affordances."""
+
+    def test_localfiles_true_when_library_has_files(self, client, mock_home_service):
+        mock_home_service.get_integration_status = MagicMock(return_value=_make_status(False))
+        mock_home_service.has_local_files = AsyncMock(return_value=True)
+
+        response = client.get('/home/integration-status')
+
+        assert response.status_code == 200
+        assert response.json()['localfiles'] is True
+        mock_home_service.has_local_files.assert_awaited_once()
+
+    def test_localfiles_false_when_library_empty(self, client, mock_home_service):
+        mock_home_service.get_integration_status = MagicMock(return_value=_make_status(True))
+        mock_home_service.has_local_files = AsyncMock(return_value=False)
+
+        response = client.get('/home/integration-status')
+
+        assert response.status_code == 200
+        assert response.json()['localfiles'] is False
+
+    def test_status_survives_has_local_files_error(self, client, mock_home_service):
+        # A localfiles-refinement failure must not blank the gating status; it falls back to the sync default.
+        mock_home_service.get_integration_status = MagicMock(return_value=_make_status(True))
+        mock_home_service.has_local_files = AsyncMock(side_effect=RuntimeError('db down'))
+
+        response = client.get('/home/integration-status')
+
+        assert response.status_code == 200
+        assert response.json()['localfiles'] is True
 
 
 class TestHomeRangeSourcePropagation:

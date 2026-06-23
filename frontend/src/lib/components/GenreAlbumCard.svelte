@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, Bookmark } from 'lucide-svelte';
+	import { Check } from 'lucide-svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import AlbumCardOverlay from '$lib/components/AlbumCardOverlay.svelte';
 	import type { HomeAlbum } from '$lib/types';
@@ -39,10 +39,6 @@
 		{#if showLibraryBadge || album.in_library}
 			<div class="absolute top-2 left-2 z-20 badge badge-success badge-sm gap-1 opacity-90">
 				<Check class="w-3 h-3" />
-			</div>
-		{:else if album.monitored && !album.requested}
-			<div class="absolute top-2 left-2 z-20 badge badge-neutral badge-sm gap-1 opacity-90">
-				<Bookmark class="w-3 h-3" />
 			</div>
 		{/if}
 		{#if album.mbid && album.in_library}

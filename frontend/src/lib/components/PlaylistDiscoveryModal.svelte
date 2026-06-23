@@ -15,6 +15,7 @@
 	import TrackPreviewButton from '$lib/components/TrackPreviewButton.svelte';
 	import { getPlaylistSuggestionsQuery } from '$lib/queries/discover/DiscoverQuery.svelte';
 	import { getPlaylistListQuery } from '$lib/queries/playlists/PlaylistQuery.svelte';
+	import { isRedactedPlaylist, type PlaylistSummary } from '$lib/api/playlists';
 	import { fetchAlbumTracks } from '$lib/api/albums';
 	import { ApiError } from '$lib/api/client';
 	import { formatDuration } from '$lib/utils/formatting';
@@ -54,7 +55,11 @@
 	const activePlaylistName = $derived(isPreselected ? playlistName : selectedPlaylistName);
 
 	const playlistListQuery = getPlaylistListQuery(() => open && !isPreselected);
-	const playlists = $derived(playlistListQuery.data ?? []);
+	const playlists = $derived(
+		(playlistListQuery.data ?? []).filter(
+			(p): p is PlaylistSummary => !isRedactedPlaylist(p) && p.is_owner
+		)
+	);
 	const playlistsLoading = $derived(playlistListQuery.isLoading);
 
 	const suggestionsQuery = getPlaylistSuggestionsQuery(() => ({
@@ -181,10 +186,10 @@
 
 <dialog bind:this={dialogEl} class="modal" onclose={handleClose} aria-label="Playlist Discovery">
 	<div
-		class="modal-box w-[92vw] max-w-4xl max-h-[85vh] sm:max-w-4xl max-sm:w-screen max-sm:max-w-full max-sm:max-h-screen max-sm:rounded-none flex flex-col p-0! overflow-hidden rounded-2xl bg-base-100/80 backdrop-blur-xl shadow-[0_8px_64px_oklch(var(--p)/0.12)] border border-white/10 relative"
+		class="modal-box w-[92vw] max-w-4xl max-h-[85vh] sm:max-w-4xl max-sm:w-screen max-sm:max-w-full max-sm:max-h-screen max-sm:rounded-none flex flex-col p-0! overflow-hidden rounded-2xl bg-base-100/80 backdrop-blur-xl shadow-[0_8px_64px_oklch(from_var(--color-primary)_l_c_h_/_0.12)] border border-white/10 relative"
 	>
 		<div
-			class="absolute top-0 inset-x-0 h-1 bg-linear-to-r from-primary/80 via-secondary/60 to-primary/80 shadow-[0_2px_12px_oklch(var(--p)/0.3)] z-10 rounded-t-2xl"
+			class="absolute top-0 inset-x-0 h-1 bg-linear-to-r from-primary/80 via-secondary/60 to-primary/80 shadow-[0_2px_12px_oklch(from_var(--color-primary)_l_c_h_/_0.3)] z-10 rounded-t-2xl"
 		></div>
 
 		<div class="flex items-center justify-between px-6 pt-6 pb-4 shrink-0 border-b border-white/5">
@@ -464,7 +469,7 @@
 												</div>
 											{/if}
 
-											{#if $integrationStore.lidarr && !album.in_library && !isAlbumRequested}
+											{#if $integrationStore.download_client && !album.in_library && !isAlbumRequested}
 												<div class="tooltip tooltip-bottom" data-tip="Request album">
 													<AlbumRequestButton
 														mbid={album.mbid}

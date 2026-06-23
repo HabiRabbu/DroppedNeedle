@@ -182,3 +182,16 @@ export function createLocalStorageCache<T>(
 
 	return { get, set, remove, isStale, updateTTL };
 }
+
+// Clears user-scoped caches on logout / user switch; the TanStack query-cache reset doesn't cover these.
+export function clearLocalStorageNamespace(baseKey: string): void {
+	if (!browser) return;
+	const prefix = `${baseKey}_`;
+	const toRemove: string[] = [];
+	for (let i = 0; i < localStorage.length; i++) {
+		const key = localStorage.key(i);
+		if (!key) continue;
+		if (key === baseKey || key.startsWith(prefix)) toRemove.push(key);
+	}
+	for (const key of toRemove) localStorage.removeItem(key);
+}

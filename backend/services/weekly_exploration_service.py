@@ -25,9 +25,14 @@ class WeeklyExplorationService:
         self._lb_repo = listenbrainz_repo
         self._mb_repo = musicbrainz_repo
 
-    async def build_section(self, username: str) -> WeeklyExplorationSection | None:
+    async def build_section(
+        self, username: str, lb_repo: ListenBrainzRepositoryProtocol | None = None
+    ) -> WeeklyExplorationSection | None:
+        # Use the requesting user's request-scoped client when provided (Phase 5);
+        # never the global singleton's identity.
+        repo = lb_repo or self._lb_repo
         try:
-            playlists = await self._lb_repo.get_recommendation_playlists(username)
+            playlists = await repo.get_recommendation_playlists(username)
             if not playlists:
                 return None
 
@@ -39,7 +44,7 @@ class WeeklyExplorationService:
             if not playlist_id:
                 return None
 
-            playlist = await self._lb_repo.get_playlist_tracks(playlist_id)
+            playlist = await repo.get_playlist_tracks(playlist_id)
             if not playlist or not playlist.tracks:
                 return None
 

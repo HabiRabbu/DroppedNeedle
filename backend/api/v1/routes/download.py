@@ -16,7 +16,7 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/download", tags=["download
 
 @router.get("/local/track/{track_id}")
 async def download_track(
-    track_id: int,
+    track_id: str,
     local_service: LocalFilesService = Depends(get_local_files_service),
 ) -> FileResponse:
     try:
@@ -34,7 +34,7 @@ async def download_track(
         raise HTTPException(status_code=403, detail="Access denied: path is outside the music directory")
     except ExternalServiceError as e:
         logger.error("Download error for track %s: %s", track_id, e)
-        raise HTTPException(status_code=502, detail="Failed to retrieve track file from Lidarr")
+        raise HTTPException(status_code=502, detail="Failed to retrieve track file")
     except OSError as e:
         logger.error("OS error downloading track %s: %s", track_id, e)
         raise HTTPException(status_code=500, detail="Failed to read track file")
@@ -60,7 +60,7 @@ async def download_album(
         raise HTTPException(status_code=403, detail="Access denied: path is outside the music directory")
     except ExternalServiceError as e:
         logger.error("Download error for album %s: %s", album_id, e)
-        raise HTTPException(status_code=502, detail="Failed to retrieve album data from Lidarr")
+        raise HTTPException(status_code=502, detail="Failed to retrieve album data")
     except OSError as e:
         logger.error("OS error creating album ZIP %s: %s", album_id, e)
         raise HTTPException(status_code=500, detail="Failed to create album archive")
@@ -86,7 +86,7 @@ async def download_album_by_mbid(
         raise HTTPException(status_code=403, detail="Access denied: path is outside the music directory")
     except ExternalServiceError as e:
         logger.error("Download error for album MBID %s: %s", mbid, e)
-        raise HTTPException(status_code=502, detail="Failed to retrieve album data from Lidarr")
+        raise HTTPException(status_code=502, detail="Failed to retrieve album data")
     except OSError as e:
         logger.error("OS error creating album ZIP for MBID %s: %s", mbid, e)
         raise HTTPException(status_code=500, detail="Failed to create album archive")

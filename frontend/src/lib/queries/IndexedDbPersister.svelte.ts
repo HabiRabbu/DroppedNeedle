@@ -1,23 +1,14 @@
-import type {
-	AsyncStorage,
-	PersistedClient,
-	PersistedQuery,
-	Persister
-} from '@tanstack/svelte-query-persist-client';
-import { del, entries, get, set } from 'idb-keyval';
+import type { AsyncStorage, PersistedQuery } from '@tanstack/svelte-query-persist-client';
+import { clear, del, entries, get, set } from 'idb-keyval';
 
-export function createIDBPersister(idbValidKey: string = 'tanstackQuery') {
-	return {
-		persistClient: async (client: PersistedClient) => {
-			await set(idbValidKey, client);
-		},
-		restoreClient: async () => {
-			return await get<PersistedClient>(idbValidKey);
-		},
-		removeClient: async () => {
-			await del(idbValidKey);
-		}
-	} satisfies Persister;
+/**
+ * Wipe every persisted query from IndexedDB on a user switch (AMU-5): the
+ * per-query entries written by {@link createIDBStorage}. idb-keyval's default
+ * store is used only by this persister (verified), so a blanket `clear()` is safe
+ * and cannot drop unrelated app data.
+ */
+export async function clearPersistedQueryCache(): Promise<void> {
+	await clear();
 }
 
 export function createIDBStorage(): AsyncStorage<PersistedQuery> {

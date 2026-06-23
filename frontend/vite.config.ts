@@ -1,5 +1,9 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 import { sveltekit } from '@sveltejs/kit/vite';
+
+// `$env/dynamic/public` reads an SSR-injected global absent in the chromium test env and throws on import; alias to an empty-env stub so component tests can load
+const envPublicStub = fileURLToPath(new URL('./src/lib/test/env-public-stub.ts', import.meta.url));
 
 export default defineConfig({
 	plugins: [sveltekit()],
@@ -8,6 +12,9 @@ export default defineConfig({
 		projects: [
 			{
 				extends: true,
+				resolve: {
+					alias: { '$env/dynamic/public': envPublicStub }
+				},
 				test: {
 					name: 'client',
 					environment: 'browser',

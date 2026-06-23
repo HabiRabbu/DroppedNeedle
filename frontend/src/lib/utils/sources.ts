@@ -1,5 +1,3 @@
-export type SourceType = 'jellyfin' | 'local' | 'youtube' | 'navidrome' | 'plex';
-
 export function getSourceLabel(sourceType: string): string {
 	if (sourceType === 'local') return 'Local';
 	if (sourceType === 'jellyfin') return 'Jellyfin';

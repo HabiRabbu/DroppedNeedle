@@ -32,7 +32,7 @@ import { downloadFile } from '$lib/utils/downloadHelper';
 import { API } from '$lib/constants';
 import type { SourceCallbacks } from './albumPageState.svelte';
 
-export function getPlaybackMeta(album: AlbumBasicInfo): PlaybackMeta {
+function getPlaybackMeta(album: AlbumBasicInfo): PlaybackMeta {
 	return {
 		albumId: album.musicbrainz_id,
 		albumName: album.title,
@@ -42,7 +42,7 @@ export function getPlaybackMeta(album: AlbumBasicInfo): PlaybackMeta {
 	};
 }
 
-export function getTrackMeta(album: AlbumBasicInfo): TrackMeta {
+function getTrackMeta(album: AlbumBasicInfo): TrackMeta {
 	return {
 		albumId: album.musicbrainz_id,
 		albumName: album.title,
@@ -52,9 +52,7 @@ export function getTrackMeta(album: AlbumBasicInfo): TrackMeta {
 	};
 }
 
-export function playSource<
-	T extends { track_number: number; disc_number?: number | null; title: string }
->(
+function playSource<T extends { track_number: number; disc_number?: number | null; title: string }>(
 	match: { tracks: T[] } | null,
 	launcher: (tracks: T[], startIndex: number, shuffle: boolean, meta: PlaybackMeta) => void,
 	album: AlbumBasicInfo,
@@ -111,7 +109,7 @@ export function playSourceTrack(
 	else playSource(navidromeMatch, launchNavidromePlayback, album, opts);
 }
 
-export function buildTrackQueueItem(
+function buildTrackQueueItem(
 	track: { position: number; disc_number?: number | null; title: string },
 	album: AlbumBasicInfo,
 	resolvedLocal: LocalTrackInfo | null,

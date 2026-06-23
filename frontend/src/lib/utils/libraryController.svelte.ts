@@ -9,7 +9,7 @@ import { downloadFile } from '$lib/utils/downloadHelper';
 import { API } from '$lib/constants';
 import type { LocalAlbumSummary } from '$lib/types';
 
-export const PAGE_SIZE = 48;
+const PAGE_SIZE = 48;
 
 export interface SidebarData<TAlbum> {
 	recentAlbums: TAlbum[];
@@ -367,7 +367,7 @@ export function createLibraryController<TAlbum>(
 			items.push({
 				label: 'Download Album',
 				icon: Download,
-				onclick: () => downloadFile(API.download.localAlbum(localAlbum.lidarr_album_id))
+				onclick: () => downloadFile(API.download.localAlbumByMbid(localAlbum.musicbrainz_id))
 			});
 		}
 		return items;

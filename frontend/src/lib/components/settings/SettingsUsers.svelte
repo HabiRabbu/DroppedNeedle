@@ -4,12 +4,14 @@
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
+	import SettingsImportUsers from '$lib/components/settings/SettingsImportUsers.svelte';
 	import {
 		UserRound,
 		ShieldCheck,
 		UserCheck,
 		UserX,
 		Plus,
+		Download,
 		Eye,
 		EyeOff,
 		RefreshCw,
@@ -23,6 +25,9 @@
 		display_name: string;
 		role: 'admin' | 'trusted' | 'user';
 		email: string | null;
+		username: string | null;
+		username_display: string | null;
+		avatar_url: string | null;
 		providers: string[];
 	}
 
@@ -36,7 +41,6 @@
 	let page = $state(1);
 	let total = $state(0);
 
-	// Delete user
 	let userToDelete = $state<UserRecord | null>(null);
 	let deleteDialogEl: HTMLDialogElement | undefined = $state();
 	let deleting = $state(false);
@@ -46,9 +50,11 @@
 	const rangeStart = $derived(total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1);
 	const rangeEnd = $derived(Math.min(page * PAGE_SIZE, total));
 
-	// Create user form
+	let showImport = $state(false);
+
 	let showCreateForm = $state(false);
 	let newName = $state('');
+	let newUsername = $state('');
 	let newEmail = $state('');
 	let newPassword = $state('');
 	let newRole = $state<'admin' | 'trusted' | 'user'>('user');
@@ -99,12 +105,14 @@
 		try {
 			const user = await api.post<UserRecord>('/api/v1/auth/admin/users', {
 				display_name: newName,
-				email: newEmail,
+				username: newUsername,
+				email: newEmail || undefined,
 				password: newPassword,
 				role: newRole
 			});
 			createSuccess = `Created ${user.display_name}`;
 			newName = '';
+			newUsername = '';
 			newEmail = '';
 			newPassword = '';
 			newRole = 'user';
@@ -206,6 +214,10 @@
 			>
 				<RefreshCw class="h-4 w-4 {loading ? 'animate-spin' : ''}" />
 			</button>
+			<button class="btn btn-outline btn-sm gap-1" onclick={() => (showImport = true)}>
+				<Download class="h-4 w-4" />
+				Import
+			</button>
 			<button
 				class="btn btn-primary btn-sm gap-1"
 				onclick={() => (showCreateForm = !showCreateForm)}
@@ -215,6 +227,8 @@
 			</button>
 		</div>
 	</div>
+
+	<SettingsImportUsers bind:open={showImport} onImported={() => void loadUsers(page)} />
 
 	{#if showCreateForm}
 		<div class="bg-base-300/50 rounded-box p-4 border border-base-300">
@@ -239,12 +253,22 @@
 					/>
 				</fieldset>
 				<fieldset class="fieldset">
-					<legend class="fieldset-legend">Email</legend>
+					<legend class="fieldset-legend">Username</legend>
+					<input
+						type="text"
+						class="input input-bordered w-full input-sm"
+						bind:value={newUsername}
+						required
+						autocomplete="off"
+						placeholder="jane.smith"
+					/>
+				</fieldset>
+				<fieldset class="fieldset">
+					<legend class="fieldset-legend">Email (optional)</legend>
 					<input
 						type="email"
 						class="input input-bordered w-full input-sm"
 						bind:value={newEmail}
-						required
 						placeholder="jane@example.com"
 					/>
 				</fieldset>
@@ -342,11 +366,22 @@
 				<div
 					class="flex items-center gap-3 p-3 bg-base-300/30 rounded-box hover:bg-base-300/50 transition-colors"
 				>
-					<div class="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-						<UserRound class="h-5 w-5 text-primary/60" />
+					<div
+						class="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 overflow-hidden"
+					>
+						{#if user.avatar_url}
+							<img src={user.avatar_url} alt={user.display_name} class="h-full w-full object-cover" />
+						{:else}
+							<UserRound class="h-5 w-5 text-primary/60" />
+						{/if}
 					</div>
 					<div class="flex-1 min-w-0">
 						<p class="text-sm font-medium truncate">{user.display_name}</p>
+						{#if user.username_display ?? user.username}
+							<p class="text-xs text-base-content/40 truncate">
+								@{user.username_display ?? user.username}
+							</p>
+						{/if}
 						{#if user.email}
 							<p class="text-xs text-base-content/50 truncate">{user.email}</p>
 						{/if}

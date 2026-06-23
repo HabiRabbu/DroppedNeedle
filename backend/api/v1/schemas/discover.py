@@ -1,6 +1,6 @@
 from typing import Literal
 
-from api.v1.schemas.home import HomeArtist, HomeSection, ServicePrompt
+from api.v1.schemas.home import HomeSection, ServicePrompt
 from api.v1.schemas.common import GenreArtistMap, IntegrationStatus
 from api.v1.schemas.weekly_exploration import WeeklyExplorationSection
 from models.youtube import YouTubeQuotaResponse as YouTubeQuotaResponse
@@ -26,7 +26,6 @@ class DiscoverQueueItemLight(AppStruct):
     cover_url: str | None = None
     is_wildcard: bool = False
     in_library: bool = False
-    monitored: bool = False
 
 
 class DiscoverQueueEnrichment(AppStruct):

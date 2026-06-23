@@ -1,8 +1,8 @@
 import type { NowPlaying, QueueItem, QueueOrigin, SourceType } from '$lib/player/types';
 import { playbackToast } from '$lib/stores/playbackToast.svelte';
 
-export const VOLUME_STORAGE_KEY = 'musicseerr_player_volume';
-export const SESSION_STORAGE_KEY = 'musicseerr_player_session';
+const VOLUME_STORAGE_KEY = 'droppedneedle_player_volume';
+const SESSION_STORAGE_KEY = 'droppedneedle_player_session';
 
 export type StoredSession = {
 	nowPlaying: NowPlaying;
@@ -49,7 +49,15 @@ export function migrateLegacyItem(
 	};
 }
 
+// The listening room manages its queue inline, so its "added to queue" toasts are noise there.
+let queueMutationToastsSuppressed = false;
+
+export function setQueueMutationToastsSuppressed(suppressed: boolean): void {
+	queueMutationToastsSuppressed = suppressed;
+}
+
 export function showQueueMutationToast(action: 'queue' | 'next', count: number): void {
+	if (queueMutationToastsSuppressed) return;
 	const label = count === 1 ? 'track' : 'tracks';
 	if (action === 'queue') {
 		playbackToast.show(
@@ -69,7 +77,7 @@ export function getStoredVolume(): number {
 		const stored = localStorage.getItem(VOLUME_STORAGE_KEY);
 		if (stored !== null) return Math.max(0, Math.min(100, Number(stored)));
 	} catch {
-		// Ignore errors
+		/* empty */
 	}
 	return 75;
 }
@@ -78,7 +86,7 @@ export function storeVolume(volume: number): void {
 	try {
 		localStorage.setItem(VOLUME_STORAGE_KEY, String(volume));
 	} catch {
-		// Ignore errors
+		/* empty */
 	}
 }
 
@@ -89,7 +97,7 @@ export function getStoredSession(): StoredSession | null {
 		const parsed = JSON.parse(stored);
 		if (parsed && parsed.nowPlaying) return parsed as StoredSession;
 	} catch {
-		// Ignore errors
+		/* empty */
 	}
 	return null;
 }
@@ -102,6 +110,6 @@ export function storeSessionData(data: StoredSession | null): void {
 			localStorage.removeItem(SESSION_STORAGE_KEY);
 		}
 	} catch {
-		// Ignore errors
+		/* empty */
 	}
 }

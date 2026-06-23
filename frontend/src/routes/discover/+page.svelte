@@ -16,6 +16,7 @@
 	import DiscoverArtistMiniBand from '$lib/components/DiscoverArtistMiniBand.svelte';
 	import SectionDivider from '$lib/components/SectionDivider.svelte';
 	import CarouselSkeleton from '$lib/components/CarouselSkeleton.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { removeAllQueueCachedData } from '$lib/utils/discoverQueueCache';
 	import { api } from '$lib/api/client';
@@ -37,6 +38,7 @@
 	} from 'lucide-svelte';
 	import { getDiscoverQuery } from '$lib/queries/discover/DiscoverQuery.svelte';
 	import { DiscoverQueryKeyFactory } from '$lib/queries/discover/DiscoverQueryKeyFactory';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 	import { API } from '$lib/constants';
 
@@ -57,7 +59,7 @@
 	async function handleRefresh() {
 		await api.global.post(API.discoverRefresh());
 		await invalidateQueriesWithPersister({
-			queryKey: DiscoverQueryKeyFactory.discover(activeSource)
+			queryKey: DiscoverQueryKeyFactory.discover(authStore.user?.id, activeSource)
 		});
 	}
 
@@ -94,6 +96,9 @@
 			(discoverData?.radio_sections?.length ?? 0) > 0 ||
 			discoverData?.discover_picks != null ||
 			discoverData?.unexplored_genres != null
+	);
+	let isBuilding = $derived(
+		!!discoverData && !hasContent && (!!discoverData.refreshing || isUpdating)
 	);
 	let dismissVersion = $state(0);
 	let servicePrompts = $derived.by(() => {
@@ -171,7 +176,7 @@
 </script>
 
 <svelte:head>
-	<title>Discover - Musicseerr</title>
+	<title>Discover - DroppedNeedle</title>
 </svelte:head>
 
 <div class="min-h-[calc(100vh-200px)]">
@@ -221,9 +226,19 @@
 						</section>
 					{/each}
 				</div>
+			{:else if isBuilding}
+				<div class="flex flex-col items-center justify-center py-12 sm:py-16">
+					<span class="loading loading-spinner loading-lg text-primary mb-4"></span>
+					<h2 class="mb-2 text-center text-xl font-bold sm:text-2xl">
+						Building Your Recommendations
+					</h2>
+					<p class="max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+						Looking through your listening history to build recommendations. Give it a moment on
+						first load.
+					</p>
+				</div>
 			{:else if discoverData}
 				<div class="space-y-10 sm:space-y-12">
-					<!-- §1 HERO -->
 					{#if hasHero}
 						<div class="discover-section-enter">
 							{#if hasWeeklyExploration && discoverData.weekly_exploration}
@@ -237,7 +252,6 @@
 						</div>
 					{/if}
 
-					<!-- §2 QUICK ACTIONS -->
 					<div class="discover-section-enter">
 						<div class="grid grid-cols-1 gap-4 {showQueueInQuickActions ? 'md:grid-cols-2' : ''}">
 							{#if showQueueInQuickActions}
@@ -245,7 +259,7 @@
 							{/if}
 							<button
 								type="button"
-								class="group relative w-full overflow-hidden rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/8 via-base-200/50 to-secondary/8 px-5 py-7 backdrop-blur-sm shadow-[0_4px_24px_oklch(var(--p)/0.06)] transition-all duration-300 cursor-pointer text-left motion-safe:hover:-translate-y-0.5 hover:shadow-[0_8px_32px_oklch(var(--p)/0.15)] hover:border-primary/25 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+								class="group relative w-full overflow-hidden rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/8 via-base-200/50 to-secondary/8 px-5 py-7 backdrop-blur-sm shadow-[0_4px_24px_oklch(from_var(--color-primary)_l_c_h_/_0.06)] transition-all duration-300 cursor-pointer text-left motion-safe:hover:-translate-y-0.5 hover:shadow-[0_8px_32px_oklch(from_var(--color-primary)_l_c_h_/_0.15)] hover:border-primary/25 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
 								onclick={() => (playlistDiscoverOpen = true)}
 							>
 								<div
@@ -253,7 +267,7 @@
 								></div>
 								<div class="flex items-center gap-4">
 									<div
-										class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/15 shadow-[0_0_16px_oklch(var(--p)/0.15)]"
+										class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/15 shadow-[0_0_16px_oklch(from_var(--color-primary)_l_c_h_/_0.15)]"
 									>
 										<Wand2 class="h-5 w-5 text-primary" />
 									</div>
@@ -273,7 +287,6 @@
 						</div>
 					</div>
 
-					<!-- §3 MADE FOR YOU -->
 					{#if hasMadeForYou}
 						<div>
 							<SectionDivider label="Made For You">
@@ -321,13 +334,12 @@
 						</div>
 					{/if}
 
-					<!-- §4 BECAUSE YOU LISTENED -->
-					{#if hasBecauseYouListened}
-						<div>
-							<SectionDivider label="Because You Listened">
-								{#snippet icon()}<Heart class="w-3.5 h-3.5" />{/snippet}
-							</SectionDivider>
+					<div>
+						<SectionDivider label="Because You Listened">
+							{#snippet icon()}<Heart class="w-3.5 h-3.5" />{/snippet}
+						</SectionDivider>
 
+						{#if hasBecauseYouListened}
 							<div class="discover-section-enter space-y-5 sm:space-y-6">
 								{#each discoverData.because_you_listen_to as entry, i (entry.seed_artist_mbid || entry.seed_artist)}
 									<div>
@@ -347,10 +359,15 @@
 									<div><HomeSection section={discoverData.popular_in_your_genres} /></div>
 								{/if}
 							</div>
-						</div>
-					{/if}
+						{:else}
+							<EmptyState
+								icon={Heart}
+								title="Listen to more music to see recommendations"
+								description="As you build up your listening history, we'll surface artists and albums based on what you love."
+							/>
+						{/if}
+					</div>
 
-					<!-- §5 NEW & FRESH -->
 					{#if hasNewFresh}
 						<div>
 							<SectionDivider label="New & Fresh">
@@ -373,7 +390,6 @@
 						</div>
 					{/if}
 
-					<!-- §6 FROM YOUR LIBRARY -->
 					{#if hasFromYourLibrary}
 						<div>
 							<SectionDivider label="From Your Library">
@@ -392,7 +408,6 @@
 						</div>
 					{/if}
 
-					<!-- §7 BROWSE GENRES -->
 					{#if hasBrowseGenres}
 						<div>
 							<SectionDivider label="Browse Genres">
@@ -424,7 +439,6 @@
 						</div>
 					{/if}
 
-					<!-- §8 TRENDING NOW -->
 					{#if hasTrending}
 						<div>
 							<SectionDivider label="Trending Now">
@@ -447,38 +461,7 @@
 						</div>
 					{/if}
 
-					{#if !hasContent && servicePrompts.length === 0}
-						{#if discoverData.refreshing || isUpdating}
-							<div class="flex flex-col items-center justify-center py-12 sm:py-16">
-								<span class="loading loading-spinner loading-lg text-primary mb-4"></span>
-								<h2 class="mb-2 text-center text-xl font-bold sm:text-2xl">
-									Building Your Recommendations
-								</h2>
-								<p class="max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
-									Looking through your listening history to build recommendations. Give it a moment
-									on first load.
-								</p>
-							</div>
-						{:else}
-							<div class="flex flex-col items-center justify-center py-12 sm:py-16">
-								<Compass class="mb-4 h-12 w-12 sm:mb-6 sm:h-14 sm:w-14 text-base-content/50" />
-								<h2 class="mb-2 text-center text-xl font-bold sm:text-2xl">Still Loading</h2>
-								<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
-									Your recommendations are still loading. Try refreshing.
-								</p>
-								<button
-									class="btn btn-primary"
-									onclick={() => void handleRefresh()}
-									disabled={refreshing}
-								>
-									{#if refreshing}
-										<span class="loading loading-spinner loading-sm"></span>
-									{/if}
-									Refresh Recommendations
-								</button>
-							</div>
-						{/if}
-					{:else if !hasContent && servicePrompts.length > 0}
+					{#if !hasContent && servicePrompts.length > 0}
 						<div class="flex flex-col items-center justify-center py-12 sm:py-16">
 							<Compass class="mb-4 h-12 w-12 sm:mb-6 sm:h-14 sm:w-14 text-base-content/50" />
 							<h2 class="mb-2 text-center text-xl font-bold sm:text-2xl">
@@ -489,6 +472,24 @@
 								they get.
 							</p>
 							<a href="/settings" class="btn btn-primary">Connect Services</a>
+						</div>
+					{:else if !hasContent}
+						<div class="flex flex-col items-center justify-center py-12 sm:py-16">
+							<Compass class="mb-4 h-12 w-12 sm:mb-6 sm:h-14 sm:w-14 text-base-content/50" />
+							<h2 class="mb-2 text-center text-xl font-bold sm:text-2xl">Still Loading</h2>
+							<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+								Your recommendations are still loading. Try refreshing.
+							</p>
+							<button
+								class="btn btn-primary"
+								onclick={() => void handleRefresh()}
+								disabled={refreshing}
+							>
+								{#if refreshing}
+									<span class="loading loading-spinner loading-sm"></span>
+								{/if}
+								Refresh Recommendations
+							</button>
 						</div>
 					{/if}
 				</div>

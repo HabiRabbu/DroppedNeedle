@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib, json, logging, os, uuid
+import hashlib, json, logging, os, sqlite3, uuid
 from urllib.parse import urlencode
 
 import httpx
@@ -15,7 +15,7 @@ from api.v1.schemas.settings import OIDCConnectionSettings
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.crypto import encrypt
-from infrastructure.persistence.auth_store import AuthStore, UserRecord
+from infrastructure.persistence.auth_store import AuthStore, UserRecord, _derive_username
 
 logger = logging.getLogger(__name__)
 
@@ -293,13 +293,28 @@ class OIDCUserAuthService:
         provider_id = str(uuid.uuid4())
         is_first = not await self._store.has_any_users()
 
-        user = await self._store.create_user(
-            id = user_id,
-            display_name = name,
-            role = "admin" if is_first else "user",
-            email = email,
-            avatar_url = thumb,
-        )
+        # Auto-derive a username from the OIDC name (D3) so an SSO-only account can
+        # later set a local password without choosing a username.
+        # Retry on the unique-index race so two concurrent first-logins whose names
+        # slug to the same base don't 500 (mirrors AuthStore._assign_unique_username).
+        user = None
+        for _attempt in range(20):
+            derived_username, derived_display = await _derive_username(self._store, display_name = name)
+            try:
+                user = await self._store.create_user(
+                    id = user_id,
+                    display_name = name,
+                    role = "admin" if is_first else "user",
+                    email = email,
+                    avatar_url = thumb,
+                    username = derived_username,
+                    username_display = derived_display,
+                )
+                break
+            except sqlite3.IntegrityError:
+                continue
+        if user is None:
+            raise AuthenticationError("Could not create an account from OIDC")
         await self._store.create_auth_provider(
             id = provider_id,
             user_id = user_id,

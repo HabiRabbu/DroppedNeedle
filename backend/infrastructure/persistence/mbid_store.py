@@ -28,15 +28,21 @@ class MBIDStore(PersistenceBase):
                 )
                 """
             )
+            # Per-user ignore list (Phase 5): composite PK lets two users independently
+            # ignore the same release. Fresh installs get this shape directly; existing
+            # single-PK tables are rebuilt by migrate_ignored_releases_to_user() in the
+            # lifespan (assigns legacy rows to the first admin).
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ignored_releases (
-                    release_group_mbid_lower TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    release_group_mbid_lower TEXT NOT NULL,
                     release_group_mbid TEXT NOT NULL,
                     artist_mbid TEXT NOT NULL,
                     release_name TEXT NOT NULL,
                     artist_name TEXT NOT NULL,
-                    ignored_at REAL NOT NULL
+                    ignored_at REAL NOT NULL,
+                    PRIMARY KEY (user_id, release_group_mbid_lower)
                 )
                 """
             )
@@ -129,6 +135,7 @@ class MBIDStore(PersistenceBase):
 
     async def add_ignored_release(
         self,
+        user_id: str,
         release_group_mbid: str,
         artist_mbid: str,
         release_name: str,
@@ -140,10 +147,10 @@ class MBIDStore(PersistenceBase):
             conn.execute(
                 """
                 INSERT INTO ignored_releases (
-                    release_group_mbid_lower, release_group_mbid, artist_mbid,
+                    user_id, release_group_mbid_lower, release_group_mbid, artist_mbid,
                     release_name, artist_name, ignored_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(release_group_mbid_lower) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, release_group_mbid_lower) DO UPDATE SET
                     release_group_mbid = excluded.release_group_mbid,
                     artist_mbid = excluded.artist_mbid,
                     release_name = excluded.release_name,
@@ -151,6 +158,7 @@ class MBIDStore(PersistenceBase):
                     ignored_at = excluded.ignored_at
                 """,
                 (
+                    user_id,
                     _normalize(release_group_mbid),
                     release_group_mbid,
                     artist_mbid,
@@ -162,17 +170,22 @@ class MBIDStore(PersistenceBase):
 
         await self._write(operation)
 
-    async def get_ignored_release_mbids(self) -> set[str]:
+    async def get_ignored_release_mbids(self, user_id: str) -> set[str]:
         def operation(conn: sqlite3.Connection) -> set[str]:
-            rows = conn.execute("SELECT release_group_mbid_lower FROM ignored_releases").fetchall()
+            rows = conn.execute(
+                "SELECT release_group_mbid_lower FROM ignored_releases WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
             return {str(row["release_group_mbid_lower"]) for row in rows if row["release_group_mbid_lower"]}
 
         return await self._read(operation)
 
-    async def get_ignored_releases(self) -> list[dict[str, Any]]:
+    async def get_ignored_releases(self, user_id: str) -> list[dict[str, Any]]:
         def operation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             rows = conn.execute(
-                "SELECT release_group_mbid, artist_mbid, release_name, artist_name, ignored_at FROM ignored_releases ORDER BY ignored_at DESC"
+                "SELECT release_group_mbid, artist_mbid, release_name, artist_name, ignored_at "
+                "FROM ignored_releases WHERE user_id = ? ORDER BY ignored_at DESC",
+                (user_id,),
             ).fetchall()
             return [
                 {
@@ -336,7 +349,6 @@ class MBIDStore(PersistenceBase):
         await self._write(operation)
 
     async def prune_old_ignored_releases(self, days: int) -> int:
-        """Delete ignored releases older than `days` days."""
         import time as _time
         cutoff = _time.time() - days * 86400
 
@@ -345,6 +357,47 @@ class MBIDStore(PersistenceBase):
                 "DELETE FROM ignored_releases WHERE ignored_at < ?",
                 (cutoff,),
             )
+            return cursor.rowcount
+
+        return await self._write(operation)
+
+    async def migrate_ignored_releases_to_user(self, user_id: str) -> int:
+        """One-time (Phase 5): rebuild a legacy single-PK ``ignored_releases`` table
+        into the per-user composite-PK shape, assigning all existing (global) rows to
+        ``user_id`` (the first admin). Idempotent: no-op once the ``user_id`` column
+        exists. Data-preserving - rows are copied, not dropped (AMU-4 intent)."""
+        def operation(conn: sqlite3.Connection) -> int:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(ignored_releases)").fetchall()}
+            if "user_id" in cols:
+                return 0
+            conn.execute("ALTER TABLE ignored_releases RENAME TO ignored_releases_legacy")
+            conn.execute(
+                """
+                CREATE TABLE ignored_releases (
+                    user_id TEXT NOT NULL,
+                    release_group_mbid_lower TEXT NOT NULL,
+                    release_group_mbid TEXT NOT NULL,
+                    artist_mbid TEXT NOT NULL,
+                    release_name TEXT NOT NULL,
+                    artist_name TEXT NOT NULL,
+                    ignored_at REAL NOT NULL,
+                    PRIMARY KEY (user_id, release_group_mbid_lower)
+                )
+                """
+            )
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO ignored_releases (
+                    user_id, release_group_mbid_lower, release_group_mbid, artist_mbid,
+                    release_name, artist_name, ignored_at
+                )
+                SELECT ?, release_group_mbid_lower, release_group_mbid, artist_mbid,
+                       release_name, artist_name, ignored_at
+                FROM ignored_releases_legacy
+                """,
+                (user_id,),
+            )
+            conn.execute("DROP TABLE ignored_releases_legacy")
             return cursor.rowcount
 
         return await self._write(operation)

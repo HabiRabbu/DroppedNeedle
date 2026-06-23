@@ -34,7 +34,7 @@ from api.v1.schemas.navidrome import (
 from infrastructure.cover_urls import prefer_artist_cover_url, prefer_release_group_cover_url
 from infrastructure.validators import clean_lastfm_bio
 from core.exceptions import ExternalServiceError
-from repositories.navidrome_models import SubsonicAlbum, SubsonicSong, SubsonicArtistIndex
+from repositories.navidrome_models import SubsonicAlbum, SubsonicSong
 from repositories.protocols import NavidromeRepositoryProtocol
 from services.preferences_service import PreferencesService
 
@@ -90,8 +90,8 @@ class NavidromeLibraryService:
         self._album_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._artist_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._mbid_to_navidrome_id: dict[str, str] = {}
-        self._lidarr_album_index: dict[str, tuple[str, str]] = {}
-        self._lidarr_artist_index: dict[str, str] = {}
+        self._library_album_index: dict[str, tuple[str, str]] = {}
+        self._library_artist_index: dict[str, str] = {}
         self._dirty = False
 
     def lookup_navidrome_id(self, mbid: str) -> str | None:
@@ -124,7 +124,7 @@ class NavidromeLibraryService:
             elif cached is None:
                 del self._album_mbid_cache[cache_key]
 
-        match = self._lidarr_album_index.get(cache_key)
+        match = self._library_album_index.get(cache_key)
         if match:
             self._album_mbid_cache[cache_key] = match[0]
             self._dirty = True
@@ -132,7 +132,7 @@ class NavidromeLibraryService:
 
         clean_key = f"{_normalize(_clean_album_name(name))}:{_normalize(artist)}"
         if clean_key != cache_key:
-            match = self._lidarr_album_index.get(clean_key)
+            match = self._library_album_index.get(clean_key)
             if match:
                 self._album_mbid_cache[cache_key] = match[0]
                 self._dirty = True
@@ -159,7 +159,7 @@ class NavidromeLibraryService:
             elif cached is None:
                 del self._artist_mbid_cache[cache_key]
 
-        match = self._lidarr_artist_index.get(cache_key)
+        match = self._library_artist_index.get(cache_key)
         if match:
             self._artist_mbid_cache[cache_key] = match
             self._dirty = True
@@ -185,8 +185,8 @@ class NavidromeLibraryService:
     async def _build_artist_summary(self, artist_data: object) -> NavidromeArtistSummary:
         """Build an artist summary, enriching MBID from Lidarr if needed."""
         name = getattr(artist_data, 'name', '')
-        lidarr_mbid = await self._resolve_artist_mbid(name) if name else None
-        mbid = lidarr_mbid or getattr(artist_data, 'musicBrainzId', None) or None
+        library_mbid = await self._resolve_artist_mbid(name) if name else None
+        mbid = library_mbid or getattr(artist_data, 'musicBrainzId', None) or None
         image_url = prefer_artist_cover_url(mbid, None, size=500)
         return NavidromeArtistSummary(
             navidrome_id=artist_data.id,
@@ -349,8 +349,8 @@ class NavidromeLibraryService:
             logger.warning("Failed to fetch Navidrome artist %s", artist_id, exc_info=True)
             return None
 
-        lidarr_mbid = await self._resolve_artist_mbid(artist.name) if artist.name else None
-        mbid = lidarr_mbid or artist.musicBrainzId or None
+        library_mbid = await self._resolve_artist_mbid(artist.name) if artist.name else None
+        mbid = library_mbid or artist.musicBrainzId or None
         image_url = prefer_artist_cover_url(mbid, None, size=500)
 
         albums: list[NavidromeAlbumSummary] = []
@@ -595,22 +595,25 @@ class NavidromeLibraryService:
         self,
         playlist_id: str,
         playlist_service: 'PlaylistService',
+        requesting: 'UserRecord',
     ) -> NavidromeImportResult:
         source_ref = f"navidrome:{playlist_id}"
-        existing = await playlist_service.get_by_source_ref(source_ref)
+        existing = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
         if existing:
             return NavidromeImportResult(
-                musicseerr_playlist_id=existing.id,
+                droppedneedle_playlist_id=existing.id,
                 already_imported=True,
             )
 
         detail = await self.get_playlist_detail(playlist_id)
         try:
-            created = await playlist_service.create_playlist(detail.name, source_ref=source_ref)
+            created = await playlist_service.create_playlist(
+                detail.name, source_ref=source_ref, user_id=requesting.id,
+            )
         except Exception:  # noqa: BLE001
-            re_check = await playlist_service.get_by_source_ref(source_ref)
+            re_check = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
             if re_check:
-                return NavidromeImportResult(musicseerr_playlist_id=re_check.id, already_imported=True)
+                return NavidromeImportResult(droppedneedle_playlist_id=re_check.id, already_imported=True)
             raise
 
         track_dicts = []
@@ -635,14 +638,14 @@ class NavidromeLibraryService:
 
         if track_dicts:
             try:
-                await playlist_service.add_tracks(created.id, track_dicts)
+                await playlist_service.add_tracks(created.id, requesting, track_dicts)
             except Exception:  # noqa: BLE001
                 logger.error("Failed to add tracks during Navidrome playlist import %s", playlist_id, exc_info=True)
-                await playlist_service.delete_playlist(created.id)
+                await playlist_service.delete_playlist(created.id, requesting)
                 raise ExternalServiceError(f"Failed to import Navidrome playlist {playlist_id}")
 
         return NavidromeImportResult(
-            musicseerr_playlist_id=created.id,
+            droppedneedle_playlist_id=created.id,
             tracks_imported=len(track_dicts),
             tracks_failed=failed,
         )
@@ -749,22 +752,21 @@ class NavidromeLibraryService:
 
         if self._library_db:
             try:
-                lidarr_albums = await self._library_db.get_all_albums_for_matching()
-                self._lidarr_album_index = {}
-                self._lidarr_artist_index = {}
-                for title, artist_name, album_mbid, artist_mbid in lidarr_albums:
+                library_albums = await self._library_db.get_all_albums_for_matching()
+                self._library_album_index = {}
+                self._library_artist_index = {}
+                for title, artist_name, album_mbid, artist_mbid in library_albums:
                     key = f"{_normalize(title)}:{_normalize(artist_name)}"
                     clean_key = f"{_normalize(_clean_album_name(title))}:{_normalize(artist_name)}"
-                    self._lidarr_album_index[key] = (album_mbid, artist_mbid)
+                    self._library_album_index[key] = (album_mbid, artist_mbid)
                     if clean_key != key:
-                        self._lidarr_album_index[clean_key] = (album_mbid, artist_mbid)
+                        self._library_album_index[clean_key] = (album_mbid, artist_mbid)
                     norm_artist = _normalize(artist_name)
                     if norm_artist and artist_mbid:
-                        self._lidarr_artist_index[norm_artist] = artist_mbid
+                        self._library_artist_index[norm_artist] = artist_mbid
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to build Lidarr matching indices", exc_info=True)
 
-        loaded_from_disk = False
         if self._mbid_store:
             try:
                 disk_albums = await self._mbid_store.load_navidrome_album_mbid_index(max_age_seconds=86400)
@@ -772,11 +774,10 @@ class NavidromeLibraryService:
                 if disk_albums or disk_artists:
                     self._album_mbid_cache.update(disk_albums)
                     self._artist_mbid_cache.update(disk_artists)
-                    loaded_from_disk = True
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to load Navidrome MBID cache from disk", exc_info=True)
 
-        if not self._lidarr_album_index:
+        if not self._library_album_index:
             logger.warning("Lidarr library data unavailable - Lidarr enrichment will be skipped")
 
         try:
@@ -815,30 +816,30 @@ class NavidromeLibraryService:
         resolved_albums = 0
         resolved_artists = 0
 
-        if self._lidarr_album_index:
+        if self._library_album_index:
             for album in all_albums:
                 if not album.name or album.name == "Unknown":
                     continue
                 cache_key = f"{_normalize(album.name)}:{_normalize(album.artist)}"
                 existing = self._album_mbid_cache.get(cache_key)
                 if isinstance(existing, str):
-                    lidarr_match = self._lidarr_album_index.get(cache_key)
-                    if not lidarr_match:
+                    library_match = self._library_album_index.get(cache_key)
+                    if not library_match:
                         clean_key = f"{_normalize(_clean_album_name(album.name))}:{_normalize(album.artist)}"
                         if clean_key != cache_key:
-                            lidarr_match = self._lidarr_album_index.get(clean_key)
-                    if lidarr_match and lidarr_match[0] != existing:
-                        self._album_mbid_cache[cache_key] = lidarr_match[0]
+                            library_match = self._library_album_index.get(clean_key)
+                    if library_match and library_match[0] != existing:
+                        self._album_mbid_cache[cache_key] = library_match[0]
                         self._dirty = True
                         resolved_albums += 1
                     continue
                 if isinstance(existing, tuple):
-                    lidarr_hit = self._lidarr_album_index.get(cache_key)
-                    if not lidarr_hit:
+                    library_hit = self._library_album_index.get(cache_key)
+                    if not library_hit:
                         clean_key = f"{_normalize(_clean_album_name(album.name))}:{_normalize(album.artist)}"
                         if clean_key != cache_key:
-                            lidarr_hit = self._lidarr_album_index.get(clean_key)
-                    if lidarr_hit:
+                            library_hit = self._library_album_index.get(clean_key)
+                    if library_hit:
                         del self._album_mbid_cache[cache_key]
                     elif time.time() - existing[1] < _NEGATIVE_CACHE_TTL:
                         continue
@@ -850,15 +851,15 @@ class NavidromeLibraryService:
                 norm = _normalize(name)
                 existing = self._artist_mbid_cache.get(norm)
                 if isinstance(existing, str):
-                    lidarr_match = self._lidarr_artist_index.get(norm)
-                    if lidarr_match and lidarr_match != existing:
-                        self._artist_mbid_cache[norm] = lidarr_match
+                    library_match = self._library_artist_index.get(norm)
+                    if library_match and library_match != existing:
+                        self._artist_mbid_cache[norm] = library_match
                         self._dirty = True
                         resolved_artists += 1
                     continue
                 if isinstance(existing, tuple):
-                    lidarr_hit = self._lidarr_artist_index.get(norm)
-                    if lidarr_hit:
+                    library_hit = self._library_artist_index.get(norm)
+                    if library_hit:
                         del self._artist_mbid_cache[norm]
                     elif time.time() - existing[1] < _NEGATIVE_CACHE_TTL:
                         continue

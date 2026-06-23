@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-import json, logging, uuid
-
-from plex_api_client import PlexAPI
-from plex_api_client.models.operations.get_server_resources import GetServerResourcesRequest
-from plex_api_client.models.operations.gettokendetails import GetTokenDetailsRequest
+import json, logging, sqlite3, uuid
 
 from core.exceptions import AuthenticationError, PlexApiError
 from infrastructure.crypto import encrypt
-from infrastructure.persistence.auth_store import AuthStore, UserRecord
+from infrastructure.persistence.auth_store import AuthStore, UserRecord, _derive_username
 
 logger = logging.getLogger(__name__)
 
-_PRODUCT = "MusicSeerr"
-_VERSION = "1.4.0"
+_PRODUCT = "DroppedNeedle"
 
 
 class PlexUserAuthService:
@@ -77,60 +72,28 @@ class PlexUserAuthService:
         return user, raw_token
 
     async def _get_user_profile(self, auth_token: str, client_id: str) -> dict:
-        plex = PlexAPI(
-            token = auth_token,
-            client_identifier = client_id,
-            product = _PRODUCT,
-            version = _VERSION,
-        )
         try:
-            resp = await plex.authentication.get_token_details_async(
-                request = GetTokenDetailsRequest(client_identifier = client_id)
-            )
-        except Exception as e:  # noqa: BLE001
+            profile = await self._plex_repo.get_account_profile(auth_token, client_id)
+        except PlexApiError as e:
             logger.error(f"Failed to fetch Plex user profile: {e}")
             raise AuthenticationError("Could not verify Plex account")
 
-        account = resp.user_plex_account
-        if account is None:
-            raise AuthenticationError("Could not retrieve Plex account details")
-
         return {
-            "uuid": account.uuid or "",
-            "email": account.email or "",
-            "display_name": account.friendly_name or account.username or account.title or "Plex User",
-            "thumb": account.thumb or None,
+            "uuid": profile.uuid,
+            "email": profile.email or "",
+            "display_name": profile.display_name,
+            "thumb": profile.thumb,
             "auth_token": auth_token,
         }
 
     async def _check_server_membership(self, auth_token: str, client_id: str, machine_id: str) -> bool:
-        plex = PlexAPI(
-            token = auth_token,
-            client_identifier = client_id,
-            product = _PRODUCT,
-            version = _VERSION,
-        )
         try:
-            resp = await plex.plex.get_server_resources_async(
-                request = GetServerResourcesRequest(
-                    client_identifier = client_id,
-                    include_https = 1,
-                    include_relay = 1,
-                )
-            )
-        except Exception as e:  # noqa: BLE001
+            server_ids = await self._plex_repo.get_account_server_ids(auth_token, client_id)
+        except PlexApiError as e:
             logger.error(f"Failed to fetch Plex resources: {e}")
             raise AuthenticationError("Could not verify server access")
 
-        devices = resp.plex_devices or []
-        for device in devices:
-            if (
-                device.client_identifier == machine_id
-                and device.provides
-                and "server" in device.provides
-            ):
-                return True
-        return False
+        return machine_id in server_ids
 
     async def _get_server_machine_id(self) -> str | None:
         try:
@@ -176,13 +139,28 @@ class PlexUserAuthService:
         provider_id = str(uuid.uuid4())
         is_first = not await self._store.has_any_users()
 
-        user = await self._store.create_user(
-            id = user_id,
-            display_name = name,
-            role = "admin" if is_first else "user",
-            email = email,
-            avatar_url = thumb,
-        )
+        # Auto-derive a username from the Plex display name (D3) so an SSO-only
+        # account can later set a local password without choosing a username.
+        # Retry on the unique-index race so two concurrent first-logins whose names
+        # slug to the same base don't 500 (mirrors AuthStore._assign_unique_username).
+        user = None
+        for _attempt in range(20):
+            derived_username, derived_display = await _derive_username(self._store, display_name = name)
+            try:
+                user = await self._store.create_user(
+                    id = user_id,
+                    display_name = name,
+                    role = "admin" if is_first else "user",
+                    email = email,
+                    avatar_url = thumb,
+                    username = derived_username,
+                    username_display = derived_display,
+                )
+                break
+            except sqlite3.IntegrityError:
+                continue
+        if user is None:
+            raise AuthenticationError("Could not create an account from Plex")
         await self._store.create_auth_provider(
             id = provider_id,
             user_id = user_id,

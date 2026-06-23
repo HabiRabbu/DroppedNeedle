@@ -27,7 +27,7 @@
 </script>
 
 <svelte:head>
-	<title>Your Top Albums - Musicseerr</title>
+	<title>Your Top Albums - DroppedNeedle</title>
 </svelte:head>
 
 <div class="space-y-4 px-4 sm:px-6 lg:px-8">

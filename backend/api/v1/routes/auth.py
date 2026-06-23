@@ -10,6 +10,9 @@ from api.v1.schemas.auth import (
     AuthProvidersResponse,
     AuthResponse,
     CreateUserRequest,
+    ImportCandidateListResponse,
+    ImportUsersRequest,
+    ImportUsersResponse,
     JellyfinLoginRequest,
     LoginRequest,
     OIDCAuthorizeResponse,
@@ -22,10 +25,11 @@ from api.v1.schemas.auth import (
     SetupStatusResponse,
     UserListResponse,
     UserResponse,
+    import_candidate_to_response,
     session_to_response,
     user_to_response,
 )
-from core.dependencies.auth_providers import get_auth_service, get_plex_user_auth_service, get_jellyfin_user_auth_service, get_oidc_user_auth_service
+from core.dependencies.auth_providers import get_auth_service, get_plex_user_auth_service, get_jellyfin_user_auth_service, get_oidc_user_auth_service, get_user_import_service
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError, RegistrationError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep, CurrentTokenDep, CurrentUserDep
@@ -33,12 +37,13 @@ from services.oidc_user_auth_service import OIDCUserAuthService
 from services.auth_service import AuthService
 from services.jellyfin_user_auth_service import JellyfinUserAuthService
 from services.plex_user_auth_service import PlexUserAuthService
+from services.user_import_service import UserImportService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class = MsgSpecRoute, prefix = "/auth", tags = ["auth"])
 
-_COOKIE_NAME = "musicseerr_session"
+_COOKIE_NAME = "droppedneedle_session"
 _COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
 
 
@@ -100,6 +105,7 @@ async def setup(
     try:
         user, token = await auth.create_first_admin(
             display_name = body.display_name,
+            username = body.username,
             email = body.email,
             password = body.password,
             user_agent = request.headers.get("User-Agent"),
@@ -121,14 +127,14 @@ async def login(
 ) -> AuthResponse:
     try:
         user, token = await auth.login_local(
-            email = body.email,
+            username = body.username,
             password = body.password,
             user_agent = request.headers.get("User-Agent"),
         )
     except AuthenticationError:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Invalid email or password",
+            detail = "Invalid username or password",
             headers = {"WWW-Authenticate": "Bearer"},
         )
 
@@ -158,8 +164,13 @@ async def logout_all(
 
 
 @router.get("/me", response_model = UserResponse)
-async def me(current_user: CurrentUserDep) -> UserResponse:
-    return user_to_response(current_user)
+async def me(
+    current_user: CurrentUserDep,
+    auth: AuthService = Depends(get_auth_service),
+) -> UserResponse:
+    # Carry the linked providers so the client can offer change- vs set-password (D8).
+    providers = await auth.get_provider_names_for_users([current_user.id])
+    return user_to_response(current_user, providers.get(current_user.id))
 
 
 @router.get("/sessions", response_model = SessionListResponse)
@@ -211,6 +222,7 @@ async def admin_create_user(
     try:
         user = await auth.admin_create_user(
             display_name = body.display_name,
+            username = body.username,
             email = body.email,
             password = body.password,
             role = body.role,
@@ -219,6 +231,49 @@ async def admin_create_user(
         logger.debug(f"Admin user creation failed: {e}")
         raise HTTPException(status_code = status.HTTP_409_CONFLICT, detail = "Could not create user")
     return user_to_response(user)
+
+
+@router.get("/admin/import/jellyfin", response_model = ImportCandidateListResponse)
+async def admin_import_list_jellyfin(
+    _admin: CurrentAdminDep,
+    importer: UserImportService = Depends(get_user_import_service),
+) -> ImportCandidateListResponse:
+    candidates = await importer.list_jellyfin_users()
+    return ImportCandidateListResponse(
+        users = [import_candidate_to_response(c) for c in candidates],
+    )
+
+
+@router.get("/admin/import/plex", response_model = ImportCandidateListResponse)
+async def admin_import_list_plex(
+    _admin: CurrentAdminDep,
+    importer: UserImportService = Depends(get_user_import_service),
+) -> ImportCandidateListResponse:
+    candidates = await importer.list_plex_users()
+    return ImportCandidateListResponse(
+        users = [import_candidate_to_response(c) for c in candidates],
+    )
+
+
+@router.post("/admin/import", response_model = ImportUsersResponse)
+async def admin_import_users(
+    _admin: CurrentAdminDep,
+    body: ImportUsersRequest = MsgSpecBody(ImportUsersRequest),
+    importer: UserImportService = Depends(get_user_import_service),
+) -> ImportUsersResponse:
+    if body.provider not in ("jellyfin", "plex"):
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "Unsupported import provider")
+    try:
+        result = await importer.import_users(body.provider, body.provider_uids)
+    except RegistrationError as e:
+        logger.debug(f"User import failed: {e}")
+        raise HTTPException(status_code = status.HTTP_409_CONFLICT, detail = "Could not import users")
+    return ImportUsersResponse(
+        imported = [user_to_response(u) for u in result.imported],
+        linked = [user_to_response(u) for u in result.linked],
+        skipped = result.skipped,
+        total_imported = len(result.imported),
+    )
 
 
 @router.patch("/admin/users/{user_id}/role", status_code = status.HTTP_204_NO_CONTENT)

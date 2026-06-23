@@ -13,7 +13,11 @@ const basePlaylist: PlaylistSummary = {
 	custom_cover_url: null,
 	source_ref: null,
 	created_at: '2026-01-01T00:00:00Z',
-	updated_at: '2026-01-02T00:00:00Z'
+	updated_at: '2026-01-02T00:00:00Z',
+	is_public: false,
+	is_owner: true,
+	owner_name: null,
+	is_redacted: false
 };
 
 function renderCard(playlist: PlaylistSummary = basePlaylist) {

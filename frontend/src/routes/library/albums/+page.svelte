@@ -1,125 +1,67 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import AlbumCard from '$lib/components/AlbumCard.svelte';
-	import AlbumCardSkeleton from '$lib/components/AlbumCardSkeleton.svelte';
-	import { api } from '$lib/api/client';
-	import { API } from '$lib/constants';
-	import { isAbortError } from '$lib/utils/errorHandling';
-	import type { Album } from '$lib/types';
 	import { ChevronLeft, Disc3, Search, X } from 'lucide-svelte';
+	import { getLibraryAlbumsQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import LibraryAlbumCard from '$lib/components/library/LibraryAlbumCard.svelte';
+	import Pagination from '$lib/components/Pagination.svelte';
+	import type { AlbumSort } from '$lib/types';
 
-	type LibraryAlbum = {
-		album: string;
-		artist: string;
-		artist_mbid: string | null;
-		foreignAlbumId: string | null;
-		year: number | null;
-		monitored: boolean;
-		cover_url: string | null;
-		date_added: number | null;
-	};
-
-	type PaginatedResponse = {
-		albums: LibraryAlbum[];
-		total: number;
-		offset: number;
-		limit: number;
-	};
-
-	const PAGE_SIZE = 48;
+	const PAGE_SIZE = 50;
 	const SEARCH_DEBOUNCE_MS = 300;
+	const VALID_SORTS: AlbumSort[] = ['recent', 'title', 'artist'];
+	const FORMATS = ['flac', 'mp3', 'm4a', 'opus', 'ogg'];
 
-	let albums = $state<LibraryAlbum[]>([]);
-	let total = $state(0);
-	let loading = $state(true);
-	let loadingMore = $state(false);
-	let error = $state<string | null>(null);
-
-	let sortBy = $state('artist');
-	let sortOrder = $state('asc');
-	let searchQuery = $state('');
-	let searchTimeout: ReturnType<typeof setTimeout> | null = null;
-	let fetchId = 0;
-	let abortController: AbortController | null = null;
-
-	onMount(() => {
-		fetchAlbums(true);
+	// browse state lives in the url so it's shareable and back-button stable
+	const params = $derived.by(() => {
+		const sp = page.url.searchParams;
+		const pageNum = Math.max(1, parseInt(sp.get('page') ?? '1', 10) || 1);
+		const rawSort = (sp.get('sort') ?? 'recent') as AlbumSort;
+		return {
+			page: pageNum,
+			sort: VALID_SORTS.includes(rawSort) ? rawSort : 'recent',
+			q: sp.get('q') ?? '',
+			format: sp.get('format') ?? ''
+		};
 	});
 
-	async function fetchAlbums(reset = false) {
-		const id = ++fetchId;
-		abortController?.abort();
-		abortController = new AbortController();
+	const albumsQuery = getLibraryAlbumsQuery(() => params);
+	const total = $derived(albumsQuery.data?.total ?? 0);
+	const totalPages = $derived(
+		albumsQuery.data ? Math.max(1, Math.ceil(albumsQuery.data.total / PAGE_SIZE)) : 1
+	);
 
-		if (reset) {
-			loading = true;
-			albums = [];
-		} else {
-			loadingMore = true;
+	// local edits win over the url term until back/forward navigation re-syncs the input
+	let searchInput = $derived(params.q);
+	let searchTimeout: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => () => clearTimeout(searchTimeout));
+
+	function setParams(updates: Record<string, string | number | null>) {
+		const url = new URL(page.url);
+		for (const [k, v] of Object.entries(updates)) {
+			if (v === null || v === '') url.searchParams.delete(k);
+			else url.searchParams.set(k, String(v));
 		}
-		error = null;
-
-		try {
-			const offset = reset ? 0 : albums.length;
-			const q = searchQuery.trim() || undefined;
-			const url = API.library.albums(PAGE_SIZE, offset, sortBy, sortOrder, q);
-			const data = await api.get<PaginatedResponse>(url, { signal: abortController.signal });
-			if (id !== fetchId) return;
-			albums = reset ? data.albums : [...albums, ...data.albums];
-			total = data.total;
-		} catch (e) {
-			if (isAbortError(e)) return;
-			if (id !== fetchId) return;
-			error = "Couldn't load albums";
-		} finally {
-			if (id === fetchId) {
-				loading = false;
-				loadingMore = false;
-			}
-		}
+		goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
-	function handleSearchInput(): void {
-		if (searchTimeout) clearTimeout(searchTimeout);
-		searchTimeout = setTimeout(() => {
-			fetchAlbums(true);
-		}, SEARCH_DEBOUNCE_MS);
+	function handleSearchInput(e: Event) {
+		searchInput = (e.target as HTMLInputElement).value;
+		clearTimeout(searchTimeout);
+		searchTimeout = setTimeout(
+			() => setParams({ q: searchInput.trim(), page: null }),
+			SEARCH_DEBOUNCE_MS
+		);
 	}
 
-	function clearSearch(): void {
-		searchQuery = '';
-		if (searchTimeout) clearTimeout(searchTimeout);
-		fetchAlbums(true);
+	function clearSearch() {
+		searchInput = '';
+		clearTimeout(searchTimeout);
+		setParams({ q: null, page: null });
 	}
-
-	function handleSortChange(event: Event): void {
-		const value = (event.target as HTMLSelectElement).value;
-		const [newSortBy, newSortOrder] = value.split(':');
-		sortBy = newSortBy;
-		sortOrder = newSortOrder;
-		fetchAlbums(true);
-	}
-
-	function loadMore(): void {
-		if (!loadingMore && albums.length < total) {
-			fetchAlbums(false);
-		}
-	}
-
-	function convertToAlbum(libAlbum: LibraryAlbum): Album {
-		return {
-			title: libAlbum.album,
-			artist: libAlbum.artist,
-			year: libAlbum.year,
-			musicbrainz_id: libAlbum.foreignAlbumId || '',
-			in_library: true,
-			cover_url: libAlbum.cover_url
-		};
-	}
-
-	const hasMore = $derived(albums.length < total);
 </script>
+
+<svelte:head><title>Albums · Library</title></svelte:head>
 
 <div class="container mx-auto p-4 md:p-6 lg:p-8">
 	<div class="flex items-center gap-4 mb-6">
@@ -130,7 +72,7 @@
 		>
 			<ChevronLeft class="w-6 h-6" />
 		</button>
-		<div class="flex-1">
+		<div>
 			<h1 class="text-3xl font-bold">All Albums</h1>
 			<p class="text-base-content/70 text-sm mt-1">
 				{total}
@@ -147,13 +89,13 @@
 			/>
 			<input
 				type="text"
-				placeholder="Search albums..."
+				placeholder="Search albums or artists..."
 				class="input input-bordered w-full rounded-full pl-11 pr-12"
-				bind:value={searchQuery}
+				value={searchInput}
 				oninput={handleSearchInput}
 				aria-label="Search albums"
 			/>
-			{#if searchQuery}
+			{#if searchInput}
 				<button
 					class="absolute right-3 top-1/2 -translate-y-1/2 btn btn-sm btn-ghost btn-circle"
 					onclick={clearSearch}
@@ -165,56 +107,62 @@
 		</div>
 		<select
 			class="select select-bordered rounded-full"
-			value="{sortBy}:{sortOrder}"
-			onchange={handleSortChange}
+			value={params.sort}
+			onchange={(e) => setParams({ sort: (e.target as HTMLSelectElement).value, page: null })}
 			aria-label="Sort albums"
 		>
-			<option value="artist:asc">Artist A-Z</option>
-			<option value="artist:desc">Artist Z-A</option>
-			<option value="title:asc">Title A-Z</option>
-			<option value="title:desc">Title Z-A</option>
-			<option value="date_added:desc">Newest First</option>
-			<option value="date_added:asc">Oldest First</option>
-			<option value="year:desc">Year (Newest)</option>
-			<option value="year:asc">Year (Oldest)</option>
+			<option value="recent">Newest First</option>
+			<option value="title">Title A-Z</option>
+			<option value="artist">Artist A-Z</option>
+		</select>
+		<select
+			class="select select-bordered rounded-full"
+			value={params.format}
+			onchange={(e) => setParams({ format: (e.target as HTMLSelectElement).value, page: null })}
+			aria-label="Filter by format"
+		>
+			<option value="">All formats</option>
+			{#each FORMATS as f (f)}
+				<option value={f}>{f.toUpperCase()}</option>
+			{/each}
 		</select>
 	</div>
 
-	{#if error}
+	{#if albumsQuery.isError}
 		<div class="alert alert-error mb-6">
-			<span>{error}</span>
-			<button class="btn btn-sm btn-ghost" onclick={() => fetchAlbums(true)}>Retry</button>
+			<span>Couldn't load albums</span>
+			<button class="btn btn-sm btn-ghost" onclick={() => albumsQuery.refetch()}>Retry</button>
 		</div>
-	{:else if loading}
-		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+	{:else if albumsQuery.isLoading}
+		<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
 			{#each Array(12) as _, i (`skeleton-${i}`)}
-				<AlbumCardSkeleton />
+				<div class="skeleton aspect-square w-full rounded-lg"></div>
 			{/each}
 		</div>
-	{:else if albums.length === 0}
+	{:else if !albumsQuery.data || albumsQuery.data.items.length === 0}
 		<div class="flex flex-col items-center justify-center min-h-100 text-center">
 			<Disc3 class="h-12 w-12 text-base-content/40 mb-4" strokeWidth={1.5} />
 			<h2 class="text-2xl font-semibold mb-2">No albums found</h2>
 			<p class="text-base-content/70 mb-4">
-				{searchQuery
-					? 'Try a different search term.'
+				{params.q || params.format
+					? 'Try a different search or filter.'
 					: "Your library doesn't contain any albums yet."}
 			</p>
 		</div>
 	{:else}
-		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-			{#each albums as album, index (album.foreignAlbumId || `${album.album}-${album.artist}-${index}`)}
-				<AlbumCard album={convertToAlbum(album)} />
+		<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+			{#each albumsQuery.data.items as album (album.release_group_mbid)}
+				<LibraryAlbumCard {album} />
 			{/each}
 		</div>
-		{#if hasMore}
-			<div class="flex justify-center mt-6">
-				<button class="btn btn-primary btn-outline" onclick={loadMore} disabled={loadingMore}>
-					{#if loadingMore}
-						<span class="loading loading-spinner loading-sm"></span>
-					{/if}
-					Load More ({albums.length} / {total})
-				</button>
+
+		{#if totalPages > 1}
+			<div class="mt-6 flex justify-center">
+				<Pagination
+					current={params.page}
+					total={totalPages}
+					onchange={(p) => setParams({ page: p })}
+				/>
 			</div>
 		{/if}
 	{/if}

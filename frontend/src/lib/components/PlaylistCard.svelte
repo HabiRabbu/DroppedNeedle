@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import type { PlaylistSummary } from '$lib/api/playlists';
-	import { fetchPlaylist, deletePlaylist } from '$lib/api/playlists';
+	import { fetchPlaylist, deletePlaylist, isRedactedPlaylist } from '$lib/api/playlists';
 	import { playlistTrackToQueueItem } from '$lib/player/queueHelpers';
 	import { playerStore } from '$lib/stores/player.svelte';
 	import { toastStore } from '$lib/stores/toast';
 	import { formatTotalDurationSec } from '$lib/utils/formatting';
 	import { getSourceColor, getSourceLabel } from '$lib/utils/sources';
-	import { Play, Shuffle, Trash2, Tv } from 'lucide-svelte';
+	import { Play, Shuffle, Trash2, Tv, Lock, Globe } from 'lucide-svelte';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
 	import PlaylistMosaic from './PlaylistMosaic.svelte';
@@ -18,6 +19,18 @@
 	}
 
 	let { playlist, ondelete }: Props = $props();
+
+	// Mutations (delete) are owner-only; admins may delete any playlist for cleanup (D4).
+	let canDelete = $derived(playlist.is_owner || authStore.isAdmin);
+	let ownerInitials = $derived(
+		(playlist.owner_name ?? '')
+			.trim()
+			.split(/\s+/)
+			.map((w) => w[0])
+			.slice(0, 2)
+			.join('')
+			.toUpperCase() || '?'
+	);
 
 	let playLoading = $state(false);
 	let shuffleLoading = $state(false);
@@ -46,6 +59,7 @@
 		playLoading = true;
 		try {
 			const detail = await fetchPlaylist(playlist.id);
+			if (isRedactedPlaylist(detail)) return;
 			const items = detail.tracks
 				.map(playlistTrackToQueueItem)
 				.filter((item): item is NonNullable<typeof item> => item !== null);
@@ -71,6 +85,7 @@
 		shuffleLoading = true;
 		try {
 			const detail = await fetchPlaylist(playlist.id);
+			if (isRedactedPlaylist(detail)) return;
 			const items = detail.tracks
 				.map(playlistTrackToQueueItem)
 				.filter((item): item is NonNullable<typeof item> => item !== null);
@@ -133,7 +148,7 @@
 		: ''}
 	style:--source-glow={sourceColor
 		? `color-mix(in srgb, ${sourceColor} 20%, transparent)`
-		: 'rgba(174,213,242,0.15)'}
+		: 'oklch(from var(--color-primary) l c h / 0.15)'}
 >
 	<a
 		href="/playlists/{playlist.id}"
@@ -166,10 +181,35 @@
 					<span>{sourceLabel}</span>
 				</div>
 			{/if}
+			{#if playlist.is_owner}
+				<div
+					class="absolute top-2 left-2 flex items-center justify-center rounded-full bg-base-100/80 p-1 shadow-sm backdrop-blur-sm"
+					title={playlist.is_public ? 'Public playlist' : 'Private playlist'}
+					aria-label={playlist.is_public ? 'Public playlist' : 'Private playlist'}
+				>
+					{#if playlist.is_public}
+						<Globe class="h-3 w-3 text-success" />
+					{:else}
+						<Lock class="h-3 w-3 text-base-content/60" />
+					{/if}
+				</div>
+			{/if}
 		</figure>
 		<div class="px-3 pt-3 pb-1">
 			<h3 class="text-sm font-semibold line-clamp-1">{playlist.name}</h3>
 			<p class="text-xs text-base-content/60 mt-0.5">{subtitle}</p>
+			{#if !playlist.is_owner && playlist.is_public}
+				<div class="mt-1.5 flex items-center gap-1.5">
+					<div class="avatar avatar-placeholder">
+						<div class="w-4 h-4 rounded-full bg-accent text-accent-content">
+							<span class="text-[8px] font-semibold leading-none">{ownerInitials}</span>
+						</div>
+					</div>
+					<span class="text-[10px] text-base-content/60 line-clamp-1">
+						Shared by {playlist.owner_name ?? 'someone'}
+					</span>
+				</div>
+			{/if}
 		</div>
 	</a>
 
@@ -202,30 +242,32 @@
 			{/if}
 		</button>
 
-		<div class="ml-auto">
-			<button
-				class="btn btn-circle btn-sm transition-all duration-150 {deleteConfirming
-					? 'btn-error shadow-md animate-pulse'
-					: 'btn-ghost text-base-content/50 hover:text-error'}"
-				onclick={handleDeleteClick}
-				disabled={deleting}
-				aria-label={deleteConfirming
-					? `Confirm delete ${playlist.name}`
-					: `Delete ${playlist.name}`}
-				title={deleteConfirming ? 'Click again to delete' : `Delete ${playlist.name}`}
-			>
-				{#if deleting}
-					<span class="loading loading-spinner loading-xs"></span>
-				{:else}
-					<Trash2 class="h-3.5 w-3.5" />
-				{/if}
-			</button>
-		</div>
+		{#if canDelete}
+			<div class="ml-auto">
+				<button
+					class="btn btn-circle btn-sm transition-all duration-150 {deleteConfirming
+						? 'btn-error shadow-md animate-pulse'
+						: 'btn-ghost text-base-content/50 hover:text-error'}"
+					onclick={handleDeleteClick}
+					disabled={deleting}
+					aria-label={deleteConfirming
+						? `Confirm delete ${playlist.name}`
+						: `Delete ${playlist.name}`}
+					title={deleteConfirming ? 'Click again to delete' : `Delete ${playlist.name}`}
+				>
+					{#if deleting}
+						<span class="loading loading-spinner loading-xs"></span>
+					{:else}
+						<Trash2 class="h-3.5 w-3.5" />
+					{/if}
+				</button>
+			</div>
+		{/if}
 	</div>
 </div>
 
 <style>
 	div.card:hover {
-		box-shadow: 0 0 20px var(--source-glow, rgba(174, 213, 242, 0.15));
+		box-shadow: 0 0 20px var(--source-glow, oklch(from var(--color-primary) l c h / 0.15));
 	}
 </style>

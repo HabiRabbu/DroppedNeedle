@@ -1,10 +1,10 @@
-# Contributing to MusicSeerr
+# Contributing to DroppedNeedle
 
 Thanks for your interest. Bug reports, feature requests, and pull requests are all welcome.
 
 ## Reporting Bugs
 
-Use the [bug report template](https://github.com/habirabbu/musicseerr/issues/new?template=bug.yml). Include your MusicSeerr version, steps to reproduce, and relevant logs from `docker compose logs musicseerr`. The more detail you give, the faster things get fixed.
+Use the [bug report template](https://github.com/habirabbu/musicseerr/issues/new?template=bug.yml). Include your DroppedNeedle version, steps to reproduce, and relevant logs from `docker compose logs droppedneedle`. The more detail you give, the faster things get fixed.
 
 ## Requesting Features
 

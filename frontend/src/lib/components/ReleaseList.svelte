@@ -3,8 +3,6 @@
 	import { ChevronDown, Download } from 'lucide-svelte';
 	import { colors } from '$lib/colors';
 	import { libraryStore } from '$lib/stores/library';
-	import { toggleAlbumMonitored } from '$lib/utils/monitorAlbum';
-	import { toastStore } from '$lib/stores/toast';
 	import AlbumImage from './AlbumImage.svelte';
 	import LibraryBadge from './LibraryBadge.svelte';
 
@@ -14,7 +12,6 @@
 		year?: number | null;
 		in_library?: boolean;
 		requested?: boolean;
-		monitored?: boolean;
 	}
 
 	interface RemoveResult {
@@ -51,8 +48,7 @@
 	let notInLibraryCount = $derived(
 		releases.filter(
 			(r) =>
-				!r.in_library &&
-				!libraryStore.isInLibrary(r.id) &&
+				!(libraryStore.isInLibrary(r.id) || (!$libraryStore.initialized && r.in_library)) &&
 				!r.requested &&
 				!libraryStore.isRequested(r.id)
 		).length
@@ -61,7 +57,6 @@
 	function handleDeleted(rg: Release, result: RemoveResult) {
 		rg.in_library = false;
 		rg.requested = false;
-		rg.monitored = false;
 		releases = releases;
 		onRemoved?.(result);
 	}
@@ -137,7 +132,7 @@
 							</div>
 						</a>
 						<div class="flex items-center shrink-0 ml-auto mr-3 sm:mr-4">
-							{#if libraryStore.isInLibrary(rg.id) || rg.in_library}
+							{#if libraryStore.isInLibrary(rg.id) || (!$libraryStore.initialized && rg.in_library)}
 								<LibraryBadge
 									status="library"
 									musicbrainzId={rg.id}
@@ -155,29 +150,6 @@
 									size="lg"
 									ondeleted={(result) => handleDeleted(rg, result)}
 								/>
-							{:else if !libraryStore.isInLibrary(rg.id) && !libraryStore.isRequested(rg.id) && (rg.monitored || libraryStore.isMonitored(rg.id))}
-								<div class="flex items-center gap-1.5">
-									{@render requestButton(rg, `Request ${rg.title}`)}
-									<LibraryBadge
-										status="monitored"
-										musicbrainzId={rg.id}
-										albumTitle={rg.title}
-										{artistName}
-										size="lg"
-										ontogglemonitored={async () => {
-											try {
-												await toggleAlbumMonitored(rg.id, false);
-												rg.monitored = false;
-												releases = releases;
-											} catch {
-												toastStore.show({
-													message: 'Failed to update monitoring status',
-													type: 'error'
-												});
-											}
-										}}
-									/>
-								</div>
 							{:else}
 								{@render requestButton(rg, `Request ${title.toLowerCase().slice(0, -1)}`)}
 							{/if}

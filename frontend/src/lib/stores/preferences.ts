@@ -6,8 +6,7 @@ const API_BASE = '/api/v1';
 
 const defaultPreferences: UserPreferences = {
 	primary_types: ['album', 'ep', 'single'],
-	secondary_types: ['studio'],
-	release_statuses: ['official']
+	secondary_types: ['studio']
 };
 
 const { subscribe, set, update } = writable<UserPreferences>(defaultPreferences);

@@ -16,8 +16,10 @@ NPM    ?= pnpm
 .PHONY: \
 	help \
 	backend-venv backend-lint backend-test \
+	test-compat backend-test-compat \
+	backend-test-compat-subsonic backend-test-compat-jellyfin backend-test-compat-streaming \
+	frontend-test-connect-apps \
 	backend-test-album-refresh \
-	backend-test-artist-lock \
 	backend-test-artist-monitoring \
 	backend-test-artist-page \
 	backend-test-artist-releases-dedup \
@@ -45,19 +47,31 @@ NPM    ?= pnpm
 	backend-test-genre-index \
 	backend-test-home \
 	backend-test-now-playing \
+	backend-test-scrobble \
+	backend-test-connections \
 	backend-test-home-genre \
 	backend-test-infra-hardening \
 	backend-test-memory \
 	backend-test-jellyfin \
 	backend-test-jellyfin-proxy \
 	backend-test-library-pagination \
-	backend-test-lidarr-url \
-	backend-test-local-files-fallback \
+	backend-test-artists-aggregated-pagination \
+	backend-test-audio-tagger \
+	backend-test-naming-template-engine \
+	backend-test-library-manager \
+	backend-test-tracks-view \
+	backend-test-library-scanner \
+	backend-test-scan-scheduler \
+	backend-test-audio-fingerprinter \
+	backend-test-musicbrainz-matcher \
+	backend-test-sse-publisher \
+	backend-test-local-files \
 	backend-test-monitoring-cache \
 	backend-test-navidrome \
 	backend-test-multidisc \
 	backend-test-mus15-status-race \
 	backend-test-performance \
+	backend-test-preferences \
 	backend-test-plex \
 	backend-test-plex-repository \
 	backend-test-plex-routes \
@@ -72,23 +86,30 @@ NPM    ?= pnpm
 	backend-test-sync-resume \
 	backend-test-sync-watchdog \
 	backend-test-content-enrichment \
+	backend-test-username-login \
+	backend-test-user-import \
 	backend-test-peer-review-fixes \
 	backend-test-discover-all \
 	test-discover-all \
 	test-audiodb-all test-mus14-all test-sync-all \
 	frontend-install frontend-build frontend-browser-install \
 	frontend-format-check frontend-check frontend-lint frontend-test frontend-test-server \
+	frontend-test-client frontend-test-connections \
 	frontend-test-album-page \
 	frontend-test-audiodb-images \
 	frontend-test-auth \
+	frontend-test-auth-username \
+	frontend-test-user-import \
 	frontend-test-discover-page \
 	frontend-test-jellyfin \
-	frontend-test-monitored-artists \
+	frontend-test-follow \
 	frontend-test-navidrome \
 	frontend-test-plex \
 	frontend-test-playlist-detail \
 	frontend-test-queuehelpers \
 	rebuild \
+	security-tests e2e e2e-fast docs-check \
+	frontend-test-e2e frontend-test-integration-coverage \
 	fmt format lint tests test ci
 
 help: ## Show available targets
@@ -111,11 +132,26 @@ backend-lint: $(BACKEND_VENV_STAMP) ## Run backend Ruff checks
 backend-test: $(BACKEND_VENV_STAMP) ## Run all backend tests
 	$(PYTEST)
 
+backend-test-compat: $(BACKEND_VENV_STAMP) ## Connect Apps: all compat backend tests (auth, serializers, endpoints, streaming, mapping, errors)
+	$(PYTEST) tests/compat -v
+
+backend-test-compat-subsonic: $(BACKEND_VENV_STAMP) ## Connect Apps: Subsonic shim only
+	$(PYTEST) tests/compat/test_auth_subsonic.py tests/compat/test_subsonic_serializer.py tests/compat/test_subsonic_endpoints.py -v
+
+backend-test-compat-jellyfin: $(BACKEND_VENV_STAMP) ## Connect Apps: Jellyfin shim only
+	$(PYTEST) tests/compat/test_auth_jellyfin.py tests/compat/test_jellyfin_serializer.py tests/compat/test_jellyfin_endpoints.py -v
+
+backend-test-compat-streaming: $(BACKEND_VENV_STAMP) ## Connect Apps: streaming + transcode (ffprobe-gated)
+	$(PYTEST) tests/compat/test_streaming.py -v
+
+frontend-test-connect-apps: ## Connect Apps: SettingsConnectApps component + data-layer tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsConnectApps.svelte.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/connect-apps
+
+test-compat: backend-test-compat frontend-test-connect-apps ## Connect Apps: full backend + frontend suite
+
 backend-test-album-refresh: $(BACKEND_VENV_STAMP) ## Run album refresh endpoint tests
 	$(PYTEST) tests/routes/test_album_refresh.py tests/services/test_navidrome_cache_invalidation.py -v
-
-backend-test-artist-lock: $(BACKEND_VENV_STAMP) ## Run MUS-14 per-artist lock tests
-	$(PYTEST) tests/repositories/test_album_artist_lock.py -v
 
 backend-test-artist-monitoring: $(BACKEND_VENV_STAMP) ## Run MUS-15B artist monitoring tests
 	$(PYTEST) tests/test_artist_monitoring.py -v
@@ -162,8 +198,14 @@ backend-test-dedup-cancellation: $(BACKEND_VENV_STAMP) ## Run deduplicator cance
 backend-test-discovery: $(BACKEND_VENV_STAMP) ## Run discovery service and route tests
 	$(PYTEST) tests/services/test_discovery.py tests/routes/test_discovery_routes.py -v
 
+backend-test-discover-home-peruser: $(BACKEND_VENV_STAMP) ## Run Phase 5 per-user discovery/home isolation tests (AMU-8)
+	$(PYTEST) tests/test_discover_home_peruser.py -v
+
 backend-test-discovery-precache: $(BACKEND_VENV_STAMP) ## Run artist discovery precache tests
 	$(PYTEST) tests/services/test_discovery_precache_progress.py tests/services/test_discovery_precache_lock.py tests/infrastructure/test_retry_non_breaking.py -v
+
+backend-test-discovery-peruser: $(BACKEND_VENV_STAMP) ## Run per-user artist/album discovery resolution tests (configured gate + route user_id)
+	$(PYTEST) tests/services/test_artist_discovery_service.py tests/services/test_album_discovery_service.py tests/routes/test_discovery_peruser_routes.py -v
 
 backend-test-exception-handling: $(BACKEND_VENV_STAMP) ## Run exception-handling regressions
 	$(PYTEST) tests/routes/test_scrobble_routes.py tests/routes/test_scrobble_settings_routes.py tests/test_error_leakage.py tests/test_background_task_logging.py
@@ -192,11 +234,23 @@ backend-test-unexplored-genres: $(BACKEND_VENV_STAMP) ## Run unexplored genres t
 backend-test-now-playing: $(BACKEND_VENV_STAMP) ## Run now-playing service and route tests
 	$(PYTEST) tests/services/test_now_playing.py tests/routes/test_now_playing_routes.py -v
 
+backend-test-scrobble: $(BACKEND_VENV_STAMP) ## Run per-user scrobble service + route tests
+	$(PYTEST) tests/services/test_scrobble_service.py tests/routes/test_scrobble_routes.py -v
+
+backend-test-connections: $(BACKEND_VENV_STAMP) ## Run per-user connection stores + factory + /me routes + D10 backfill tests
+	$(PYTEST) tests/infrastructure/test_user_connections_store.py tests/infrastructure/test_user_listening_prefs_store.py tests/infrastructure/test_play_history_store.py tests/services/test_per_user_client_factory.py tests/routes/test_me_connections.py tests/services/test_global_connection_backfill.py -v
+
 backend-test-deep-discovery: $(BACKEND_VENV_STAMP) ## Run deep discovery and analytics tests
 	$(PYTEST) tests/services/test_deep_discovery.py -v
 
 backend-test-home: $(BACKEND_VENV_STAMP) ## Run home page backend tests
 	$(PYTEST) tests/services/test_home_service.py tests/routes/test_home_routes.py
+
+backend-test-profile: $(BACKEND_VENV_STAMP) ## Run per-user profile + self-service tests
+	$(PYTEST) tests/routes/test_profile_routes.py tests/services/test_auth_self_service.py
+
+backend-test-user-import: $(BACKEND_VENV_STAMP) ## Run Phase 6 admin user-import service + route tests
+	$(PYTEST) tests/services/test_user_import_service.py tests/routes/test_user_import_routes.py
 
 backend-test-home-genre: $(BACKEND_VENV_STAMP) ## Run home genre decoupling tests
 	$(PYTEST) tests/services/test_home_genre_decoupling.py
@@ -216,11 +270,89 @@ backend-test-jellyfin-proxy: $(BACKEND_VENV_STAMP) ## Run Jellyfin stream proxy 
 backend-test-library-pagination: $(BACKEND_VENV_STAMP) ## Run library pagination tests
 	$(PYTEST) tests/infrastructure/test_library_pagination.py -v
 
-backend-test-lidarr-url: $(BACKEND_VENV_STAMP) ## Run dynamic Lidarr URL resolution tests
-	$(PYTEST) tests/test_lidarr_url_dynamic.py -v
+backend-test-artists-aggregated-pagination: $(BACKEND_VENV_STAMP) ## Artists aggregation: stable pagination + folded-column search upkeep
+	$(PYTEST) tests/infrastructure/test_artists_aggregated_pagination.py -v
 
-backend-test-local-files-fallback: $(BACKEND_VENV_STAMP) ## Run local files stale-while-error fallback tests
-	$(PYTEST) tests/test_local_files_fallback.py -v
+backend-test-audio-tagger: $(BACKEND_VENV_STAMP) ## Phase 3: AudioTagger read/write roundtrip tests
+	$(PYTEST) tests/services/test_audio_tagger.py -v
+
+backend-test-naming-template-engine: $(BACKEND_VENV_STAMP) ## Phase 3: NamingTemplateEngine tests
+	$(PYTEST) tests/services/test_naming_template_engine.py -v
+
+backend-test-library-manager: $(BACKEND_VENV_STAMP) ## Phase 3: LibraryManager CRUD + concurrency tests
+	$(PYTEST) tests/services/test_library_manager.py -v
+
+backend-test-library-search-diacritics: $(BACKEND_VENV_STAMP) ## Accent-/case-insensitive library search (fold)
+	$(PYTEST) tests/services/test_library_search_diacritics.py -v
+
+backend-test-tracks-view: $(BACKEND_VENV_STAMP) ## Tracks view + multi-folder add-validation/reconcile hardening
+	$(PYTEST) tests/services/test_library_manager.py tests/routes/test_library_routes.py tests/routes/test_library_settings_routes.py -v
+
+backend-test-library-scanner: $(BACKEND_VENV_STAMP) ## Phase 4: LibraryScanner integration tests
+	$(PYTEST) tests/services/test_library_scanner.py -v
+
+backend-test-scan-scheduler: $(BACKEND_VENV_STAMP) ## Auto-scan scheduler timing (catch-up + daily-at-time)
+	$(PYTEST) tests/test_auto_scan_task.py -v
+
+backend-test-audio-fingerprinter: $(BACKEND_VENV_STAMP) ## Phase 4a: AudioFingerprinter fpcalc + AcoustID tests
+	$(PYTEST) tests/services/test_audio_fingerprinter.py -v
+
+backend-test-musicbrainz-matcher: $(BACKEND_VENV_STAMP) ## Phase 4a: MusicBrainzMatcher Tier 2/3 tests
+	$(PYTEST) tests/services/test_musicbrainz_matcher.py -v
+
+backend-test-slskd: $(BACKEND_VENV_STAMP) ## Phase 6a: SlskdClient + SlskdRepository + protocol conformance
+	$(PYTEST) tests/repositories/test_slskd_client.py tests/repositories/test_slskd_repository.py tests/repositories/test_download_client_protocol_contract.py -v
+
+backend-test-preflight-scorer: $(BACKEND_VENV_STAMP) ## Phase 6a: AlbumPreflightScorer + TrackMatcher tests
+	$(PYTEST) tests/services/test_album_preflight_scorer.py tests/services/test_track_matcher.py -v
+
+backend-test-download-store: $(BACKEND_VENV_STAMP) ## Phase 6a: DownloadStore tables + CRUD + cascade tests
+	$(PYTEST) tests/infrastructure/test_download_store.py -v
+
+backend-test-follow-store: $(BACKEND_VENV_STAMP) ## Follow: FollowStore tables + CRUD + approvals + baseline detection + cascade
+	$(PYTEST) tests/infrastructure/test_follow_store.py -v
+
+backend-test-follow: $(BACKEND_VENV_STAMP) ## Follow: store + FollowService + follow/auto-download + admin approvals routes
+	$(PYTEST) tests/infrastructure/test_follow_store.py tests/test_artist_monitoring.py tests/routes/test_follow_routes.py tests/routes/test_follow_approvals_routes.py -v
+
+backend-test-new-releases: $(BACKEND_VENV_STAMP) ## Follow: NewReleaseService poll detection + fan-out + degradation
+	$(PYTEST) tests/services/test_new_release_service.py -v
+
+backend-test-download-service: $(BACKEND_VENV_STAMP) ## Phase 6b: DownloadService search/pick/cancel + mount check
+	$(PYTEST) tests/services/test_download_service.py -v
+
+backend-test-download-routes: $(BACKEND_VENV_STAMP) ## Phase 6b: download-client + search + quarantine route tests
+	$(PYTEST) tests/routes/test_download_client_routes.py tests/routes/test_download_search_routes.py tests/routes/test_quarantine_routes.py -v
+
+backend-test-orchestrator: $(BACKEND_VENV_STAMP) ## Phase 7: DownloadOrchestrator + FileProcessor.process_downloaded
+	$(PYTEST) tests/services/test_download_orchestrator.py tests/services/test_file_processor.py -v
+
+backend-test-e2e-download: $(BACKEND_VENV_STAMP) ## Phase 7: blocking E2E gate (search -> import -> library_files)
+	$(PYTEST) tests/infrastructure/test_e2e_download.py -v
+
+security-tests: $(BACKEND_VENV_STAMP) ## Phase 9: security suite (no-secrets-in-logs, auth matrix, api-key masking)
+	$(PYTEST) tests/security -v
+
+docs-check: ## Phase 9: verify the native-engine docs exist and are non-empty
+	@for f in docs/SETUP.md docs/NATIVE_ENGINE.md docs/SLSKD_SETUP.md; do \
+		test -s "$(ROOT_DIR)/$$f" || { echo "docs-check FAILED: missing or empty $$f"; exit 1; }; \
+	done
+	@echo "docs-check OK: SETUP.md, NATIVE_ENGINE.md, SLSKD_SETUP.md present and non-empty"
+
+e2e: $(BACKEND_VENV_STAMP) ## Phase 9: full e2e suite (mock + optional real-slskd container)
+	$(PYTEST) tests/e2e tests/infrastructure/test_e2e_download.py -v
+
+e2e-fast: $(BACKEND_VENV_STAMP) ## Phase 9: e2e suite, mock-only (skips the real-slskd container test)
+	$(PYTEST) tests/e2e tests/infrastructure/test_e2e_download.py -m "not e2e" -v
+
+backend-test-sse-publisher: $(BACKEND_VENV_STAMP) ## Phase 3b: SSEPublisher pub/sub tests
+	$(PYTEST) tests/infrastructure/test_sse_publisher.py -v
+
+backend-test-p2-post-deletion: $(BACKEND_VENV_STAMP) ## Phase 2 gate: old integration deleted, app still boots empty
+	$(PYTEST) tests/repositories/test_lidarr_directory_empty.py tests/test_phase1_brownout.py -v
+
+backend-test-local-files: $(BACKEND_VENV_STAMP) ## Run native local-files service + stream route tests
+	$(PYTEST) tests/services/test_local_files_service.py tests/routes/test_stream_routes.py -v
 
 backend-test-monitoring-cache: $(BACKEND_VENV_STAMP) ## Run artist monitoring cache/flag refresh tests
 	$(PYTEST) tests/services/test_refresh_library_flags.py tests/test_queue_disk_invalidation.py tests/services/test_artist_utils_tags.py -v
@@ -237,8 +369,14 @@ backend-test-mus15-status-race: $(BACKEND_VENV_STAMP) ## Run MUS-15 status race 
 backend-test-performance: $(BACKEND_VENV_STAMP) ## Run performance regression tests
 	$(PYTEST) tests/services/test_album_singleflight.py tests/services/test_artist_singleflight.py tests/services/test_genre_batch_parallel.py tests/services/test_cache_stats_nonblocking.py tests/services/test_settings_cache_invalidation.py tests/services/test_discover_enrich_singleflight.py
 
+backend-test-preferences: $(BACKEND_VENV_STAMP) ## Run release-type preferences persistence + consumer (artist/search) tests
+	$(PYTEST) tests/services/test_preferences_generic_settings.py tests/services/test_preferences_library_settings.py tests/services/test_settings_cache_invalidation.py tests/services/test_search_service.py tests/services/test_artist_release_pagination.py tests/test_cache_key_contracts.py tests/repositories/test_musicbrainz_recording_search.py -v
+
 backend-test-playlist: $(BACKEND_VENV_STAMP) ## Run playlist tests
 	$(PYTEST) tests/services/test_playlist_service.py tests/services/test_playlist_source_resolution.py tests/repositories/test_playlist_repository.py tests/routes/test_playlist_routes.py
+
+backend-test-playlist-ownership: $(BACKEND_VENV_STAMP) ## Run playlist ownership/redaction tests
+	$(PYTEST) tests/routes/test_playlist_ownership.py
 
 backend-test-queue-strategies: $(BACKEND_VENV_STAMP) ## Run queue strategy extraction tests
 	$(PYTEST) tests/services/test_queue_strategies.py -v
@@ -260,6 +398,9 @@ backend-test-source-playlists: $(BACKEND_VENV_STAMP) ## Run source playlist impo
 
 backend-test-content-enrichment: $(BACKEND_VENV_STAMP) ## Run content enrichment tests (lyrics, album info, audio quality)
 	$(PYTEST) tests/services/test_content_enrichment.py -v
+
+backend-test-username-login: $(BACKEND_VENV_STAMP) ## Run Phase 1 username-login + backfill tests
+	$(PYTEST) tests/services/test_username_login.py tests/routes/test_auth_username.py -v
 
 backend-test-peer-review-fixes: $(BACKEND_VENV_STAMP) ## Run peer review fix regression tests
 	$(PYTEST) tests/test_peer_review_fixes.py -v
@@ -291,8 +432,7 @@ test-discover-all: backend-test-discover-all frontend-test-discover-page ## Run 
 
 test-audiodb-all: backend-test-audiodb backend-test-audiodb-prewarm backend-test-audiodb-settings backend-test-coverart-audiodb backend-test-audiodb-phase8 backend-test-audiodb-phase9 frontend-test-audiodb-images ## Run every AudioDB test target
 
-test-mus14-all: backend-test-request-queue backend-test-artist-lock backend-test-request-service ## Run all MUS-14 request system tests
-	$(PYTEST) tests/repositories/test_lidarr_library_cache.py -v
+test-mus14-all: backend-test-request-queue backend-test-request-service ## Run all MUS-14 request system tests
 
 test-sync-all: backend-test-sync-watchdog backend-test-sync-resume backend-test-audiodb-parallel backend-test-sync-generation ## Run all sync reliability tests
 
@@ -320,6 +460,24 @@ frontend-test: ## Run the frontend vitest suite (all projects, needs Playwright)
 frontend-test-server: ## Run frontend server-project tests only (no Playwright)
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server
 
+frontend-test-client: ## Run frontend client-project tests only (chromium, needs Playwright)
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client
+
+frontend-test-connections: ## Run per-user connections + scrobble-preferences frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/connections src/lib/queries/scrobble-preferences
+
+frontend-test-home-discover: ## Run Phase 5 per-user home/discover key + cache-isolation frontend tests (AMU-5/AMU-8)
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run src/lib/queries/HomeQueryKeyFactory.spec.ts src/lib/queries/discover/DiscoverQueryKeyFactory.spec.ts src/lib/queries/discover/DiscoverQuery.spec.ts src/lib/queries/clearOnUserSwitch.svelte.spec.ts src/lib/utils/discoverQueueCache.svelte.spec.ts src/lib/components/TimeRangeView.svelte.spec.ts src/lib/components/RadioSection.spec.ts
+
+frontend-test-e2e: ## Phase 9: Playwright download-flow E2E (needs a running stack; not in ci)
+	cd "$(FRONTEND_DIR)" && $(NPM) exec playwright test
+
+frontend-test-integration-coverage: ## Phase 9: assert every native route has a frontend API surface
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/__tests__/integration-coverage.spec.ts
+
+frontend-test-downloads-ui: ## Phase 6b: download-client + search component tests (chromium)
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsDownloadClient.svelte.spec.ts src/lib/components/downloads/SearchResultCard.svelte.spec.ts
+
 frontend-test-album-page: ## Run the album page browser test
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/routes/album/[id]/page.svelte.spec.ts
 
@@ -327,8 +485,8 @@ frontend-test-audiodb-images: ## Run AudioDB image tests
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/utils/imageSuffix.spec.ts
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/BaseImage.svelte.spec.ts
 
-frontend-test-monitored-artists: ## Run pending monitored artist store tests
-	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/stores/monitoredArtists.spec.ts
+frontend-test-follow: ## Run Follow feature query/mutation data-layer tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/following
 
 frontend-test-playlist-detail: ## Run playlist page browser tests
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/routes/playlists/[id]/page.svelte.spec.ts
@@ -351,6 +509,15 @@ frontend-test-discover-page: ## Run discover page and query tests
 frontend-test-auth: ## Run auth query/mutation data-layer tests
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/auth/AuthMutations.spec.ts
 
+frontend-test-user-import: ## Run Phase 6 admin user-import query/mutation data-layer tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/auth/UserImportMutations.spec.ts
+
+frontend-test-profile: ## Run profile query/mutation + cache-isolation tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/profile/ProfileMutations.spec.ts
+
+frontend-test-auth-username: ## Run Phase 1 auth username frontend tests (data layer + login page)
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run src/lib/queries/auth src/routes/login
+
 rebuild: ## Rebuild the application
 	cd "$(ROOT_DIR)" && ./manage.sh --rebuild
 
@@ -365,4 +532,4 @@ lint: backend-lint frontend-lint ## Run all linting checks
 tests: backend-test frontend-test-server ## Run all tests
 test: tests ## Alias for 'tests'
 
-ci: backend-lint frontend-lint frontend-check frontend-format-check backend-test frontend-test-server ## Run the full CI pipeline (fmt-check + lint + typecheck + tests)
+ci: backend-lint frontend-lint frontend-check frontend-format-check backend-test frontend-test-server security-tests e2e-fast docs-check ## Run the full CI pipeline (lint + typecheck + tests + security + e2e + docs)

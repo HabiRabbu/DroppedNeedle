@@ -22,27 +22,27 @@
 		primary: {
 			gradient: 'from-primary/15 via-primary/5 to-transparent',
 			border: 'border-primary/15',
-			glow: 'shadow-[0_8px_32px_oklch(var(--p)/0.12)]',
+			glow: 'shadow-[0_8px_32px_oklch(from_var(--color-primary)_l_c_h_/_0.12)]',
 			text: 'text-primary'
 		},
 		secondary: {
 			gradient: 'from-secondary/15 via-secondary/5 to-transparent',
 			border: 'border-secondary/15',
-			glow: 'shadow-[0_8px_32px_oklch(var(--s)/0.12)]',
+			glow: 'shadow-[0_8px_32px_oklch(from_var(--color-secondary)_l_c_h_/_0.12)]',
 			text: 'text-secondary'
 		},
 		accent: {
 			gradient: 'from-accent/15 via-accent/5 to-transparent',
 			border: 'border-accent/15',
-			glow: 'shadow-[0_8px_32px_oklch(var(--a)/0.12)]',
+			glow: 'shadow-[0_8px_32px_oklch(from_var(--color-accent)_l_c_h_/_0.12)]',
 			text: 'text-accent'
 		}
 	};
 
 	const glowHover: Record<BrowseHeroCard['colorScheme'], string> = {
-		primary: 'shadow-[0_12px_48px_oklch(var(--p)/0.25)]',
-		secondary: 'shadow-[0_12px_48px_oklch(var(--s)/0.25)]',
-		accent: 'shadow-[0_12px_48px_oklch(var(--a)/0.25)]'
+		primary: 'shadow-[0_12px_48px_oklch(from_var(--color-primary)_l_c_h_/_0.25)]',
+		secondary: 'shadow-[0_12px_48px_oklch(from_var(--color-secondary)_l_c_h_/_0.25)]',
+		accent: 'shadow-[0_12px_48px_oklch(from_var(--color-accent)_l_c_h_/_0.25)]'
 	};
 
 	let hoveredIndex = $state<number | null>(null);

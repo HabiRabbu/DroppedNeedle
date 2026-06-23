@@ -100,8 +100,14 @@ async def mb_api_get(
 
 def should_include_release(
     release_group: dict[str, Any],
-    included_secondary_types: set[str] | None = None
+    included_secondary_types: set[str] | None = None,
+    included_primary_types: set[str] | None = None,
 ) -> bool:
+    if included_primary_types is not None:
+        primary_type = (release_group.get("primary-type") or "").lower()
+        if primary_type not in included_primary_types:
+            return False
+
     secondary_types = set(map(str.lower, release_group.get("secondary-types", []) or []))
 
     if included_secondary_types is None:

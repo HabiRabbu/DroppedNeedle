@@ -28,7 +28,6 @@
 			musicbrainz_id: da.musicbrainz_id,
 			in_library: da.in_library,
 			requested: da.requested,
-			monitored: da.monitored,
 			cover_url: da.cover_url
 		};
 	}
@@ -41,8 +40,8 @@
 		<CarouselSkeleton count={6} cardWidth="w-36" />
 	{:else if !configured}
 		<div class="bg-base-200 rounded-lg p-6 text-center">
-			<p class="text-base-content/70">Connect a music service in Settings to see recommendations</p>
-			<a href="/settings" class="btn btn-primary btn-sm mt-3">Configure</a>
+			<p class="text-base-content/70">Connect a music service to see recommendations</p>
+			<a href="/profile#scrobbling" class="btn btn-primary btn-sm mt-3">Configure</a>
 		</div>
 	{:else if albums.length === 0}
 		<div class="bg-base-200 rounded-lg p-6 text-center">

@@ -6,6 +6,7 @@
 	import { getRadioQuery } from '$lib/queries/discover/DiscoverQuery.svelte';
 	import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 	import { DiscoverQueryKeyFactory } from '$lib/queries/discover/DiscoverQueryKeyFactory';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { ChevronDown, Disc3, Radio, RefreshCw } from 'lucide-svelte';
 	import { tilt } from '$lib/actions/tilt';
 	import { slide } from 'svelte/transition';
@@ -36,7 +37,7 @@
 
 	async function handleRefresh() {
 		await invalidateQueriesWithPersister({
-			queryKey: DiscoverQueryKeyFactory.radio(seedType, seedId, source)
+			queryKey: DiscoverQueryKeyFactory.radio(authStore.user?.id, seedType, seedId, source)
 		});
 	}
 </script>
@@ -45,7 +46,7 @@
 	<div class="w-full">
 		<div style="perspective: 1200px;">
 			<button
-				use:tilt={{ shadowColorVar: 'var(--s)' }}
+				use:tilt={{ shadowColorVar: 'var(--color-secondary)' }}
 				type="button"
 				class="group relative w-full overflow-hidden rounded-2xl border transition-all cursor-pointer text-left
 					focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100
@@ -160,9 +161,8 @@
 {/if}
 
 <style>
-	/* Radio wave concentric arcs emanating from top-right */
 	.radio-waves {
-		--wave-color: oklch(var(--s) / 0.12);
+		--wave-color: oklch(from var(--color-secondary) l c h / 0.12);
 	}
 
 	.wave {

@@ -3,7 +3,6 @@ import { artistHref } from '$lib/utils/entityRoutes';
 import type { AlbumBasicInfo, YouTubeTrackLink, YouTubeLink, YouTubeQuotaStatus } from '$lib/types';
 import { compareDiscTrack, getDiscTrackKey } from '$lib/player/queueHelpers';
 import { requestAlbum } from '$lib/utils/albumRequest';
-import { toggleAlbumMonitored } from '$lib/utils/monitorAlbum';
 
 export interface EventHandlerDeps {
 	getAlbum: () => AlbumBasicInfo | null;
@@ -19,10 +18,9 @@ export interface EventHandlerDeps {
 	setShowDeleteModal: (v: boolean) => void;
 	setShowArtistRemovedModal: (v: boolean) => void;
 	setRemovedArtistName: (v: string) => void;
-	setMonitorToggleLoading: (v: boolean) => void;
 	setToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
 	setShowToast: (v: boolean) => void;
-	onRequestSuccess?: (opts?: { monitorArtist?: boolean; autoDownloadArtist?: boolean }) => void;
+	onRequestSuccess?: () => void;
 }
 
 export function createEventHandlers(deps: EventHandlerDeps) {
@@ -47,10 +45,7 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 		deps.setQuota(q);
 	}
 
-	async function handleRequest(opts?: {
-		monitorArtist?: boolean;
-		autoDownloadArtist?: boolean;
-	}): Promise<void> {
+	async function handleRequest(): Promise<void> {
 		const album = deps.getAlbum();
 		if (!album || deps.getRequesting()) return;
 		deps.setRequesting(true);
@@ -59,9 +54,7 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 				artist: album.artist_name ?? undefined,
 				album: album.title,
 				year: album.year ?? undefined,
-				artistMbid: album.artist_id,
-				monitorArtist: opts?.monitorArtist,
-				autoDownloadArtist: opts?.autoDownloadArtist
+				artistMbid: album.artist_id
 			});
 			const current = deps.getAlbum();
 			if (result.success && current) {
@@ -70,7 +63,7 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 				deps.albumBasicCacheSet(current, deps.getAlbumId());
 				deps.setToast('Added to Library', 'success');
 				deps.setShowToast(true);
-				deps.onRequestSuccess?.(opts);
+				deps.onRequestSuccess?.();
 			}
 		} finally {
 			deps.setRequesting(false);
@@ -87,7 +80,6 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 		if (album) {
 			album.in_library = false;
 			album.requested = false;
-			album.monitored = false;
 			deps.setAlbum(album);
 			deps.albumBasicCacheSet(album, deps.getAlbumId());
 		}
@@ -96,26 +88,6 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 		if (result.artist_removed && result.artist_name) {
 			deps.setRemovedArtistName(result.artist_name);
 			deps.setShowArtistRemovedModal(true);
-		}
-	}
-
-	async function handleToggleMonitored(monitored: boolean): Promise<void> {
-		const album = deps.getAlbum();
-		if (!album) return;
-		deps.setMonitorToggleLoading(true);
-		try {
-			await toggleAlbumMonitored(album.musicbrainz_id, monitored);
-			const current = deps.getAlbum();
-			if (current) {
-				current.monitored = monitored;
-				deps.setAlbum(current);
-				deps.albumBasicCacheSet(current, deps.getAlbumId());
-			}
-		} catch {
-			deps.setToast('Failed to update monitoring status', 'error');
-			deps.setShowToast(true);
-		} finally {
-			deps.setMonitorToggleLoading(false);
 		}
 	}
 
@@ -133,7 +105,6 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 		handleRequest,
 		handleDeleteClick,
 		handleDeleted,
-		handleToggleMonitored,
 		goToArtist
 	};
 }

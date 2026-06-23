@@ -437,7 +437,7 @@ describe('playerStore queue methods', () => {
 				shuffleOrder: []
 			};
 
-			localStorage.setItem('musicseerr_player_session', JSON.stringify(legacySession));
+			localStorage.setItem('droppedneedle_player_session', JSON.stringify(legacySession));
 			playerStore.resumeSession();
 
 			expect(playerStore.queue[0].sourceType).toBe('local');
@@ -654,7 +654,7 @@ describe('playerStore queue methods', () => {
 				shuffleOrder: []
 			};
 
-			localStorage.setItem('musicseerr_player_session', JSON.stringify(session));
+			localStorage.setItem('droppedneedle_player_session', JSON.stringify(session));
 			playerStore.resumeSession();
 
 			expect(playerStore.queue[0].queueOrigin).toBe('context');
@@ -692,7 +692,7 @@ describe('playerStore queue methods', () => {
 				shuffleOrder: []
 			};
 
-			localStorage.setItem('musicseerr_player_session', JSON.stringify(session));
+			localStorage.setItem('droppedneedle_player_session', JSON.stringify(session));
 			playerStore.resumeSession();
 
 			expect(playerStore.queue[0].queueOrigin).toBe('manual');

@@ -14,9 +14,8 @@ interface LibraryAlbum {
 	album: string;
 	artist: string;
 	artist_mbid: string | null;
-	foreignAlbumId: string | null;
+	musicbrainz_id: string | null;
 	year: number | null;
-	monitored: boolean;
 	cover_url: string | null;
 	date_added: number | null;
 }
@@ -122,5 +121,3 @@ function createRecentlyAddedStore() {
 }
 
 export const recentlyAddedStore = createRecentlyAddedStore();
-
-export type { LibraryArtist, LibraryAlbum, RecentlyAddedData, RecentlyAddedState };

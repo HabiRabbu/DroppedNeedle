@@ -19,20 +19,33 @@ class AsyncPlaylistRepository:
     def __init__(self, repo: PlaylistRepository):
         self._repo = repo
 
-    async def create_playlist(self, name: str, source_ref: str | None = None) -> PlaylistRecord:
-        return await asyncio.to_thread(self._repo.create_playlist, name, source_ref)
+    async def create_playlist(
+        self, name: str, source_ref: str | None = None, user_id: str | None = None,
+    ) -> PlaylistRecord:
+        return await asyncio.to_thread(self._repo.create_playlist, name, source_ref, user_id)
 
     async def get_playlist(self, playlist_id: str) -> Optional[PlaylistRecord]:
         return await asyncio.to_thread(self._repo.get_playlist, playlist_id)
 
-    async def get_by_source_ref(self, source_ref: str) -> Optional[PlaylistRecord]:
-        return await asyncio.to_thread(self._repo.get_by_source_ref, source_ref)
+    async def get_by_source_ref(
+        self, source_ref: str, user_id: str | None = None,
+    ) -> Optional[PlaylistRecord]:
+        return await asyncio.to_thread(self._repo.get_by_source_ref, source_ref, user_id)
 
-    async def get_imported_source_ids(self, prefix: str) -> set[str]:
-        return await asyncio.to_thread(self._repo.get_imported_source_ids, prefix)
+    async def get_imported_source_ids(self, prefix: str, user_id: str | None = None) -> set[str]:
+        return await asyncio.to_thread(self._repo.get_imported_source_ids, prefix, user_id)
 
-    async def get_all_playlists(self) -> list[PlaylistSummaryRecord]:
-        return await asyncio.to_thread(self._repo.get_all_playlists)
+    async def get_all_playlists(self, user_id: str | None = None) -> list[PlaylistSummaryRecord]:
+        return await asyncio.to_thread(self._repo.get_all_playlists, user_id)
+
+    async def get_summary(self, playlist_id: str) -> Optional[PlaylistSummaryRecord]:
+        return await asyncio.to_thread(self._repo.get_summary, playlist_id)
+
+    async def set_public(self, playlist_id: str, is_public: bool) -> Optional[PlaylistRecord]:
+        return await asyncio.to_thread(self._repo.set_public, playlist_id, is_public)
+
+    async def assign_unowned_to(self, user_id: str) -> int:
+        return await asyncio.to_thread(self._repo.assign_unowned_to, user_id)
 
     async def update_playlist(
         self,
@@ -98,6 +111,6 @@ class AsyncPlaylistRepository:
         return await asyncio.to_thread(self._repo.get_track, playlist_id, track_id)
 
     async def check_track_membership(
-        self, tracks: list[tuple[str, str, str]],
+        self, tracks: list[tuple[str, str, str]], user_id: str | None = None,
     ) -> dict[str, list[int]]:
-        return await asyncio.to_thread(self._repo.check_track_membership, tracks)
+        return await asyncio.to_thread(self._repo.check_track_membership, tracks, user_id)

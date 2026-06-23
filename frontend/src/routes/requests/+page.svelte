@@ -16,26 +16,49 @@
 		Search,
 		ShieldCheck,
 		Check,
-		X
+		X,
+		Heart
 	} from 'lucide-svelte';
+	import ArtistImage from '$lib/components/ArtistImage.svelte';
 	import {
 		fetchActiveRequests,
 		fetchRequestHistory,
 		cancelRequest,
 		retryRequest,
 		clearHistoryItem,
-		notifyRequestCountChanged,
 		fetchPendingApprovals,
 		approveRequest,
 		rejectRequest,
 		notifyPendingApprovalCountChanged
 	} from '$lib/utils/requestsApi';
-	import { requestCountStore } from '$lib/stores/requestCountStore.svelte';
+	import { getAutoDownloadApprovalsQuery } from '$lib/queries/following/AdminApprovalsQueries.svelte';
+	import {
+		createApproveAutoDownloadMutation,
+		createRejectAutoDownloadMutation
+	} from '$lib/queries/following/AdminApprovalsMutations.svelte';
 	import { isAbortError } from '$lib/utils/errorHandling';
 	import { libraryStore } from '$lib/stores/library';
 	import { authStore } from '$lib/stores/authStore.svelte';
 
-	let activeTab = $state<'active' | 'history' | 'approvals'>('active');
+	type RequestsTab = 'active' | 'history' | 'approvals' | 'auto-download';
+	let activeTab = $state<RequestsTab>('active');
+
+	// Auto-download standing approvals (TanStack); only fetched for admins on this tab.
+	const autoApprovalsQuery = getAutoDownloadApprovalsQuery(
+		() => authStore.isAdmin && activeTab === 'auto-download'
+	);
+	const autoApprovals = $derived(autoApprovalsQuery.data?.items ?? []);
+	const autoApprovalCount = $derived(autoApprovalsQuery.data?.count ?? 0);
+	const approveAuto = createApproveAutoDownloadMutation();
+	const rejectAuto = createRejectAutoDownloadMutation();
+
+	function approvalTimeAgo(epochSeconds: number): string {
+		const diff = Date.now() / 1000 - epochSeconds;
+		if (diff < 60) return 'just now';
+		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+		return `${Math.floor(diff / 86400)}d ago`;
+	}
 
 	let activeItems = $state<ActiveRequestItem[]>([]);
 	let activeCount = $state(0);
@@ -63,7 +86,6 @@
 	let toastType = $state<'success' | 'error' | 'info'>('success');
 	let isPolling = $state(false);
 
-	// Approvals tab (admin only)
 	let approvalItems = $state<ActiveRequestItem[]>([]);
 	let approvalCount = $state(0);
 	let approvalLoading = $state(true);
@@ -108,7 +130,6 @@
 			}
 			activeItems = data.items;
 			activeCount = data.count;
-			notifyRequestCountChanged(activeCount);
 			if (prevActiveCount > 0 && data.count < prevActiveCount) {
 				libraryStore.refresh();
 			}
@@ -207,7 +228,7 @@
 			if (controller.signal.aborted) return;
 			approvalItems = data.items;
 			approvalCount = data.count;
-			notifyPendingApprovalCountChanged(approvalCount);
+			notifyPendingApprovalCountChanged();
 			approvalError = null;
 		} catch (e) {
 			if (isAbortError(e)) return;
@@ -225,8 +246,7 @@
 				showToast(result.message);
 				approvalItems = approvalItems.filter((i) => i.musicbrainz_id !== mbid);
 				approvalCount = approvalItems.length;
-				notifyRequestCountChanged();
-				notifyPendingApprovalCountChanged(approvalCount);
+				notifyPendingApprovalCountChanged();
 			} else {
 				showToast(result.message, 'error');
 			}
@@ -242,7 +262,7 @@
 				showToast(result.message, 'info');
 				approvalItems = approvalItems.filter((i) => i.musicbrainz_id !== mbid);
 				approvalCount = approvalItems.length;
-				notifyPendingApprovalCountChanged(approvalCount);
+				notifyPendingApprovalCountChanged();
 			} else {
 				showToast(result.message, 'error');
 			}
@@ -251,7 +271,7 @@
 		}
 	}
 
-	function switchTab(tab: 'active' | 'history' | 'approvals') {
+	function switchTab(tab: RequestsTab) {
 		activeTab = tab;
 		if (tab === 'active') {
 			abortHistoryLoad();
@@ -261,10 +281,15 @@
 			stopPolling();
 			abortApprovalsLoad();
 			void loadHistory();
-		} else {
+		} else if (tab === 'approvals') {
 			stopPolling();
 			abortHistoryLoad();
 			void loadApprovals();
+		} else {
+			// auto-download: the TanStack query fetches itself once the tab is active
+			stopPolling();
+			abortHistoryLoad();
+			abortApprovalsLoad();
 		}
 	}
 
@@ -275,7 +300,6 @@
 				showToast(result.message);
 				activeItems = activeItems.filter((i) => i.musicbrainz_id !== mbid);
 				activeCount = activeItems.length;
-				notifyRequestCountChanged(activeCount);
 			} else {
 				showToast(result.message, 'error');
 			}
@@ -338,7 +362,6 @@
 
 	onMount(() => {
 		document.addEventListener('visibilitychange', handleVisibility);
-		requestCountStore.setPageActive(true);
 		const tabParam = page.url.searchParams.get('tab');
 		if (tabParam === 'approvals' && authStore.isAdmin) {
 			switchTab('approvals');
@@ -348,11 +371,7 @@
 		}
 	});
 
-	// Keep the active tab in sync with the URL. The sidebar's Requests (/requests) and
-	// Approvals (/requests?tab=approvals) links navigate without remounting this page, so
-	// onMount alone can't switch tabs on those clicks. Skip the first run (onMount sets the
-	// initial tab) and untrack `activeTab` so in-page tab buttons (which don't touch the URL)
-	// aren't overridden.
+	// sidebar Requests/Approvals links navigate without remounting, so onMount can't switch tabs on those clicks; skip first run (onMount sets initial tab) and untrack activeTab so in-page buttons aren't overridden
 	let tabSyncReady = false;
 	$effect(() => {
 		const tabParam = page.url.searchParams.get('tab');
@@ -377,7 +396,6 @@
 		abortHistoryLoad();
 		abortApprovalsLoad();
 		document.removeEventListener('visibilitychange', handleVisibility);
-		requestCountStore.setPageActive(false);
 	});
 </script>
 
@@ -458,6 +476,25 @@
 						class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-warning/15 text-warning text-xs font-medium tabular-nums"
 					>
 						{approvalCount}
+					</span>
+				{/if}
+			</button>
+		{/if}
+		{#if authStore.isAdmin}
+			<button
+				role="tab"
+				class="tab-btn"
+				class:tab-btn-active={activeTab === 'auto-download'}
+				aria-selected={activeTab === 'auto-download'}
+				onclick={() => switchTab('auto-download')}
+			>
+				<Heart class="h-4 w-4" />
+				Auto-downloads
+				{#if autoApprovalCount > 0}
+					<span
+						class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-warning/15 text-warning text-xs font-medium tabular-nums"
+					>
+						{autoApprovalCount}
 					</span>
 				{/if}
 			</button>
@@ -706,6 +743,107 @@
 								<button
 									class="btn btn-error btn-sm btn-outline gap-1"
 									onclick={() => void handleReject(item.musicbrainz_id)}
+								>
+									<X class="h-3.5 w-3.5" />
+									Reject
+								</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	{:else if activeTab === 'auto-download' && authStore.isAdmin}
+		<div in:fade={{ duration: 150 }}>
+			{#if autoApprovalsQuery.isError}
+				<div class="alert alert-warning mb-4">
+					<TriangleAlert class="h-5 w-5" />
+					<span>Could not load auto-download approvals.</span>
+					<button class="btn btn-sm" onclick={() => void autoApprovalsQuery.refetch()}>Retry</button
+					>
+				</div>
+			{:else if autoApprovalsQuery.isPending}
+				<div class="flex flex-col gap-2.5">
+					{#each Array(3) as _, i (`auto-approval-loading-${i}`)}
+						<div
+							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
+							style="animation-delay: {i * 100}ms"
+						>
+							<div class="w-14 h-14 sm:w-16 sm:h-16 bg-base-300 rounded-lg"></div>
+							<div class="flex-1">
+								<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
+								<div class="h-3 bg-base-300 rounded w-28"></div>
+							</div>
+							<div class="flex gap-2">
+								<div class="h-8 bg-base-300 rounded-btn w-20"></div>
+								<div class="h-8 bg-base-300 rounded-btn w-20"></div>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{:else if autoApprovals.length === 0}
+				<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
+					<div class="w-16 h-16 rounded-full bg-success/5 flex items-center justify-center mb-4">
+						<Heart class="h-8 w-8 text-success/30" />
+					</div>
+					<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">
+						No pending auto-download approvals
+					</h2>
+					<p class="text-base-content/30 text-sm max-w-xs">
+						When a user turns on auto-download for an artist, it appears here for your review.
+					</p>
+				</div>
+			{:else}
+				<div class="flex flex-col gap-2.5">
+					{#each autoApprovals as item (item.user_id + item.artist_mbid)}
+						<div
+							in:fly={{ y: 12, duration: 200 }}
+							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
+						>
+							<div
+								class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300"
+							>
+								<ArtistImage
+									mbid={item.artist_mbid}
+									alt={item.artist_name}
+									className="w-full h-full object-cover"
+								/>
+							</div>
+							<div class="flex-1 min-w-0">
+								<a
+									href="/artist/{item.artist_mbid}"
+									class="block font-semibold text-sm truncate hover:text-accent hover:underline"
+									title={item.artist_name}>{item.artist_name}</a
+								>
+								<div class="flex items-center gap-1.5 flex-wrap text-xs text-base-content/40">
+									<span>{item.user_name ?? 'A user'}</span>
+									<span class="text-base-content/20">•</span>
+									<span>requested {approvalTimeAgo(item.requested_at)}</span>
+								</div>
+							</div>
+							<div class="flex gap-2 shrink-0">
+								<button
+									class="btn btn-success btn-sm gap-1"
+									disabled={approveAuto.isPending || rejectAuto.isPending}
+									onclick={() =>
+										approveAuto.mutate({
+											userId: item.user_id,
+											mbid: item.artist_mbid,
+											artistName: item.artist_name
+										})}
+								>
+									<Check class="h-3.5 w-3.5" />
+									Approve
+								</button>
+								<button
+									class="btn btn-error btn-sm btn-outline gap-1"
+									disabled={approveAuto.isPending || rejectAuto.isPending}
+									onclick={() =>
+										rejectAuto.mutate({
+											userId: item.user_id,
+											mbid: item.artist_mbid,
+											artistName: item.artist_name
+										})}
 								>
 									<X class="h-3.5 w-3.5" />
 									Reject

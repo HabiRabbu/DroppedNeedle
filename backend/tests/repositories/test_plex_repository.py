@@ -104,7 +104,7 @@ class TestBuildHeaders:
         repo, _, _ = _make_repo()
         headers = repo._build_headers()
         assert headers["X-Plex-Token"] == "test-token"
-        assert headers["X-Plex-Product"] == "MusicSeerr"
+        assert headers["X-Plex-Product"] == "DroppedNeedle"
         assert headers["X-Plex-Version"] == "1.0"
         assert headers["Accept"] == "application/json"
 
@@ -582,6 +582,83 @@ class TestOAuthPin:
 
             token = await repo.poll_oauth_pin(42, "client-123")
             assert token is None
+
+
+def _mock_fresh_client(response: MagicMock):
+    instance = AsyncMock()
+    instance.__aenter__ = AsyncMock(return_value=instance)
+    instance.__aexit__ = AsyncMock(return_value=False)
+    instance.get = AsyncMock(return_value=response)
+    return instance
+
+
+class TestAccountAuthCalls:
+    @pytest.mark.asyncio
+    async def test_server_ids_ignores_tokenless_client_devices(self):
+        # Regression: /api/v2/resources lists client devices (e.g. Plexamp) with
+        # no accessToken. The old generated SDK model rejected those and broke
+        # login for everyone. The lenient parse must skip them and still find the
+        # server by clientIdentifier + provides.
+        repo, _, _ = _make_repo()
+        devices = [
+            {"clientIdentifier": "server-machine-id", "provides": "server", "accessToken": "abc"},
+            {"clientIdentifier": "plexamp-device", "provides": "client,player,pubsub-player"},
+        ]
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = devices
+
+        with patch("httpx.AsyncClient") as MockClient:
+            MockClient.return_value = _mock_fresh_client(response)
+            server_ids = await repo.get_account_server_ids("user-token", "client-123")
+
+        assert server_ids == {"server-machine-id"}
+
+    @pytest.mark.asyncio
+    async def test_server_ids_auth_failure_raises(self):
+        repo, _, _ = _make_repo()
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 401
+
+        with patch("httpx.AsyncClient") as MockClient:
+            MockClient.return_value = _mock_fresh_client(response)
+            with pytest.raises(PlexAuthError):
+                await repo.get_account_server_ids("user-token", "client-123")
+
+    @pytest.mark.asyncio
+    async def test_account_profile_prefers_friendly_name(self):
+        repo, _, _ = _make_repo()
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {
+            "uuid": "user-uuid",
+            "email": "a@b.com",
+            "friendlyName": "Friendly",
+            "username": "uname",
+            "title": "Title",
+            "thumb": "http://thumb",
+        }
+
+        with patch("httpx.AsyncClient") as MockClient:
+            MockClient.return_value = _mock_fresh_client(response)
+            profile = await repo.get_account_profile("user-token", "client-123")
+
+        assert profile.uuid == "user-uuid"
+        assert profile.email == "a@b.com"
+        assert profile.display_name == "Friendly"
+        assert profile.thumb == "http://thumb"
+
+    @pytest.mark.asyncio
+    async def test_account_profile_missing_uuid_raises(self):
+        repo, _, _ = _make_repo()
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {"email": "a@b.com"}
+
+        with patch("httpx.AsyncClient") as MockClient:
+            MockClient.return_value = _mock_fresh_client(response)
+            with pytest.raises(PlexApiError, match="missing uuid"):
+                await repo.get_account_profile("user-token", "client-123")
 
 
 class TestClearCache:

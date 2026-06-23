@@ -8,7 +8,7 @@ if (typeof window !== 'undefined') {
 }
 
 export interface TiltOptions {
-	/** CSS color variable for the shadow glow, e.g. 'var(--p)' or 'var(--s)' */
+	/** Full CSS colour for the shadow glow, e.g. 'var(--color-primary)' or 'var(--color-secondary)' */
 	shadowColorVar?: string;
 }
 
@@ -23,9 +23,9 @@ export interface TiltOptions {
  * Respects `prefers-reduced-motion: reduce` reactively.
  */
 export function tilt(node: HTMLElement, options?: TiltOptions) {
-	const color = options?.shadowColorVar ?? 'var(--p)';
+	const color = options?.shadowColorVar ?? 'var(--color-primary)';
 
-	node.style.setProperty('--tilt-shadow', `0 4px 16px oklch(${color} / 0.06)`);
+	node.style.setProperty('--tilt-shadow', `0 4px 16px oklch(from ${color} l c h / 0.06)`);
 
 	function handlePointerMove(e: PointerEvent) {
 		if (reducedMotion) return;
@@ -46,13 +46,13 @@ export function tilt(node: HTMLElement, options?: TiltOptions) {
 			'--tilt-specular-bg',
 			`radial-gradient(circle at ${pctX}% ${pctY}%, rgba(255,255,255,0.08) 0%, transparent 60%)`
 		);
-		node.style.setProperty('--tilt-shadow', `0 12px 48px oklch(${color} / 0.2)`);
+		node.style.setProperty('--tilt-shadow', `0 12px 48px oklch(from ${color} l c h / 0.2)`);
 	}
 
 	function handlePointerLeave() {
 		node.style.removeProperty('--tilt-transform');
 		node.style.removeProperty('--tilt-specular-bg');
-		node.style.setProperty('--tilt-shadow', `0 4px 16px oklch(${color} / 0.06)`);
+		node.style.setProperty('--tilt-shadow', `0 4px 16px oklch(from ${color} l c h / 0.06)`);
 	}
 
 	node.addEventListener('pointermove', handlePointerMove);

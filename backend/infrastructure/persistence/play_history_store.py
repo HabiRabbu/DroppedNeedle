@@ -1,0 +1,184 @@
+import asyncio
+import logging
+import sqlite3
+import threading
+from pathlib import Path
+from uuid import uuid4
+
+import msgspec
+
+logger = logging.getLogger(__name__)
+
+
+class PlayHistoryRecord(msgspec.Struct, frozen=True):
+    id: str
+    user_id: str
+    track_name: str
+    artist_name: str
+    played_at: str
+    album_name: str | None = None
+    recording_mbid: str | None = None
+    release_group_mbid: str | None = None
+    duration_ms: int | None = None
+    source: str | None = None
+
+
+class PlayHistoryStore:
+    """Append-only per-user listening history; written for every play regardless
+    of external linkage (D6)."""
+
+    def __init__(self, db_path: Path, write_lock: threading.Lock | None = None):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_lock = write_lock or threading.Lock()
+        with self._write_lock:
+            self._ensure_tables()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def _ensure_tables(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS play_history (
+                  id TEXT PRIMARY KEY,
+                  user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+                  track_name TEXT NOT NULL, artist_name TEXT NOT NULL, album_name TEXT,
+                  recording_mbid TEXT, release_group_mbid TEXT, duration_ms INTEGER,
+                  source TEXT,
+                  played_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_play_history_user_played "
+                "ON play_history(user_id, played_at DESC)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _execute(self, operation, write: bool):
+        if write:
+            with self._write_lock:
+                conn = self._connect()
+                try:
+                    result = operation(conn)
+                    conn.commit()
+                    return result
+                finally:
+                    conn.close()
+
+        conn = self._connect()
+        try:
+            return operation(conn)
+        finally:
+            conn.close()
+
+    async def _read(self, operation):
+        return await asyncio.to_thread(self._execute, operation, False)
+
+    async def _write(self, operation):
+        return await asyncio.to_thread(self._execute, operation, True)
+
+    @staticmethod
+    def _row_to_record(row: sqlite3.Row) -> PlayHistoryRecord:
+        return PlayHistoryRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            track_name=row["track_name"],
+            artist_name=row["artist_name"],
+            played_at=row["played_at"],
+            album_name=row["album_name"],
+            recording_mbid=row["recording_mbid"],
+            release_group_mbid=row["release_group_mbid"],
+            duration_ms=row["duration_ms"],
+            source=row["source"],
+        )
+
+    async def insert(
+        self,
+        user_id: str,
+        *,
+        track_name: str,
+        artist_name: str,
+        played_at: str,
+        album_name: str | None = None,
+        recording_mbid: str | None = None,
+        release_group_mbid: str | None = None,
+        duration_ms: int | None = None,
+        source: str | None = None,
+    ) -> str:
+        row_id = uuid4().hex
+
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO play_history (
+                    id, user_id, track_name, artist_name, album_name,
+                    recording_mbid, release_group_mbid, duration_ms, source, played_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row_id,
+                    user_id,
+                    track_name,
+                    artist_name,
+                    album_name,
+                    recording_mbid,
+                    release_group_mbid,
+                    duration_ms,
+                    source,
+                    played_at,
+                ),
+            )
+
+        await self._write(operation)
+        return row_id
+
+    async def recent(self, user_id: str, limit: int = 50) -> list[PlayHistoryRecord]:
+        safe_limit = max(1, limit)
+
+        def operation(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                "SELECT * FROM play_history WHERE user_id = ? "
+                "ORDER BY played_at DESC LIMIT ?",
+                (user_id, safe_limit),
+            ).fetchall()
+
+        rows = await self._read(operation)
+        return [self._row_to_record(row) for row in rows]
+
+    async def play_counts_by_artist(
+        self, user_id: str, artist_name: str
+    ) -> dict[str, int]:
+        """Play counts for a user's tracks by an artist, keyed both by
+        ``rec:<recording_mbid>`` and ``name:<lower track_name>`` so the discovery
+        service can match owned library files (06 s11.5)."""
+
+        def operation(conn: sqlite3.Connection) -> dict[str, int]:
+            rows = conn.execute(
+                "SELECT recording_mbid, track_name, COUNT(*) AS plays "
+                "FROM play_history WHERE user_id = ? AND artist_name = ? "
+                "GROUP BY recording_mbid, track_name",
+                (user_id, artist_name),
+            ).fetchall()
+            counts: dict[str, int] = {}
+            for r in rows:
+                plays = int(r["plays"])
+                if r["recording_mbid"]:
+                    key = f"rec:{r['recording_mbid']}"
+                    counts[key] = counts.get(key, 0) + plays
+                name_key = f"name:{(r['track_name'] or '').lower()}"
+                counts[name_key] = counts.get(name_key, 0) + plays
+            return counts
+
+        return await self._read(operation)

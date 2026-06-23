@@ -116,4 +116,4 @@ async def test_artist_fetcher_uses_non_default_user_agent_for_external_requests(
         repo = CoverArtRepository(http_client=http_client, cache=cache, cache_dir=tmp_path)
 
         assert repo._artist_fetcher._external_headers is not None
-        assert repo._artist_fetcher._external_headers['User-Agent'].startswith('Musicseerr/')
+        assert repo._artist_fetcher._external_headers['User-Agent'].startswith('DroppedNeedle/')

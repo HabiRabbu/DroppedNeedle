@@ -1,8 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { API } from '$lib/constants';
-	import { api } from '$lib/api/client';
-	import { isAbortError } from '$lib/utils/errorHandling';
+	import { ApiError } from '$lib/api/client';
 	import {
 		UserRound,
 		Pencil,
@@ -22,75 +19,152 @@
 		RefreshCw,
 		LogOut,
 		ShieldCheck,
-		UserCheck
+		UserCheck,
+		UserCog,
+		AtSign,
+		Mail,
+		KeyRound
 	} from 'lucide-svelte';
-	import { goto } from '$app/navigation';
 	import { authStore } from '$lib/stores/authStore.svelte';
+	import { logout } from '$lib/utils/logout';
+	import { getProfileQuery } from '$lib/queries/profile/ProfileQuery.svelte';
+	import {
+		createUpdateDisplayNameMutation,
+		createUpdateUsernameMutation,
+		createUpdateEmailMutation,
+		createChangePasswordMutation,
+		createSetPasswordMutation,
+		createUploadAvatarMutation
+	} from '$lib/queries/profile/ProfileMutations.svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
+	import type { ProfileServiceConnection } from '$lib/queries/profile/types';
+	import ScrobblingDiscoveryCard from '$lib/components/profile/ScrobblingDiscoveryCard.svelte';
 
-	interface ServiceConnection {
-		name: string;
-		enabled: boolean;
-		username: string;
-		url: string;
-	}
+	const userId = authStore.user?.id ?? '';
+	const profileQuery = getProfileQuery(userId);
+	const profile = $derived(profileQuery.data);
+	const providers = $derived(profile?.providers ?? authStore.user?.providers ?? []);
+	const hasLocalPassword = $derived(providers.includes('local'));
 
-	interface LibStats {
-		source: string;
-		total_tracks: number;
-		total_albums: number;
-		total_artists: number;
-		total_size_bytes: number;
-		total_size_human: string;
-	}
+	// lastfm + listenbrainz are per-user (managed in the scrobbling card), so drop from the read-only grid
+	const HIDDEN_SERVICES = new Set(['ListenBrainz', 'Last.fm']);
+	const visibleServices = $derived(
+		(profile?.services ?? []).filter((s) => !HIDDEN_SERVICES.has(s.name))
+	);
 
-	interface ProfileData {
-		display_name: string;
-		avatar_url: string;
-		services: ServiceConnection[];
-		library_stats: LibStats[];
-	}
+	const displayNameMutation = createUpdateDisplayNameMutation(userId);
+	const usernameMutation = createUpdateUsernameMutation(userId);
+	const emailMutation = createUpdateEmailMutation(userId);
+	const changePasswordMutation = createChangePasswordMutation(userId);
+	const setPasswordMutation = createSetPasswordMutation(userId);
+	const avatarMutation = createUploadAvatarMutation(userId);
 
-	let profile: ProfileData | null = $state(null);
-	let loading = $state(true);
-	let error = $state(false);
 	let editingName = $state(false);
 	let nameInput = $state('');
-	let saving = $state(false);
+	let nameError = $state<string | null>(null);
+
+	let editingUsername = $state(false);
+	let usernameInput = $state('');
+	let usernameError = $state<string | null>(null);
+
+	let editingEmail = $state(false);
+	let emailInput = $state('');
+	let emailError = $state<string | null>(null);
+
+	let showPasswordForm = $state(false);
+	let currentPassword = $state('');
+	let newPassword = $state('');
+	let passwordError = $state<string | null>(null);
+	let passwordDone = $state(false);
+
 	let showAvatarModal = $state(false);
 	let avatarPreview: string | null = $state(null);
 	let avatarFile: File | null = $state(null);
 	let draggingOver = $state(false);
 	let fileInput: HTMLInputElement | undefined = $state();
 
-	async function loadProfile() {
-		loading = true;
-		error = false;
-		try {
-			profile = await api.get<ProfileData>(API.profile.get());
-			nameInput = profile?.display_name ?? '';
-		} catch (e) {
-			if (isAbortError(e)) return;
-			error = true;
-		} finally {
-			loading = false;
-		}
+	function errMessage(e: unknown): string {
+		return e instanceof ApiError ? e.message : 'Could not reach the server';
+	}
+
+	function startEditName() {
+		nameInput = profile?.display_name ?? '';
+		nameError = null;
+		editingName = true;
 	}
 
 	async function saveName() {
-		if (!profile) return;
-		saving = true;
+		nameError = null;
 		try {
-			await api.global.put(API.profile.update(), { display_name: nameInput });
-			profile.display_name = nameInput;
+			await displayNameMutation.mutateAsync({ display_name: nameInput });
 			editingName = false;
-		} catch {
-			// Ignore errors
-		} finally {
-			saving = false;
+		} catch (e) {
+			nameError = errMessage(e);
 		}
 	}
+
+	function startEditUsername() {
+		usernameInput = profile?.username_display ?? profile?.username ?? '';
+		usernameError = null;
+		editingUsername = true;
+	}
+
+	async function saveUsername() {
+		usernameError = null;
+		try {
+			await usernameMutation.mutateAsync({ username: usernameInput });
+			editingUsername = false;
+		} catch (e) {
+			usernameError = errMessage(e);
+		}
+	}
+
+	function startEditEmail() {
+		emailInput = profile?.email ?? '';
+		emailError = null;
+		editingEmail = true;
+	}
+
+	async function saveEmail() {
+		emailError = null;
+		try {
+			await emailMutation.mutateAsync({ email: emailInput.trim() || null });
+			editingEmail = false;
+		} catch (e) {
+			emailError = errMessage(e);
+		}
+	}
+
+	function togglePasswordForm() {
+		showPasswordForm = !showPasswordForm;
+		currentPassword = '';
+		newPassword = '';
+		passwordError = null;
+		passwordDone = false;
+	}
+
+	async function submitPassword() {
+		passwordError = null;
+		try {
+			if (hasLocalPassword) {
+				await changePasswordMutation.mutateAsync({
+					current_password: currentPassword,
+					new_password: newPassword
+				});
+			} else {
+				await setPasswordMutation.mutateAsync({ new_password: newPassword });
+			}
+			currentPassword = '';
+			newPassword = '';
+			showPasswordForm = false;
+			passwordDone = true;
+		} catch (e) {
+			passwordError = errMessage(e);
+		}
+	}
+
+	const passwordPending = $derived(changePasswordMutation.isPending || setPasswordMutation.isPending);
 
 	function handleAvatarFile(file: File) {
 		if (!file.type.startsWith('image/')) return;
@@ -111,10 +185,6 @@
 		draggingOver = true;
 	}
 
-	function handleDragLeave() {
-		draggingOver = false;
-	}
-
 	function handleFileSelect(e: Event) {
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0];
@@ -122,21 +192,12 @@
 	}
 
 	async function uploadAvatar() {
-		if (!profile || !avatarFile) return;
-		saving = true;
+		if (!avatarFile) return;
 		try {
-			const formData = new FormData();
-			formData.append('file', avatarFile);
-			const data = await api.global.upload<{ avatar_url: string }>(
-				API.profile.avatarUpload(),
-				formData
-			);
-			profile.avatar_url = data.avatar_url + '?t=' + Date.now();
+			await avatarMutation.mutateAsync(avatarFile);
 			closeAvatarModal();
 		} catch {
-			// Ignore errors
-		} finally {
-			saving = false;
+			// keep the modal open to retry; failure shows via disabled/loading state
 		}
 	}
 
@@ -149,14 +210,19 @@
 		}
 	}
 
-	function cancelEditName() {
-		nameInput = profile?.display_name ?? '';
-		editingName = false;
-	}
-
 	function handleNameKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') void saveName();
-		if (e.key === 'Escape') cancelEditName();
+		if (e.key === 'Escape') editingName = false;
+	}
+
+	function handleUsernameKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') void saveUsername();
+		if (e.key === 'Escape') editingUsername = false;
+	}
+
+	function handleEmailKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') void saveEmail();
+		if (e.key === 'Escape') editingEmail = false;
 	}
 
 	function getServiceIcon(name: string) {
@@ -183,7 +249,7 @@
 		return 'border-base-300';
 	}
 
-	function getServiceProfileUrl(service: ServiceConnection): string | null {
+	function getServiceProfileUrl(service: ProfileServiceConnection): string | null {
 		if (!service.enabled || !service.username) return null;
 		if (service.name === 'Last.fm')
 			return `https://www.last.fm/user/${encodeURIComponent(service.username)}`;
@@ -213,29 +279,15 @@
 		return n.toString();
 	}
 
-	async function handleLogout() {
-		try {
-			await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' });
-		} catch {
-			// ignore
-		}
-		authStore.clear();
-		goto('/login');
-	}
-
 	const roleLabel: Record<string, string> = {
 		admin: 'Admin',
 		trusted: 'Trusted',
 		user: 'User'
 	};
-
-	onMount(() => {
-		void loadProfile();
-	});
 </script>
 
 <svelte:head>
-	<title>Profile - MusicSeerr</title>
+	<title>Profile - DroppedNeedle</title>
 </svelte:head>
 
 <div class="min-h-screen">
@@ -245,7 +297,7 @@
 
 		<div class="relative px-4 pt-10 pb-6 sm:px-6 lg:px-8">
 			<div class="mx-auto max-w-4xl">
-				{#if loading}
+				{#if profileQuery.isPending}
 					<div class="flex flex-col items-center gap-6">
 						<div class="skeleton h-32 w-32 rounded-full sm:h-40 sm:w-40"></div>
 						<div class="flex flex-col items-center gap-2">
@@ -280,7 +332,7 @@
 							</div>
 						</button>
 
-						<div class="flex flex-col items-center gap-1 pb-2">
+						<div class="flex w-full max-w-md flex-col items-center gap-2 pb-2">
 							<div class="flex items-center gap-2">
 								<span class="text-xs font-semibold uppercase tracking-widest text-base-content/40"
 									>Profile</span
@@ -305,28 +357,31 @@
 										type="text"
 										bind:value={nameInput}
 										onkeydown={handleNameKeydown}
-										class="input input-sm bg-base-200/80 text-2xl font-bold backdrop-blur-sm"
+										class="input input-sm input-soft text-2xl font-bold"
 										placeholder="Your name"
 									/>
 									<button
 										onclick={() => void saveName()}
 										class="btn btn-ghost btn-sm btn-circle"
-										disabled={saving}
+										disabled={displayNameMutation.isPending}
 										aria-label="Save name"
 									>
 										<Check class="h-4 w-4 text-success" />
 									</button>
 									<button
-										onclick={cancelEditName}
+										onclick={() => (editingName = false)}
 										class="btn btn-ghost btn-sm btn-circle"
 										aria-label="Cancel"
 									>
 										<X class="h-4 w-4 text-error" />
 									</button>
 								</div>
+								{#if nameError}
+									<p class="text-xs text-error">{nameError}</p>
+								{/if}
 							{:else}
 								<button
-									onclick={() => (editingName = true)}
+									onclick={startEditName}
 									class="group flex items-center gap-2"
 									aria-label="Edit display name"
 								>
@@ -340,11 +395,11 @@
 							{/if}
 						</div>
 					</div>
-				{:else if error}
+				{:else if profileQuery.isError}
 					<div class="flex flex-col items-center gap-4 py-12 text-center">
 						<CircleAlert class="h-10 w-10 text-base-content/50" />
 						<p class="text-base-content/70">Failed to load profile</p>
-						<button class="btn btn-primary btn-sm gap-2" onclick={() => void loadProfile()}>
+						<button class="btn btn-primary btn-sm gap-2" onclick={() => void profileQuery.refetch()}>
 							<RefreshCw class="h-4 w-4" />
 							Try Again
 						</button>
@@ -354,9 +409,213 @@
 		</div>
 	</div>
 
-	{#if !loading && profile}
+	{#if profile}
 		<div class="px-4 pb-12 sm:px-6 lg:px-8">
-			<div class="mx-auto max-w-4xl space-y-8">
+			<div class="mx-auto max-w-4xl space-y-8 stagger-fade-in">
+				<section>
+					<h2
+						class="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-widest text-base-content/50"
+					>
+						<UserCog class="h-4 w-4" />
+						Account
+					</h2>
+					<div
+						class="divide-y divide-base-300/30 overflow-hidden rounded-xl border border-base-300/40 bg-base-200/50 backdrop-blur-sm"
+					>
+						<div class="flex items-start gap-3 px-5 py-4">
+							<div
+								class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-base-300/60 text-base-content/70"
+							>
+								<AtSign class="h-4 w-4" />
+							</div>
+							<div class="min-w-0 flex-1">
+								<p class="text-[10px] font-medium uppercase tracking-wider text-base-content/40">
+									Username
+								</p>
+								{#if editingUsername}
+									<div class="mt-1 flex items-center gap-2">
+										<input
+											type="text"
+											bind:value={usernameInput}
+											onkeydown={handleUsernameKeydown}
+											autocomplete="username"
+											class="input input-sm input-soft w-full max-w-xs"
+											placeholder="username"
+										/>
+										<button
+											onclick={() => void saveUsername()}
+											class="btn btn-ghost btn-sm btn-circle"
+											disabled={usernameMutation.isPending}
+											aria-label="Save username"
+										>
+											<Check class="h-4 w-4 text-success" />
+										</button>
+										<button
+											onclick={() => (editingUsername = false)}
+											class="btn btn-ghost btn-sm btn-circle"
+											aria-label="Cancel"
+										>
+											<X class="h-4 w-4 text-error" />
+										</button>
+									</div>
+									{#if usernameError}
+										<p class="mt-1 text-xs text-error">{usernameError}</p>
+									{/if}
+								{:else}
+									<p class="truncate text-sm font-medium">
+										@{profile.username_display ?? profile.username ?? '-'}
+									</p>
+								{/if}
+							</div>
+							{#if !editingUsername}
+								<button
+									onclick={startEditUsername}
+									class="btn btn-ghost btn-sm btn-circle text-base-content/40 hover:text-primary"
+									aria-label="Edit username"
+								>
+									<Pencil class="h-4 w-4" />
+								</button>
+							{/if}
+						</div>
+
+						<div class="flex items-start gap-3 px-5 py-4">
+							<div
+								class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-base-300/60 text-base-content/70"
+							>
+								<Mail class="h-4 w-4" />
+							</div>
+							<div class="min-w-0 flex-1">
+								<p class="text-[10px] font-medium uppercase tracking-wider text-base-content/40">
+									Email
+								</p>
+								{#if editingEmail}
+									<div class="mt-1 flex items-center gap-2">
+										<input
+											type="email"
+											bind:value={emailInput}
+											onkeydown={handleEmailKeydown}
+											autocomplete="email"
+											class="input input-sm input-soft w-full max-w-xs"
+											placeholder="name@example.com (optional)"
+										/>
+										<button
+											onclick={() => void saveEmail()}
+											class="btn btn-ghost btn-sm btn-circle"
+											disabled={emailMutation.isPending}
+											aria-label="Save email"
+										>
+											<Check class="h-4 w-4 text-success" />
+										</button>
+										<button
+											onclick={() => (editingEmail = false)}
+											class="btn btn-ghost btn-sm btn-circle"
+											aria-label="Cancel"
+										>
+											<X class="h-4 w-4 text-error" />
+										</button>
+									</div>
+									{#if emailError}
+										<p class="mt-1 text-xs text-error">{emailError}</p>
+									{/if}
+								{:else if profile.email}
+									<p class="truncate text-sm font-medium">{profile.email}</p>
+								{:else}
+									<p class="text-sm text-base-content/40">Not set</p>
+								{/if}
+							</div>
+							{#if !editingEmail}
+								<button
+									onclick={startEditEmail}
+									class="btn btn-ghost btn-sm btn-circle text-base-content/40 hover:text-primary"
+									aria-label="Edit email"
+								>
+									<Pencil class="h-4 w-4" />
+								</button>
+							{/if}
+						</div>
+
+						<div class="px-5 py-4">
+							<div class="flex items-center gap-3">
+								<div
+									class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-base-300/60 text-base-content/70"
+								>
+									<KeyRound class="h-4 w-4" />
+								</div>
+								<div class="min-w-0 flex-1">
+									<p class="text-[10px] font-medium uppercase tracking-wider text-base-content/40">
+										Password
+									</p>
+									{#if hasLocalPassword}
+										<p class="text-sm font-medium tracking-widest">••••••••</p>
+									{:else}
+										<p class="text-sm text-base-content/40">No local password</p>
+									{/if}
+								</div>
+								<button
+									onclick={togglePasswordForm}
+									class="btn btn-ghost btn-sm gap-1.5 text-base-content/60 hover:text-primary"
+								>
+									{#if showPasswordForm}
+										Cancel
+									{:else if hasLocalPassword}
+										<Pencil class="h-3.5 w-3.5" /> Change
+									{:else}
+										<KeyRound class="h-3.5 w-3.5" /> Set a password
+									{/if}
+								</button>
+							</div>
+
+							{#if passwordDone && !showPasswordForm}
+								<p class="mt-2 flex items-center gap-1.5 pl-12 text-xs text-success">
+									<Check class="h-3.5 w-3.5" />
+									{hasLocalPassword ? 'Password updated' : 'Local password set'}
+								</p>
+							{/if}
+
+							{#if showPasswordForm}
+								<div class="mt-3 space-y-2 pl-0 sm:pl-12">
+									{#if hasLocalPassword}
+										<input
+											type="password"
+											bind:value={currentPassword}
+											autocomplete="current-password"
+											class="input input-sm input-soft w-full max-w-sm"
+											placeholder="Current password"
+										/>
+									{:else}
+										<p class="text-xs text-base-content/50">
+											Add a password so you can also sign in with your username.
+										</p>
+									{/if}
+									<input
+										type="password"
+										bind:value={newPassword}
+										autocomplete="new-password"
+										class="input input-sm input-soft w-full max-w-sm"
+										placeholder="New password (min 12 characters)"
+									/>
+									{#if passwordError}
+										<p class="text-xs text-error">{passwordError}</p>
+									{/if}
+									<div class="flex gap-2 pt-1">
+										<button
+											onclick={() => void submitPassword()}
+											class="btn btn-primary btn-sm glow-primary-soft gap-1.5 rounded-full"
+											disabled={passwordPending || !newPassword || (hasLocalPassword && !currentPassword)}
+										>
+											{#if passwordPending}
+												<span class="loading loading-spinner loading-xs"></span>
+											{/if}
+											{hasLocalPassword ? 'Update password' : 'Set password'}
+										</button>
+										<button onclick={togglePasswordForm} class="btn btn-ghost btn-sm">Cancel</button>
+									</div>
+								</div>
+							{/if}
+						</div>
+					</div>
+				</section>
+
 				<section>
 					<h2
 						class="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-widest text-base-content/50"
@@ -365,7 +624,7 @@
 						Connected Services
 					</h2>
 					<div class="grid gap-3 sm:grid-cols-3">
-						{#each profile.services as service (service.name)}
+						{#each visibleServices as service (service.name)}
 							{@const Icon = getServiceIcon(service.name)}
 							{@const profileUrl = getServiceProfileUrl(service)}
 							<a
@@ -373,7 +632,7 @@
 								target={profileUrl ? '_blank' : undefined}
 								rel={profileUrl ? 'noopener noreferrer' : undefined}
 								role={profileUrl ? undefined : 'presentation'}
-								class="group rounded-xl border {getServiceBorderColor(
+								class="crate-card group rounded-xl border {getServiceBorderColor(
 									service.name
 								)} bg-base-200/50 p-4 backdrop-blur-sm transition-all hover:bg-base-200/80 hover:shadow-lg {profileUrl
 									? 'cursor-pointer'
@@ -415,6 +674,10 @@
 					</div>
 				</section>
 
+				<div id="scrobbling" class="scroll-mt-20">
+					<ScrobblingDiscoveryCard />
+				</div>
+
 				{#if profile.library_stats.length > 0}
 					<section>
 						<h2
@@ -427,7 +690,7 @@
 							{#each profile.library_stats as stats (stats.source)}
 								{@const SourceIcon = getSourceIcon(stats.source)}
 								<div
-									class="overflow-hidden rounded-xl border border-base-300/40 bg-base-200/50 backdrop-blur-sm"
+									class="crate-card overflow-hidden rounded-xl border border-base-300/40 bg-base-200/50 backdrop-blur-sm"
 								>
 									<div class="flex items-center gap-3 border-b border-base-300/30 px-5 py-3">
 										<div
@@ -461,9 +724,7 @@
 										<div class="flex flex-col items-center gap-1">
 											<div class="flex items-center gap-1.5 text-base-content/50">
 												<Users class="h-3.5 w-3.5" />
-												<span class="text-[10px] font-medium uppercase tracking-wider">
-													Artists
-												</span>
+												<span class="text-[10px] font-medium uppercase tracking-wider"> Artists </span>
 											</div>
 											<span class="text-xl font-bold tabular-nums">
 												{formatNumber(stats.total_artists)}
@@ -489,14 +750,14 @@
 				<section class="flex justify-center gap-3 pt-2">
 					<a
 						href="/settings"
-						class="btn btn-outline btn-sm gap-2 border-base-content/20 text-base-content/60 transition-all hover:border-primary hover:text-primary"
+						class="btn btn-outline btn-sm gap-2 rounded-full border-base-content/20 text-base-content/60 transition-all hover:border-primary hover:text-primary"
 					>
 						<Settings class="h-4 w-4" />
 						Open Settings
 					</a>
 					<button
-						class="btn btn-outline btn-sm gap-2 border-base-content/20 text-base-content/60 transition-all hover:border-error hover:text-error"
-						onclick={() => void handleLogout()}
+						class="btn btn-outline btn-sm gap-2 rounded-full border-base-content/20 text-base-content/60 transition-all hover:border-error hover:text-error"
+						onclick={() => void logout()}
 					>
 						<LogOut class="h-4 w-4" />
 						Sign Out
@@ -523,7 +784,7 @@
 				{draggingOver ? 'border-primary bg-primary/10' : 'border-base-content/20 hover:border-primary/50'}"
 			ondrop={handleDrop}
 			ondragover={handleDragOver}
-			ondragleave={handleDragLeave}
+			ondragleave={() => (draggingOver = false)}
 			onclick={() => fileInput?.click()}
 			onkeydown={(e) => {
 				if (e.key === 'Enter' || e.key === ' ') fileInput?.click();
@@ -548,9 +809,9 @@
 			<button
 				class="btn btn-primary btn-sm"
 				onclick={() => void uploadAvatar()}
-				disabled={saving || !avatarFile}
+				disabled={avatarMutation.isPending || !avatarFile}
 			>
-				{#if saving}
+				{#if avatarMutation.isPending}
 					<span class="loading loading-spinner loading-xs"></span>
 				{/if}
 				Upload</button

@@ -111,29 +111,6 @@ def build_album_basic_info(
     }
 
 
-def lidarr_to_basic_info(lidarr_album: dict, release_group_id: str, in_library: bool, is_requested: bool = False) -> dict:
-    year = None
-    if release_date := lidarr_album.get("release_date"):
-        try:
-            year = int(release_date.split("-")[0])
-        except (ValueError, IndexError):
-            pass
-    return {
-        "title": lidarr_album.get("title", "Unknown Album"),
-        "musicbrainz_id": release_group_id,
-        "artist_name": lidarr_album.get("artist_name", "Unknown Artist"),
-        "artist_id": lidarr_album.get("artist_mbid", ""),
-        "release_date": lidarr_album.get("release_date"),
-        "year": year,
-        "type": lidarr_album.get("album_type"),
-        "disambiguation": lidarr_album.get("disambiguation"),
-        "in_library": in_library,
-        "requested": is_requested and not in_library,
-        "monitored": lidarr_album.get("monitored", False),
-        "cover_url": lidarr_album.get("cover_url"),
-    }
-
-
 def mb_to_basic_info(release_group: dict, release_group_id: str, in_library: bool, is_requested: bool) -> dict:
     artist_name, artist_id = extract_artist_info(release_group)
     return {
@@ -147,6 +124,5 @@ def mb_to_basic_info(release_group: dict, release_group_id: str, in_library: boo
         "disambiguation": release_group.get("disambiguation"),
         "in_library": in_library,
         "requested": is_requested and not in_library,
-        "monitored": False,
         "cover_url": None,
     }

@@ -2,14 +2,14 @@
 
 from repositories.protocols import (
     MusicBrainzRepositoryProtocol,
-    LidarrRepositoryProtocol,
+    LibraryRepositoryProtocol,
     WikidataRepositoryProtocol,
     CoverArtRepositoryProtocol,
 )
 
 __all__ = [
     "MusicBrainzRepositoryProtocol",
-    "LidarrRepositoryProtocol",
+    "LibraryRepositoryProtocol",
     "WikidataRepositoryProtocol",
     "CoverArtRepositoryProtocol",
 ]

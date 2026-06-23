@@ -2,6 +2,7 @@
 and DiscoverHomepageService.build_playlist_suggestions."""
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
@@ -24,9 +25,6 @@ from services.discover.facade import DiscoverService
 from services.discover.homepage_service import DiscoverHomepageService
 from services.discover.integration_helpers import IntegrationHelpers
 from services.playlist_service import PlaylistService
-
-
-# ---- helpers ----
 
 
 def _make_lb_settings(
@@ -63,10 +61,10 @@ def _make_prefs(
     jf_settings.api_key = ""
     prefs.get_jellyfin_connection.return_value = jf_settings
 
-    lidarr = MagicMock()
-    lidarr.lidarr_url = ""
-    lidarr.lidarr_api_key = ""
-    prefs.get_lidarr_connection.return_value = lidarr
+    download_client = MagicMock()
+    download_client.enabled = False
+    download_client.url = ""
+    prefs.get_download_client_settings.return_value = download_client
 
     yt = MagicMock()
     yt.enabled = False
@@ -131,6 +129,9 @@ def _make_track_record(
     )
 
 
+_REQ = SimpleNamespace(id="owner", role="user")
+
+
 def _make_playlist_record(playlist_id: str = "pl-1") -> PlaylistRecord:
     return PlaylistRecord(
         id=playlist_id,
@@ -138,6 +139,7 @@ def _make_playlist_record(playlist_id: str = "pl-1") -> PlaylistRecord:
         cover_image_path=None,
         created_at="2024-01-01",
         updated_at="2024-01-01",
+        user_id="owner",
     )
 
 
@@ -164,26 +166,34 @@ def _make_homepage_service(
 ) -> DiscoverHomepageService:
     lb_repo = AsyncMock()
     jf_repo = AsyncMock()
-    lidarr_repo = AsyncMock()
+    library_repo = AsyncMock()
     mb_repo = AsyncMock()
     prefs = _make_prefs(lb_enabled=lb_enabled, lfm_enabled=lfm_enabled, primary_source=primary_source)
     integration = IntegrationHelpers(prefs)
     mbid_resolution = MagicMock()
 
+    # per-user identity is resolved from the factory, not global preferences
+    factory = MagicMock()
+    factory.resolve_listenbrainz = AsyncMock(return_value=lb_repo if lb_enabled else None)
+    factory.resolve_lastfm = AsyncMock(return_value=(lastfm_repo or AsyncMock()) if lfm_enabled else None)
+    factory.resolve_listenbrainz_username = AsyncMock(return_value="lbuser" if lb_enabled else None)
+    factory.resolve_lastfm_username = AsyncMock(return_value="lfmuser" if lfm_enabled else None)
+    prefs_store = MagicMock()
+    prefs_store.get = AsyncMock(return_value=SimpleNamespace(primary_music_source=primary_source))
+
     return DiscoverHomepageService(
         listenbrainz_repo=lb_repo,
         jellyfin_repo=jf_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         musicbrainz_repo=mb_repo,
         integration=integration,
         mbid_resolution=mbid_resolution,
         memory_cache=cache,
         genre_index=genre_index,
         lastfm_repo=lastfm_repo,
+        client_factory=factory,
+        listening_prefs_store=prefs_store,
     )
-
-
-# ==== PlaylistService.analyse_playlist_profile tests ====
 
 
 class TestAnalyseProfileReturnsNoneForUnknownPlaylist:
@@ -193,9 +203,44 @@ class TestAnalyseProfileReturnsNoneForUnknownPlaylist:
         repo.get_playlist.return_value = None
         service = _make_playlist_service(repo=repo)
 
-        result = await service.analyse_playlist_profile("nonexistent")
+        result = await service.analyse_playlist_profile("nonexistent", _REQ)
 
         assert result is None
+
+
+class TestAnalyseProfilePrivateNonOwnerReturnsNone:
+    @pytest.mark.asyncio
+    async def test_private_playlist_of_another_user_returns_none(self) -> None:
+        # D4: a non-owner must not learn a private playlist's existence or artists
+        repo = AsyncMock()
+        record = _make_playlist_record()
+        record.user_id = "someone-else"
+        record.is_public = False
+        repo.get_playlist.return_value = record
+        repo.get_tracks.return_value = [_make_track_record(artist_id="mbid-a")]
+        service = _make_playlist_service(repo=repo)
+
+        result = await service.analyse_playlist_profile("pl-1", _REQ)
+
+        assert result is None
+        repo.get_tracks.assert_not_called()
+
+
+class TestAnalyseProfilePublicNonOwnerReturnsProfile:
+    @pytest.mark.asyncio
+    async def test_public_playlist_of_another_user_returns_profile(self) -> None:
+        repo = AsyncMock()
+        record = _make_playlist_record()
+        record.user_id = "someone-else"
+        record.is_public = True
+        repo.get_playlist.return_value = record
+        repo.get_tracks.return_value = [_make_track_record(artist_id="mbid-a")]
+        service = _make_playlist_service(repo=repo)
+
+        result = await service.analyse_playlist_profile("pl-1", _REQ)
+
+        assert result is not None
+        assert result.artist_mbids == ["mbid-a"]
 
 
 class TestAnalyseProfileEmptyArtistMbids:
@@ -210,7 +255,7 @@ class TestAnalyseProfileEmptyArtistMbids:
         repo.get_tracks.return_value = tracks
         service = _make_playlist_service(repo=repo)
 
-        result = await service.analyse_playlist_profile("pl-1")
+        result = await service.analyse_playlist_profile("pl-1", _REQ)
 
         assert result is not None
         assert result.artist_mbids == []
@@ -230,7 +275,7 @@ class TestAnalyseProfileExtractsUniqueArtistMbids:
         repo.get_tracks.return_value = tracks
         service = _make_playlist_service(repo=repo)
 
-        result = await service.analyse_playlist_profile("pl-1")
+        result = await service.analyse_playlist_profile("pl-1", _REQ)
 
         assert result is not None
         assert sorted(result.artist_mbids) == ["mbid-a", "mbid-b"]
@@ -250,7 +295,7 @@ class TestAnalyseProfileBuildsGenreDistribution:
         }
         service = _make_playlist_service(repo=repo, genre_index=genre_index)
 
-        result = await service.analyse_playlist_profile("pl-1")
+        result = await service.analyse_playlist_profile("pl-1", _REQ)
 
         assert result is not None
         assert result.genre_distribution == {"mbid-a": ["rock", "alternative"]}
@@ -266,13 +311,10 @@ class TestAnalyseProfileNoGenreIndex:
         ]
         service = _make_playlist_service(repo=repo, genre_index=None)
 
-        result = await service.analyse_playlist_profile("pl-1")
+        result = await service.analyse_playlist_profile("pl-1", _REQ)
 
         assert result is not None
         assert result.genre_distribution == {}
-
-
-# ==== DiscoverService facade tests ====
 
 
 class TestFacadePlaylistNotFoundRaises404:
@@ -289,7 +331,7 @@ class TestFacadePlaylistNotFoundRaises404:
 
         with pytest.raises(HTTPException) as exc_info:
             await facade.get_playlist_suggestions(
-                PlaylistSuggestionsRequest(playlist_id="missing"),
+                PlaylistSuggestionsRequest(playlist_id="missing"), _REQ,
             )
         assert exc_info.value.status_code == 404
 
@@ -310,7 +352,7 @@ class TestFacadeEmptyProfileRaises422:
 
         with pytest.raises(HTTPException) as exc_info:
             await facade.get_playlist_suggestions(
-                PlaylistSuggestionsRequest(playlist_id="pl-1"),
+                PlaylistSuggestionsRequest(playlist_id="pl-1"), _REQ,
             )
         assert exc_info.value.status_code == 422
 
@@ -332,16 +374,13 @@ class TestFacadeDelegatesToHomepageBuild:
         facade._integration = MagicMock()
 
         result = await facade.get_playlist_suggestions(
-            PlaylistSuggestionsRequest(playlist_id="pl-1"),
+            PlaylistSuggestionsRequest(playlist_id="pl-1"), _REQ,
         )
         assert isinstance(result, PlaylistSuggestionsResponse)
         assert result.playlist_id == "pl-1"
         assert result.profile == profile
         assert result.suggestions == section
         homepage.build_playlist_suggestions.assert_awaited_once()
-
-
-# ==== DiscoverHomepageService.build_playlist_suggestions tests ====
 
 
 class TestBuildSuggestionsReturnsAlbumSection:
@@ -356,7 +395,7 @@ class TestBuildSuggestionsReturnsAlbumSection:
         service = _make_homepage_service()
         profile = PlaylistProfile(artist_mbids=["a-1", "a-2", "a-3"], track_count=10)
 
-        result = await service.build_playlist_suggestions(profile)
+        result = await service.build_playlist_suggestions("u1", profile)
 
         assert result.type == "albums"
         assert result.title == "Suggestions for your playlist"
@@ -383,7 +422,7 @@ class TestBuildSuggestionsUsesGenrePool:
             track_count=5,
         )
 
-        await service.build_playlist_suggestions(profile)
+        await service.build_playlist_suggestions("u1", profile)
 
         mock_genre_discover.assert_awaited_once()
         call_args = mock_genre_discover.call_args
@@ -401,7 +440,7 @@ class TestBuildSuggestionsEmptyResultsReturnsFallback:
         service = _make_homepage_service()
         profile = PlaylistProfile(artist_mbids=["a-1"], track_count=1)
 
-        result = await service.build_playlist_suggestions(profile)
+        result = await service.build_playlist_suggestions("u1", profile)
 
         assert result.items == []
         assert result.fallback_message is not None
@@ -420,7 +459,7 @@ class TestBuildSuggestionsCapsAtCount:
         service = _make_homepage_service()
         profile = PlaylistProfile(artist_mbids=["a-1"], track_count=10)
 
-        result = await service.build_playlist_suggestions(profile, count=5)
+        result = await service.build_playlist_suggestions("u1", profile, count=5)
 
         mock_select.assert_called_once_with(mock_pools.return_value, 5)
         assert len(result.items) <= 5
@@ -437,7 +476,7 @@ class TestBuildSuggestionsExcludesPlaylistArtists:
         service = _make_homepage_service()
         profile = PlaylistProfile(artist_mbids=["a-1", "a-2"], track_count=5)
 
-        await service.build_playlist_suggestions(profile)
+        await service.build_playlist_suggestions("u1", profile)
 
         call_kwargs = mock_pools.call_args
         assert call_kwargs.kwargs["excluded_mbids"] == {"a-1", "a-2"}
@@ -454,7 +493,7 @@ class TestBuildSuggestionsSourceResolution:
         service = _make_homepage_service()
         profile = PlaylistProfile(artist_mbids=["a-1"], track_count=5)
 
-        result = await service.build_playlist_suggestions(profile, source=None)
+        result = await service.build_playlist_suggestions("u1", profile, source=None)
 
         assert result.source is not None
 
@@ -466,7 +505,7 @@ class TestBuildSuggestionsDisabledSourceReturnsFallback:
         profile = PlaylistProfile(artist_mbids=["a-1"], track_count=5)
 
         result = await service.build_playlist_suggestions(
-            profile, source="listenbrainz",
+            "u1", profile, source="listenbrainz",
         )
 
         assert result.items == []
@@ -481,7 +520,7 @@ class TestBuildSuggestionsDisabledSourceNoneReturnsFallback:
         service = _make_homepage_service(lb_enabled=False, lfm_enabled=False)
         profile = PlaylistProfile(artist_mbids=["a-1"], track_count=5)
 
-        result = await service.build_playlist_suggestions(profile, source=None)
+        result = await service.build_playlist_suggestions("u1", profile, source=None)
 
         assert result.items == []
         assert result.fallback_message is not None
@@ -489,8 +528,6 @@ class TestBuildSuggestionsDisabledSourceNoneReturnsFallback:
 
 
 class TestBuildSuggestionsLastfmPathCallsLastfmRepo:
-    """When source is lastfm and lfm is enabled, build_similar_artist_pools_lastfm is used."""
-
     @pytest.mark.asyncio
     @patch("services.discover.homepage_service.round_robin_dedup_select")
     @patch("services.discover.homepage_service.build_similar_artist_pools_lastfm")
@@ -508,7 +545,7 @@ class TestBuildSuggestionsLastfmPathCallsLastfmRepo:
         )
         profile = PlaylistProfile(artist_mbids=["a-1", "a-2", "a-3"], track_count=10)
 
-        result = await service.build_playlist_suggestions(profile, source="lastfm")
+        result = await service.build_playlist_suggestions("u1", profile, source="lastfm")
 
         mock_lfm_pools.assert_awaited_once()
         call_kwargs = mock_lfm_pools.call_args
@@ -533,7 +570,7 @@ class TestBuildSuggestionsLastfmPathCallsLastfmRepo:
         )
         profile = PlaylistProfile(artist_mbids=["a-1", "a-2", "a-3"], track_count=10)
 
-        result = await service.build_playlist_suggestions(profile, source="listenbrainz")
+        result = await service.build_playlist_suggestions("u1", profile, source="listenbrainz")
 
         mock_lb_pools.assert_awaited_once()
         call_kwargs = mock_lb_pools.call_args

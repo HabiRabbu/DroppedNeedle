@@ -14,8 +14,6 @@ import type {
 	TopSongsResponse
 } from '$lib/types';
 import type { MusicSource } from '$lib/stores/musicSource';
-import { integrationStore } from '$lib/stores/integration';
-import { get } from 'svelte/store';
 import { setQueryDataWithPersister } from '../QueryClient';
 
 export const getBasicArtistQueryOptions = (artistId: string) =>
@@ -98,7 +96,7 @@ export const getArtistLastFmEnrichmentQuery = (
 				api.global.get<LastFmArtistEnrichment>(API.artist.lastFmEnrichment(artistId, artistName!), {
 					signal
 				}),
-			enabled: () => !!artistName && get(integrationStore).lastfm
+			enabled: () => !!artistName
 		};
 	});
 

@@ -13,6 +13,7 @@ from api.v1.schemas.discover import (
 from api.v1.schemas.home import HomeAlbum, HomeSection
 from api.v1.routes.discover import router
 from core.dependencies import get_discover_service
+from tests.helpers import override_user_auth
 
 
 def _make_suggestions_response(
@@ -60,6 +61,7 @@ def client(mock_discover_service):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_discover_service] = lambda: mock_discover_service
+    override_user_auth(app)
     return TestClient(app)
 
 

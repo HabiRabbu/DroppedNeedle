@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio, hashlib, httpx, logging, os, uuid, json
+import asyncio, hashlib, httpx, logging, os, re, sqlite3, uuid, json
 import bcrypt as _bcrypt
 
 from core.dependencies.cache_providers import get_preferences_service
@@ -25,8 +25,9 @@ class AuthService:
         self,
         *,
         display_name: str,
-        email: str,
+        username: str,
         password: str,
+        email: str | None = None,
         user_agent: str | None = None,
     ) -> tuple[UserRecord, str]:
         if not await self.is_setup_required():
@@ -34,26 +35,34 @@ class AuthService:
 
         _validate_password(password)
         await _check_hibp(password)
-        email = email.lower().strip()
-        _validate_email(email)
+        username, username_display = _validate_username(username)
+        if await self._store.get_user_by_username(username) is not None:
+            raise RegistrationError("Username already taken")
+        email = _normalise_optional_email(email)
 
         user_id = _new_id()
         provider_id = _new_id()
 
-        user = await self._store.create_user(
-            id = user_id,
-            display_name = display_name.strip(),
-            role = "admin",
-            email = email,
-        )
+        try:
+            user = await self._store.create_user(
+                id = user_id,
+                display_name = display_name.strip(),
+                role = "admin",
+                email = email,
+                username = username,
+                username_display = username_display,
+            )
 
-        await self._store.create_auth_provider(
-            id = provider_id,
-            user_id = user_id,
-            provider = "local",
-            provider_uid = email,
-            provider_data = _make_local_data(password),
-        )
+            await self._store.create_auth_provider(
+                id = provider_id,
+                user_id = user_id,
+                provider = "local",
+                provider_uid = username,
+                provider_data = _make_local_data(password),
+            )
+        except sqlite3.IntegrityError:
+            # Unique-index race on username/email between the pre-check and insert.
+            raise RegistrationError("Could not create account")
 
         raw_token = await self._issue_session(user_id, user_agent = user_agent)
         await self._store.update_last_login(user_id)
@@ -65,38 +74,46 @@ class AuthService:
         self,
         *,
         display_name: str,
-        email: str,
+        username: str,
         password: str,
+        email: str | None = None,
         role: str = "user",
     ) -> UserRecord:
         if role not in ("admin", "trusted", "user"):
             raise RegistrationError(f"Invalid role: {role}")
         _validate_password(password)
         await _check_hibp(password)
-        email = email.lower().strip()
-        _validate_email(email)
+        username, username_display = _validate_username(username)
+        if await self._store.get_user_by_username(username) is not None:
+            raise RegistrationError("Could not create user")
 
-        existing = await self._store.get_user_by_email(email)
-        if existing is not None:
+        email = _normalise_optional_email(email)
+        if email is not None and await self._store.get_user_by_email(email) is not None:
             raise RegistrationError("Could not create user")
 
         user_id = _new_id()
         provider_id = _new_id()
 
-        user = await self._store.create_user(
-            id = user_id,
-            display_name = display_name.strip(),
-            role = role,
-            email = email,
-        )
+        try:
+            user = await self._store.create_user(
+                id = user_id,
+                display_name = display_name.strip(),
+                role = role,
+                email = email,
+                username = username,
+                username_display = username_display,
+            )
 
-        await self._store.create_auth_provider(
-            id = provider_id,
-            user_id = user_id,
-            provider = "local",
-            provider_uid = email,
-            provider_data = _make_local_data(password),
-        )
+            await self._store.create_auth_provider(
+                id = provider_id,
+                user_id = user_id,
+                provider = "local",
+                provider_uid = username,
+                provider_data = _make_local_data(password),
+            )
+        except sqlite3.IntegrityError:
+            # Unique-index race on username/email between the pre-check and insert.
+            raise RegistrationError("Could not create user")
 
         logger.info(f"Admin created user: {display_name} ({user_id[:8]}) role: {role}")
         return user
@@ -104,30 +121,123 @@ class AuthService:
     async def login_local(
         self,
         *,
-        email: str,
+        username: str,
         password: str,
         user_agent: str | None = None,
     ) -> tuple[UserRecord, str]:
-        email = email.lower().strip()
+        # Usernames are stored lowercased (D3); accept mixed-case input.
+        username = username.strip().lower()
 
-        provider = await self._store.get_auth_provider("local", email)
-        if provider is None:
-            # Don't reveal whether the email exists
+        user = await self._store.get_user_by_username(username)
+        provider = await self._store.get_auth_provider("local", username) if user else None
+        if user is None or provider is None:
+            # Don't reveal whether the username exists (or has a local password).
             _dummy_verify()
-            raise AuthenticationError("Invalid email or password")
+            raise AuthenticationError("Invalid username or password")
 
         if not _verify_password(password, provider.provider_data or ""):
-            raise AuthenticationError("Invalid email or password")
+            raise AuthenticationError("Invalid username or password")
 
-        user = await self._store.get_user_by_id(provider.user_id)
-        if user is None:
-            raise AuthenticationError("Invalid email or password")
-
-        raw_token = await self._issue_session(provider.user_id, user_agent = user_agent)
-        await self._store.update_last_login(provider.user_id)
+        raw_token = await self._issue_session(user.id, user_agent = user_agent)
+        await self._store.update_last_login(user.id)
 
         logger.info(f"Local login: {user.display_name} ({user.id[:8]})")
         return user, raw_token
+
+    async def update_display_name(self, user_id: str, display_name: str) -> UserRecord:
+        """Self-service display_name change (D8). Persists to the auth_users row."""
+        name = (display_name or "").strip()
+        if not name:
+            raise RegistrationError("Display name cannot be empty")
+        await self._store.update_user_profile(user_id, display_name = name)
+        return await self._require_user(user_id)
+
+    async def update_avatar(self, user_id: str, avatar_url: str) -> UserRecord:
+        """Persist a user's per-user avatar URL (D9) and return the fresh record."""
+        await self._store.update_user_profile(user_id, avatar_url = avatar_url)
+        return await self._require_user(user_id)
+
+    async def update_username(self, user_id: str, new_username: str) -> UserRecord:
+        """Self-service username change (D8), atomically syncing the local provider_uid (M3).
+
+        Maps a unique-index collision to a domain error instead of a 500.
+        """
+        username, username_display = _validate_username(new_username)
+        providers = await self._store.list_providers_for_user(user_id)
+        local = next((p for p in providers if p.provider == "local"), None)
+        try:
+            await self._store.update_username(
+                user_id,
+                username,
+                username_display,
+                local_provider_id = local.id if local else None,
+            )
+        except sqlite3.IntegrityError:
+            raise RegistrationError("Username already taken")
+        return await self._require_user(user_id)
+
+    async def update_email(self, user_id: str, new_email: str | None) -> UserRecord:
+        """Self-service email change (D8). Empty/None clears to NULL; otherwise dedupes."""
+        email = _normalise_optional_email(new_email)
+        if email is not None:
+            existing = await self._store.get_user_by_email(email)
+            if existing is not None and existing.id != user_id:
+                raise RegistrationError("Email already in use")
+        try:
+            await self._store.update_email(user_id, email)
+        except sqlite3.IntegrityError:
+            raise RegistrationError("Email already in use")
+        return await self._require_user(user_id)
+
+    async def change_password(
+        self, user_id: str, current_password: str, new_password: str
+    ) -> UserRecord:
+        """Change the password of a local account (D8): verify current, then re-hash."""
+        local = await self._local_provider(user_id)
+        if local is None:
+            raise AuthenticationError("No local password is set for this account")
+        if not _verify_password(current_password, local.provider_data or ""):
+            raise AuthenticationError("Current password is incorrect")
+        _validate_password(new_password)
+        await _check_hibp(new_password)
+        await self._store.update_provider_data(local.id, _make_local_data(new_password))
+        return await self._require_user(user_id)
+
+    async def set_local_password(self, user_id: str, new_password: str) -> UserRecord:
+        """Add a local password to an SSO-only account (D8).
+
+        Binds provider_uid to the user's username (guaranteed non-NULL after Phase 1's
+        SSO auto-derive/backfill) so login_local resolves afterwards. Rejects accounts
+        that already have a local provider - those use change_password instead.
+        """
+        if await self._local_provider(user_id) is not None:
+            raise RegistrationError("A local password already exists; use change password instead")
+        user = await self._require_user(user_id)
+        if not user.username:
+            raise RegistrationError("Choose a username first")
+        _validate_password(new_password)
+        await _check_hibp(new_password)
+        try:
+            await self._store.create_auth_provider(
+                id = _new_id(),
+                user_id = user_id,
+                provider = "local",
+                provider_uid = user.username,
+                provider_data = _make_local_data(new_password),
+            )
+        except sqlite3.IntegrityError:
+            raise RegistrationError("Could not set a local password")
+        return user
+
+    async def _local_provider(self, user_id: str):
+        providers = await self._store.list_providers_for_user(user_id)
+        return next((p for p in providers if p.provider == "local"), None)
+
+    async def _require_user(self, user_id: str) -> UserRecord:
+        user = await self._store.get_user_by_id(user_id)
+        if user is None:
+            raise AuthenticationError("User not found")
+        return user
 
     async def verify_token(self, raw_token: str) -> tuple[UserRecord, TokenRecord] | None:
         token = await self._store.verify_token(raw_token)
@@ -263,6 +373,29 @@ def _validate_password(password: str) -> None:
 def _validate_email(email: str) -> None:
     if not email or "@" not in email or len(email) < 5:
         raise RegistrationError("Invalid email address")
+
+
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+def _validate_username(username: str) -> tuple[str, str]:
+    """Validate a username (D3): mixed-case input, charset [a-zA-Z0-9._-], 3-32 chars.
+
+    Returns (lowercased_for_storage, original_casing_for_display).
+    """
+    candidate = (username or "").strip()
+    if not (3 <= len(candidate) <= 32) or _USERNAME_RE.match(candidate) is None:
+        raise RegistrationError("Invalid username")
+    return candidate.lower(), candidate
+
+
+def _normalise_optional_email(email: str | None) -> str | None:
+    """Lowercase + validate an email when supplied; treat blank/None as absent (D3)."""
+    if not email or not email.strip():
+        return None
+    normalised = email.lower().strip()
+    _validate_email(normalised)
+    return normalised
 
 
 async def _check_hibp(password: str) -> None:

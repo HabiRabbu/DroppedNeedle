@@ -1,117 +1,67 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import ArtistCard from '$lib/components/ArtistCard.svelte';
 	import ArtistCardSkeleton from '$lib/components/ArtistCardSkeleton.svelte';
-	import { api } from '$lib/api/client';
-	import { API } from '$lib/constants';
-	import { isAbortError } from '$lib/utils/errorHandling';
-	import type { Artist } from '$lib/types';
+	import { getLibraryArtistsInfiniteQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import type { Artist, ArtistSort, LibraryArtistSummary } from '$lib/types';
 	import { ChevronLeft, Mic, Search, X } from 'lucide-svelte';
 
-	type LibraryArtist = {
-		name: string;
-		mbid: string;
-		album_count: number;
-		date_added: string | null;
-	};
-
-	type PaginatedResponse = {
-		artists: LibraryArtist[];
-		total: number;
-		offset: number;
-		limit: number;
-	};
-
-	const PAGE_SIZE = 48;
 	const SEARCH_DEBOUNCE_MS = 300;
 
-	let artists = $state<LibraryArtist[]>([]);
-	let total = $state(0);
-	let loading = $state(true);
-	let loadingMore = $state(false);
-	let error = $state<string | null>(null);
-
-	let sortBy = $state('name');
-	let sortOrder = $state('asc');
-	let searchQuery = $state('');
+	let searchInput = $state('');
+	let debouncedQuery = $state('');
+	let sortBy = $state<ArtistSort>('name');
+	let sortOrder = $state<'asc' | 'desc'>('asc');
 	let searchTimeout: ReturnType<typeof setTimeout> | null = null;
-	let fetchId = 0;
-	let abortController: AbortController | null = null;
 
-	onMount(() => {
-		fetchArtists(true);
-	});
+	const params = $derived({ sortBy, sortOrder, q: debouncedQuery });
+	const artistsQuery = getLibraryArtistsInfiniteQuery(() => params);
 
-	async function fetchArtists(reset = false) {
-		const id = ++fetchId;
-		abortController?.abort();
-		abortController = new AbortController();
-
-		if (reset) {
-			loading = true;
-			artists = [];
-		} else {
-			loadingMore = true;
-		}
-		error = null;
-
-		try {
-			const offset = reset ? 0 : artists.length;
-			const q = searchQuery.trim() || undefined;
-			const url = API.library.artists(PAGE_SIZE, offset, sortBy, sortOrder, q);
-			const data = await api.get<PaginatedResponse>(url, { signal: abortController.signal });
-			if (id !== fetchId) return;
-			artists = reset ? data.artists : [...artists, ...data.artists];
-			total = data.total;
-		} catch (e) {
-			if (isAbortError(e)) return;
-			if (id !== fetchId) return;
-			error = "Couldn't load artists";
-		} finally {
-			if (id === fetchId) {
-				loading = false;
-				loadingMore = false;
+	// Dedupe by the same key the keyed #each uses: if the backend ever returns a
+	// group on two pages, two identical keys would throw Svelte's each_key_duplicate
+	// and freeze the tab. Stable ORDER BY prevents this; this is defence in depth.
+	const artists = $derived.by(() => {
+		const seen: Record<string, true> = Object.create(null);
+		const out: LibraryArtistSummary[] = [];
+		for (const page of artistsQuery.data?.pages ?? []) {
+			for (const item of page.items) {
+				const key = item.artist_mbid || item.artist_name;
+				if (seen[key]) continue;
+				seen[key] = true;
+				out.push(item);
 			}
 		}
-	}
+		return out;
+	});
+	const total = $derived(artistsQuery.data?.pages[0]?.total ?? 0);
 
 	function handleSearchInput(): void {
 		if (searchTimeout) clearTimeout(searchTimeout);
 		searchTimeout = setTimeout(() => {
-			fetchArtists(true);
+			debouncedQuery = searchInput.trim();
 		}, SEARCH_DEBOUNCE_MS);
 	}
 
 	function clearSearch(): void {
-		searchQuery = '';
+		searchInput = '';
 		if (searchTimeout) clearTimeout(searchTimeout);
-		fetchArtists(true);
+		debouncedQuery = '';
 	}
 
 	function handleSortChange(event: Event): void {
 		const value = (event.target as HTMLSelectElement).value;
-		const [newSortBy, newSortOrder] = value.split(':');
+		const [newSortBy, newSortOrder] = value.split(':') as [ArtistSort, 'asc' | 'desc'];
 		sortBy = newSortBy;
 		sortOrder = newSortOrder;
-		fetchArtists(true);
 	}
 
-	function loadMore(): void {
-		if (!loadingMore && artists.length < total) {
-			fetchArtists(false);
-		}
-	}
-
-	function convertToArtist(libArtist: LibraryArtist): Artist {
+	function convertToArtist(libArtist: LibraryArtistSummary): Artist {
 		return {
-			title: libArtist.name,
-			musicbrainz_id: libArtist.mbid,
+			title: libArtist.artist_name,
+			musicbrainz_id: libArtist.artist_mbid ?? '',
 			in_library: true
 		};
 	}
-
-	const hasMore = $derived(artists.length < total);
 </script>
 
 <div class="container mx-auto p-4 md:p-6 lg:p-8">
@@ -142,11 +92,11 @@
 				type="text"
 				placeholder="Search artists..."
 				class="input input-bordered w-full rounded-full pl-11 pr-12"
-				bind:value={searchQuery}
+				bind:value={searchInput}
 				oninput={handleSearchInput}
 				aria-label="Search artists"
 			/>
-			{#if searchQuery}
+			{#if searchInput}
 				<button
 					class="absolute right-3 top-1/2 -translate-y-1/2 btn btn-sm btn-ghost btn-circle"
 					onclick={clearSearch}
@@ -171,12 +121,12 @@
 		</select>
 	</div>
 
-	{#if error}
+	{#if artistsQuery.isError}
 		<div class="alert alert-error mb-6">
-			<span>{error}</span>
-			<button class="btn btn-sm btn-ghost" onclick={() => fetchArtists(true)}>Retry</button>
+			<span>Couldn't load artists</span>
+			<button class="btn btn-sm btn-ghost" onclick={() => artistsQuery.refetch()}>Retry</button>
 		</div>
-	{:else if loading}
+	{:else if artistsQuery.isLoading}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 			{#each Array(12) as _, i (`skeleton-${i}`)}
 				<ArtistCardSkeleton />
@@ -187,21 +137,25 @@
 			<Mic class="h-12 w-12 text-base-content/40 mb-4" strokeWidth={1.5} />
 			<h2 class="text-2xl font-semibold mb-2">No artists found</h2>
 			<p class="text-base-content/70 mb-4">
-				{searchQuery
+				{debouncedQuery
 					? 'Try a different search term.'
 					: "Your library doesn't contain any artists yet."}
 			</p>
 		</div>
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-			{#each artists as artist (artist.mbid)}
+			{#each artists as artist (artist.artist_mbid || artist.artist_name)}
 				<ArtistCard artist={convertToArtist(artist)} />
 			{/each}
 		</div>
-		{#if hasMore}
+		{#if artistsQuery.hasNextPage}
 			<div class="flex justify-center mt-6">
-				<button class="btn btn-primary btn-outline" onclick={loadMore} disabled={loadingMore}>
-					{#if loadingMore}
+				<button
+					class="btn btn-primary btn-outline"
+					onclick={() => artistsQuery.fetchNextPage()}
+					disabled={artistsQuery.isFetchingNextPage}
+				>
+					{#if artistsQuery.isFetchingNextPage}
 						<span class="loading loading-spinner loading-sm"></span>
 					{/if}
 					Load More ({artists.length} / {total})

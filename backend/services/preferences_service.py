@@ -6,8 +6,9 @@ from typing import Any
 import msgspec
 from api.v1.schemas.settings import (
     UserPreferences,
-    LidarrSettings,
-    LidarrConnectionSettings,
+    LibrarySyncSettings,
+    LibraryScanScheduleSettings,
+    DownloadClientConnectionSettings,
     JellyfinConnectionSettings,
     ListenBrainzConnectionSettings,
     OIDCConnectionSettings,
@@ -20,14 +21,17 @@ from api.v1.schemas.settings import (
     LASTFM_SECRET_MASK,
     NavidromeConnectionSettings,
     NAVIDROME_PASSWORD_MASK,
-    OIDCConnectionSettings,
     OIDC_SECRET_MASK,
     PlexConnectionSettings,
     PLEX_TOKEN_MASK,
     MusicBrainzConnectionSettings,
     SecuritySettings,
+    LibrarySettings,
+    ConnectAppsSettings,
+    ACOUSTID_KEY_MASK,
+    DOWNLOAD_CLIENT_API_KEY_MASK,
+    DEFAULT_NAMING_TEMPLATE,
 )
-from api.v1.schemas.profile import ProfileSettings
 from api.v1.schemas.advanced_settings import AdvancedSettings
 from core.config import Settings
 from core.exceptions import ConfigurationError
@@ -131,15 +135,32 @@ class PreferencesService:
             logger.error(f"Failed to save preferences: {e}")
             raise ConfigurationError(f"Failed to save preferences: {e}")
 
-    def get_lidarr_settings(self) -> LidarrSettings:
-        return self._get_section("lidarr_settings", LidarrSettings)
+    def get_library_sync_settings(self) -> LibrarySyncSettings:
+        return self._get_section("library_sync_settings", LibrarySyncSettings)
 
-    def save_lidarr_settings(self, lidarr_settings: LidarrSettings) -> None:
+    def save_library_sync_settings(self, library_sync_settings: LibrarySyncSettings) -> None:
         try:
-            self._save_section("lidarr_settings", lidarr_settings)
+            self._save_section("library_sync_settings", library_sync_settings)
         except Exception as e:  # noqa: BLE001
-            logger.error(f"Failed to save Lidarr settings: {e}")
-            raise ConfigurationError(f"Failed to save Lidarr settings: {e}")
+            logger.error(f"Failed to save library sync settings: {e}")
+            raise ConfigurationError(f"Failed to save library sync settings: {e}")
+
+    def get_library_scan_schedule(self) -> LibraryScanScheduleSettings:
+        config = self._load_config()
+        if "library_scan_schedule" not in config and "library_sync_settings" in config:
+            # one-time migration: carry the old interval to the native schedule
+            freq = config["library_sync_settings"].get("sync_frequency", "24hr")
+            migrated = LibraryScanScheduleSettings(scan_frequency=freq)
+            self._save_section("library_scan_schedule", migrated)
+            return migrated
+        return self._get_section("library_scan_schedule", LibraryScanScheduleSettings)
+
+    def save_library_scan_schedule(self, schedule: LibraryScanScheduleSettings) -> None:
+        try:
+            self._save_section("library_scan_schedule", schedule)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save library scan schedule: {e}")
+            raise ConfigurationError(f"Failed to save library scan schedule: {e}")
 
     def get_advanced_settings(self) -> AdvancedSettings:
         return self._get_section("advanced_settings", AdvancedSettings)
@@ -151,41 +172,48 @@ class PreferencesService:
             logger.error(f"Failed to save advanced settings: {e}")
             raise ConfigurationError(f"Failed to save advanced settings: {e}")
 
-    def get_lidarr_connection(self) -> LidarrConnectionSettings:
-        config = self._load_config()
-        stored_key = config.get("lidarr_api_key")
-        if stored_key is not None:
-            api_key = self._read_secret(("lidarr_api_key",), stored_key)
-        else:
-            api_key = self._settings.lidarr_api_key
-        return LidarrConnectionSettings(
-            lidarr_url=config.get("lidarr_url", self._settings.lidarr_url),
-            lidarr_api_key=api_key,
-            quality_profile_id=config.get("quality_profile_id", self._settings.quality_profile_id),
-            metadata_profile_id=config.get("metadata_profile_id", self._settings.metadata_profile_id),
-            root_folder_path=config.get("root_folder_path", self._settings.root_folder_path),
-        )
+    def get_download_client_settings(self) -> DownloadClientConnectionSettings:
+        """Download client settings with the slskd ``api_key`` MASKED (safe for API responses)."""
+        settings = self._get_section("download_client", DownloadClientConnectionSettings)
+        if settings.api_key:
+            settings.api_key = DOWNLOAD_CLIENT_API_KEY_MASK
+        return settings
 
-    def save_lidarr_connection(self, settings: LidarrConnectionSettings) -> None:
+    def get_download_client_settings_raw(self) -> DownloadClientConnectionSettings:
+        """Download client settings with the slskd ``api_key`` DECRYPTED (for the client/scorer)."""
+        config = self._load_config()
+        data = config.get("download_client", {})
+        settings = self._get_section("download_client", DownloadClientConnectionSettings)
+        settings.api_key = self._read_secret(("download_client", "api_key"), data.get("api_key", ""))
+        return settings
+
+    def save_download_client_settings(self, settings: DownloadClientConnectionSettings) -> None:
         try:
             config = self._load_config().copy()
-            config.update({
-                "lidarr_url": settings.lidarr_url,
-                "lidarr_api_key": encrypt(settings.lidarr_api_key),
-                "quality_profile_id": settings.quality_profile_id,
-                "metadata_profile_id": settings.metadata_profile_id,
-                "root_folder_path": settings.root_folder_path,
-            })
+            current = config.get("download_client", {})
+            api_key = settings.api_key
+            if api_key == DOWNLOAD_CLIENT_API_KEY_MASK:
+                api_key = current.get("api_key", "")  # preserve existing on masked sentinel
+            elif api_key:
+                api_key = encrypt(api_key)
+            config["download_client"] = {
+                "enabled": settings.enabled,
+                "client_type": settings.client_type,
+                "url": settings.url,
+                "api_key": api_key,
+                "verify_downloads": settings.verify_downloads,
+                "min_bitrate_kbps": settings.min_bitrate_kbps,
+                "quality_min": settings.quality_min,
+                "quality_max": settings.quality_max,
+                "flac_mp3_only": settings.flac_mp3_only,
+                "preflight_score_auto_accept": settings.preflight_score_auto_accept,
+                "preflight_score_manual_min": settings.preflight_score_manual_min,
+            }
             self._save_config(config)
-
-            self._settings.lidarr_url = settings.lidarr_url
-            self._settings.lidarr_api_key = settings.lidarr_api_key
-            self._settings.quality_profile_id = settings.quality_profile_id
-            self._settings.metadata_profile_id = settings.metadata_profile_id
-            self._settings.root_folder_path = settings.root_folder_path
+            logger.info("Saved download client settings to %s", self._config_path)
         except Exception as e:  # noqa: BLE001
-            logger.error(f"Failed to save Lidarr connection settings: {e}")
-            raise ConfigurationError(f"Failed to save Lidarr connection settings: {e}")
+            logger.error("Failed to save download client settings: %s", e)
+            raise ConfigurationError(f"Failed to save download client settings: {e}")
 
     def get_jellyfin_connection(self) -> JellyfinConnectionSettings:
         config = self._load_config()
@@ -378,6 +406,16 @@ class PreferencesService:
             logger.error(f"Failed to save home settings: {e}")
             raise ConfigurationError(f"Failed to save home settings: {e}")
 
+    def get_connect_apps_settings(self) -> ConnectAppsSettings:
+        return self._get_section("connect_apps", ConnectAppsSettings)
+
+    def save_connect_apps_settings(self, settings: ConnectAppsSettings) -> None:
+        try:
+            self._save_section("connect_apps", settings)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save Connect Apps settings: {e}")
+            raise ConfigurationError(f"Failed to save Connect Apps settings: {e}")
+
     def get_local_files_connection(self) -> LocalFilesConnectionSettings:
         return self._get_section("local_files_settings", LocalFilesConnectionSettings)
 
@@ -439,6 +477,66 @@ class PreferencesService:
         settings = self.get_lastfm_connection()
         return settings.enabled and bool(settings.api_key) and bool(settings.shared_secret)
 
+    def _library_settings_section(self) -> LibrarySettings:
+        """Decoded library_settings section, seeding library_paths once from the
+        legacy root folder on first read."""
+        config = self._load_config()
+        data = config.get("library_settings")
+        if data:
+            try:
+                return msgspec.convert(data, type=LibrarySettings)
+            except Exception as e:  # noqa: BLE001
+                logger.error("Failed to parse library_settings; using defaults: %s", e)
+                return LibrarySettings()
+        legacy_root = config.get("_legacy_lidarr", {}).get("root_folder_path")
+        if legacy_root:
+            return LibrarySettings(library_paths=[legacy_root])
+        return LibrarySettings()
+
+    def get_library_settings(self) -> LibrarySettings:
+        """Library settings with the AcoustID key MASKED (safe for API responses)."""
+        settings = self._library_settings_section()
+        return LibrarySettings(
+            library_paths=settings.library_paths,
+            staging_path=settings.staging_path,
+            naming_template=settings.naming_template,
+            acoustid_api_key=ACOUSTID_KEY_MASK if settings.acoustid_api_key else "",
+        )
+
+    def get_library_settings_raw(self) -> LibrarySettings:
+        """Library settings with the AcoustID key DECRYPTED (server-side use only)."""
+        settings = self._library_settings_section()
+        api_key = self._read_secret(
+            ("library_settings", "acoustid_api_key"), settings.acoustid_api_key
+        )
+        return LibrarySettings(
+            library_paths=settings.library_paths,
+            staging_path=settings.staging_path,
+            naming_template=settings.naming_template,
+            acoustid_api_key=api_key,
+        )
+
+    def save_library_settings(self, settings: LibrarySettings) -> None:
+        try:
+            current = self._load_config().get("library_settings", {})
+            api_key = settings.acoustid_api_key
+            if api_key == ACOUSTID_KEY_MASK:
+                api_key = current.get("acoustid_api_key", "")  # preserve existing (encrypted)
+            elif api_key:
+                api_key = encrypt(api_key)
+            self._save_section(
+                "library_settings",
+                LibrarySettings(
+                    library_paths=settings.library_paths,
+                    staging_path=settings.staging_path,
+                    naming_template=settings.naming_template or DEFAULT_NAMING_TEMPLATE,
+                    acoustid_api_key=api_key,
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to save library settings: %s", e)
+            raise ConfigurationError(f"Failed to save library settings: {e}")
+
     def get_scrobble_settings(self) -> ScrobbleSettings:
         return self._get_section("scrobble_settings", ScrobbleSettings)
 
@@ -458,16 +556,6 @@ class PreferencesService:
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to save primary music source: %s", e)
             raise ConfigurationError(f"Failed to save primary music source: {e}")
-
-    def get_profile_settings(self) -> ProfileSettings:
-        return self._get_section("profile_settings", ProfileSettings)
-
-    def save_profile_settings(self, settings: ProfileSettings) -> None:
-        try:
-            self._save_section("profile_settings", settings)
-        except Exception as e:  # noqa: BLE001
-            logger.error("Failed to save profile settings: %s", e)
-            raise ConfigurationError(f"Failed to save profile settings: {e}")
 
     def get_setting(self, key: str) -> Any:
         config = self._load_config()
@@ -583,4 +671,4 @@ class PreferencesService:
             self._save_section("security_settings", settings)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to save security settings: {e}")
-            raise ConfigurationError(f"Failed to save security settings")
+            raise ConfigurationError("Failed to save security settings")

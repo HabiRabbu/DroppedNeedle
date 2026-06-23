@@ -70,7 +70,6 @@ class GenreCoverPrewarmService:
             all_artist = artist_mbids[:_MAX_MBIDS_PER_RUN]
             remaining = _MAX_MBIDS_PER_RUN - len(all_artist)
             all_album = album_mbids[:remaining] if remaining > 0 else []
-            total = len(all_artist) + len(all_album)
             warmed = 0
             try:
                 for i, mbid in enumerate(all_artist):

@@ -1,5 +1,8 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+_UID = "u1"
 
 from api.v1.schemas.settings import (
     ListenBrainzConnectionSettings,
@@ -54,10 +57,10 @@ def _make_prefs(
     jf_settings.api_key = ""
     prefs.get_jellyfin_connection.return_value = jf_settings
 
-    lidarr = MagicMock()
-    lidarr.lidarr_url = ""
-    lidarr.lidarr_api_key = ""
-    prefs.get_lidarr_connection.return_value = lidarr
+    download_client = MagicMock()
+    download_client.enabled = False
+    download_client.url = ""
+    prefs.get_download_client_settings.return_value = download_client
 
     yt = MagicMock()
     yt.enabled = False
@@ -101,7 +104,7 @@ def _make_service(
     lfm_repo.get_user_recent_tracks = AsyncMock(return_value=[])
 
     jf_repo = AsyncMock()
-    lidarr_repo = AsyncMock()
+    library_repo = AsyncMock()
     mb_repo = AsyncMock()
     prefs = _make_prefs(
         lb_enabled=lb_enabled,
@@ -109,13 +112,26 @@ def _make_service(
         primary_source=primary_source,
     )
 
+    # discover resolves the user's client via the factory; reuse the same mock repos so existing assertions hold
+    factory = MagicMock()
+    factory.resolve_listenbrainz = AsyncMock(return_value=lb_repo if lb_enabled else None)
+    factory.resolve_lastfm = AsyncMock(return_value=lfm_repo if lfm_enabled else None)
+    factory.resolve_listenbrainz_username = AsyncMock(return_value="lbuser" if lb_enabled else None)
+    factory.resolve_lastfm_username = AsyncMock(return_value="lfmuser" if lfm_enabled else None)
+    factory.is_listenbrainz_linked = AsyncMock(return_value=lb_enabled)
+    factory.is_lastfm_linked = AsyncMock(return_value=lfm_enabled)
+    prefs_store = MagicMock()
+    prefs_store.get = AsyncMock(return_value=SimpleNamespace(primary_music_source=primary_source))
+
     service = DiscoverService(
         listenbrainz_repo=lb_repo,
         jellyfin_repo=jf_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         musicbrainz_repo=mb_repo,
         preferences_service=prefs,
         lastfm_repo=lfm_repo,
+        client_factory=factory,
+        listening_prefs_store=prefs_store,
     )
     return service, lb_repo, lfm_repo, prefs
 
@@ -141,33 +157,31 @@ class TestResolveSource:
 class TestLastFmSectionsAlwaysFetched:
     @pytest.mark.asyncio
     async def test_lastfm_tasks_fetched_when_source_is_listenbrainz(self):
-        """Last.fm weekly/recent tasks should be fetched even when primary source is listenbrainz."""
+        # last.fm weekly/recent tasks fetch regardless of primary source
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        await service.build_discover_data(source="listenbrainz")
+        await service.build_discover_data(_UID, source="listenbrainz")
         lfm_repo.get_user_weekly_artist_chart.assert_awaited_once()
         lfm_repo.get_user_weekly_album_chart.assert_awaited_once()
         lfm_repo.get_user_recent_tracks.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lastfm_tasks_fetched_when_source_is_lastfm(self):
-        """Last.fm weekly/recent tasks should also be fetched when primary source is lastfm."""
         service, _, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
         )
-        await service.build_discover_data(source="lastfm")
+        await service.build_discover_data(_UID, source="lastfm")
         lfm_repo.get_user_weekly_artist_chart.assert_awaited_once()
         lfm_repo.get_user_weekly_album_chart.assert_awaited_once()
         lfm_repo.get_user_recent_tracks.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lastfm_tasks_not_fetched_when_lfm_disabled(self):
-        """Last.fm tasks should NOT be fetched when Last.fm is disabled."""
         service, _, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=False, primary_source="listenbrainz"
         )
-        await service.build_discover_data(source="listenbrainz")
+        await service.build_discover_data(_UID, source="listenbrainz")
         lfm_repo.get_user_weekly_artist_chart.assert_not_awaited()
         lfm_repo.get_user_weekly_album_chart.assert_not_awaited()
         lfm_repo.get_user_recent_tracks.assert_not_awaited()
@@ -176,21 +190,19 @@ class TestLastFmSectionsAlwaysFetched:
 class TestGloballyTrendingSourceSelection:
     @pytest.mark.asyncio
     async def test_listenbrainz_trending_when_source_is_lb(self):
-        """When source is listenbrainz, LB sitewide_top_artists should be called for trending."""
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        await service.build_discover_data(source="listenbrainz")
+        await service.build_discover_data(_UID, source="listenbrainz")
         lb_repo.get_sitewide_top_artists.assert_awaited_once()
         lfm_repo.get_global_top_artists.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_lastfm_trending_when_source_is_lastfm(self):
-        """When source is lastfm, LFM global_top_artists should be called for trending."""
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
         )
-        await service.build_discover_data(source="lastfm")
+        await service.build_discover_data(_UID, source="lastfm")
         lfm_repo.get_global_top_artists.assert_awaited_once()
         lb_repo.get_sitewide_top_artists.assert_not_awaited()
 
@@ -198,15 +210,23 @@ class TestGloballyTrendingSourceSelection:
 class TestCacheKeySourceAware:
     def test_different_sources_produce_different_keys(self):
         service, _, _, _ = _make_service()
-        key_lb = service._integration.get_discover_cache_key("listenbrainz")
-        key_lfm = service._integration.get_discover_cache_key("lastfm")
+        key_lb = service._integration.get_discover_cache_key(_UID, "listenbrainz")
+        key_lfm = service._integration.get_discover_cache_key(_UID, "lastfm")
         assert key_lb != key_lfm
         assert "listenbrainz" in key_lb
         assert "lastfm" in key_lfm
 
+    def test_different_users_produce_different_keys(self):
+        service, _, _, _ = _make_service()
+        key_a = service._integration.get_discover_cache_key("user-a", "listenbrainz")
+        key_b = service._integration.get_discover_cache_key("user-b", "listenbrainz")
+        assert key_a != key_b
+
     def test_none_source_uses_global_default(self):
         service, _, _, _ = _make_service(primary_source="lastfm")
-        key = service._integration.get_discover_cache_key(None)
+        # source resolution runs before the cache key; None maps to global default
+        resolved = service.resolve_source(None)
+        key = service._integration.get_discover_cache_key(_UID, resolved)
         assert "lastfm" in key
 
 
@@ -218,14 +238,14 @@ class TestBuildServicePrompts:
         jf.jellyfin_url = "http://jf"
         jf.api_key = "jf-key"
         prefs.get_jellyfin_connection.return_value = jf
-        lidarr = MagicMock()
-        lidarr.lidarr_url = "http://lidarr"
-        lidarr.lidarr_api_key = "lidarr-key"
-        prefs.get_lidarr_connection.return_value = lidarr
+        download_client = MagicMock()
+        download_client.enabled = True
+        download_client.url = "http://slskd"
+        prefs.get_download_client_settings.return_value = download_client
         service = DiscoverService(
             listenbrainz_repo=AsyncMock(),
             jellyfin_repo=AsyncMock(),
-            lidarr_repo=AsyncMock(),
+            library_repo=AsyncMock(),
             musicbrainz_repo=AsyncMock(),
             preferences_service=prefs,
             lastfm_repo=AsyncMock(),
@@ -233,41 +253,39 @@ class TestBuildServicePrompts:
         return service
 
     def test_lastfm_prompt_shown_when_disabled(self):
+        # LB/last.fm prompts are per-user: driven by the passed flags, not service config
         service = self._make_all_enabled()
-        service._integration._preferences.is_lastfm_enabled.return_value = False
-        prompts = service._homepage._build_service_prompts()
+        prompts = service._homepage._build_service_prompts(lb_enabled=True, lfm_enabled=False)
         services = [p.service for p in prompts]
         assert "lastfm" in services
 
     def test_lastfm_prompt_hidden_when_enabled(self):
         service = self._make_all_enabled()
-        prompts = service._homepage._build_service_prompts()
+        prompts = service._homepage._build_service_prompts(lb_enabled=True, lfm_enabled=True)
         services = [p.service for p in prompts]
         assert "lastfm" not in services
 
     def test_no_prompts_when_all_enabled(self):
         service = self._make_all_enabled()
-        prompts = service._homepage._build_service_prompts()
+        prompts = service._homepage._build_service_prompts(lb_enabled=True, lfm_enabled=True)
         assert prompts == []
 
     def test_all_prompts_when_nothing_enabled(self):
         service, _, _, _ = _make_service(lb_enabled=False, lfm_enabled=False)
-        prompts = service._homepage._build_service_prompts()
+        prompts = service._homepage._build_service_prompts(lb_enabled=False, lfm_enabled=False)
         services = {p.service for p in prompts}
-        assert services == {"lidarr-connection", "listenbrainz", "jellyfin", "lastfm"}
+        assert services == {"download-client", "listenbrainz", "jellyfin", "lastfm"}
 
     def test_lb_prompt_mentions_lastfm(self):
         service = self._make_all_enabled()
-        lb_settings = _make_lb_settings(enabled=False)
-        service._integration._preferences.get_listenbrainz_connection.return_value = lb_settings
-        prompts = service._homepage._build_service_prompts()
+        prompts = service._homepage._build_service_prompts(lb_enabled=False, lfm_enabled=True)
         lb_prompt = next(p for p in prompts if p.service == "listenbrainz")
         assert "last.fm" in lb_prompt.description.lower()
 
 
 class TestBuildArtistsYouMightLikeLastFm:
     def test_handles_lastfm_similar_artist_shape(self):
-        """_build_artists_you_might_like must work with LastFmSimilarArtist (mbid/name, not artist_mbid/artist_name)."""
+        # LastFmSimilarArtist uses mbid/name, not LB's artist_mbid/artist_name
         from repositories.lastfm_models import LastFmSimilarArtist
 
         service, _, _, _ = _make_service(primary_source="lastfm")
@@ -289,7 +307,7 @@ class TestBuildArtistsYouMightLikeLastFm:
         assert section.source == "lastfm"
 
     def test_handles_listenbrainz_similar_artist_shape(self):
-        """_build_artists_you_might_like must also still work with LB similar artist objects."""
+        # LB similar-artist objects use artist_mbid/artist_name (the other shape)
         service, _, _, _ = _make_service(primary_source="listenbrainz")
         seed = MagicMock(artist_name="Radiohead", artist_mbids=["seed-mbid"])
         lb_similar = MagicMock(
@@ -311,7 +329,6 @@ class TestBuildArtistsYouMightLikeLastFm:
         assert section.source == "listenbrainz"
 
     def test_skips_artists_without_mbid(self):
-        """Artists with no mbid should be skipped."""
         from repositories.lastfm_models import LastFmSimilarArtist
 
         service, _, _, _ = _make_service()
@@ -439,7 +456,7 @@ class TestDiscoverQueuePersonalization:
             ]
         )
 
-        queue = await service.build_queue(count=10, source="listenbrainz")
+        queue = await service.build_queue(_UID, count=10, source="listenbrainz")
 
         assert len(queue.items) == 10
         assert any(not item.is_wildcard for item in queue.items)
@@ -491,14 +508,14 @@ class TestDiscoverQueuePersonalization:
             ]
         )
 
-        queue = await service.build_queue(count=10, source="listenbrainz")
+        queue = await service.build_queue(_UID, count=10, source="listenbrainz")
 
         assert len(queue.items) == 10
         assert all(item.is_wildcard for item in queue.items)
 
     @pytest.mark.asyncio
     async def test_deep_cuts_excludes_listened_release_groups(self):
-        """Deep cuts strategy should exclude listened release groups, other strategies should not."""
+        # only the deep-cuts strategy filters out already-listened release groups
         service, lb_repo, _, _ = _make_service(lb_enabled=True, lfm_enabled=False)
         mb_repo = service._queue._mb_repo
 
@@ -578,7 +595,7 @@ class TestDiscoverQueuePersonalization:
             ]
         )
 
-        queue = await service.build_queue(count=10, source="listenbrainz")
+        queue = await service.build_queue(_UID, count=10, source="listenbrainz")
         mbids = {item.release_group_mbid.lower() for item in queue.items}
 
         assert "listened-rg-1" not in mbids, "Deep cuts should exclude listened release groups"
@@ -667,7 +684,7 @@ class TestShowGloballyTrendingSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_globally_trending=False)
 
-        response = await service.build_discover_data(source="listenbrainz")
+        response = await service.build_discover_data(_UID, source="listenbrainz")
 
         lb_repo.get_sitewide_top_artists.assert_not_awaited()
         assert response.globally_trending is None
@@ -679,7 +696,7 @@ class TestShowGloballyTrendingSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_globally_trending=False)
 
-        response = await service.build_discover_data(source="lastfm")
+        response = await service.build_discover_data(_UID, source="lastfm")
 
         lfm_repo.get_global_top_artists.assert_not_awaited()
         assert response.globally_trending is None
@@ -691,7 +708,7 @@ class TestShowGloballyTrendingSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_globally_trending=True)
 
-        await service.build_discover_data(source="listenbrainz")
+        await service.build_discover_data(_UID, source="listenbrainz")
 
         lb_repo.get_sitewide_top_artists.assert_awaited_once()
 
@@ -702,15 +719,14 @@ class TestShowGloballyTrendingSetting:
         )
         prefs.get_home_settings.return_value = HomeSettings(show_globally_trending=False)
 
-        response = await service.build_discover_data(source="listenbrainz")
+        response = await service.build_discover_data(_UID, source="listenbrainz")
 
         assert response.globally_trending is None
         assert response.service_prompts is not None
 
 
 class TestDailyMixesWiring:
-    """Integration: verify build_discover_data() populates response.daily_mixes
-    via post_tasks wiring (Phase 5 acceptance)."""
+    # build_discover_data() must populate response.daily_mixes via post_tasks wiring
 
     @pytest.mark.asyncio
     async def test_daily_mixes_populated_via_post_tasks(self, monkeypatch):
@@ -724,7 +740,7 @@ class TestDailyMixesWiring:
             HomeSection(title="Your Pop Mix", type="albums", items=[], source="listenbrainz"),
         ]
 
-        async def fake_daily_mix(resolved_source, library_mbids=None):
+        async def fake_daily_mix(user_id, resolved_source, library_mbids=None):
             assert resolved_source == "listenbrainz"
             return stub_sections
 
@@ -732,7 +748,7 @@ class TestDailyMixesWiring:
             service._homepage, "_build_daily_mix_sections", fake_daily_mix
         )
 
-        response = await service.build_discover_data(source="listenbrainz")
+        response = await service.build_discover_data(_UID, source="listenbrainz")
 
         assert response.daily_mixes == stub_sections
 
@@ -742,13 +758,13 @@ class TestDailyMixesWiring:
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
 
-        async def fake_daily_mix(resolved_source, library_mbids=None):
+        async def fake_daily_mix(user_id, resolved_source, library_mbids=None):
             return None
 
         monkeypatch.setattr(
             service._homepage, "_build_daily_mix_sections", fake_daily_mix
         )
 
-        response = await service.build_discover_data(source="listenbrainz")
+        response = await service.build_discover_data(_UID, source="listenbrainz")
 
         assert response.daily_mixes == []

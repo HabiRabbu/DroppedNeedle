@@ -18,19 +18,21 @@ class AuthProvidersResponse(AppStruct):
 
 class SetupRequest(AppStruct):
     display_name: str
-    email: str
+    username: str
     password: str
+    email: str | None = None
 
 
 class CreateUserRequest(AppStruct):
     display_name: str
-    email: str
+    username: str
     password: str
     role: str = "user"
+    email: str | None = None
 
 
 class LoginRequest(AppStruct):
-    email: str
+    username: str
     password: str
 
 
@@ -40,6 +42,8 @@ class UserResponse(AppStruct):
     role: str
     email: str | None = None
     avatar_url: str | None = None
+    username: str | None = None
+    username_display: str | None = None
     providers: list[str] = []
 
 
@@ -67,6 +71,31 @@ class UserListResponse(AppStruct):
 
 class SetRoleRequest(AppStruct):
     role: str
+
+
+class ImportCandidateResponse(AppStruct):
+    provider: str
+    provider_uid: str
+    display_name: str
+    avatar_url: str | None = None
+    email: str | None = None
+    already_imported: bool = False
+
+
+class ImportCandidateListResponse(AppStruct):
+    users: list[ImportCandidateResponse]
+
+
+class ImportUsersRequest(AppStruct):
+    provider: str
+    provider_uids: list[str]
+
+
+class ImportUsersResponse(AppStruct):
+    imported: list[UserResponse]
+    linked: list[UserResponse]
+    skipped: list[str]
+    total_imported: int
 
 
 class PlexPinResponse(AppStruct):
@@ -100,7 +129,20 @@ def user_to_response(user, providers: list[str] | None = None) -> UserResponse:
         role = user.role,
         email = user.email,
         avatar_url = user.avatar_url,
+        username = user.username,
+        username_display = user.username_display,
         providers = providers or [],
+    )
+
+
+def import_candidate_to_response(candidate) -> ImportCandidateResponse:
+    return ImportCandidateResponse(
+        provider = candidate.provider,
+        provider_uid = candidate.provider_uid,
+        display_name = candidate.display_name,
+        avatar_url = candidate.avatar_url,
+        email = candidate.email,
+        already_imported = candidate.already_imported,
     )
 
 

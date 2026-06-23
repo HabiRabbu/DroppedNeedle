@@ -32,6 +32,11 @@ class PlaylistSummaryResponse(AppStruct):
     source_ref: str | None = None
     created_at: str = ""
     updated_at: str = ""
+    # Ownership / visibility (D4).
+    is_public: bool = False
+    is_owner: bool = False
+    owner_name: str | None = None
+    is_redacted: bool = False
 
 
 class PlaylistDetailResponse(AppStruct):
@@ -46,10 +51,28 @@ class PlaylistDetailResponse(AppStruct):
     total_duration: int | None = None
     created_at: str = ""
     updated_at: str = ""
+    # Ownership / visibility (D4).
+    is_public: bool = False
+    is_owner: bool = False
+    owner_name: str | None = None
+    is_redacted: bool = False
+
+
+class RedactedPlaylist(AppStruct):
+    """Admin's view of another user's PRIVATE playlist (D4): existence + count + owner
+    only, never the name/tracks/covers. Returned in the list and as a detail body (200)."""
+    id: str
+    track_count: int = 0
+    owner_name: str | None = None
+    is_redacted: bool = True
 
 
 class PlaylistListResponse(AppStruct):
-    playlists: list[PlaylistSummaryResponse] = msgspec.field(default_factory=list)
+    playlists: list[PlaylistSummaryResponse | RedactedPlaylist] = msgspec.field(default_factory=list)
+
+
+class SetPlaylistPublicRequest(AppStruct):
+    is_public: bool
 
 
 class CreatePlaylistRequest(AppStruct):

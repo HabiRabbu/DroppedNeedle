@@ -12,7 +12,6 @@
 	let { albumTitle, artistName, musicbrainzId, ondeleted, onclose }: Props = $props();
 
 	let dialogEl: HTMLDialogElement | undefined = $state();
-	let deleteFiles = $state(false);
 	let removing = $state(false);
 	let loadingPreview = $state(false);
 	let willRemoveArtist = $state(false);
@@ -45,7 +44,7 @@
 		removing = true;
 		error = null;
 
-		const result = await removeAlbum(musicbrainzId, deleteFiles);
+		const result = await removeAlbum(musicbrainzId, true);
 
 		if (result.success) {
 			dialogEl?.close();
@@ -66,7 +65,8 @@
 		<h3 class="text-lg font-bold">Remove Album</h3>
 		<p class="py-4 text-base-content/70">
 			Remove <span class="font-semibold text-base-content">{albumTitle}</span> by
-			<span class="font-semibold text-base-content">{artistName}</span> from your library?
+			<span class="font-semibold text-base-content">{artistName}</span> from your library? Its
+			local files will be permanently deleted from disk - this can't be undone.
 		</p>
 
 		{#if loadingPreview}
@@ -81,15 +81,6 @@
 				</span>
 			</div>
 		{/if}
-
-		<label class="label cursor-pointer justify-start gap-3">
-			<input
-				type="checkbox"
-				class="checkbox checkbox-error checkbox-sm"
-				bind:checked={deleteFiles}
-			/>
-			<span class="label-text">Also delete local files</span>
-		</label>
 
 		{#if error}
 			<div class="alert alert-error mt-3 text-sm">

@@ -231,7 +231,7 @@ async def debug_artist_cover(
             "meta_250": None,
             "meta_500": None,
         },
-        "lidarr": {
+        "library": {
             "configured": False,
             "has_image_url": False,
             "image_url": None,
@@ -269,7 +269,7 @@ async def debug_artist_cover(
         if isinstance(breaker, dict)
     ):
         debug_info["recommendation"] = "One or more cover fetch circuit breakers are OPEN. Retry after cooldown or reset breakers."
-    elif debug_info["lidarr"]["has_image_url"]:
+    elif debug_info["library"]["has_image_url"]:
         debug_info["recommendation"] = "Lidarr has an image URL - fetch should succeed from Lidarr."
     elif debug_info["musicbrainz"]["has_wikidata_relation"]:
         debug_info["recommendation"] = "Wikidata URL found - fetch should succeed from Wikidata/Wikimedia."

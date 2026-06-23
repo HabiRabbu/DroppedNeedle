@@ -6,6 +6,7 @@ import type {
 	ScrobbleResponse
 } from '$lib/types';
 import { api } from '$lib/api/client';
+import { API } from '$lib/constants';
 import {
 	makeTrackKey,
 	shouldAccumulate,
@@ -40,7 +41,7 @@ function createScrobbleManager() {
 		const now = Date.now();
 		if (settingsCache && now - lastSettingsFetch < 60_000) return settingsCache;
 		try {
-			settingsCache = await api.global.get<ScrobbleSettings>('/api/v1/settings/scrobble');
+			settingsCache = await api.global.get<ScrobbleSettings>(API.me.scrobblePreferences());
 			lastSettingsFetch = now;
 			return settingsCache;
 		} catch {
@@ -66,7 +67,7 @@ function createScrobbleManager() {
 				album_name: albumName,
 				duration_ms: durationMs
 			};
-			await api.global.post('/api/v1/scrobble/now-playing', body);
+			await api.global.post(API.scrobble.nowPlaying(), body);
 		} catch {
 			status = 'error';
 		}
@@ -87,7 +88,7 @@ function createScrobbleManager() {
 				duration_ms: durationMs,
 				timestamp
 			};
-			const data = await api.global.post<ScrobbleResponse>('/api/v1/scrobble/submit', body);
+			const data = await api.global.post<ScrobbleResponse>(API.scrobble.submit(), body);
 			lastServiceDetail = Object.fromEntries(
 				Object.entries(data.services).map(([k, v]) => [k, { success: v.success }])
 			);
@@ -240,6 +241,15 @@ function createScrobbleManager() {
 		async refreshSettings(): Promise<void> {
 			settingsCache = null;
 			await init();
+		},
+		reset(): void {
+			// clear per-user scrobble state on user switch/logout so the client gate +
+			// tooltip never reflect the wrong user (AMU-5)
+			enabled = false;
+			status = 'idle';
+			lastServiceDetail = null;
+			settingsCache = null;
+			lastSettingsFetch = 0;
 		}
 	};
 }

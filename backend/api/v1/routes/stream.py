@@ -123,13 +123,13 @@ async def stop_jellyfin_playback(
         raise HTTPException(status_code=502, detail="Failed to report playback stop")
 
 
-@router.head("/local/{track_id}")
+@router.head("/local/{file_id}")
 async def head_local_file(
-    track_id: int,
+    file_id: str,
     local_service: LocalFilesService = Depends(get_local_files_service),
 ) -> Response:
     try:
-        headers = await local_service.head_track(track_id)
+        headers = await local_service.head_track(file_id)
         return Response(
             status_code=200,
             headers=headers,
@@ -142,23 +142,23 @@ async def head_local_file(
     except PermissionError:
         raise HTTPException(status_code=403, detail="Access denied: path is outside the music directory")
     except ExternalServiceError as e:
-        logger.error("Local head error for track %s: %s", track_id, e)
+        logger.error("Local head error for track %s: %s", file_id, e)
         raise HTTPException(status_code=502, detail="Failed to check local file")
     except OSError as e:
-        logger.error("OS error checking local track %s: %s", track_id, e)
+        logger.error("OS error checking local track %s: %s", file_id, e)
         raise HTTPException(status_code=500, detail="Failed to read local file")
 
 
-@router.get("/local/{track_id}")
+@router.get("/local/{file_id}")
 async def stream_local_file(
-    track_id: int,
+    file_id: str,
     request: Request,
     local_service: LocalFilesService = Depends(get_local_files_service),
 ) -> StreamingResponse:
     try:
         range_header = request.headers.get("Range")
         chunks, headers, status_code = await local_service.stream_track(
-            track_file_id=track_id,
+            file_id=file_id,
             range_header=range_header,
         )
         return StreamingResponse(
@@ -177,10 +177,10 @@ async def stream_local_file(
         detail = str(e)
         if "Range not satisfiable" in detail:
             raise HTTPException(status_code=416, detail="Range not satisfiable")
-        logger.error("Local stream error for track %s: %s", track_id, e)
+        logger.error("Local stream error for track %s: %s", file_id, e)
         raise HTTPException(status_code=502, detail="Failed to stream local file")
     except OSError as e:
-        logger.error("OS error streaming local track %s: %s", track_id, e)
+        logger.error("OS error streaming local track %s: %s", file_id, e)
         raise HTTPException(status_code=500, detail="Failed to read local file")
 
 

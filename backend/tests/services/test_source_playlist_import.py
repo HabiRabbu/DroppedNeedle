@@ -13,6 +13,10 @@ from repositories.playlist_repository import PlaylistRecord
 from services.plex_library_service import PlexLibraryService
 from services.navidrome_library_service import NavidromeLibraryService
 from services.jellyfin_library_service import JellyfinLibraryService
+from tests.helpers import mock_user
+
+# The importer whose identity owns the imported playlist (ownership-gated add/delete).
+_REQ = mock_user(user_id="importer-id")
 
 
 def _mock_playlist_service(existing: PlaylistRecord | None = None) -> MagicMock:
@@ -165,8 +169,8 @@ class TestPlexImportPlaylist:
         tracks = [_plex_track()]
         svc = _plex_service(playlists=[pl], items=tracks)
         ps = _mock_playlist_service()
-        result = await svc.import_playlist("pl-1", ps)
-        assert result.musicseerr_playlist_id == "new-pl-1"
+        result = await svc.import_playlist("pl-1", ps, requesting=_REQ)
+        assert result.droppedneedle_playlist_id == "new-pl-1"
         assert result.tracks_imported == 1
         assert result.already_imported is False
         ps.create_playlist.assert_awaited_once()
@@ -177,9 +181,9 @@ class TestPlexImportPlaylist:
         existing = PlaylistRecord(id="existing-1", name="Already", cover_image_path=None, created_at="2024-01-01", updated_at="2024-01-01")
         svc = _plex_service()
         ps = _mock_playlist_service(existing=existing)
-        result = await svc.import_playlist("pl-1", ps)
+        result = await svc.import_playlist("pl-1", ps, requesting=_REQ)
         assert result.already_imported is True
-        assert result.musicseerr_playlist_id == "existing-1"
+        assert result.droppedneedle_playlist_id == "existing-1"
         ps.create_playlist.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -188,9 +192,9 @@ class TestPlexImportPlaylist:
         tracks = [_plex_track()]
         svc = _plex_service(playlists=[pl], items=tracks)
         ps = _mock_playlist_service()
-        await svc.import_playlist("pl-1", ps)
+        await svc.import_playlist("pl-1", ps, requesting=_REQ)
         call_args = ps.add_tracks.call_args[0]
-        track_dicts = call_args[1]
+        track_dicts = call_args[2]
         assert track_dicts[0]["track_name"] == "Song"
         assert track_dicts[0]["artist_name"] == "Artist"
         assert track_dicts[0]["album_name"] == "Album"
@@ -206,10 +210,10 @@ class TestPlexImportPlaylist:
         tracks = [_plex_track(), _plex_track(key="t-2", title="No Media", part_key="")]
         svc = _plex_service(playlists=[pl], items=tracks)
         ps = _mock_playlist_service()
-        result = await svc.import_playlist("pl-1", ps)
+        result = await svc.import_playlist("pl-1", ps, requesting=_REQ)
         assert result.tracks_imported == 1
         assert result.tracks_failed == 1
-        track_dicts = ps.add_tracks.call_args[0][1]
+        track_dicts = ps.add_tracks.call_args[0][2]
         assert len(track_dicts) == 1
         assert track_dicts[0]["track_source_id"] == "/library/parts/1/1/file.flac"
 
@@ -221,8 +225,8 @@ class TestPlexImportPlaylist:
         ps = _mock_playlist_service()
         ps.add_tracks = AsyncMock(side_effect=Exception("DB error"))
         with pytest.raises(Exception):
-            await svc.import_playlist("pl-1", ps)
-        ps.delete_playlist.assert_awaited_once_with("new-pl-1")
+            await svc.import_playlist("pl-1", ps, requesting=_REQ)
+        ps.delete_playlist.assert_awaited_once_with("new-pl-1", _REQ)
 
 
 class TestNavidromeListPlaylists:
@@ -262,7 +266,7 @@ class TestNavidromeImportPlaylist:
         detail_raw.entry = [_navidrome_song()]
         svc = _navidrome_service(playlist_detail=detail_raw)
         ps = _mock_playlist_service()
-        result = await svc.import_playlist("nd-pl-1", ps)
+        result = await svc.import_playlist("nd-pl-1", ps, requesting=_REQ)
         assert result.tracks_imported == 1
         assert result.already_imported is False
 
@@ -272,8 +276,8 @@ class TestNavidromeImportPlaylist:
         detail_raw.entry = [_navidrome_song()]
         svc = _navidrome_service(playlist_detail=detail_raw)
         ps = _mock_playlist_service()
-        await svc.import_playlist("nd-pl-1", ps)
-        track_dicts = ps.add_tracks.call_args[0][1]
+        await svc.import_playlist("nd-pl-1", ps, requesting=_REQ)
+        track_dicts = ps.add_tracks.call_args[0][2]
         assert track_dicts[0]["track_name"] == "Song"
         assert track_dicts[0]["source_type"] == "navidrome"
         assert track_dicts[0]["track_source_id"] == "ns-1"
@@ -311,7 +315,7 @@ class TestJellyfinImportPlaylist:
         tracks = [_jellyfin_track()]
         svc = _jellyfin_service(playlists=[pl], items=tracks)
         ps = _mock_playlist_service()
-        result = await svc.import_playlist("jf-1", ps)
+        result = await svc.import_playlist("jf-1", ps, requesting=_REQ)
         assert result.tracks_imported == 1
         assert result.already_imported is False
 
@@ -321,8 +325,8 @@ class TestJellyfinImportPlaylist:
         tracks = [_jellyfin_track()]
         svc = _jellyfin_service(playlists=[pl], items=tracks)
         ps = _mock_playlist_service()
-        await svc.import_playlist("jf-1", ps)
-        track_dicts = ps.add_tracks.call_args[0][1]
+        await svc.import_playlist("jf-1", ps, requesting=_REQ)
+        track_dicts = ps.add_tracks.call_args[0][2]
         assert track_dicts[0]["track_name"] == "JF Track"
         assert track_dicts[0]["source_type"] == "jellyfin"
         assert track_dicts[0]["track_source_id"] == "jft-1"
@@ -332,7 +336,7 @@ class TestJellyfinImportPlaylist:
         existing = PlaylistRecord(id="ex-1", name="Exists", cover_image_path=None, created_at="2024-01-01", updated_at="2024-01-01")
         svc = _jellyfin_service()
         ps = _mock_playlist_service(existing=existing)
-        result = await svc.import_playlist("jf-1", ps)
+        result = await svc.import_playlist("jf-1", ps, requesting=_REQ)
         assert result.already_imported is True
         ps.create_playlist.assert_not_awaited()
 
@@ -344,5 +348,5 @@ class TestJellyfinImportPlaylist:
         ps = _mock_playlist_service()
         ps.add_tracks = AsyncMock(side_effect=Exception("fail"))
         with pytest.raises(ExternalServiceError):
-            await svc.import_playlist("jf-1", ps)
-        ps.delete_playlist.assert_awaited_once_with("new-pl-1")
+            await svc.import_playlist("jf-1", ps, requesting=_REQ)
+        ps.delete_playlist.assert_awaited_once_with("new-pl-1", _REQ)

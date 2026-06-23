@@ -10,10 +10,10 @@ def _make_library_service(**overrides):
     """Build a minimal LibraryService with mocked deps."""
     from services.library_service import LibraryService
 
-    lidarr = overrides.get("lidarr", AsyncMock())
-    lidarr.is_configured = MagicMock(return_value=True)
-    lidarr.get_library = overrides.get("get_library", AsyncMock(return_value=[]))
-    lidarr.get_artists_from_library = overrides.get(
+    library_repo = overrides.get("library_repo", AsyncMock())
+    library_repo.is_configured = MagicMock(return_value=True)
+    library_repo.get_library = overrides.get("get_library", AsyncMock(return_value=[]))
+    library_repo.get_artists_from_library = overrides.get(
         "get_artists_from_library", AsyncMock(return_value=[])
     )
 
@@ -26,7 +26,7 @@ def _make_library_service(**overrides):
     )
 
     svc = LibraryService(
-        lidarr_repo=lidarr,
+        library_repo=library_repo,
         library_db=library_db,
         cover_repo=MagicMock(),
         preferences_service=prefs,
@@ -38,7 +38,7 @@ class TestCooldownOnlyOnSuccess:
     @pytest.mark.asyncio
     async def test_failed_sync_does_not_set_cooldown(self):
         svc = _make_library_service()
-        svc._lidarr_repo.get_library = AsyncMock(side_effect=RuntimeError("DNS fail"))
+        svc._library_repo.get_library = AsyncMock(side_effect=RuntimeError("DNS fail"))
 
         with patch("services.library_service.CacheStatusService") as mock_css:
             mock_css.return_value.is_syncing.return_value = False
@@ -74,7 +74,7 @@ class TestCooldownOnlyOnSuccess:
             return []
 
         svc = _make_library_service()
-        svc._lidarr_repo.get_library = fail_then_succeed
+        svc._library_repo.get_library = fail_then_succeed
 
         with patch("services.library_service.CacheStatusService") as mock_css:
             mock_css.return_value.is_syncing.return_value = False
@@ -90,7 +90,7 @@ class TestCooldownOnlyOnSuccess:
 class TestSyncFutureDedup:
     @pytest.mark.asyncio
     async def test_concurrent_syncs_deduplicated(self):
-        """Two concurrent sync calls should result in exactly one Lidarr call."""
+        """Two concurrent sync calls should result in exactly one library call."""
         call_count = 0
         sync_event = asyncio.Event()
 
@@ -102,7 +102,7 @@ class TestSyncFutureDedup:
             return []
 
         svc = _make_library_service()
-        svc._lidarr_repo.get_library = slow_get_library
+        svc._library_repo.get_library = slow_get_library
 
         with patch("services.library_service.CacheStatusService") as mock_css:
             mock_css.return_value.is_syncing.return_value = False
@@ -113,17 +113,17 @@ class TestSyncFutureDedup:
             )
 
         assert all(r.status == "success" for r in results)
-        assert call_count == 1, f"Expected 1 Lidarr call, got {call_count}"
+        assert call_count == 1, f"Expected 1 library call, got {call_count}"
 
     @pytest.mark.asyncio
     async def test_concurrent_sync_failure_propagates_to_waiter(self):
         """When the producer fails, deduped waiters get the real exception."""
         async def failing_get_library(**kwargs):
             await asyncio.sleep(0.05)
-            raise RuntimeError("Lidarr DNS failure")
+            raise RuntimeError("library DNS failure")
 
         svc = _make_library_service()
-        svc._lidarr_repo.get_library = failing_get_library
+        svc._library_repo.get_library = failing_get_library
 
         with patch("services.library_service.CacheStatusService") as mock_css:
             mock_css.return_value.is_syncing.return_value = False

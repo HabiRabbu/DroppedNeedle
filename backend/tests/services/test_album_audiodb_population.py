@@ -41,7 +41,7 @@ def _make_service(
     if audiodb_service is None:
         audiodb_service = MagicMock()
     return AlbumService(
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         mb_repo=MagicMock(),
         library_db=MagicMock(),
         memory_cache=MagicMock(),

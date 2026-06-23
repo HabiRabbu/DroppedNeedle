@@ -15,30 +15,6 @@ class LibraryResponse(AppStruct):
     library: list[LibraryAlbum]
 
 
-class LibraryArtistsResponse(AppStruct):
-    artists: list[LibraryArtist]
-    total: int
-
-
-class LibraryAlbumsResponse(AppStruct):
-    albums: list[LibraryAlbum]
-    total: int
-
-
-class PaginatedLibraryAlbumsResponse(AppStruct):
-    albums: list[LibraryAlbum] = []
-    total: int = 0
-    offset: int = 0
-    limit: int = 50
-
-
-class PaginatedLibraryArtistsResponse(AppStruct):
-    artists: list[LibraryArtist] = []
-    total: int = 0
-    offset: int = 0
-    limit: int = 50
-
-
 class RecentlyAddedResponse(AppStruct):
     albums: list[LibraryAlbum] = []
     artists: list[LibraryArtist] = []
@@ -73,7 +49,6 @@ class SyncLibraryResponse(AppStruct):
 class LibraryMbidsResponse(AppStruct):
     mbids: list[str] = []
     requested_mbids: list[str] = []
-    monitored_mbids: list[str] = []
 
 
 class LibraryGroupedResponse(AppStruct):
@@ -103,3 +78,94 @@ class ResolvedTrack(AppStruct):
 
 class TrackResolveResponse(AppStruct):
     items: list[ResolvedTrack] = []
+
+
+# reused LibraryManager domain structs; no import cycle since it imports only models/stubs
+from services.native.library_manager import (  # noqa: E402, F401
+    LibraryAlbumStatus as LibraryAlbumStatusResponse,
+    LibraryAlbumSummary as LibraryAlbumResponse,
+    LibraryArtistSummary as LibraryArtistResponse,
+    LibraryStats as NativeLibraryStatsResponse,
+    LibraryTrack as LibraryTrackResponse,
+    LibraryTrackListItem as LibraryTrackListItemResponse,
+    UnmatchedFile as UnmatchedFileResponse,
+)
+
+
+class NativeAlbumsResponse(AppStruct):
+    items: list[LibraryAlbumResponse] = []
+    total: int = 0
+
+
+class NativeTrackPage(AppStruct):
+    # envelope matches the frontend createLibraryTrackLoader page shape
+    items: list[LibraryTrackListItemResponse] = []
+    total: int = 0
+    offset: int = 0
+    limit: int = 48
+
+
+class LibraryUnmatchedResponse(AppStruct):
+    items: list[UnmatchedFileResponse] = []
+    total: int = 0
+
+
+class NativeArtistsResponse(AppStruct):
+    items: list[LibraryArtistResponse] = []
+    total: int = 0
+
+
+class NativeTracksResponse(AppStruct):
+    items: list[LibraryTrackResponse] = []
+
+
+class TrackTagUpdateRequest(AppStruct):
+    title: str
+    artist: str
+    album: str
+    track_number: int
+    album_artist: str | None = None
+    disc_number: int = 1
+    year: int | None = None
+    genre: str | None = None
+    musicbrainz_release_group_id: str | None = None
+    musicbrainz_release_id: str | None = None
+    musicbrainz_recording_id: str | None = None
+    musicbrainz_artist_id: str | None = None
+    musicbrainz_album_artist_id: str | None = None
+
+
+class UnmatchedResolveRequest(AppStruct):
+    # mbid required for manual_id, optional for accept (falls back to top candidate)
+    resolution: str  # 'accept' | 'reject' | 'manual_id'
+    mbid: str | None = None
+
+
+class UnmatchedBatchItem(AppStruct):
+    review_id: int
+    recording_mbid: str | None = None
+
+
+class UnmatchedBatchResolveRequest(AppStruct):
+    release_group_mbid: str
+    items: list[UnmatchedBatchItem] = []
+
+
+class UnmatchedBatchFailure(AppStruct):
+    review_id: int
+    error: str
+
+
+class UnmatchedBatchResolveResponse(AppStruct):
+    resolved: int = 0
+    failed: list[UnmatchedBatchFailure] = []
+
+
+class LibraryScanStatusResponse(AppStruct):
+    status: str = "idle"
+    total_files: int = 0
+    processed_files: int = 0
+    matched_files: int = 0
+    failed_files: int = 0
+    started_at: float | None = None
+    updated_at: float | None = None

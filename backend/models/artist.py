@@ -26,7 +26,6 @@ class ReleaseItem(AppStruct):
     year: int | None = None
     in_library: bool = False
     requested: bool = False
-    monitored: bool = False
 
 
 class ArtistInfo(AppStruct):
@@ -52,9 +51,12 @@ class ArtistInfo(AppStruct):
     aliases: list[str] = []
     external_links: list[ExternalLink] = []
     in_library: bool = False
-    in_lidarr: bool = False
-    monitored: bool = False
+    # Per-user follow state. The artist page reads it from the dedicated
+    # /artists/{mbid}/follow endpoint, so these stay at their defaults in the
+    # globally-cached struct.
+    followed: bool = False
     auto_download: bool = False
+    auto_download_state: str = "none"
     albums: list[ReleaseItem] = []
     singles: list[ReleaseItem] = []
     eps: list[ReleaseItem] = []

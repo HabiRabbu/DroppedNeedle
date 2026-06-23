@@ -43,18 +43,15 @@ class LastFmArtistEnrichment(AppStruct):
     url: str | None = None
 
 
-class ArtistMonitoringRequest(AppStruct):
-    monitored: bool
-    auto_download: bool = False
+class FollowRequest(AppStruct):
+    followed: bool
 
 
-class ArtistMonitoringResponse(AppStruct):
-    success: bool
-    monitored: bool
+class AutoDownloadRequest(AppStruct):
+    enabled: bool
+
+
+class FollowStatusResponse(AppStruct):
+    followed: bool
     auto_download: bool
-
-
-class ArtistMonitoringStatus(AppStruct):
-    in_lidarr: bool
-    monitored: bool
-    auto_download: bool
+    auto_download_state: str

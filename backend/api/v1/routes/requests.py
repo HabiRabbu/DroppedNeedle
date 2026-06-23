@@ -1,12 +1,11 @@
 import msgspec.structs
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from api.v1.schemas.request import (
     AlbumRequest,
     BatchAlbumRequest,
     BatchCancelRequest,
     BatchCancelResponse,
     BatchRequestResponse,
-    QueueStatusResponse,
     RequestAcceptedResponse,
 )
 from core.dependencies import get_request_service
@@ -60,11 +59,6 @@ async def cancel_batch(
     request_service: RequestService = Depends(get_request_service),
 ):
     user_id = None if current_user.role == "admin" else current_user.id
-    return await request_service.cancel_batch(body.musicbrainz_ids, user_id=user_id)
-
-
-@router.get("/new/queue-status", response_model=QueueStatusResponse)
-async def get_queue_status(
-    request_service: RequestService = Depends(get_request_service)
-):
-    return request_service.get_queue_status()
+    return await request_service.cancel_batch(
+        body.musicbrainz_ids, user_id=user_id, user_role=current_user.role
+    )

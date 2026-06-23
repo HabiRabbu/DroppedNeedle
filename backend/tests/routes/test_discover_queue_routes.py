@@ -7,6 +7,9 @@ from fastapi.testclient import TestClient
 from api.v1.schemas.discover import DiscoverQueueResponse, DiscoverQueueItemLight
 from api.v1.routes.discover import router
 from core.dependencies import get_discover_service, get_discover_queue_manager
+from tests.helpers import override_user_auth
+
+_UID = "test-user-id"
 
 
 def _make_queue_response(source: str) -> DiscoverQueueResponse:
@@ -30,7 +33,7 @@ def _make_queue_response(source: str) -> DiscoverQueueResponse:
 def mock_discover_service():
     mock = AsyncMock()
     mock.build_queue = AsyncMock(return_value=_make_queue_response("listenbrainz"))
-    mock.resolve_source = MagicMock(side_effect=lambda s: s or "listenbrainz")
+    mock.resolve_source_for_user = AsyncMock(side_effect=lambda uid, s: s or "listenbrainz")
     return mock
 
 
@@ -48,6 +51,7 @@ def client(mock_discover_service, mock_queue_manager):
     app.include_router(router)
     app.dependency_overrides[get_discover_service] = lambda: mock_discover_service
     app.dependency_overrides[get_discover_queue_manager] = lambda: mock_queue_manager
+    override_user_auth(app, user_id=_UID)
     return TestClient(app)
 
 
@@ -60,7 +64,7 @@ class TestDiscoverQueueSourceRoute:
     def test_queue_passes_source_param_to_manager(self, client, mock_queue_manager):
         resp = client.get("/discover/queue?source=lastfm")
         assert resp.status_code == 200
-        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with("lastfm", None)
+        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with(_UID, "lastfm", None)
 
     def test_queue_passes_listenbrainz_source(self, client, mock_discover_service):
         resp = client.get("/discover/queue?source=listenbrainz")
@@ -70,18 +74,18 @@ class TestDiscoverQueueSourceRoute:
     def test_queue_no_source_uses_resolved_source(self, client, mock_discover_service, mock_queue_manager):
         resp = client.get("/discover/queue")
         assert resp.status_code == 200
-        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with("listenbrainz", None)
-        mock_discover_service.resolve_source.assert_called_once_with(None)
+        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with(_UID, "listenbrainz", None)
+        mock_discover_service.resolve_source_for_user.assert_awaited_once_with(_UID, None)
 
     def test_queue_respects_count_param(self, client, mock_queue_manager):
         resp = client.get("/discover/queue?count=5&source=lastfm")
         assert resp.status_code == 200
-        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with("lastfm", 5)
+        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with(_UID, "lastfm", 5)
 
     def test_queue_caps_count_at_20(self, client, mock_queue_manager):
         resp = client.get("/discover/queue?count=50")
         assert resp.status_code == 200
-        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with("listenbrainz", 20)
+        mock_queue_manager.build_hydrated_queue.assert_awaited_once_with(_UID, "listenbrainz", 20)
 
     def test_queue_returns_items(self, client, mock_discover_service):
         resp = client.get("/discover/queue?source=lastfm")
@@ -110,7 +114,7 @@ class TestQueueStatusRoute:
         )
         resp = client.get("/discover/queue/status")
         assert resp.status_code == 200
-        mock_discover_service.resolve_source.assert_called_once_with(None)
+        mock_discover_service.resolve_source_for_user.assert_awaited_once_with(_UID, None)
 
     def test_status_ready_includes_queue_info(self, client, mock_queue_manager):
         mock_queue_manager.get_status = MagicMock(
@@ -143,7 +147,7 @@ class TestQueueGenerateRoute:
         assert resp.status_code == 200
         data = resp.json()
         assert data["action"] == "started"
-        mock_queue_manager.start_build.assert_awaited_once_with("listenbrainz", force=False)
+        mock_queue_manager.start_build.assert_awaited_once_with(_UID, "listenbrainz", force=False)
 
     def test_generate_already_building(self, client, mock_queue_manager):
         mock_queue_manager.start_build = AsyncMock(
@@ -165,7 +169,7 @@ class TestQueueGenerateRoute:
             json={"source": "listenbrainz", "force": True},
         )
         assert resp.status_code == 200
-        mock_queue_manager.start_build.assert_awaited_once_with("listenbrainz", force=True)
+        mock_queue_manager.start_build.assert_awaited_once_with(_UID, "listenbrainz", force=True)
 
     def test_generate_defaults_source(self, client, mock_discover_service, mock_queue_manager):
         mock_queue_manager.start_build = AsyncMock(
@@ -176,4 +180,4 @@ class TestQueueGenerateRoute:
             json={"force": False},
         )
         assert resp.status_code == 200
-        mock_discover_service.resolve_source.assert_called_once_with(None)
+        mock_discover_service.resolve_source_for_user.assert_awaited_once_with(_UID, None)

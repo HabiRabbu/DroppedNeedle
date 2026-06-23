@@ -178,7 +178,7 @@ def test_head_local_returns_200_with_headers(local_client, mock_local_service):
 
     assert response.status_code == 200
     assert response.headers["accept-ranges"] == "bytes"
-    mock_local_service.head_track.assert_awaited_once_with(42)
+    mock_local_service.head_track.assert_awaited_once_with("42")
 
 
 def test_head_local_returns_404_when_not_found(local_client, mock_local_service):

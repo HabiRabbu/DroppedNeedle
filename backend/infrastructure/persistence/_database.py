@@ -4,10 +4,27 @@ import asyncio
 import json
 import sqlite3
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+
+def _fold_text(value: Any) -> Any:
+    """Casefold and strip diacritics so 'Marias' matches 'Marías'.
+
+    Registered as the SQLite ``fold()`` function and applied to both column and
+    pattern in LIKE searches, so library search is accent- and case-insensitive
+    for keyboards that can't type the accent. NFKD also folds compatibility forms
+    (ligatures, full-width chars) into their plain equivalents, which is desirable
+    for forgiving search and matches the codebase's other search normalizers
+    (search_service, plex/navidrome). Non-strings (incl. NULL) pass through
+    unchanged so the surrounding LIKE keeps its normal semantics."""
+    if not isinstance(value, str):
+        return value
+    decomposed = unicodedata.normalize("NFKD", value)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
 
 
 def _encode_json(value: Any) -> str:
@@ -51,8 +68,13 @@ class PersistenceBase:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # accent/case-insensitive LIKE searches (see _fold_text)
+        conn.create_function("fold", 1, _fold_text, deterministic=True)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        # (AUD-7) Uniform backstop: a writer blocked by another writer waits up to
+        # 5s for the lock instead of failing immediately with "database is locked".
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def _execute(self, operation: Any, write: bool) -> Any:

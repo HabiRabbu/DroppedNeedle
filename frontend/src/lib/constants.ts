@@ -2,38 +2,38 @@ import type { MusicSource } from './stores/musicSource';
 
 export const AUTH_FREE_PATHS = ['/login', '/setup', '/auth/callback'];
 
-export const CACHE_KEY_GROUPS = {
+const CACHE_KEY_GROUPS = {
 	core: {
-		LIBRARY_MBIDS: 'musicseerr_library_mbids',
-		RECENTLY_ADDED: 'musicseerr_recently_added',
-		HOME_CACHE: 'musicseerr_home_cache',
-		DISCOVER_QUEUE: 'musicseerr_discover_queue',
-		SEARCH: 'musicseerr_search_cache'
+		LIBRARY_MBIDS: 'droppedneedle_library_mbids',
+		RECENTLY_ADDED: 'droppedneedle_recently_added',
+		HOME_CACHE: 'droppedneedle_home_cache',
+		DISCOVER_QUEUE: 'droppedneedle_discover_queue',
+		SEARCH: 'droppedneedle_search_cache'
 	},
 	library: {
-		LOCAL_FILES_SIDEBAR: 'musicseerr_local_files_sidebar',
-		JELLYFIN_SIDEBAR: 'musicseerr_jellyfin_sidebar',
-		JELLYFIN_ALBUMS_LIST: 'musicseerr_jellyfin_albums_list',
-		NAVIDROME_SIDEBAR: 'musicseerr_navidrome_sidebar',
-		NAVIDROME_ALBUMS_LIST: 'musicseerr_navidrome_albums_list',
-		PLEX_SIDEBAR: 'musicseerr_plex_sidebar',
-		PLEX_ALBUMS_LIST: 'musicseerr_plex_albums_list',
-		LOCAL_FILES_ALBUMS_LIST: 'musicseerr_local_files_albums_list'
+		LOCAL_FILES_SIDEBAR: 'droppedneedle_local_files_sidebar',
+		JELLYFIN_SIDEBAR: 'droppedneedle_jellyfin_sidebar',
+		JELLYFIN_ALBUMS_LIST: 'droppedneedle_jellyfin_albums_list',
+		NAVIDROME_SIDEBAR: 'droppedneedle_navidrome_sidebar',
+		NAVIDROME_ALBUMS_LIST: 'droppedneedle_navidrome_albums_list',
+		PLEX_SIDEBAR: 'droppedneedle_plex_sidebar',
+		PLEX_ALBUMS_LIST: 'droppedneedle_plex_albums_list',
+		LOCAL_FILES_ALBUMS_LIST: 'droppedneedle_local_files_albums_list'
 	},
 	detail: {
-		ALBUM_BASIC_CACHE: 'musicseerr_album_basic_cache',
-		ALBUM_TRACKS_CACHE: 'musicseerr_album_tracks_cache',
-		ALBUM_DISCOVERY_CACHE: 'musicseerr_album_discovery_cache',
-		ALBUM_LASTFM_CACHE: 'musicseerr_album_lastfm_cache',
-		ALBUM_YOUTUBE_CACHE: 'musicseerr_album_youtube_cache',
-		ALBUM_SOURCE_MATCH_CACHE: 'musicseerr_album_source_match_cache',
-		ARTIST_BASIC_CACHE: 'musicseerr_artist_basic_cache',
-		ARTIST_EXTENDED_CACHE: 'musicseerr_artist_extended_cache',
-		ARTIST_LASTFM_CACHE: 'musicseerr_artist_lastfm_cache'
+		ALBUM_BASIC_CACHE: 'droppedneedle_album_basic_cache',
+		ALBUM_TRACKS_CACHE: 'droppedneedle_album_tracks_cache',
+		ALBUM_DISCOVERY_CACHE: 'droppedneedle_album_discovery_cache',
+		ALBUM_LASTFM_CACHE: 'droppedneedle_album_lastfm_cache',
+		ALBUM_YOUTUBE_CACHE: 'droppedneedle_album_youtube_cache',
+		ALBUM_SOURCE_MATCH_CACHE: 'droppedneedle_album_source_match_cache',
+		ARTIST_BASIC_CACHE: 'droppedneedle_artist_basic_cache',
+		ARTIST_EXTENDED_CACHE: 'droppedneedle_artist_extended_cache',
+		ARTIST_LASTFM_CACHE: 'droppedneedle_artist_lastfm_cache'
 	},
 	charts: {
-		TIME_RANGE_OVERVIEW_CACHE: 'musicseerr_time_range_overview_cache',
-		GENRE_DETAIL_CACHE: 'musicseerr_genre_detail_cache'
+		TIME_RANGE_OVERVIEW_CACHE: 'droppedneedle_time_range_overview_cache',
+		GENRE_DETAIL_CACHE: 'droppedneedle_genre_detail_cache'
 	}
 } as const;
 
@@ -45,18 +45,20 @@ export const CACHE_KEYS = {
 } as const;
 
 export const PAGE_SOURCE_KEYS = {
-	home: 'musicseerr_source_home',
-	discover: 'musicseerr_source_discover',
-	artist: 'musicseerr_source_artist',
-	trending: 'musicseerr_source_trending',
-	popular: 'musicseerr_source_popular',
-	yourTop: 'musicseerr_source_your_top'
+	home: 'droppedneedle_source_home',
+	discover: 'droppedneedle_source_discover',
+	artist: 'droppedneedle_source_artist',
+	trending: 'droppedneedle_source_trending',
+	popular: 'droppedneedle_source_popular',
+	yourTop: 'droppedneedle_source_your_top'
 } as const;
 
-export const CACHE_TTL_GROUPS = {
+const CACHE_TTL_GROUPS = {
 	core: {
 		DEFAULT: 5 * 60 * 1000,
 		LIBRARY: 5 * 60 * 1000,
+		LIBRARY_NATIVE: 60 * 1000,
+		SCAN_STATUS: 2 * 1000,
 		RECENTLY_ADDED: 5 * 60 * 1000,
 		HOME: 5 * 60 * 1000,
 		DISCOVER: 30 * 60 * 1000,
@@ -116,28 +118,12 @@ export const API_SIZES = {
 	FULL: 500
 } as const;
 
-export const BATCH_SIZES = {
-	RELEASES: 50,
-	SEARCH_RESULTS: 24,
-	COVER_PREFETCH: 12
-} as const;
-
 export const TOAST_DURATION = 2000;
-
-export const SCROLL_THRESHOLD = 10;
-
-export const CANVAS_SAMPLE_SIZE = 50;
-
-export const IMAGE_PIXEL_SAMPLE_STEP = 16;
-
-export const ALPHA_THRESHOLD = 128;
 
 export const STATUS_COLORS = {
 	REQUESTED: '#F59E0B',
 	MONITORED: '#6B7280'
 } as const;
-
-export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const YOUTUBE_PLAYER_ELEMENT_ID = 'yt-player-embed';
 
@@ -156,7 +142,15 @@ export const API = {
 		lastFmEnrichment: (id: string, artistName: string) => {
 			const params = new URLSearchParams({ artist_name: artistName });
 			return `/api/v1/artists/${id}/lastfm?${params.toString()}`;
-		}
+		},
+		follow: (id: string) => `/api/v1/artists/${id}/follow`,
+		autoDownload: (id: string) => `/api/v1/artists/${id}/auto-download`
+	},
+	following: {
+		artists: () => '/api/v1/following/artists',
+		newReleases: (limit: number, offset: number) =>
+			`/api/v1/following/new-releases?limit=${limit}&offset=${offset}`,
+		events: () => '/api/v1/following/events'
 	},
 	album: {
 		basic: (id: string) => `/api/v1/albums/${id}`,
@@ -164,8 +158,14 @@ export const API = {
 	},
 	library: {
 		mbids: () => '/api/v1/library/mbids',
-		albums: (limit = 50, offset = 0, sortBy = 'date_added', sortOrder = 'desc', q?: string) => {
-			let url = `/api/v1/library/albums?limit=${limit}&offset=${offset}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+		albums: (page = 1, sort = 'recent', q?: string, format?: string, pageSize = 50) => {
+			let url = `/api/v1/library/albums?page=${page}&page_size=${pageSize}&sort=${sort}`;
+			if (q) url += `&q=${encodeURIComponent(q)}`;
+			if (format) url += `&format=${encodeURIComponent(format)}`;
+			return url;
+		},
+		tracks: (limit = 48, offset = 0, sort = 'recent', q?: string) => {
+			let url = `/api/v1/library/tracks?limit=${limit}&offset=${offset}&sort=${sort}`;
 			if (q) url += `&q=${encodeURIComponent(q)}`;
 			return url;
 		},
@@ -174,6 +174,23 @@ export const API = {
 			if (q) url += `&q=${encodeURIComponent(q)}`;
 			return url;
 		},
+		album: (mbid: string) => `/api/v1/library/albums/${mbid}/status`,
+		albumTracks: (mbid: string) => `/api/v1/library/albums/${mbid}/tracks`,
+		stats: () => '/api/v1/library/stats',
+		scanSchedule: () => '/api/v1/settings/library/schedule',
+		rescanAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/rescan`,
+		updateTrackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}`,
+		trackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}/tags`,
+		scanStart: () => '/api/v1/library/scan/start',
+		scanCancel: () => '/api/v1/library/scan/cancel',
+		scanStatus: () => '/api/v1/library/scan/status',
+		scanStream: () => '/api/v1/library/scan/stream',
+		unmatched: () => '/api/v1/library/scan/unmatched',
+		resolveUnmatched: (id: number) => `/api/v1/library/scan/unmatched/${id}/resolve`,
+		resolveUnmatchedBatch: () => '/api/v1/library/scan/unmatched/resolve-batch',
+		settings: () => '/api/v1/settings/library',
+		addPath: () => '/api/v1/settings/library/paths',
+		removePath: (path: string) => `/api/v1/settings/library/paths?path=${encodeURIComponent(path)}`,
 		removeAlbumPreview: (mbid: string) => `/api/v1/library/album/${mbid}/removal-preview`,
 		removeAlbum: (mbid: string) => `/api/v1/library/album/${mbid}`,
 		resolveTracks: () => '/api/v1/library/resolve-tracks'
@@ -221,7 +238,6 @@ export const API = {
 			`/api/v1/youtube/track-link/${albumId}/${discNumber}/${trackNumber}`,
 		quota: () => '/api/v1/youtube/quota'
 	},
-	queue: () => '/api/v1/queue',
 	settings: () => '/api/v1/settings',
 	settingsPrimarySource: () => '/api/v1/settings/primary-source',
 	settingsNavidrome: () => '/api/v1/settings/navidrome',
@@ -239,7 +255,23 @@ export const API = {
 		get: () => '/api/v1/profile',
 		update: () => '/api/v1/profile',
 		avatarUpload: () => '/api/v1/profile/avatar',
-		avatar: () => '/api/v1/profile/avatar'
+		avatar: (userId: string) => `/api/v1/profile/avatar/${userId}`,
+		updateUsername: () => '/api/v1/profile/username',
+		updateEmail: () => '/api/v1/profile/email',
+		changePassword: () => '/api/v1/profile/password',
+		setPassword: () => '/api/v1/profile/set-password'
+	},
+	me: {
+		connections: () => '/api/v1/me/connections',
+		connection: (service: string) => `/api/v1/me/connections/${service}`,
+		scrobblePreferences: () => '/api/v1/me/scrobble-preferences',
+		lastfmAuthToken: () => '/api/v1/me/connections/lastfm/auth/token',
+		lastfmAuthSession: () => '/api/v1/me/connections/lastfm/auth/session',
+		listenbrainz: () => '/api/v1/me/connections/listenbrainz'
+	},
+	scrobble: {
+		nowPlaying: () => '/api/v1/scrobble/now-playing',
+		submit: () => '/api/v1/scrobble/submit'
 	},
 	playlists: {
 		list: () => '/api/v1/playlists',
@@ -256,7 +288,8 @@ export const API = {
 		getCover: (id: string) => `/api/v1/playlists/${id}/cover`,
 		deleteCover: (id: string) => `/api/v1/playlists/${id}/cover`,
 		checkTracks: () => '/api/v1/playlists/check-tracks',
-		resolveSources: (id: string) => `/api/v1/playlists/${id}/resolve-sources`
+		resolveSources: (id: string) => `/api/v1/playlists/${id}/resolve-sources`,
+		share: (id: string) => `/api/v1/playlists/${id}/share`
 	},
 	stream: {
 		jellyfin: (itemId: string) => `/api/v1/stream/jellyfin/${itemId}`,
@@ -274,9 +307,53 @@ export const API = {
 		local: (trackId: number | string) => `/api/v1/stream/local/${trackId}`
 	},
 	download: {
-		localTrack: (trackId: number) => `/api/v1/download/local/track/${trackId}`,
+		localTrack: (trackId: string) => `/api/v1/download/local/track/${trackId}`,
 		localAlbum: (albumId: number) => `/api/v1/download/local/album/${albumId}`,
 		localAlbumByMbid: (mbid: string) => `/api/v1/download/local/album/mbid/${mbid}`
+	},
+	downloadClient: {
+		config: () => '/api/v1/download-client/config',
+		test: () => '/api/v1/download-client/test',
+		status: () => '/api/v1/download-client/status'
+	},
+	connectApps: {
+		settings: () => '/api/v1/connect-apps/settings',
+		appPasswords: () => '/api/v1/connect-apps/app-passwords',
+		appPassword: (id: string) => `/api/v1/connect-apps/app-passwords/${id}`
+	},
+	downloads: {
+		searchAlbum: () => '/api/v1/downloads/search/album',
+		searchJob: (jobId: string) => `/api/v1/downloads/search/${jobId}`,
+		pick: (jobId: string) => `/api/v1/downloads/search/${jobId}/pick`,
+		cancelSearch: (jobId: string) => `/api/v1/downloads/search/${jobId}/cancel`,
+		searchStream: (jobId: string) => `/api/v1/downloads/search/stream?job_id=${jobId}`,
+		quarantine: () => '/api/v1/downloads/quarantine',
+		quarantineDelete: (id: number) => `/api/v1/downloads/quarantine/${id}`,
+		list: (status?: string, page = 1, pageSize = 100, releaseGroupMbid?: string) => {
+			const params = new URLSearchParams();
+			if (status) params.set('status', status);
+			if (releaseGroupMbid) params.set('release_group_mbid', releaseGroupMbid);
+			params.set('page', String(page));
+			params.set('page_size', String(pageSize));
+			return `/api/v1/downloads?${params.toString()}`;
+		},
+		get: (taskId: string) => `/api/v1/downloads/${taskId}`,
+		stream: (taskId: string) => `/api/v1/downloads/${taskId}/stream`,
+		cancel: (taskId: string) => `/api/v1/downloads/${taskId}/cancel`,
+		retry: (taskId: string) => `/api/v1/downloads/${taskId}/retry`
+	},
+	requests: {
+		new: () => '/api/v1/requests/new',
+		autoDownloadApprovals: () => '/api/v1/requests/auto-download-approvals',
+		approveAutoDownload: (userId: string, mbid: string) =>
+			`/api/v1/requests/auto-download-approvals/${userId}/${mbid}/approve`,
+		rejectAutoDownload: (userId: string, mbid: string) =>
+			`/api/v1/requests/auto-download-approvals/${userId}/${mbid}/reject`,
+		revokeAutoDownload: (userId: string, mbid: string) =>
+			`/api/v1/requests/auto-download-approvals/${userId}/${mbid}/revoke`
+	},
+	tracks: {
+		request: (recordingMbid: string) => `/api/v1/tracks/${recordingMbid}/request`
 	},
 	jellyfinLibrary: {
 		albumMatch: (mbid: string) => `/api/v1/jellyfin/albums/match/${mbid}`,
@@ -453,30 +530,28 @@ export const API = {
 	},
 	local: {
 		albumMatch: (mbid: string) => `/api/v1/local/albums/match/${mbid}`,
-		albums: (limit = 50, offset = 0, sortBy = 'name', q?: string, sortOrder = 'asc') => {
+		albums: (
+			limit = 50,
+			offset = 0,
+			sortBy = 'name',
+			q?: string,
+			sortOrder = 'asc',
+			decade?: number
+		) => {
 			let url = `/api/v1/local/albums?limit=${limit}&offset=${offset}&sort_by=${sortBy}&sort_order=${sortOrder}`;
 			if (q) url += `&q=${encodeURIComponent(q)}`;
+			if (decade != null) url += `&decade=${decade}`;
 			return url;
 		},
-		albumTracks: (id: number | string) => `/api/v1/local/albums/${id}/tracks`,
+		albumTracks: (mbid: string) => `/api/v1/local/albums/${mbid}/tracks`,
 		search: (query: string) => `/api/v1/local/search?q=${encodeURIComponent(query)}`,
 		recent: () => '/api/v1/local/recent',
-		stats: () => '/api/v1/local/stats'
-	}
-} as const;
-
-export const MESSAGES = {
-	ERRORS: {
-		LOAD_ALBUM: 'Failed to load album',
-		LOAD_ARTIST: 'Failed to load artist',
-		LOAD_TRACKS: "Couldn't load the track list",
-		LOAD_RELEASES: 'Failed to load releases',
-		NETWORK: 'Network error occurred',
-		NOT_FOUND: 'Resource not found',
-		REQUEST_FAILED: 'Request failed'
-	},
-	SUCCESS: {
-		ADDED_TO_LIBRARY: 'Added to Library',
-		REQUESTED: 'Request submitted successfully'
+		stats: () => '/api/v1/local/stats',
+		suggestions: (limit = 12, decade?: number) => {
+			let url = `/api/v1/local/suggestions?limit=${limit}`;
+			if (decade != null) url += `&decade=${decade}`;
+			return url;
+		},
+		decades: () => '/api/v1/local/decades'
 	}
 } as const;

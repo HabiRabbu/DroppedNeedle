@@ -1,19 +1,3 @@
-from .base import LidarrBase
-from .library import LidarrLibraryRepository
-from .artist import LidarrArtistRepository
-from .history import LidarrHistoryRepository
-from .album import LidarrAlbumRepository
-from .config import LidarrConfigRepository
-from .queue import LidarrQueueRepository
-from .repository import LidarrRepository
-
-__all__ = [
-    "LidarrBase",
-    "LidarrLibraryRepository",
-    "LidarrArtistRepository",
-    "LidarrHistoryRepository",
-    "LidarrAlbumRepository",
-    "LidarrConfigRepository",
-    "LidarrQueueRepository",
-    "LidarrRepository",
-]
+# Intentionally empty. Kept for git history after the Phase 2 demolition removed
+# the old integration code. The native engine lives under repositories/ and
+# services/native/ instead.

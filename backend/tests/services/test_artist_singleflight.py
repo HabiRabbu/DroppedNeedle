@@ -20,8 +20,8 @@ def _fake_artist_info() -> ArtistInfo:
 
 def _make_service() -> ArtistService:
     mb = AsyncMock()
-    lidarr = AsyncMock()
-    lidarr.is_configured.return_value = False
+    library_repo = AsyncMock()
+    library_repo.is_configured.return_value = False
     wikidata = AsyncMock()
     prefs = MagicMock()
     mem_cache = AsyncMock()
@@ -35,7 +35,7 @@ def _make_service() -> ArtistService:
 
     svc = ArtistService(
         mb_repo=mb,
-        lidarr_repo=lidarr,
+        library_repo=library_repo,
         wikidata_repo=wikidata,
         preferences_service=prefs,
         memory_cache=mem_cache,

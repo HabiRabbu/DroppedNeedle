@@ -1,10 +1,5 @@
-"""Regression tests: audiodb_enabled=False suppresses ALL AudioDB behavior.
-
-Tests are split into two groups:
-- Settings-based: AudioDBImageService exists but audiodb_enabled=False causes
-  its methods to short-circuit and return None despite data in cache.
-- Null-guard (supplementary): audiodb_service=None — tests DI wiring defence.
-"""
+"""Regression: audiodb_enabled=False suppresses all AudioDB behavior, via both
+the settings short-circuit and the audiodb_service=None DI null-guard."""
 
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -106,7 +101,6 @@ def _make_album_info(**overrides) -> AlbumInfo:
 
 
 def _disabled_settings() -> MagicMock:
-    """Return a mock preferences_service whose settings have audiodb_enabled=False."""
     prefs = MagicMock()
     settings = MagicMock()
     settings.audiodb_enabled = False
@@ -115,7 +109,6 @@ def _disabled_settings() -> MagicMock:
 
 
 def _disabled_image_service() -> AudioDBImageService:
-    """Real AudioDBImageService with audiodb_enabled=False and data in disk cache."""
     disk_cache = MagicMock()
     disk_cache.get_audiodb_artist = AsyncMock(return_value=ARTIST_IMAGES_RAW)
     disk_cache.get_audiodb_album = AsyncMock(return_value=ALBUM_IMAGES_RAW)
@@ -130,7 +123,7 @@ def _disabled_image_service() -> AudioDBImageService:
 def _make_artist_service(audiodb_service=None) -> ArtistService:
     return ArtistService(
         mb_repo=MagicMock(),
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         wikidata_repo=MagicMock(),
         preferences_service=MagicMock(),
         memory_cache=MagicMock(),
@@ -141,7 +134,7 @@ def _make_artist_service(audiodb_service=None) -> ArtistService:
 
 def _make_album_service(audiodb_service=None) -> AlbumService:
     return AlbumService(
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         mb_repo=MagicMock(),
         library_db=MagicMock(),
         memory_cache=MagicMock(),
@@ -153,14 +146,12 @@ def _make_album_service(audiodb_service=None) -> AlbumService:
 
 def _make_search_service(audiodb_service=None) -> SearchService:
     mb_repo = MagicMock()
-    lidarr_repo = MagicMock()
-    lidarr_repo.get_library_mbids = AsyncMock(return_value=set())
-    lidarr_repo.get_queue = AsyncMock(return_value=[])
-    lidarr_repo.get_monitored_no_files_mbids = AsyncMock(return_value=set())
+    library_repo = MagicMock()
+    library_repo.get_library_mbids = AsyncMock(return_value=set())
     coverart_repo = MagicMock()
     prefs = MagicMock()
     prefs.get_preferences.return_value = MagicMock(secondary_types=[])
-    return SearchService(mb_repo, lidarr_repo, coverart_repo, prefs, audiodb_service)
+    return SearchService(mb_repo, library_repo, coverart_repo, prefs, audiodb_service)
 
 
 def _make_repo(enabled: bool = True) -> AudioDBRepository:
@@ -178,10 +169,8 @@ def _make_repo(enabled: bool = True) -> AudioDBRepository:
     )
 
 
-# Settings-based kill-switch tests (audiodb_enabled=False in preferences)
-
 class TestSettingsKillSwitchArtist:
-    """8.10.a — Real AudioDBImageService with audiodb_enabled=False."""
+    """8.10.a"""
 
     @pytest.mark.asyncio
     async def test_image_service_returns_none_despite_cached_data(self):
@@ -217,7 +206,7 @@ class TestSettingsKillSwitchArtist:
 
 
 class TestSettingsKillSwitchAlbum:
-    """8.10.b — Real AudioDBImageService with audiodb_enabled=False."""
+    """8.10.b"""
 
     @pytest.mark.asyncio
     async def test_image_service_returns_none_despite_cached_data(self):
@@ -247,7 +236,7 @@ class TestSettingsKillSwitchAlbum:
 
 
 class TestSettingsKillSwitchSearch:
-    """8.10.d — Real AudioDBImageService with audiodb_enabled=False."""
+    """8.10.d"""
 
     @pytest.mark.asyncio
     async def test_search_overlay_no_audiodb_urls(self):
@@ -265,8 +254,6 @@ class TestSettingsKillSwitchSearch:
         assert results[0].banner_url is None
         assert results[1].album_thumb_url is None
 
-
-# Supplementary null-guard tests (audiodb_service=None — DI wiring defence)
 
 class TestNullGuardArtistDetail:
 
@@ -328,8 +315,6 @@ class TestNullGuardSearchOverlay:
         assert results[1].album_thumb_url is None
 
 
-# Repository and cover provider tests (unchanged — already test correct path)
-
 class TestRepositoryDisabled:
 
     @pytest.mark.asyncio
@@ -355,8 +340,7 @@ class TestCoverProviderDisabled:
 
     @pytest.mark.asyncio
     async def test_cover_provider_disabled_via_settings_skips_audiodb(self):
-        """8.10.c — audiodb_enabled=False: AudioDB cache not queried, fallback
-        providers called normally."""
+        """8.10.c: AudioDB cache not queried, fallback providers called normally."""
         http_get = AsyncMock()
         write_cache = AsyncMock()
         img_svc = _disabled_image_service()
@@ -378,7 +362,7 @@ class TestCoverProviderDisabled:
 
     @pytest.mark.asyncio
     async def test_cover_provider_null_guard_skips_audiodb(self):
-        """Supplementary: audiodb_service=None — DI wiring defence."""
+        """audiodb_service=None DI wiring defence."""
         http_get = AsyncMock()
         write_cache = AsyncMock()
         fetcher = AlbumCoverFetcher(

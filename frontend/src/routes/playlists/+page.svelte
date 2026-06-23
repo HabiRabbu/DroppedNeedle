@@ -1,19 +1,37 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { fetchPlaylists, createPlaylist, type PlaylistSummary } from '$lib/api/playlists';
+	import {
+		isRedactedPlaylist,
+		type PlaylistListItem,
+		type PlaylistSummary,
+		type RedactedPlaylist
+	} from '$lib/api/playlists';
 	import { toastStore } from '$lib/stores/toast';
-	import { ListMusic, Plus } from 'lucide-svelte';
+	import { authStore } from '$lib/stores/authStore.svelte';
+	import { getPlaylistListQuery } from '$lib/queries/playlists/PlaylistQuery.svelte';
+	import { createCreatePlaylistMutation } from '$lib/queries/playlists/PlaylistMutations.svelte';
+	import { ListMusic, Plus, Lock } from 'lucide-svelte';
 	import PlaylistCard from '$lib/components/PlaylistCard.svelte';
+	import RedactedPlaylistCard from '$lib/components/RedactedPlaylistCard.svelte';
 	import PlaylistCardSkeleton from '$lib/components/PlaylistCardSkeleton.svelte';
 
-	let playlists = $state<PlaylistSummary[]>([]);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
+	const query = getPlaylistListQuery(() => authStore.isAuthenticated);
+	const createMutation = createCreatePlaylistMutation();
+
+	let items = $derived((query.data ?? []) as PlaylistListItem[]);
+	let myPlaylists = $derived(
+		items.filter((p): p is PlaylistSummary => !isRedactedPlaylist(p) && p.is_owner)
+	);
+	let sharedPlaylists = $derived(
+		items.filter((p): p is PlaylistSummary => !isRedactedPlaylist(p) && !p.is_owner)
+	);
+	let redactedPlaylists = $derived(items.filter(isRedactedPlaylist) as RedactedPlaylist[]);
+	let errorMessage = $derived(
+		query.isError ? (query.error instanceof Error ? query.error.message : "Couldn't load playlists") : null
+	);
 
 	let showNewInput = $state(false);
 	let newName = $state('');
-	let creating = $state(false);
 	let newNameInputEl = $state<HTMLInputElement | null>(null);
 
 	$effect(() => {
@@ -22,31 +40,19 @@
 		}
 	});
 
-	async function load() {
-		loading = true;
-		error = null;
-		try {
-			playlists = await fetchPlaylists();
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Couldn't load playlists";
-		} finally {
-			loading = false;
-		}
-	}
+	const gridClass =
+		'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4';
 
 	async function handleCreate() {
 		const trimmed = newName.trim();
-		if (!trimmed || creating) return;
-		creating = true;
+		if (!trimmed || createMutation.isPending) return;
 		try {
-			const created = await createPlaylist(trimmed);
+			const created = await createMutation.mutateAsync(trimmed);
 			newName = '';
 			showNewInput = false;
 			await goto(`/playlists/${created.id}`);
 		} catch (_e) {
 			toastStore.show({ message: "Couldn't create the playlist", type: 'error' });
-		} finally {
-			creating = false;
 		}
 	}
 
@@ -58,20 +64,16 @@
 		}
 	}
 
-	function handleCardDelete(playlistId: string) {
-		playlists = playlists.filter((p) => p.id !== playlistId);
+	function handleCardDelete() {
+		void query.refetch();
 	}
-
-	onMount(() => {
-		void load();
-	});
 </script>
 
 <svelte:head>
-	<title>Playlists - Musicseerr</title>
+	<title>Playlists - DroppedNeedle</title>
 </svelte:head>
 
-<div class="space-y-4 px-4 sm:px-6 lg:px-8">
+<div class="space-y-6 px-4 sm:px-6 lg:px-8">
 	<div class="flex items-center justify-between">
 		<h1 class="text-2xl font-bold sm:text-3xl">Playlists</h1>
 		<button
@@ -98,9 +100,9 @@
 			<button
 				class="btn btn-accent btn-sm"
 				onclick={() => void handleCreate()}
-				disabled={!newName.trim() || creating}
+				disabled={!newName.trim() || createMutation.isPending}
 			>
-				{#if creating}
+				{#if createMutation.isPending}
 					<span class="loading loading-spinner loading-xs"></span>
 				{:else}
 					Create
@@ -118,18 +120,18 @@
 		</div>
 	{/if}
 
-	{#if loading}
-		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+	{#if query.isLoading}
+		<div class={gridClass}>
 			{#each Array(8) as _, i (`skeleton-${i}`)}
 				<PlaylistCardSkeleton />
 			{/each}
 		</div>
-	{:else if error}
+	{:else if errorMessage}
 		<div role="alert" class="alert alert-error">
-			<span>{error}</span>
-			<button class="btn btn-sm btn-ghost" onclick={() => void load()}>Retry</button>
+			<span>{errorMessage}</span>
+			<button class="btn btn-sm btn-ghost" onclick={() => void query.refetch()}>Retry</button>
 		</div>
-	{:else if playlists.length === 0}
+	{:else if items.length === 0}
 		<div class="flex flex-col items-center justify-center py-20 gap-4">
 			<ListMusic class="h-16 w-16 text-base-content/20" />
 			<h2 class="text-lg font-semibold text-base-content/60">No playlists yet</h2>
@@ -144,10 +146,46 @@
 			</button>
 		</div>
 	{:else}
-		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-			{#each playlists as playlist (playlist.id)}
-				<PlaylistCard {playlist} ondelete={handleCardDelete} />
-			{/each}
-		</div>
+		{#if myPlaylists.length > 0}
+			<section class="space-y-3">
+				<h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">
+					My Playlists
+				</h2>
+				<div class={gridClass}>
+					{#each myPlaylists as playlist (playlist.id)}
+						<PlaylistCard {playlist} ondelete={handleCardDelete} />
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		{#if sharedPlaylists.length > 0}
+			<section class="space-y-3">
+				<h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">
+					Shared with you
+				</h2>
+				<div class={gridClass}>
+					{#each sharedPlaylists as playlist (playlist.id)}
+						<PlaylistCard {playlist} ondelete={handleCardDelete} />
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		{#if redactedPlaylists.length > 0}
+			<section class="space-y-3">
+				<h2
+					class="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider text-base-content/40"
+				>
+					<Lock class="h-3.5 w-3.5" />
+					Private &middot; admin view
+				</h2>
+				<div class={gridClass}>
+					{#each redactedPlaylists as playlist (playlist.id)}
+						<RedactedPlaylistCard {playlist} />
+					{/each}
+				</div>
+			</section>
+		{/if}
 	{/if}
 </div>

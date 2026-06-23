@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
+
+import msgspec.structs
 
 from api.v1.schemas.home import (
     HomeResponse,
@@ -18,17 +20,20 @@ from api.v1.schemas.library import LibraryAlbum
 from repositories.protocols import (
     ListenBrainzRepositoryProtocol,
     JellyfinRepositoryProtocol,
-    LidarrRepositoryProtocol,
+    LibraryRepositoryProtocol,
     MusicBrainzRepositoryProtocol,
     LastFmRepositoryProtocol,
 )
 from services.preferences_service import PreferencesService
 from services.home_transformers import HomeDataTransformers
+from services.per_user_client_factory import PerUserClientFactory
+from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
+from infrastructure.persistence.play_history_store import PlayHistoryStore
 from infrastructure.cache.cache_keys import DISCOVER_RESPONSE_PREFIX, HOME_RESPONSE_PREFIX
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.http.deduplication import deduplicate
 
-from .integration_helpers import HomeIntegrationHelpers
+from .integration_helpers import HomeIntegrationHelpers, resolve_source_value
 from .section_builders import HomeSectionBuilders
 from .genre_service import GenreService
 from services.weekly_exploration_service import WeeklyExplorationService
@@ -36,27 +41,44 @@ from services.weekly_exploration_service import WeeklyExplorationService
 logger = logging.getLogger(__name__)
 
 
+class _HomeUserMusic(NamedTuple):
+    # per-request music identity: request-scoped LB/Last.fm clients, never a mutated singleton
+    lb_client: Any
+    lfm_client: Any
+    lb_username: str | None
+    lfm_username: str | None
+    lb_enabled: bool
+    lfm_enabled: bool
+    resolved_source: str
+
+
 class HomeService:
     def __init__(
         self,
         listenbrainz_repo: ListenBrainzRepositoryProtocol,
         jellyfin_repo: JellyfinRepositoryProtocol,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         musicbrainz_repo: MusicBrainzRepositoryProtocol,
         preferences_service: PreferencesService,
         memory_cache: CacheInterface | None = None,
         lastfm_repo: LastFmRepositoryProtocol | None = None,
         audiodb_image_service: Any = None,
         cache_dir: Path | None = None,
+        client_factory: PerUserClientFactory | None = None,
+        listening_prefs_store: UserListeningPrefsStore | None = None,
+        play_history_store: PlayHistoryStore | None = None,
     ):
         self._lb_repo = listenbrainz_repo
         self._jf_repo = jellyfin_repo
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._mb_repo = musicbrainz_repo
         self._preferences = preferences_service
         self._memory_cache = memory_cache
         self._lfm_repo = lastfm_repo
         self._audiodb_image_service = audiodb_image_service
+        self._client_factory = client_factory
+        self._prefs_store = listening_prefs_store
+        self._play_history_store = play_history_store
         self._transformers = HomeDataTransformers(jellyfin_repo)
 
         self._helpers = HomeIntegrationHelpers(preferences_service)
@@ -68,20 +90,20 @@ class HomeService:
         self._weekly_exploration = WeeklyExplorationService(listenbrainz_repo, musicbrainz_repo)
 
     def clear_genre_disk_cache(self) -> int:
-        """Delegate to GenreService to delete genre section files from disk."""
         return self._genre.clear_disk_cache()
 
     def _resolve_source(self, source: str | None = None) -> str:
         return self._helpers.resolve_source(source)
 
-    def _build_service_prompts(self, lb_enabled, lidarr_configured, lfm_enabled):
-        return self._builders.build_service_prompts(lb_enabled, lidarr_configured, lfm_enabled)
+    def _build_service_prompts(self, lb_enabled, download_client_configured, lfm_enabled):
+        return self._builders.build_service_prompts(lb_enabled, download_client_configured, lfm_enabled)
 
     def get_integration_status(self) -> HomeIntegrationStatus:
         return HomeIntegrationStatus(
             listenbrainz=self._helpers.is_listenbrainz_enabled(),
             jellyfin=self._helpers.is_jellyfin_enabled(),
-            lidarr=self._helpers.is_lidarr_configured(),
+            download_client=self._helpers.is_download_client_configured(),
+            library=self._helpers.is_library_configured(),
             youtube=self._helpers.is_youtube_enabled(),
             youtube_api=self._helpers.is_youtube_api_enabled(),
             localfiles=self._helpers.is_local_files_enabled(),
@@ -89,6 +111,10 @@ class HomeService:
             navidrome=self._helpers.is_navidrome_enabled(),
             plex=self._helpers.is_plex_enabled(),
         )
+
+    async def has_local_files(self) -> bool:
+        # the engine is always present; affordances only light up once music exists
+        return await self._library_repo.has_any_files()
 
     async def get_genre_artist(
         self, genre_name: str, exclude_mbids: set[str] | None = None
@@ -98,28 +124,71 @@ class HomeService:
     async def get_genre_artists_batch(self, genres: list[str]) -> dict[str, str | None]:
         return await self._genre.get_genre_artists_batch(genres)
 
-    def _get_home_cache_key(self, source: str | None = None) -> str:
-        resolved = self._helpers.resolve_source(source)
-        lb_enabled = self._helpers.is_listenbrainz_enabled()
-        lfm_enabled = self._helpers.is_lastfm_enabled()
-        lb_username = self._helpers.get_listenbrainz_username() or ""
-        lfm_username = self._helpers.get_lastfm_username() or ""
-        return f"{HOME_RESPONSE_PREFIX}{resolved}:{lb_enabled}:{lfm_enabled}:{lb_username}:{lfm_username}"
+    async def get_library_genre_names(self, limit: int = 20) -> list[str]:
+        # account-less top genres from the shared library, for the genre-cover warmer
+        library_albums = await self._library_repo.get_library(include_unmonitored=True)
+        genre_list = self._builders.build_genre_list_section(library_albums, None)
+        if not genre_list or not genre_list.items:
+            return []
+        return [g.name for g in genre_list.items[:limit] if isinstance(g, HomeGenre)]
 
-    async def get_cached_home_data(self, source: str | None = None) -> HomeResponse | None:
+    def _get_home_cache_key(
+        self, user_id: str, resolved_source: str, lb_enabled: bool, lfm_enabled: bool
+    ) -> str:
+        # lb/lfm enable flags keep a user's connect/disconnect busting their own key
+        return f"{HOME_RESPONSE_PREFIX}{user_id}:{resolved_source}:{lb_enabled}:{lfm_enabled}"
+
+    async def _resolve_user_music(self, user_id: str, source: str | None) -> _HomeUserMusic:
+        lb_client = lfm_client = None
+        lb_username = lfm_username = None
+        if self._client_factory:
+            lb_client = await self._client_factory.resolve_listenbrainz(user_id)
+            lfm_client = await self._client_factory.resolve_lastfm(user_id)
+            lb_username = await self._client_factory.resolve_listenbrainz_username(user_id)
+            lfm_username = await self._client_factory.resolve_lastfm_username(user_id)
+        primary_source = "listenbrainz"
+        if self._prefs_store:
+            prefs = await self._prefs_store.get(user_id)
+            primary_source = prefs.primary_music_source
+        lb_enabled = lb_client is not None
+        lfm_enabled = lfm_client is not None
+        resolved = resolve_source_value(source, primary_source, lb_enabled, lfm_enabled)
+        return _HomeUserMusic(
+            lb_client, lfm_client, lb_username, lfm_username, lb_enabled, lfm_enabled, resolved
+        )
+
+    def _integration_status_for_user(
+        self, lb_enabled: bool, lfm_enabled: bool
+    ) -> HomeIntegrationStatus:
+        # media-server / library integrations stay global (D2); only LB/Last.fm are per-user
+        return msgspec.structs.replace(
+            self.get_integration_status(), listenbrainz=lb_enabled, lastfm=lfm_enabled
+        )
+
+    async def get_cached_home_data(self, user_id: str, source: str | None = None) -> HomeResponse | None:
         if not self._memory_cache:
             return None
-        cache_key = self._get_home_cache_key(source)
+        music = await self._resolve_user_music(user_id, source)
+        cache_key = self._get_home_cache_key(
+            user_id, music.resolved_source, music.lb_enabled, music.lfm_enabled
+        )
         return await self._memory_cache.get(cache_key)
 
-    @deduplicate(lambda self, source=None: self._get_home_cache_key(source))
-    async def get_home_data(self, source: str | None = None) -> HomeResponse:
+    @deduplicate(lambda self, user_id, source=None: f"{HOME_RESPONSE_PREFIX}dedup:{user_id}:{source or ''}")
+    async def get_home_data(self, user_id: str, source: str | None = None) -> HomeResponse:
         HOME_CACHE_TTL = 300
-        resolved_source = self._helpers.resolve_source(source)
+        music = await self._resolve_user_music(user_id, source)
+        resolved_source = music.resolved_source
+        lb_client = music.lb_client
+        lfm_client = music.lfm_client
+        lb_enabled = music.lb_enabled
+        lfm_enabled = music.lfm_enabled
+        username = music.lb_username
+        lfm_username = music.lfm_username
         home_settings = self._preferences.get_home_settings()
 
         if self._memory_cache:
-            cache_key = self._get_home_cache_key(source)
+            cache_key = self._get_home_cache_key(user_id, resolved_source, lb_enabled, lfm_enabled)
             cached = await self._memory_cache.get(cache_key)
             if cached is not None:
                 if not cached.genre_artists:
@@ -145,54 +214,44 @@ class HomeService:
                     })
                 return cached
 
-        integration_status = self.get_integration_status()
-        lb_enabled = integration_status.listenbrainz
-        lidarr_configured = integration_status.lidarr
-        lfm_enabled = integration_status.lastfm
-        username = self._helpers.get_listenbrainz_username()
-        lfm_username = self._helpers.get_lastfm_username()
+        integration_status = self._integration_status_for_user(lb_enabled, lfm_enabled)
+        download_client_configured = integration_status.download_client
 
         tasks: dict[str, Any] = {}
 
+        # sitewide trending/popular need no account; keep the global singleton repos
         if resolved_source == "listenbrainz":
             if home_settings.show_whats_hot:
                 tasks["lb_trending_artists"] = self._lb_repo.get_sitewide_top_artists(count=20)
                 tasks["lb_trending_albums"] = self._lb_repo.get_sitewide_top_release_groups(count=20)
-        elif resolved_source == "lastfm" and self._lfm_repo and lfm_enabled:
+        elif resolved_source == "lastfm" and self._lfm_repo:
             if home_settings.show_whats_hot:
                 tasks["lfm_global_top_artists"] = self._lfm_repo.get_global_top_artists(limit=20)
-            if lfm_username:
-                tasks["lfm_top_albums"] = self._lfm_repo.get_user_top_albums(
+            if lfm_client and lfm_username:
+                tasks["lfm_top_albums"] = lfm_client.get_user_top_albums(
                     lfm_username, period="1month", limit=20
                 )
-            else:
-                logger.warning(
-                    "Last.fm enabled as home source but username is missing; skipping top album fetch"
-                )
 
-        if lidarr_configured:
-            tasks["library_albums"] = self._lidarr_repo.get_library(include_unmonitored=True)
-            tasks["library_artists"] = self._lidarr_repo.get_artists_from_library(include_unmonitored=True)
-            tasks["recently_imported"] = self._lidarr_repo.get_recently_imported(limit=15)
-            tasks["monitored_mbids"] = self._lidarr_repo.get_monitored_no_files_mbids()
+        # library home sections are driven by the native library (the scanner is
+        # always present, D8), not by whether a download client is configured
+        if integration_status.library:
+            tasks["library_albums"] = self._library_repo.get_library(include_unmonitored=True)
+            tasks["library_artists"] = self._library_repo.get_artists_from_library(include_unmonitored=True)
+            tasks["recently_imported"] = self._library_repo.get_recently_imported(limit=15)
 
-        if resolved_source == "listenbrainz" and lb_enabled and username:
-            lb_settings = self._preferences.get_listenbrainz_connection()
-            self._lb_repo.configure(username=username, user_token=lb_settings.user_token)
-            tasks["lb_listens"] = self._lb_repo.get_user_listens(count=20)
-            tasks["lb_loved"] = self._lb_repo.get_user_loved_recordings(count=20)
-            tasks["lb_genres"] = self._lb_repo.get_user_genre_activity(username)
-            tasks["lb_user_top_rgs"] = self._lb_repo.get_user_top_release_groups(
+        # personalized sections use the requesting user's request-scoped client;
+        # omitted entirely for unlinked users (D1)
+        if resolved_source == "listenbrainz" and lb_client and username:
+            tasks["lb_loved"] = lb_client.get_user_loved_recordings(count=20)
+            tasks["lb_genres"] = lb_client.get_user_genre_activity(username)
+            tasks["lb_user_top_rgs"] = lb_client.get_user_top_release_groups(
                 username=username, range_="this_month", count=20
             )
-            tasks["lb_weekly_exploration"] = self._weekly_exploration.build_section(username)
-        elif resolved_source == "lastfm" and self._lfm_repo and lfm_enabled and lfm_username:
-            tasks["lfm_recent"] = self._lfm_repo.get_user_recent_tracks(
-                lfm_username, limit=20
+            tasks["lb_weekly_exploration"] = self._weekly_exploration.build_section(
+                username, lb_repo=lb_client
             )
-            tasks["lfm_loved"] = self._lfm_repo.get_user_loved_tracks(
-                lfm_username, limit=20
-            )
+        elif resolved_source == "lastfm" and lfm_client and lfm_username:
+            tasks["lfm_loved"] = lfm_client.get_user_loved_tracks(lfm_username, limit=20)
 
         results = await self._helpers.execute_tasks(tasks)
 
@@ -205,7 +264,6 @@ class HomeService:
         library_album_mbids = {
             (a.musicbrainz_id or "").lower() for a in library_albums if a.musicbrainz_id
         }
-        monitored_mbids: set[str] = results.get("monitored_mbids") or set()
 
         response = HomeResponse(integration_status=integration_status)
 
@@ -219,24 +277,30 @@ class HomeService:
                     results, library_artist_mbids
                 )
                 response.popular_albums = self._builders.build_popular_albums_section(
-                    results, library_album_mbids, monitored_mbids
+                    results, library_album_mbids
                 )
-            response.your_top_albums = self._builders.build_lb_user_top_albums_section(
-                results, library_album_mbids, monitored_mbids
-            )
-            response.recently_played = self._builders.build_listenbrainz_recent_section(results)
-            response.favorite_artists = self._builders.build_listenbrainz_favorites_section(results)
-            response.weekly_exploration = results.get("lb_weekly_exploration")
+            if lb_client:
+                response.your_top_albums = self._builders.build_lb_user_top_albums_section(
+                    results, library_album_mbids
+                )
+                response.favorite_artists = self._builders.build_listenbrainz_favorites_section(results)
+                response.weekly_exploration = results.get("lb_weekly_exploration")
         elif resolved_source == "lastfm":
             if home_settings.show_whats_hot:
                 response.trending_artists = self._builders.build_lastfm_trending_section(
                     results, library_artist_mbids
                 )
-            response.your_top_albums = self._builders.build_lastfm_top_albums_section(
-                results, library_album_mbids, monitored_mbids
-            )
-            response.recently_played = self._builders.build_lastfm_recent_section(results)
-            response.favorite_artists = self._builders.build_lastfm_favorites_section(results)
+            if lfm_client:
+                response.your_top_albums = self._builders.build_lastfm_top_albums_section(
+                    results, library_album_mbids
+                )
+                response.favorite_artists = self._builders.build_lastfm_favorites_section(results)
+
+        # recently_played comes from the local play_history table (D6) for all users,
+        # linked or not, not from external listens
+        if self._play_history_store:
+            recent_records = await self._play_history_store.recent(user_id, limit=15)
+            response.recently_played = self._builders.build_play_history_recent_section(recent_records)
 
         response.genre_list = self._builders.build_genre_list_section(
             library_albums,
@@ -263,25 +327,30 @@ class HomeService:
 
         response.service_prompts = self._builders.build_service_prompts(
             lb_enabled,
-            lidarr_configured,
+            download_client_configured,
             lfm_enabled,
         )
 
-        response.discover_preview = await self._build_discover_preview()
+        response.discover_preview = await self._build_discover_preview(
+            user_id, resolved_source, lb_enabled, lfm_enabled
+        )
 
         if self._memory_cache:
-            cache_key = self._get_home_cache_key(source)
+            cache_key = self._get_home_cache_key(user_id, resolved_source, lb_enabled, lfm_enabled)
             await self._memory_cache.set(cache_key, response, HOME_CACHE_TTL)
 
         return response
 
-    async def _build_discover_preview(self) -> DiscoverPreview | None:
+    async def _build_discover_preview(
+        self, user_id: str, resolved_source: str, lb_enabled: bool, lfm_enabled: bool
+    ) -> DiscoverPreview | None:
         if not self._memory_cache:
             return None
         try:
             from api.v1.schemas.discover import DiscoverResponse as DR
-            resolved = self._helpers.resolve_source(None)
-            cache_key = f"{DISCOVER_RESPONSE_PREFIX}{resolved}"
+            # read the user-dimensioned discover key (incl. enable flags) so it tracks
+            # the live discover cache entry
+            cache_key = f"{DISCOVER_RESPONSE_PREFIX}{user_id}:{resolved_source}:{lb_enabled}:{lfm_enabled}"
             cached = await self._memory_cache.get(cache_key)
             if not cached or not isinstance(cached, DR):
                 return None
@@ -297,7 +366,7 @@ class HomeService:
                 seed_artist_mbid=first.seed_artist_mbid,
                 items=preview_items,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return None
 
     async def _resolve_release_mbids(self, release_ids: list[str]) -> dict[str, str]:

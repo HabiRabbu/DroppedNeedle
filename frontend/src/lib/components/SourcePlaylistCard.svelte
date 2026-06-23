@@ -22,7 +22,7 @@
 </script>
 
 <div
-	class="card card-sm bg-base-100 w-full shadow-sm shrink-0 group relative transition-all hover:shadow-[0_0_20px_rgba(174,213,242,0.15)]"
+	class="card card-sm bg-base-100 w-full shadow-sm shrink-0 group relative transition-all hover:glow-primary"
 >
 	<a
 		{href}

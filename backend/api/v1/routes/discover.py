@@ -1,5 +1,5 @@
 from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
 from api.v1.schemas.discover import (
     DiscoverResponse,
     DiscoverQueueResponse,
@@ -23,6 +23,7 @@ from api.v1.schemas.discover import (
 from api.v1.schemas.common import StatusMessageResponse
 from api.v1.schemas.home import HomeSection
 from core.dependencies import get_discover_service, get_discover_queue_manager, get_youtube_repo
+from core.dependencies.type_aliases import CurrentUserDep
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 
@@ -36,10 +37,11 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/discover", tags=["discover
 
 @router.get("", response_model=DiscoverResponse)
 async def get_discover_data(
+    current_user: CurrentUserDep,
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source: listenbrainz or lastfm"),
     discover_service: DiscoverService = Depends(get_discover_service),
 ):
-    result = await discover_service.get_discover_data(source=source)
+    result = await discover_service.get_discover_data(user_id=current_user.id, source=source)
     ctx = try_get_degradation_context()
     if ctx is not None and ctx.has_degradation():
         result = msgspec.structs.replace(result, service_status=ctx.degraded_summary())
@@ -48,9 +50,10 @@ async def get_discover_data(
 
 @router.post("/refresh", response_model=StatusMessageResponse)
 async def refresh_discover_data(
+    current_user: CurrentUserDep,
     discover_service: DiscoverService = Depends(get_discover_service),
 ):
-    await discover_service.refresh_discover_data()
+    await discover_service.refresh_discover_data(current_user.id)
     return StatusMessageResponse(status="ok", message="Discover refresh triggered")
 
 
@@ -64,45 +67,49 @@ async def discover_radio(
 
 @router.post("/playlist-suggestions", response_model=PlaylistSuggestionsResponse)
 async def playlist_suggestions(
+    current_user: CurrentUserDep,
     body: PlaylistSuggestionsRequest = MsgSpecBody(PlaylistSuggestionsRequest),
     service: DiscoverService = Depends(get_discover_service),
 ) -> PlaylistSuggestionsResponse:
-    return await service.get_playlist_suggestions(body)
+    return await service.get_playlist_suggestions(body, current_user)
 
 
 @router.get("/queue", response_model=DiscoverQueueResponse)
 async def get_discover_queue(
+    current_user: CurrentUserDep,
     count: int | None = Query(default=None, description="Number of items (default from settings, max 20)"),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source: listenbrainz or lastfm"),
     discover_service: DiscoverService = Depends(get_discover_service),
     queue_manager: DiscoverQueueManager = Depends(get_discover_queue_manager),
 ):
-    resolved = source or discover_service.resolve_source(None)
-    cached = await queue_manager.consume_queue(resolved)
+    resolved = await discover_service.resolve_source_for_user(current_user.id, source)
+    cached = await queue_manager.consume_queue(current_user.id, resolved)
     if cached:
         return cached
     effective_count = min(count, 20) if count is not None else None
-    return await queue_manager.build_hydrated_queue(resolved, effective_count)
+    return await queue_manager.build_hydrated_queue(current_user.id, resolved, effective_count)
 
 
 @router.get("/queue/status", response_model=DiscoverQueueStatusResponse)
 async def get_queue_status(
+    current_user: CurrentUserDep,
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source"),
     discover_service: DiscoverService = Depends(get_discover_service),
     queue_manager: DiscoverQueueManager = Depends(get_discover_queue_manager),
 ):
-    resolved = source or discover_service.resolve_source(None)
-    return queue_manager.get_status(resolved)
+    resolved = await discover_service.resolve_source_for_user(current_user.id, source)
+    return queue_manager.get_status(current_user.id, resolved)
 
 
 @router.post("/queue/generate", response_model=QueueGenerateResponse)
 async def generate_queue(
+    current_user: CurrentUserDep,
     body: QueueGenerateRequest = MsgSpecBody(QueueGenerateRequest),
     discover_service: DiscoverService = Depends(get_discover_service),
     queue_manager: DiscoverQueueManager = Depends(get_discover_queue_manager),
 ):
-    resolved = body.source or discover_service.resolve_source(None)
-    return await queue_manager.start_build(resolved, force=body.force)
+    resolved = await discover_service.resolve_source_for_user(current_user.id, body.source)
+    return await queue_manager.start_build(current_user.id, resolved, force=body.force)
 
 
 @router.get("/queue/enrich/{release_group_mbid}", response_model=DiscoverQueueEnrichment)
@@ -115,19 +122,21 @@ async def enrich_queue_item(
 
 @router.post("/queue/ignore", status_code=204)
 async def ignore_queue_item(
+    current_user: CurrentUserDep,
     body: DiscoverQueueIgnoreRequest = MsgSpecBody(DiscoverQueueIgnoreRequest),
     discover_service: DiscoverService = Depends(get_discover_service),
 ):
     await discover_service.ignore_release(
-        body.release_group_mbid, body.artist_mbid, body.release_name, body.artist_name
+        current_user.id, body.release_group_mbid, body.artist_mbid, body.release_name, body.artist_name
     )
 
 
 @router.get("/queue/ignored", response_model=list[DiscoverIgnoredRelease])
 async def get_ignored_items(
+    current_user: CurrentUserDep,
     discover_service: DiscoverService = Depends(get_discover_service),
 ):
-    return await discover_service.get_ignored_releases()
+    return await discover_service.get_ignored_releases(current_user.id)
 
 
 @router.post("/queue/validate", response_model=DiscoverQueueValidateResponse)

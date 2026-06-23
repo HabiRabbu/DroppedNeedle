@@ -1,5 +1,3 @@
-"""Tests for genre section decoupling from home page build."""
-
 import asyncio
 import json
 import time
@@ -45,7 +43,6 @@ def _make_genre_service(
 class TestGenreSectionCacheHit:
     @pytest.mark.asyncio
     async def test_cache_hit_returns_data_no_mb_calls(self, tmp_path):
-        """Genre section cache hit should return data without any MB/AudioDB calls."""
         svc, mb, mem_cache = _make_genre_service(tmp_path)
         genre_artists = {"rock": "mbid-1", "jazz": "mbid-2"}
         genre_images = {"rock": "http://img/rock.jpg", "jazz": "http://img/jazz.jpg"}
@@ -60,7 +57,6 @@ class TestGenreSectionCacheHit:
 
     @pytest.mark.asyncio
     async def test_cache_miss_returns_none(self, tmp_path):
-        """Genre section cache miss should return None."""
         svc, _, mem_cache = _make_genre_service(tmp_path)
         mem_cache.get = AsyncMock(return_value=None)
 
@@ -71,7 +67,6 @@ class TestGenreSectionCacheHit:
 class TestGenreSectionDiskPersistence:
     @pytest.mark.asyncio
     async def test_save_and_read_from_disk(self, tmp_path):
-        """Genre section should be readable from disk after save."""
         svc, _, mem_cache = _make_genre_service(tmp_path)
         genre_artists = {"rock": "mbid-1", "pop": "mbid-2"}
         genre_images = {"rock": "http://img/rock.jpg"}
@@ -87,7 +82,7 @@ class TestGenreSectionDiskPersistence:
 
     @pytest.mark.asyncio
     async def test_disk_survives_memory_clear(self, tmp_path):
-        """Simulates a restart: memory cache is empty, disk data should be used."""
+        # simulates a restart: fresh service, empty memory cache, data must come from disk
         svc, _, mem_cache = _make_genre_service(tmp_path)
         genre_artists = {"metal": "mbid-3"}
         genre_images = {"metal": "http://img/metal.jpg"}
@@ -104,7 +99,6 @@ class TestGenreSectionDiskPersistence:
 
     @pytest.mark.asyncio
     async def test_expired_disk_returns_none(self, tmp_path):
-        """Expired genre section on disk should return None."""
         svc, _, mem_cache = _make_genre_service(tmp_path, genre_section_ttl=1)
         genre_artists = {"rock": "mbid-1"}
         genre_images = {}
@@ -124,7 +118,6 @@ class TestGenreSectionDiskPersistence:
 class TestGenreSectionBuild:
     @pytest.mark.asyncio
     async def test_build_caches_result(self, tmp_path):
-        """build_and_cache_genre_section should build and save to disk."""
         svc, mb, mem_cache = _make_genre_service(tmp_path)
         mb.search_artists_by_tag = AsyncMock(
             side_effect=lambda name, limit=10: [_make_artist(f"mbid-{name}")]
@@ -149,7 +142,7 @@ class TestGenreSectionBuild:
 
     @pytest.mark.asyncio
     async def test_build_skips_when_locked(self, tmp_path):
-        """Concurrent builds for same source should be skipped if lock is held."""
+        # a build for a source already holding the lock is a no-op (no MB calls)
         svc, mb, _ = _make_genre_service(tmp_path)
         mb.search_artists_by_tag = AsyncMock(
             side_effect=lambda name, limit=10: [_make_artist(f"mbid-{name}")]
@@ -165,13 +158,11 @@ class TestGenreSectionBuild:
 class TestGenreSectionTTLSetting:
     @pytest.mark.asyncio
     async def test_ttl_from_preferences(self, tmp_path):
-        """Genre section TTL should be read from advanced settings."""
         svc, _, _ = _make_genre_service(tmp_path, genre_section_ttl=7200)
         assert svc._get_genre_section_ttl() == 7200
 
     @pytest.mark.asyncio
     async def test_ttl_default_on_missing(self, tmp_path):
-        """Missing preference should fall back to default TTL."""
         svc, _, _ = _make_genre_service(tmp_path)
         svc._preferences_service = None
         assert svc._get_genre_section_ttl() == GENRE_SECTION_TTL_DEFAULT
@@ -179,13 +170,11 @@ class TestGenreSectionTTLSetting:
 
 class TestAdvancedSettingsGenreTTL:
     def test_genre_section_ttl_default(self):
-        """AdvancedSettings should include genre_section_ttl with correct default."""
         from api.v1.schemas.advanced_settings import AdvancedSettings
         settings = AdvancedSettings()
         assert settings.genre_section_ttl == 21600
 
     def test_genre_section_ttl_roundtrip(self):
-        """Frontend→backend roundtrip should preserve genre_section_ttl value."""
         from api.v1.schemas.advanced_settings import AdvancedSettings, AdvancedSettingsFrontend
         backend = AdvancedSettings(genre_section_ttl=43200)
         frontend = AdvancedSettingsFrontend.from_backend(backend)
@@ -194,7 +183,6 @@ class TestAdvancedSettingsGenreTTL:
         assert roundtripped.genre_section_ttl == 43200
 
     def test_genre_section_ttl_validation_rejects_below_minimum(self):
-        """genre_section_ttl below 3600 should be rejected."""
         from api.v1.schemas.advanced_settings import AdvancedSettings
         import msgspec
         with pytest.raises(msgspec.ValidationError):
@@ -206,7 +194,6 @@ class TestPerSourceLockIndependence:
 
     @pytest.mark.asyncio
     async def test_different_sources_build_independently(self, tmp_path):
-        """Building for LB should not block building for LFM."""
         svc, mb, audiodb = _make_genre_service(tmp_path)
         mb.search_artists_by_tag = AsyncMock(
             side_effect=lambda name, limit=10: [_make_artist(f"mbid-{name}")]
@@ -222,7 +209,6 @@ class TestPerSourceLockIndependence:
 
     @pytest.mark.asyncio
     async def test_per_source_locks_created_on_demand(self, tmp_path):
-        """Lock for a source is created when first needed."""
         svc, mb, audiodb = _make_genre_service(tmp_path)
 
         assert "listenbrainz" not in svc._genre_build_locks
@@ -241,11 +227,11 @@ class TestWarmerRetryOnNoop:
 
     @pytest.mark.asyncio
     async def test_warmer_retries_quickly_on_no_data(self):
-        """When no cached home data exists, warmer sleeps 60s not full TTL."""
+        # with no library genres the warmer retries after 60s, not the full TTL
         from core.tasks import warm_genre_cache_periodically
 
         home_svc = AsyncMock()
-        home_svc.get_cached_home_data = AsyncMock(return_value=None)
+        home_svc.get_library_genre_names = AsyncMock(return_value=[])
         home_svc._genre._get_genre_section_ttl = MagicMock(return_value=21600)
 
         sleep_values: list[int | float] = []

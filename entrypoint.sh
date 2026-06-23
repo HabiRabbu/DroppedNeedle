@@ -11,7 +11,7 @@ case "$PGID" in ''|*[!0-9]*) echo "[init] FATAL: PGID='$PGID' is not a valid num
 check_writable() {
     _dir="$1"
     _identity="$2"
-    _probe="$_dir/.musicseerr_write_test_$$"
+    _probe="$_dir/.droppedneedle_write_test_$$"
     if [ -n "$_identity" ]; then
         gosu "$_identity" touch "$_probe" 2>/dev/null; _rc=$?
         gosu "$_identity" rm -f "$_probe" 2>/dev/null
@@ -36,16 +36,23 @@ if [ "$(id -u)" -ne 0 ]; then
     exec "$@"
 fi
 
-if ! groupmod -o -g "$PGID" musicseerr 2>/dev/null; then
-    echo "[init] WARNING: Could not set musicseerr group to GID=$PGID."
+# Only remap when the baked identity differs from the requested PUID/PGID.
+# usermod/groupmod can stall for minutes on some storage backends, and they
+# block startup before uvicorn execs, so skip them entirely when not needed.
+if [ "$(id -g droppedneedle)" != "$PGID" ]; then
+    if ! groupmod -o -g "$PGID" droppedneedle 2>/dev/null; then
+        echo "[init] WARNING: Could not set droppedneedle group to GID=$PGID."
+    fi
 fi
-if ! usermod -o -u "$PUID" musicseerr 2>/dev/null; then
-    echo "[init] WARNING: Could not set musicseerr user to UID=$PUID."
+if [ "$(id -u droppedneedle)" != "$PUID" ]; then
+    if ! usermod -o -u "$PUID" droppedneedle 2>/dev/null; then
+        echo "[init] WARNING: Could not set droppedneedle user to UID=$PUID."
+    fi
 fi
 
-TARGET_UID=$(id -u musicseerr)
-TARGET_GID=$(id -g musicseerr)
-echo "[init] Runtime user: musicseerr (uid=$TARGET_UID gid=$TARGET_GID)"
+TARGET_UID=$(id -u droppedneedle)
+TARGET_GID=$(id -g droppedneedle)
+echo "[init] Runtime user: droppedneedle (uid=$TARGET_UID gid=$TARGET_GID)"
 
 if [ "$TARGET_UID" != "$PUID" ]; then
     echo "[init] WARNING: Requested PUID=$PUID but running as uid=$TARGET_UID (usermod may have failed)."
@@ -61,7 +68,7 @@ for dir in /app/cache /app/config; do
         continue
     fi
 
-    if chown musicseerr:musicseerr "$dir" 2>/dev/null; then
+    if chown droppedneedle:droppedneedle "$dir" 2>/dev/null; then
         echo "[init] Adjusted ownership of $dir - verifying write access."
     else
         echo "[init] WARNING: Could not chown $dir (mount may not support ownership changes)."
@@ -75,4 +82,4 @@ for dir in /app/cache /app/config; do
     fi
 done
 
-exec gosu musicseerr:musicseerr "$@"
+exec gosu droppedneedle:droppedneedle "$@"

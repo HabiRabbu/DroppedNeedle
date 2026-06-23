@@ -1,14 +1,14 @@
 import { page, userEvent } from '@vitest/browser/context';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { PlaylistDetail, PlaylistTrack } from '$lib/api/playlists';
+import type { PlaylistDetail, PlaylistDetailItem, PlaylistTrack } from '$lib/api/playlists';
 
 vi.mock('$env/dynamic/public', () => ({
 	env: { PUBLIC_API_URL: '' }
 }));
 
-const mockFetchPlaylist = vi.fn();
 const mockDeletePlaylist = vi.fn();
+const mockAddTracksToPlaylist = vi.fn();
 const mockRemoveTrackFromPlaylist = vi.fn();
 const mockRemoveTracksFromPlaylist = vi.fn();
 const mockUpdatePlaylist = vi.fn();
@@ -16,11 +16,17 @@ const mockUpdatePlaylistTrack = vi.fn();
 const mockReorderPlaylistTrack = vi.fn();
 const mockUploadPlaylistCover = vi.fn();
 const mockDeletePlaylistCover = vi.fn();
+const mockCheckTrackMembership = vi.fn();
 const mockResolvePlaylistSources = vi.fn();
 
 vi.mock('$lib/api/playlists', () => ({
-	fetchPlaylist: (...args: unknown[]) => mockFetchPlaylist(...args),
+	queueItemToTrackData: (item: unknown) => item,
+	isRedactedPlaylist: (p: { is_redacted?: boolean } | null | undefined) => p?.is_redacted === true,
+	fetchPlaylist: vi.fn(),
+	fetchPlaylists: vi.fn(),
+	createPlaylist: vi.fn(),
 	deletePlaylist: (...args: unknown[]) => mockDeletePlaylist(...args),
+	addTracksToPlaylist: (...args: unknown[]) => mockAddTracksToPlaylist(...args),
 	removeTrackFromPlaylist: (...args: unknown[]) => mockRemoveTrackFromPlaylist(...args),
 	removeTracksFromPlaylist: (...args: unknown[]) => mockRemoveTracksFromPlaylist(...args),
 	updatePlaylist: (...args: unknown[]) => mockUpdatePlaylist(...args),
@@ -28,7 +34,49 @@ vi.mock('$lib/api/playlists', () => ({
 	reorderPlaylistTrack: (...args: unknown[]) => mockReorderPlaylistTrack(...args),
 	uploadPlaylistCover: (...args: unknown[]) => mockUploadPlaylistCover(...args),
 	deletePlaylistCover: (...args: unknown[]) => mockDeletePlaylistCover(...args),
+	checkTrackMembership: (...args: unknown[]) => mockCheckTrackMembership(...args),
 	resolvePlaylistSources: (...args: unknown[]) => mockResolvePlaylistSources(...args)
+}));
+
+// The detail page consumes the user-scoped TanStack detail query + share mutation;
+// stub both so it renders without a QueryClientProvider and tests drive data directly.
+const detailQuery = {
+	data: undefined as PlaylistDetailItem | undefined,
+	isLoading: false,
+	isError: false,
+	error: null as Error | null,
+	refetch: vi.fn()
+};
+
+vi.mock('$lib/queries/playlists/PlaylistQuery.svelte', () => ({
+	getPlaylistListQuery: () => ({
+		data: [],
+		isLoading: false,
+		isError: false,
+		error: null,
+		refetch: vi.fn()
+	}),
+	getPlaylistDetailQuery: () => detailQuery
+}));
+
+vi.mock('$lib/queries/playlists/PlaylistMutations.svelte', () => ({
+	createSetPlaylistPublicMutation: () => ({ mutateAsync: vi.fn(), isPending: false })
+}));
+
+vi.mock('$lib/queries/QueryClient', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/queries/QueryClient')>()),
+	invalidateQueriesWithPersister: vi.fn()
+}));
+
+vi.mock('$lib/queries/discover/DiscoverQuery.svelte', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/queries/discover/DiscoverQuery.svelte')>()),
+	getPlaylistSuggestionsQuery: () => ({
+		data: undefined,
+		isLoading: false,
+		isError: false,
+		error: null,
+		refetch: vi.fn()
+	})
 }));
 
 const mockToastShow = vi.fn();
@@ -98,6 +146,10 @@ function makePlaylist(overrides: Partial<PlaylistDetail> = {}): PlaylistDetail {
 		source_ref: null,
 		created_at: '2026-01-01T00:00:00Z',
 		updated_at: '2026-01-02T00:00:00Z',
+		is_public: false,
+		is_owner: true,
+		owner_name: null,
+		is_redacted: false,
 		tracks: [
 			makeTrack({ id: 'trk-1', position: 0, track_name: 'First Track', duration: 240 }),
 			makeTrack({
@@ -114,7 +166,11 @@ function makePlaylist(overrides: Partial<PlaylistDetail> = {}): PlaylistDetail {
 
 describe('Playlist detail page', () => {
 	beforeEach(() => {
-		mockFetchPlaylist.mockReset();
+		detailQuery.data = makePlaylist();
+		detailQuery.isLoading = false;
+		detailQuery.isError = false;
+		detailQuery.error = null;
+		detailQuery.refetch.mockReset();
 		mockDeletePlaylist.mockReset();
 		mockRemoveTrackFromPlaylist.mockReset();
 		mockUpdatePlaylist.mockReset();
@@ -132,12 +188,12 @@ describe('Playlist detail page', () => {
 		try {
 			localStorage.clear();
 		} catch {
-			// migh throw in environments without localStorage
+			// may throw in environments without localStorage
 		}
 	});
 
 	it('renders header with playlist name, track count, and duration', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
 		await expect
@@ -148,7 +204,7 @@ describe('Playlist detail page', () => {
 	});
 
 	it('renders track rows with correct data', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
 		await expect.element(page.getByText('First Track')).toBeVisible();
@@ -157,30 +213,39 @@ describe('Playlist detail page', () => {
 	});
 
 	it('shows error state when playlist is missing', async () => {
-		mockFetchPlaylist.mockRejectedValue(new Error('404 not found'));
+		detailQuery.data = undefined;
+		detailQuery.isError = true;
+		detailQuery.error = new Error('404 not found');
 		renderDetail('pl-bad');
 
 		await expect.element(page.getByText("Couldn't load this playlist")).toBeVisible();
 		await expect.element(page.getByText('Playlist not found')).toBeVisible();
 	});
 
+	it('shows a redacted placeholder for an admin viewing a private playlist', async () => {
+		detailQuery.data = { id: 'pl-1', track_count: 9, owner_name: 'Cara', is_redacted: true };
+		renderDetail('pl-1');
+
+		await expect.element(page.getByRole('heading', { name: 'Private playlist' })).toBeVisible();
+		await expect.element(page.getByText(/owned by Cara/)).toBeVisible();
+	});
+
 	it('shows empty state when playlist has no tracks', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist({ tracks: [], track_count: 0 }));
+		detailQuery.data = makePlaylist({ tracks: [], track_count: 0 });
 		renderDetail('pl-1');
 
 		await expect.element(page.getByText('This playlist is empty')).toBeVisible();
 	});
 
 	it('Play All calls playQueue with all tracks', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
 		await expect
 			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
 			.toBeVisible();
 
-		const playBtn = page.getByRole('button', { name: /Play All/ });
-		await playBtn.click();
+		await page.getByRole('button', { name: /Play All/ }).click();
 
 		expect(mockPlayQueue).toHaveBeenCalledOnce();
 		const [items, startIdx, shuffle] = mockPlayQueue.mock.calls[0];
@@ -190,22 +255,21 @@ describe('Playlist detail page', () => {
 	});
 
 	it('Shuffle calls playQueue with shuffle=true', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
 		await expect
 			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
 			.toBeVisible();
 
-		const shuffleBtn = page.getByRole('button', { name: /Shuffle/ });
-		await shuffleBtn.click();
+		await page.getByRole('button', { name: /Shuffle/ }).click();
 
 		expect(mockPlayQueue).toHaveBeenCalledOnce();
 		expect(mockPlayQueue.mock.calls[0][2]).toBe(true);
 	});
 
 	it('Play All is disabled when playlist has no tracks', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist({ tracks: [], track_count: 0 }));
+		detailQuery.data = makePlaylist({ tracks: [], track_count: 0 });
 		renderDetail('pl-1');
 
 		await expect.element(page.getByText('This playlist is empty')).toBeVisible();
@@ -213,42 +277,42 @@ describe('Playlist detail page', () => {
 		expect(await playBtn.element()).toBeDisabled();
 	});
 
-	it('delete confirmation modal shows and cancel does not delete', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+	it('back button is visible when playlist loads', async () => {
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
 		await expect
 			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
 			.toBeVisible();
-
-		await expect.element(page.getByText(/Delete "My Playlist"\?/)).not.toBeVisible();
-
-		expect(mockDeletePlaylist).not.toHaveBeenCalled();
+		await expect.element(page.getByRole('button', { name: /Go back/ })).toBeVisible();
 	});
 
-	it('back button is visible when playlist loads', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+	it('owner sees the share toggle', async () => {
+		detailQuery.data = makePlaylist({ is_owner: true });
+		renderDetail('pl-1');
+
+		await expect
+			.element(page.getByRole('checkbox', { name: /Make playlist public/ }))
+			.toBeVisible();
+	});
+
+	it('non-owner public view is read-only (no share toggle, no edit name)', async () => {
+		detailQuery.data = makePlaylist({ is_owner: false, is_public: true, owner_name: 'Ann' });
 		renderDetail('pl-1');
 
 		await expect
 			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
 			.toBeVisible();
-
-		const backButton = page.getByRole('button', { name: /Go back/ });
-		await expect.element(backButton).toBeVisible();
+		await expect.element(page.getByText(/Shared by Ann/)).toBeVisible();
+		expect(page.getByRole('button', { name: /Edit playlist name/ }).elements()).toHaveLength(0);
+		expect(page.getByRole('checkbox', { name: /Make playlist (public|private)/ }).elements()).toHaveLength(0);
 	});
 
 	it('inline name editing: clicking name shows input, Escape cancels', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
-		await expect
-			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
-			.toBeVisible();
-
-		const editBtn = page.getByRole('button', { name: /Edit playlist name/ });
-		await editBtn.click();
-
+		await page.getByRole('button', { name: /Edit playlist name/ }).click();
 		const nameInput = page.getByPlaceholder('Playlist name');
 		await expect.element(nameInput).toBeVisible();
 
@@ -262,16 +326,10 @@ describe('Playlist detail page', () => {
 
 	it('inline name editing: Enter saves new name', async () => {
 		mockUpdatePlaylist.mockResolvedValue({ name: 'Renamed', updated_at: '2026-01-03T00:00:00Z' });
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
-		await expect
-			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
-			.toBeVisible();
-
-		const editBtn = page.getByRole('button', { name: /Edit playlist name/ });
-		await editBtn.click();
-
+		await page.getByRole('button', { name: /Edit playlist name/ }).click();
 		const nameInput = page.getByPlaceholder('Playlist name');
 		await expect.element(nameInput).toBeVisible();
 		await nameInput.clear();
@@ -282,54 +340,8 @@ describe('Playlist detail page', () => {
 		expect(mockUpdatePlaylist.mock.calls[0][1]).toEqual({ name: 'Renamed' });
 	});
 
-	it('inline name editing: save button click saves new name', async () => {
-		mockUpdatePlaylist.mockResolvedValue({ name: 'Renamed', updated_at: '2026-01-03T00:00:00Z' });
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
-		renderDetail('pl-1');
-
-		await expect
-			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
-			.toBeVisible();
-
-		await page.getByRole('button', { name: /Edit playlist name/ }).click();
-
-		const nameInput = page.getByPlaceholder('Playlist name');
-		await expect.element(nameInput).toBeVisible();
-		await nameInput.clear();
-		await nameInput.fill('Renamed');
-		await page.getByRole('button', { name: 'Save name' }).click();
-
-		await vi.waitFor(() => {
-			expect(mockUpdatePlaylist).toHaveBeenCalledOnce();
-		});
-		expect(mockUpdatePlaylist.mock.calls[0][1]).toEqual({ name: 'Renamed' });
-		await expect.element(page.getByRole('heading', { name: 'Renamed', level: 1 })).toBeVisible();
-	});
-
-	it('delete confirmation modal contains correct text and cancel button', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
-		renderDetail('pl-1');
-
-		await expect
-			.element(page.getByRole('heading', { name: 'My Playlist', level: 1 }))
-			.toBeVisible();
-
-		await expect.element(page.getByText(/This will permanently remove/)).not.toBeVisible();
-		expect(mockDeletePlaylist).not.toHaveBeenCalled();
-	});
-
-	it('remove track shows toast and updates track list', async () => {
-		mockRemoveTrackFromPlaylist.mockResolvedValue(undefined);
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
-		renderDetail('pl-1');
-
-		await expect.element(page.getByText('First Track')).toBeVisible();
-		await expect.element(page.getByText('Second Track')).toBeVisible();
-		expect(mockRemoveTrackFromPlaylist).not.toHaveBeenCalled();
-	});
-
 	it('calls resolvePlaylistSources after playlist loads', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		mockResolvePlaylistSources.mockResolvedValue({});
 		renderDetail('pl-1');
 
@@ -341,38 +353,20 @@ describe('Playlist detail page', () => {
 		});
 	});
 
-	it('merges resolved sources into track available_sources', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
-		mockResolvePlaylistSources.mockResolvedValue({
-			'trk-1': ['local', 'jellyfin'],
-			'trk-2': ['local']
-		});
-		renderDetail('pl-1');
-
-		await expect.element(page.getByText('First Track')).toBeVisible();
-		await vi.waitFor(() => {
-			expect(mockResolvePlaylistSources).toHaveBeenCalledWith('pl-1');
-		});
-	});
-
 	it('shows play button on track hover with correct aria label', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
 		await expect.element(page.getByText('First Track')).toBeVisible();
-
-		const playBtn = page.getByRole('button', { name: 'Play First Track' });
-		expect(playBtn.elements()).toHaveLength(1);
+		expect(page.getByRole('button', { name: 'Play First Track' }).elements()).toHaveLength(1);
 	});
 
 	it('play button on track calls playQueue with correct start index', async () => {
-		mockFetchPlaylist.mockResolvedValue(makePlaylist());
+		detailQuery.data = makePlaylist();
 		renderDetail('pl-1');
 
 		await expect.element(page.getByText('Second Track')).toBeVisible();
-
-		const playSecond = page.getByRole('button', { name: 'Play Second Track' });
-		await playSecond.click();
+		await page.getByRole('button', { name: 'Play Second Track' }).click();
 
 		expect(mockPlayQueue).toHaveBeenCalledOnce();
 		const [items, startIdx, shuffle] = mockPlayQueue.mock.calls[0];

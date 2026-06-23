@@ -33,7 +33,7 @@ describe('launchLocalPlayback', () => {
 	it('maps LocalTrackInfo[] to QueueItem[] with sourceType local', () => {
 		const tracks: LocalTrackInfo[] = [
 			{
-				track_file_id: 42,
+				track_file_id: '42',
 				title: 'Song A',
 				track_number: 1,
 				format: 'FLAC',
@@ -60,7 +60,7 @@ describe('launchLocalPlayback', () => {
 
 	it('always sets a non-null coverUrl on queue items', () => {
 		const tracks: LocalTrackInfo[] = [
-			{ track_file_id: 1, title: 'A', track_number: 1, format: 'flac', size_bytes: 1000 }
+			{ track_file_id: '1', title: 'A', track_number: 1, format: 'flac', size_bytes: 1000 }
 		];
 		const metaWithNullCover: PlaybackMeta = { ...meta, coverUrl: null };
 
@@ -74,14 +74,14 @@ describe('launchLocalPlayback', () => {
 	it('passes startIndex and shuffle through to playerStore', () => {
 		const tracks: LocalTrackInfo[] = [
 			{
-				track_file_id: 1,
+				track_file_id: '1',
 				title: 'A',
 				track_number: 1,
 				format: 'mp3',
 				size_bytes: 5_000_000
 			},
 			{
-				track_file_id: 2,
+				track_file_id: '2',
 				title: 'B',
 				track_number: 2,
 				format: 'mp3',

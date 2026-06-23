@@ -1,6 +1,6 @@
 from typing import Any
 
-from infrastructure.msgspec_fastapi import AppStruct, MsgSpecJSONResponse
+from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
 
 VALIDATION_ERROR = "VALIDATION_ERROR"
 NOT_FOUND = "NOT_FOUND"
@@ -31,16 +31,6 @@ STATUS_TO_CODE: dict[int, str] = {
     502: EXTERNAL_SERVICE_UNAVAILABLE,
     503: SERVICE_UNAVAILABLE,
 }
-
-
-class ErrorDetail(AppStruct):
-    code: str
-    message: str
-    details: Any | None = None
-
-
-class ErrorResponse(AppStruct):
-    error: ErrorDetail
 
 
 def error_response(

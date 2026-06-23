@@ -11,7 +11,7 @@ def _make_service(configured: bool = True) -> tuple[NavidromePlaybackService, Ma
     repo = MagicMock()
     repo.is_configured = MagicMock(return_value=configured)
     repo.build_stream_url = MagicMock(
-        return_value="http://navidrome:4533/rest/stream?u=admin&t=tok&s=salt&v=1.16.1&c=musicseerr&f=json&id=song-1"
+        return_value="http://navidrome:4533/rest/stream?u=admin&t=tok&s=salt&v=1.16.1&c=droppedneedle&f=json&id=song-1"
     )
     repo.scrobble = AsyncMock(return_value=True)
     service = NavidromePlaybackService(navidrome_repo=repo)

@@ -24,6 +24,7 @@ from api.v1.schemas.plex import (
     PlexTrackPage,
 )
 from core.dependencies import (
+    CurrentUserDep,
     get_jellyfin_library_service,
     get_local_files_service,
     get_navidrome_library_service,
@@ -53,12 +54,13 @@ _PLEX_SORT_FIELD: dict[str, str] = {
 
 @router.get("/hub", response_model=PlexHubResponse)
 async def get_plex_hub(
+    current_user: CurrentUserDep,
     service: PlexLibraryService = Depends(get_plex_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> PlexHubResponse:
     try:
         hub = await service.get_hub_data()
-        imported_ids = await playlist_service.get_imported_source_ids("plex:")
+        imported_ids = await playlist_service.get_imported_source_ids("plex:", user_id=current_user.id)
         for p in hub.playlists:
             if p.id in imported_ids:
                 p.is_imported = True
@@ -303,13 +305,14 @@ async def match_plex_album(
 
 @router.get("/playlists", response_model=list[PlexPlaylistSummary])
 async def get_plex_playlists(
+    current_user: CurrentUserDep,
     limit: int = Query(default=50, ge=1, le=200),
     service: PlexLibraryService = Depends(get_plex_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> list[PlexPlaylistSummary]:
     try:
         playlists = await service.list_playlists(limit=limit)
-        imported_ids = await playlist_service.get_imported_source_ids("plex:")
+        imported_ids = await playlist_service.get_imported_source_ids("plex:", user_id=current_user.id)
         for p in playlists:
             if p.id in imported_ids:
                 p.is_imported = True
@@ -337,6 +340,7 @@ async def get_plex_playlist_detail(
 async def import_plex_playlist(
     playlist_id: str,
     background_tasks: BackgroundTasks,
+    current_user: CurrentUserDep,
     service: PlexLibraryService = Depends(get_plex_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
     jf_service=Depends(get_jellyfin_library_service),
@@ -344,7 +348,7 @@ async def import_plex_playlist(
     nd_service=Depends(get_navidrome_library_service),
 ) -> PlexImportResult:
     try:
-        result = await service.import_playlist(playlist_id, playlist_service)
+        result = await service.import_playlist(playlist_id, playlist_service, requesting=current_user)
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Plex playlist not found")
     except ExternalServiceError as e:
@@ -354,7 +358,7 @@ async def import_plex_playlist(
     if not result.already_imported:
         background_tasks.add_task(
             playlist_service.resolve_track_sources,
-            result.musicseerr_playlist_id,
+            result.droppedneedle_playlist_id,
             jf_service=jf_service,
             local_service=local_service,
             nd_service=nd_service,

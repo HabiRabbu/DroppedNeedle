@@ -44,48 +44,53 @@ describe('AuthQueryKeyFactory', () => {
 });
 
 describe('toAuthUser', () => {
-	it('maps a session user onto the auth store shape', () => {
+	it('maps a session user (incl. username fields) onto the auth store shape', () => {
 		const user = toAuthUser({
 			id: 'u1',
 			display_name: 'Alice',
 			role: 'admin',
 			email: 'a@example.com',
-			avatar_url: null
+			avatar_url: null,
+			username: 'alice',
+			username_display: 'Alice'
 		});
 		expect(user).toEqual({
 			id: 'u1',
 			display_name: 'Alice',
 			role: 'admin',
 			email: 'a@example.com',
-			avatar_url: null
+			avatar_url: null,
+			username: 'alice',
+			username_display: 'Alice',
+			providers: []
 		});
 	});
 });
 
 describe('auth mutations route through api.global', () => {
-	it('local login posts credentials to the login endpoint', async () => {
+	it('local login posts username + password to the login endpoint', async () => {
 		mockPost.mockResolvedValue({ user: {} });
 		const { createLocalLoginMutation } = await import('./AuthMutations.svelte');
 		createLocalLoginMutation();
 
-		await lastMutationFn()({ email: 'a@example.com', password: 'pw' });
+		await lastMutationFn()({ username: 'jane.doe', password: 'pw' });
 
 		expect(mockPost).toHaveBeenCalledWith(AUTH_ENDPOINTS.login, {
-			email: 'a@example.com',
+			username: 'jane.doe',
 			password: 'pw'
 		});
 	});
 
-	it('setup posts the admin account payload', async () => {
+	it('setup posts username and omits email when not provided', async () => {
 		mockPost.mockResolvedValue({ user: {} });
 		const { createSetupMutation } = await import('./AuthMutations.svelte');
 		createSetupMutation();
 
-		await lastMutationFn()({ display_name: 'A', email: 'a@example.com', password: 'pw' });
+		await lastMutationFn()({ display_name: 'A', username: 'a.admin', password: 'pw' });
 
 		expect(mockPost).toHaveBeenCalledWith(AUTH_ENDPOINTS.setup, {
 			display_name: 'A',
-			email: 'a@example.com',
+			username: 'a.admin',
 			password: 'pw'
 		});
 	});

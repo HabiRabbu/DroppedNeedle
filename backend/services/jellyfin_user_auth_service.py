@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import json, logging, uuid
+import json, logging, sqlite3, uuid
 
 import httpx
 
 from core.exceptions import AuthenticationError, ExternalServiceError
 from infrastructure.crypto import encrypt
-from infrastructure.persistence.auth_store import AuthStore, UserRecord
+from infrastructure.persistence.auth_store import AuthStore, UserRecord, _derive_username
 
 logger = logging.getLogger(__name__)
 
 _EMBY_AUTH_HEADER = (
-    'MediaBrowser Client="MusicSeerr", Device="MusicSeerr", DeviceId="{client_id}", Version="1.4.0"'
+    'MediaBrowser Client="DroppedNeedle", Device="DroppedNeedle", DeviceId="{client_id}", Version="1.4.0"'
 )
 
 
@@ -56,7 +56,7 @@ class JellyfinUserAuthService:
 
     async def _authenticate_with_jellyfin(self, username: str, password: str) -> dict:
         client_id = self._prefs.get_or_create_setting(
-            "musicseerr_device_id", lambda: str(uuid.uuid4())
+            "droppedneedle_device_id", lambda: str(uuid.uuid4())
         )
 
         base_url = self._jellyfin_repo._base_url
@@ -141,13 +141,28 @@ class JellyfinUserAuthService:
         provider_id = str(uuid.uuid4())
         is_first = not await self._store.has_any_users()
 
-        user = await self._store.create_user(
-            id = user_id,
-            display_name = username,
-            role = "admin" if is_first else "user",
-            email = email,
-            avatar_url = thumb,
-        )
+        # Auto-derive a username from the Jellyfin Name (D3) so an SSO-only account
+        # can later set a local password without a separate "choose username" step.
+        # Retry on the unique-index race so two concurrent first-logins whose names
+        # slug to the same base don't 500 (mirrors AuthStore._assign_unique_username).
+        user = None
+        for _attempt in range(20):
+            derived_username, derived_display = await _derive_username(self._store, display_name = username)
+            try:
+                user = await self._store.create_user(
+                    id = user_id,
+                    display_name = username,
+                    role = "admin" if is_first else "user",
+                    email = email,
+                    avatar_url = thumb,
+                    username = derived_username,
+                    username_display = derived_display,
+                )
+                break
+            except sqlite3.IntegrityError:
+                continue
+        if user is None:
+            raise AuthenticationError("Could not create an account from Jellyfin")
         await self._store.create_auth_provider(
             id = provider_id,
             user_id = user_id,

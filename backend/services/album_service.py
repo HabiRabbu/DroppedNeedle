@@ -1,17 +1,15 @@
 import logging
 import asyncio
-import time
 from typing import Optional, TYPE_CHECKING
 import msgspec
 from api.v1.schemas.album import AlbumInfo, AlbumBasicInfo, AlbumTracksInfo, Track
-from repositories.protocols import LidarrRepositoryProtocol, MusicBrainzRepositoryProtocol
+from repositories.protocols import LibraryRepositoryProtocol, MusicBrainzRepositoryProtocol
 from services.preferences_service import PreferencesService
-from services.album_utils import parse_year, find_primary_release, get_ranked_releases, extract_artist_info, extract_tracks, extract_label, build_album_basic_info, lidarr_to_basic_info, mb_to_basic_info
+from services.album_utils import find_primary_release, get_ranked_releases, extract_artist_info, extract_tracks, extract_label, build_album_basic_info, mb_to_basic_info
 from infrastructure.persistence import LibraryDB
-from infrastructure.cache.cache_keys import ALBUM_INFO_PREFIX, LIDARR_ALBUM_DETAILS_PREFIX, ARTIST_INFO_PREFIX, LIDARR_ARTIST_ALBUMS_PREFIX
+from infrastructure.cache.cache_keys import ALBUM_INFO_PREFIX, LIBRARY_ALBUM_DETAILS_PREFIX
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cache.disk_cache import DiskMetadataCache
-from infrastructure.cover_urls import prefer_release_group_cover_url
 from infrastructure.validators import validate_mbid
 from core.exceptions import ResourceNotFoundError
 from services.audiodb_image_service import AudioDBImageService
@@ -26,7 +24,7 @@ logger = logging.getLogger(__name__)
 class AlbumService:
     def __init__(
         self, 
-        lidarr_repo: LidarrRepositoryProtocol, 
+        library_repo: LibraryRepositoryProtocol, 
         mb_repo: MusicBrainzRepositoryProtocol,
         library_db: LibraryDB,
         memory_cache: CacheInterface,
@@ -35,7 +33,7 @@ class AlbumService:
         audiodb_image_service: AudioDBImageService | None = None,
         audiodb_browse_queue: 'AudioDBBrowseQueue | None' = None,
     ):
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._mb_repo = mb_repo
         self._library_db = library_db
         self._cache = memory_cache
@@ -43,7 +41,6 @@ class AlbumService:
         self._preferences_service = preferences_service
         self._audiodb_image_service = audiodb_image_service
         self._audiodb_browse_queue = audiodb_browse_queue
-        self._revalidation_timestamps: dict[str, float] = {}
         self._album_in_flight: dict[str, asyncio.Future[AlbumInfo]] = {}
 
     async def _get_audiodb_album_thumb(self, release_group_id: str, artist_name: str | None = None, album_name: str | None = None, *, allow_fetch: bool = False) -> str | None:
@@ -114,49 +111,20 @@ class AlbumService:
         cache_key = f"{ALBUM_INFO_PREFIX}{release_group_id}"
         return await self._cache.get(cache_key) is not None
 
-    async def _get_queued_mbids(self) -> set[str]:
-        try:
-            queue_items = await self._lidarr_repo.get_queue()
-            return {item.musicbrainz_id.lower() for item in queue_items if item.musicbrainz_id}
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"Failed to fetch queue: {e}")
-            return set()
-    
     async def _get_cached_album_info(self, release_group_id: str, cache_key: str) -> Optional[AlbumInfo]:
         cached_info = await self._cache.get(cache_key)
         if cached_info:
-            return await self._revalidate_library_status(release_group_id, cached_info)
+            return cached_info
         
         disk_data = await self._disk_cache.get_album(release_group_id)
         if disk_data:
             album_info = msgspec.convert(disk_data, AlbumInfo, strict=False)
-            album_info = await self._revalidate_library_status(release_group_id, album_info)
             advanced_settings = self._preferences_service.get_advanced_settings()
             ttl = advanced_settings.cache_ttl_album_library if album_info.in_library else advanced_settings.cache_ttl_album_non_library
             await self._cache.set(cache_key, album_info, ttl_seconds=ttl)
             return album_info
         
         return None
-
-    async def _revalidate_library_status(self, release_group_id: str, album_info: AlbumInfo) -> AlbumInfo:
-        _REVALIDATION_COOLDOWN = 60
-        if not self._lidarr_repo.is_configured():
-            return album_info
-        now = time.monotonic()
-        last = self._revalidation_timestamps.get(release_group_id, 0.0)
-        if now - last < _REVALIDATION_COOLDOWN:
-            return album_info
-
-        lidarr_album = await self._lidarr_repo.get_album_details(release_group_id)
-        if lidarr_album is None:
-            return album_info
-
-        self._revalidation_timestamps[release_group_id] = time.monotonic()
-        current_in_library = self._check_lidarr_in_library(lidarr_album)
-        if current_in_library != album_info.in_library:
-            album_info.in_library = current_in_library
-            await self._save_album_to_cache(release_group_id, album_info)
-        return album_info
 
     async def _save_album_to_cache(self, release_group_id: str, album_info: AlbumInfo) -> None:
         cache_key = f"{ALBUM_INFO_PREFIX}{release_group_id}"
@@ -165,14 +133,7 @@ class AlbumService:
         await self._cache.set(cache_key, album_info, ttl_seconds=ttl)
         await self._disk_cache.set_album(release_group_id, album_info, is_monitored=album_info.in_library, ttl_seconds=ttl if not album_info.in_library else None)
 
-    def _check_lidarr_in_library(self, lidarr_album: dict | None) -> bool:
-        if lidarr_album is None:
-            return False
-        statistics = lidarr_album.get("statistics", {})
-        return statistics.get("trackFileCount", 0) > 0
-
     async def warm_full_album_cache(self, release_group_id: str) -> None:
-        """Fire-and-forget: populate the full album_info cache if missing."""
         try:
             cache_key = f"{ALBUM_INFO_PREFIX}{release_group_id}"
             if await self._get_cached_album_info(release_group_id, cache_key):
@@ -185,53 +146,11 @@ class AlbumService:
         release_group_id = validate_mbid(release_group_id, "album")
 
         await self._cache.delete(f"{ALBUM_INFO_PREFIX}{release_group_id}")
-        await self._cache.delete(f"{LIDARR_ALBUM_DETAILS_PREFIX}{release_group_id}")
+        await self._cache.delete(f"{LIBRARY_ALBUM_DETAILS_PREFIX}{release_group_id}")
         await self._disk_cache.delete_album(release_group_id)
-        self._revalidation_timestamps.pop(release_group_id, None)
         self._album_in_flight.pop(release_group_id, None)
 
         return await self.get_album_info(release_group_id)
-
-    async def set_album_monitored(self, release_group_id: str, monitored: bool) -> bool:
-        try:
-            release_group_id = validate_mbid(release_group_id, "album")
-        except ValueError as e:
-            logger.error(f"Invalid album MBID: {e}")
-            raise
-
-        success = await self._lidarr_repo.set_monitored(release_group_id, monitored)
-        if success:
-            await self._cache.delete(f"{ALBUM_INFO_PREFIX}{release_group_id}")
-            await self._cache.delete(f"{LIDARR_ALBUM_DETAILS_PREFIX}{release_group_id}")
-            await self._disk_cache.delete_album(release_group_id)
-            try:
-                lidarr_album = await self._lidarr_repo.get_album_details(release_group_id)
-                if lidarr_album:
-                    artist_data = lidarr_album.get("artist", {})
-                    artist_mbid = artist_data.get("foreignArtistId")
-                    if artist_mbid:
-                        await self._cache.delete(f"{ARTIST_INFO_PREFIX}{artist_mbid}")
-                        await self._cache.delete(f"{LIDARR_ARTIST_ALBUMS_PREFIX}{artist_mbid}")
-                        await self._disk_cache.delete_artist(artist_mbid)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Failed to invalidate artist caches for {release_group_id}: {e}")
-            try:
-                existing = await self._library_db.get_album_by_mbid(release_group_id)
-                if existing:
-                    album_data: dict = {
-                        "mbid": release_group_id,
-                        "monitored": monitored,
-                        "artist_mbid": existing.get("artist_mbid"),
-                        "artist_name": existing.get("artist_name"),
-                        "title": existing.get("title"),
-                        "year": existing.get("year"),
-                        "cover_url": existing.get("cover_url"),
-                        "date_added": existing.get("date_added"),
-                    }
-                    await self._library_db.upsert_album(album_data)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Failed to update library_db for {release_group_id}: {e}")
-        return success
 
     async def get_album_info(self, release_group_id: str, library_mbids: set[str] = None) -> AlbumInfo:
         try:
@@ -275,14 +194,7 @@ class AlbumService:
     async def _do_get_album_info(
         self, release_group_id: str, cache_key: str, library_mbids: set[str] | None
     ) -> AlbumInfo:
-        lidarr_album = await self._lidarr_repo.get_album_details(release_group_id) if self._lidarr_repo.is_configured() else None
-        in_library = self._check_lidarr_in_library(lidarr_album)
-        if in_library and lidarr_album:
-            album_info = await self._build_album_from_lidarr(release_group_id, lidarr_album)
-        else:
-            album_info = await self._build_album_from_musicbrainz(release_group_id, library_mbids)
-        if lidarr_album is not None:
-            album_info.monitored = lidarr_album.get("monitored", False)
+        album_info = await self._build_album_from_musicbrainz(release_group_id, library_mbids)
         album_info = await self._apply_audiodb_album_images(
             album_info, release_group_id, album_info.artist_name, album_info.title,
             allow_fetch=True, is_monitored=album_info.in_library,
@@ -301,8 +213,8 @@ class AlbumService:
             cache_key = f"{ALBUM_INFO_PREFIX}{release_group_id}"
 
             try:
-                if self._lidarr_repo.is_configured():
-                    requested_mbids = await self._lidarr_repo.get_requested_mbids()
+                if self._library_repo.is_configured():
+                    requested_mbids = await self._library_repo.get_requested_mbids()
                 else:
                     requested_mbids = set()
             except Exception:  # noqa: BLE001
@@ -329,33 +241,15 @@ class AlbumService:
                     disambiguation=cached_album_info.disambiguation,
                     in_library=cached_album_info.in_library,
                     requested=is_requested and not cached_album_info.in_library,
-                    monitored=cached_album_info.monitored,
                     cover_url=cached_album_info.cover_url,
                     album_thumb_url=album_thumb,
                 )
 
-            lidarr_album = await self._lidarr_repo.get_album_details(release_group_id) if self._lidarr_repo.is_configured() else None
-            in_library = self._check_lidarr_in_library(lidarr_album)
-
-            is_monitored = False
-            if lidarr_album is not None:
-                is_monitored = lidarr_album.get("monitored", False)
-
-            if lidarr_album:
-                basic = AlbumBasicInfo(**lidarr_to_basic_info(lidarr_album, release_group_id, in_library, is_requested=is_requested))
-                basic.monitored = is_monitored
-                if not basic.album_thumb_url:
-                    basic.album_thumb_url = await self._get_audiodb_album_thumb(
-                        release_group_id, basic.artist_name, basic.title,
-                        allow_fetch=False,
-                    )
-                return basic
             release_group = await self._fetch_release_group(release_group_id)
-            if lidarr_album is None:
-                cached_album = await self._library_db.get_album_by_mbid(release_group_id)
-                in_library = cached_album is not None
+            # in_library means non-deleted local files exist; the materialised
+            # library_albums row lags removals and misses manually-added files.
+            in_library = await self._library_db.has_album_files(release_group_id)
             basic = AlbumBasicInfo(**mb_to_basic_info(release_group, release_group_id, in_library, is_requested))
-            basic.monitored = is_monitored
             basic.album_thumb_url = await self._get_audiodb_album_thumb(
                 release_group_id, basic.artist_name, basic.title,
                 allow_fetch=False,
@@ -386,37 +280,6 @@ class AlbumService:
                     label=cached_album_info.label,
                     barcode=cached_album_info.barcode,
                     country=cached_album_info.country,
-                )
-            
-            lidarr_album = await self._lidarr_repo.get_album_details(release_group_id) if self._lidarr_repo.is_configured() else None
-            in_library = self._check_lidarr_in_library(lidarr_album)
-            
-            if in_library and lidarr_album:
-                album_id = lidarr_album.get("id")
-                tracks = []
-                total_length = 0
-                
-                if album_id:
-                    lidarr_tracks = await self._lidarr_repo.get_album_tracks(album_id)
-                    for t in lidarr_tracks:
-                        duration_ms = t.get("duration_ms", 0)
-                        if duration_ms:
-                            total_length += duration_ms
-                        tracks.append(Track(
-                            position=int(t.get("track_number") or t.get("position", 0)),
-                            disc_number=int(t.get("disc_number", 1) or 1),
-                            title=t.get("title", "Unknown"),
-                            length=duration_ms if duration_ms else None,
-                            recording_id=None,
-                        ))
-                
-                return AlbumTracksInfo(
-                    tracks=tracks,
-                    total_tracks=len(tracks),
-                    total_length=total_length if total_length > 0 else None,
-                    label=None,
-                    barcode=None,
-                    country=None,
                 )
             
             release_group = await self._fetch_release_group(release_group_id)
@@ -483,7 +346,7 @@ class AlbumService:
         if library_mbids is not None:
             return release_group_id.lower() in library_mbids
         
-        library_mbids = await self._lidarr_repo.get_library_mbids(include_release_ids=True)
+        library_mbids = await self._library_repo.get_library_mbids(include_release_ids=True)
         return release_group_id.lower() in library_mbids
     
     def _build_basic_info(
@@ -525,101 +388,15 @@ class AlbumService:
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to enrich with release details: {e}")
 
-    async def _build_album_from_lidarr(
-        self,
-        release_group_id: str,
-        lidarr_album: dict
-    ) -> AlbumInfo:
-        album_id = lidarr_album.get("id")
-        
-        tracks = []
-        total_length = 0
-        if album_id:
-            lidarr_tracks = await self._lidarr_repo.get_album_tracks(album_id)
-            for t in lidarr_tracks:
-                duration_ms = t.get("duration_ms", 0)
-                if duration_ms:
-                    total_length += duration_ms
-                tracks.append(Track(
-                    position=int(t.get("track_number") or t.get("position", 0)),
-                    disc_number=int(t.get("disc_number", 1) or 1),
-                    title=t.get("title", "Unknown"),
-                    length=duration_ms if duration_ms else None,
-                    recording_id=None,
-                ))
-        
-        label = None
-        barcode = None
-        country = None
-        
-        if not tracks:
-            try:
-                release_group = await self._fetch_release_group(release_group_id)
-                ranked_releases = get_ranked_releases(release_group)
-                candidate_ids = [r.get("id") for r in ranked_releases[:3] if r.get("id")]
-                if candidate_ids:
-                    release_results = await asyncio.gather(
-                        *(self._mb_repo.get_release_by_id(rid, includes=["recordings", "labels"]) for rid in candidate_ids),
-                        return_exceptions=True,
-                    )
-                    failures = [r for r in release_results if isinstance(r, Exception)]
-                    if failures:
-                        logger.warning(f"Album {release_group_id[:8]} MB fallback: {len(failures)}/{len(candidate_ids)} release fetches failed")
-                    for result in release_results:
-                        if isinstance(result, Exception) or not result:
-                            continue
-                        found_tracks, found_length = extract_tracks(result)
-                        if found_tracks:
-                            tracks = found_tracks
-                            total_length = found_length
-                            label = extract_label(result)
-                            barcode = result.get("barcode")
-                            country = result.get("country")
-                            break
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"MusicBrainz fallback for tracks failed: {e}")
-        
-        year = None
-        if release_date := lidarr_album.get("release_date"):
-            try:
-                year = int(release_date.split("-")[0])
-            except (ValueError, IndexError):
-                pass
-
-        cover_url = prefer_release_group_cover_url(
-            release_group_id,
-            lidarr_album.get("cover_url"),
-            size=500,
-        )
-
-        return AlbumInfo(
-            title=lidarr_album.get("title", "Unknown Album"),
-            musicbrainz_id=release_group_id,
-            artist_name=lidarr_album.get("artist_name", "Unknown Artist"),
-            artist_id=lidarr_album.get("artist_mbid", ""),
-            release_date=lidarr_album.get("release_date"),
-            year=year,
-            type=lidarr_album.get("album_type"),
-            label=label,
-            barcode=barcode,
-            country=country,
-            disambiguation=lidarr_album.get("disambiguation"),
-            tracks=tracks,
-            total_tracks=len(tracks),
-            total_length=total_length if total_length > 0 else None,
-            in_library=True,
-            monitored=lidarr_album.get("monitored", False),
-            cover_url=cover_url,
-        )
-    
     async def _build_album_from_musicbrainz(
         self,
         release_group_id: str,
         library_mbids: set[str] = None
     ) -> AlbumInfo:
-        cached_album = await self._library_db.get_album_by_mbid(release_group_id)
-        in_library = cached_album is not None
-        
+        # in_library reflects non-deleted local files, not the library_albums row
+        # (see get_album_basic_info).
+        in_library = await self._library_db.has_album_files(release_group_id)
+
         release_group = await self._fetch_release_group(release_group_id)
         primary_release = find_primary_release(release_group)
         artist_name, artist_id = extract_artist_info(release_group)

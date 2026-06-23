@@ -130,9 +130,7 @@
 		const albums = releasesQuery.data?.pages.flatMap((page) => page.albums) || [];
 		const singles = releasesQuery.data?.pages.flatMap((page) => page.singles) || [];
 		const eps = releasesQuery.data?.pages.flatMap((page) => page.eps) || [];
-		// Pages from the infinite query (and Lidarr/MusicBrainz merges) can repeat a
-		// release group; dedupe before rendering so ReleaseList's keyed {#each} never
-		// receives a duplicate key (each_key_duplicate), which would blank the page.
+		// pages can repeat a release group; dedupe so the keyed {#each} never hits each_key_duplicate, which would blank the page
 		return {
 			albums: sortReleasesByYear(dedupeById(albums)),
 			singles: sortReleasesByYear(dedupeById(singles)),
@@ -167,7 +165,6 @@
 	}
 
 	async function handleRefreshClick() {
-		// Will also invalidate the extended query
 		invalidateQueriesWithPersister({ queryKey: ArtistQueryKeyFactory.basic(data.artistId) });
 	}
 
@@ -224,7 +221,7 @@
 			title: r.title,
 			type: r.type ?? 'Album',
 			year: r.year,
-			in_library: r.in_library || libraryStore.isInLibrary(r.id),
+			in_library: libraryStore.isInLibrary(r.id) || (!$libraryStore.initialized && r.in_library),
 			requested: r.requested || libraryStore.isRequested(r.id)
 		}));
 		discographyDownloadStore.show(artist.name, data.artistId, items);
@@ -237,7 +234,7 @@
 			title: r.title,
 			type,
 			year: r.year,
-			in_library: r.in_library || libraryStore.isInLibrary(r.id),
+			in_library: libraryStore.isInLibrary(r.id) || (!$libraryStore.initialized && r.in_library),
 			requested: r.requested || libraryStore.isRequested(r.id)
 		}));
 		discographyDownloadStore.show(artist.name, data.artistId, items);
@@ -326,12 +323,8 @@
 						<ArtistDescription description={artist.description} loading={loadingExtended} />
 					{/if}
 
-					{#if $integrationStore.lastfm}
-						<LastFmEnrichment
-							enrichment={lastfmEnrichment}
-							loading={loadingLastfm}
-							enabled={$integrationStore.lastfm}
-						/>
+					{#if loadingLastfm || lastfmEnrichment}
+						<LastFmEnrichment enrichment={lastfmEnrichment} loading={loadingLastfm} />
 					{/if}
 				</section>
 

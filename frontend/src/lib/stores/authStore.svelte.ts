@@ -1,9 +1,16 @@
+/** localStorage key holding the last hydrated user id, so a page load as a
+ *  different user (shared browser) can clear the persisted query cache (AMU-5). */
+export const LAST_USER_ID_KEY = 'msr:last_user_id';
+
 export interface AuthUser {
 	id: string;
 	display_name: string;
 	role: 'admin' | 'trusted' | 'user';
 	email: string | null;
 	avatar_url: string | null;
+	username: string | null;
+	username_display: string | null;
+	providers: string[];
 }
 
 function createAuthStore() {

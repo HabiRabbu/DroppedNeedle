@@ -1,7 +1,7 @@
 from typing import Any
 
 
-class MusicseerrException(Exception):
+class DroppedNeedleException(Exception):
     def __init__(self, message: str, details: Any = None):
         self.message = message
         self.details = details
@@ -13,7 +13,7 @@ class MusicseerrException(Exception):
         return self.message
 
 
-class ExternalServiceError(MusicseerrException):
+class ExternalServiceError(DroppedNeedleException):
     pass
 
 
@@ -28,11 +28,21 @@ class RateLimitedError(ExternalServiceError):
         self.retry_after_seconds = retry_after_seconds
 
 
-class ResourceNotFoundError(MusicseerrException):
+class ResourceNotFoundError(DroppedNeedleException):
     pass
 
 
-class ValidationError(MusicseerrException):
+class ValidationError(DroppedNeedleException):
+    pass
+
+
+class PermissionDeniedError(DroppedNeedleException):
+    """Ownership/authorization violation. Mapped to HTTP 403 by the registered handler."""
+    pass
+
+
+class ConflictError(DroppedNeedleException):
+    """Duplicate active request/download. Mapped to HTTP 409 by the registered handler."""
     pass
 
 
@@ -48,11 +58,7 @@ class SourceResolutionError(ValidationError):
     pass
 
 
-class ConfigurationError(MusicseerrException):
-    pass
-
-
-class CacheError(MusicseerrException):
+class ConfigurationError(DroppedNeedleException):
     pass
 
 
@@ -114,13 +120,62 @@ class NavidromeSubsonicError(ExternalServiceError):
         self.code = code
 
 
-class ClientDisconnectedError(MusicseerrException):
+class SlskdApiError(ExternalServiceError):
+    """Transport/HTTP error talking to slskd (AUD-10).
+
+    Mapped to HTTP 503 by the registered ``ExternalServiceError`` handler -
+    no separate handler registration is needed. Mirrors the
+    ``PlexApiError``/``NavidromeApiError`` precedent.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        details: Any = None,
+        code: int | None = None,
+    ):
+        super().__init__(message, details)
+        self.code = code
+
+
+class ClientDisconnectedError(DroppedNeedleException):
     pass
 
 
-class AuthenticationError(MusicseerrException):
+class AuthenticationError(DroppedNeedleException):
     pass
 
 
-class RegistrationError(MusicseerrException):
+class RegistrationError(DroppedNeedleException):
     pass
+
+
+class SubsonicError(DroppedNeedleException):
+    """Inbound OpenSubsonic failure -> rendered as a status=failed envelope.
+
+    Distinct from the outbound ``NavidromeSubsonicError`` (us-as-client): this is
+    us-as-server failing a compat client's request. Raised by the Subsonic shim
+    and ``AppPasswordService.verify_subsonic``; the per-shim error boundary reads
+    ``err.code``. ``code`` is the first positional so ``SubsonicError(43)`` works.
+    """
+
+    def __init__(self, code: int, message: str | None = None):
+        super().__init__(message or "", None)
+        self.code = code
+
+
+class JellyfinError(DroppedNeedleException):
+    """Inbound Jellyfin failure -> rendered as a real HTTP status code.
+
+    Distinct from the outbound Jellyfin client errors: this is us-as-server
+    failing a compat client's request. Raised by the Jellyfin shim and its auth
+    resolution; the per-shim error boundary reads ``err.status`` / ``err.body``.
+    ``status`` is the first positional so ``JellyfinError(401)`` works.
+    """
+
+    def __init__(
+        self, status: int, message: str | None = None, body: dict | None = None
+    ):
+        super().__init__(message or "", None)
+        self.status = status
+        self.body = body

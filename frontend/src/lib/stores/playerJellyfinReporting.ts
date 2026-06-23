@@ -1,7 +1,7 @@
 import type { QueueItem } from '$lib/player/types';
 import { isPlexScrobbleEnabled } from '$lib/player/plexPlaybackApi';
 
-export interface ProgressReporterState {
+interface ProgressReporterState {
 	jellyfinItem: QueueItem | null;
 	progress: number;
 	isPaused: boolean;
@@ -63,7 +63,7 @@ export function createProgressReporter(
 	return { start, stop };
 }
 
-export function buildStopSessionPayload(
+function buildStopSessionPayload(
 	playSessionId: string,
 	positionSeconds: number
 ): { play_session_id: string; position_seconds: number } {

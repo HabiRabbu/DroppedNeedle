@@ -97,7 +97,7 @@
 							<Info class="w-7 h-7 text-primary" />
 						</div>
 						<div>
-							<h3 class="text-xl font-bold">MusicSeerr</h3>
+							<h3 class="text-xl font-bold">DroppedNeedle</h3>
 							<div class="flex items-center gap-2 mt-1">
 								<span class="badge badge-accent font-mono">
 									{version.version}

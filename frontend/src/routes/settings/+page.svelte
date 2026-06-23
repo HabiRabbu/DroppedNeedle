@@ -6,16 +6,12 @@
 	import { integrationStore } from '$lib/stores/integration';
 	import SettingsPreferences from '$lib/components/settings/SettingsPreferences.svelte';
 	import SettingsCache from '$lib/components/settings/SettingsCache.svelte';
-	import SettingsLidarrConnection from '$lib/components/settings/SettingsLidarrConnection.svelte';
-	import SettingsLibrarySync from '$lib/components/settings/SettingsLibrarySync.svelte';
+	import SettingsLibrary from '$lib/components/settings/SettingsLibrary.svelte';
 	import SettingsJellyfin from '$lib/components/settings/SettingsJellyfin.svelte';
 	import SettingsNavidrome from '$lib/components/settings/SettingsNavidrome.svelte';
 	import SettingsPlex from '$lib/components/settings/SettingsPlex.svelte';
-	import SettingsListenBrainz from '$lib/components/settings/SettingsListenBrainz.svelte';
 	import SettingsYouTube from '$lib/components/settings/SettingsYouTube.svelte';
-	import SettingsLocalFiles from '$lib/components/settings/SettingsLocalFiles.svelte';
-	import SettingsLastFm from '$lib/components/settings/SettingsLastFm.svelte';
-	import SettingsScrobbling from '$lib/components/settings/SettingsScrobbling.svelte';
+	import SettingsLastFmApp from '$lib/components/settings/SettingsLastFmApp.svelte';
 	import SettingsMusicSource from '$lib/components/settings/SettingsMusicSource.svelte';
 	import SettingsAdvanced from '$lib/components/settings/SettingsAdvanced.svelte';
 	import SettingsMusicBrainz from '$lib/components/settings/SettingsMusicBrainz.svelte';
@@ -24,18 +20,19 @@
 	import SettingsDiscover from '$lib/components/settings/SettingsDiscover.svelte';
 	import SettingsUsers from '$lib/components/settings/SettingsUsers.svelte';
 	import SettingsSecurity from '$lib/components/settings/SettingsSecurity.svelte';
+	import SettingsDownloadClient from '$lib/components/settings/SettingsDownloadClient.svelte';
+	import SettingsConnectApps from '$lib/components/settings/SettingsConnectApps.svelte';
+	import SettingsOnboardingChecklist from '$lib/components/settings/SettingsOnboardingChecklist.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { getUpdateCheckQuery } from '$lib/queries/VersionQuery.svelte';
 	import {
 		Settings2,
 		Music,
-		Shield,
 		Youtube,
-		Headphones,
 		Database,
 		Settings,
 		Radio,
-		Activity,
+		Search,
 		BarChart3,
 		Info,
 		ArrowUpCircle,
@@ -43,7 +40,9 @@
 		Home,
 		Compass,
 		Users,
-		ShieldCheck
+		ShieldCheck,
+		HardDriveDownload,
+		Waypoints
 	} from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
@@ -56,64 +55,67 @@
 
 	const connectionMap: Record<
 		string,
-		| 'lastfm'
-		| 'listenbrainz'
-		| 'jellyfin'
-		| 'navidrome'
-		| 'plex'
-		| 'youtube'
-		| 'localfiles'
-		| 'lidarr'
+		'jellyfin' | 'navidrome' | 'plex' | 'youtube' | 'localfiles'
 	> = {
-		lastfm: 'lastfm',
-		listenbrainz: 'listenbrainz',
 		jellyfin: 'jellyfin',
 		navidrome: 'navidrome',
 		plex: 'plex',
-		youtube: 'youtube',
-		'local-files': 'localfiles',
-		'lidarr-connection': 'lidarr'
+		youtube: 'youtube'
 	};
 
 	let activeTab = $state('settings');
+	let filter = $state('');
 
-	const tabs = [
-		{ id: 'settings', label: 'Release Preferences', group: 'Preferences', icon: Settings2 },
-		{ id: 'home', label: 'Home', group: 'Preferences', icon: Home },
-		{ id: 'discover', label: 'Discover', group: 'Preferences', icon: Compass },
-		{ id: 'lastfm', label: 'Last.fm', group: 'Music Tracking', icon: Radio },
-		{ id: 'listenbrainz', label: 'ListenBrainz', group: 'Music Tracking', icon: Music },
-		{ id: 'scrobbling', label: 'Scrobbling', group: 'Music Tracking', icon: Activity },
-		{ id: 'music-source', label: 'Music Source', group: 'Music Tracking', icon: BarChart3 },
-		{ id: 'jellyfin', label: 'Jellyfin', group: 'Media Servers', icon: JellyfinIcon },
-		{ id: 'navidrome', label: 'Navidrome', group: 'Media Servers', icon: NavidromeIcon },
-		{ id: 'plex', label: 'Plex', group: 'Media Servers', icon: PlexIcon },
-		{
-			id: 'lidarr-connection',
-			label: 'Lidarr Connection',
-			group: 'Library & Sources',
-			icon: Shield
-		},
-		{ id: 'lidarr', label: 'Library Sync', group: 'Library & Sources', icon: Music },
-		{ id: 'youtube', label: 'YouTube', group: 'Library & Sources', icon: Youtube },
-		{ id: 'local-files', label: 'Local Files', group: 'Library & Sources', icon: Headphones },
-		{ id: 'cache', label: 'Cache', group: 'System', icon: Database },
-		{ id: 'musicbrainz', label: 'MusicBrainz', group: 'System', icon: Globe },
-		...(authStore.isAdmin
-			? [
-					{ id: 'users', label: 'Users', group: 'System', icon: Users },
-					{ id: 'security', label: 'Security', group: 'System', icon: ShieldCheck }
-				]
-			: []),
-		{ id: 'advanced', label: 'Advanced', group: 'System', icon: Settings },
-		{ id: 'about', label: 'About', group: 'System', icon: Info }
+	const tiers = [
+		{ id: 'setup', label: 'Setup', hint: 'Connect your sources' },
+		{ id: 'personalize', label: 'Personalize', hint: 'Tune your content' },
+		{ id: 'system', label: 'System', hint: 'Maintenance & account' }
 	];
 
-	const groups = [...new Set(tabs.map((t) => t.group))];
+	const tabs = [
+		{ id: 'library', label: 'Library', tier: 'setup', icon: Music },
+		...(authStore.isAdmin
+			? [
+					{
+						id: 'download-client',
+						label: 'Download Client',
+						tier: 'setup',
+						icon: HardDriveDownload
+					}
+				]
+			: []),
+		{ id: 'connect-apps', label: 'Connect Apps', tier: 'setup', icon: Waypoints },
+		{ id: 'jellyfin', label: 'Jellyfin', tier: 'setup', icon: JellyfinIcon },
+		{ id: 'navidrome', label: 'Navidrome', tier: 'setup', icon: NavidromeIcon },
+		{ id: 'plex', label: 'Plex', tier: 'setup', icon: PlexIcon },
+		{ id: 'youtube', label: 'YouTube', tier: 'setup', icon: Youtube },
+		...(authStore.isAdmin ? [{ id: 'lastfm', label: 'Last.fm', tier: 'setup', icon: Radio }] : []),
+		{ id: 'settings', label: 'Release Types', tier: 'personalize', icon: Settings2 },
+		{ id: 'home', label: 'Home', tier: 'personalize', icon: Home },
+		{ id: 'discover', label: 'Discover', tier: 'personalize', icon: Compass },
+		{ id: 'music-source', label: 'Music Source', tier: 'personalize', icon: BarChart3 },
+		{ id: 'cache', label: 'Cache', tier: 'system', icon: Database },
+		{ id: 'musicbrainz', label: 'MusicBrainz', tier: 'system', icon: Globe },
+		...(authStore.isAdmin
+			? [
+					{ id: 'users', label: 'Users', tier: 'system', icon: Users },
+					{ id: 'security', label: 'Security', tier: 'system', icon: ShieldCheck }
+				]
+			: []),
+		{ id: 'advanced', label: 'Advanced', tier: 'system', icon: Settings },
+		{ id: 'about', label: 'About', tier: 'system', icon: Info }
+	];
 
-	function getTabsByGroup(group: string) {
-		return tabs.filter((t) => t.group === group);
+	const normalizedFilter = $derived(filter.trim().toLowerCase());
+	function tabsForTier(tier: string) {
+		return tabs.filter(
+			(t) =>
+				t.tier === tier && (!normalizedFilter || t.label.toLowerCase().includes(normalizedFilter))
+		);
 	}
+	const noMatches = $derived(
+		normalizedFilter.length > 0 && tiers.every((t) => tabsForTier(t.id).length === 0)
+	);
 
 	function selectTab(id: string) {
 		activeTab = id;
@@ -143,51 +145,87 @@
 
 		<div class="flex flex-col lg:flex-row gap-6">
 			<aside
-				class="w-full lg:w-80 lg:shrink-0 space-y-4 lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto"
+				class="scrollbar-hide w-full lg:w-80 lg:shrink-0 space-y-3 lg:sticky lg:top-20 lg:self-start lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto"
 			>
-				{#each groups as group, i (`group-${i}`)}
-					<div class="bg-base-200 rounded-box p-2">
-						<div class="px-4 py-2">
-							<h3 class="text-xs font-semibold text-base-content/50 uppercase tracking-wider">
-								{group}
-							</h3>
+				<label class="relative block">
+					<Search class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-base-content/40" />
+					<input
+						type="text"
+						bind:value={filter}
+						placeholder="Filter settings…"
+						class="input input-sm input-soft w-full pl-9"
+					/>
+				</label>
+
+				{#each tiers as tier (tier.id)}
+					{@const tierTabs = tabsForTier(tier.id)}
+					{#if tierTabs.length > 0}
+						<div
+							class="rounded-2xl border p-2 {tier.id === 'setup'
+								? 'border-primary/15 bg-base-200'
+								: tier.id === 'personalize'
+									? 'border-base-300/40 bg-base-200/70'
+									: 'border-base-300/30 bg-base-200/40'}"
+						>
+							<div class="px-3 pb-1 pt-2">
+								<h3
+									class="text-xs font-bold uppercase tracking-widest {tier.id === 'setup'
+										? 'text-accent'
+										: tier.id === 'personalize'
+											? 'text-base-content/55'
+											: 'text-base-content/35'}"
+								>
+									{tier.label}
+								</h3>
+								<p class="text-[10px] text-base-content/35">{tier.hint}</p>
+							</div>
+							<ul class="menu gap-0.5 p-0">
+								{#each tierTabs as tab (tab.id)}
+									{@const Icon = tab.icon}
+									{@const isActive = activeTab === tab.id}
+									<li>
+										<button
+											class="group justify-start gap-3 rounded-xl text-base transition-all {isActive
+												? 'glow-primary-soft bg-primary/15 font-semibold text-primary'
+												: 'text-base-content/70 hover:bg-base-300/40'}"
+											onclick={() => selectTab(tab.id)}
+										>
+											<Icon
+												class="h-5 w-5 {isActive
+													? 'text-primary'
+													: 'text-base-content/50 group-hover:text-base-content/80'}"
+											/>
+											<span>{tab.label}</span>
+											{#if tab.id in connectionMap}
+												{@const storeKey = connectionMap[tab.id]}
+												{@const connected = integration.current[storeKey]}
+												<span
+													class="ml-auto h-2 w-2 rounded-full {connected
+														? 'bg-success ring-2 ring-success/30'
+														: 'bg-base-content/20'}"
+												>
+													<span class="sr-only">{connected ? 'Connected' : 'Not connected'}</span>
+												</span>
+											{/if}
+											{#if tab.id === 'about' && updateAvailable}
+												<span
+													class="ml-auto flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-semibold text-accent"
+												>
+													<ArrowUpCircle class="h-3 w-3" />
+													Update
+												</span>
+											{/if}
+										</button>
+									</li>
+								{/each}
+							</ul>
 						</div>
-						<ul class="menu p-0">
-							{#each getTabsByGroup(group) as tab (tab.id)}
-								{@const Icon = tab.icon}
-								<li>
-									<button
-										class="text-base justify-start"
-										class:btn-active={activeTab === tab.id}
-										onclick={() => selectTab(tab.id)}
-									>
-										<Icon class="w-5 h-5" />
-										<span>{tab.label}</span>
-										{#if tab.id in connectionMap}
-											{@const storeKey = connectionMap[tab.id]}
-											{@const connected = integration.current[storeKey]}
-											<span
-												class="w-2 h-2 rounded-full ml-auto {connected
-													? 'bg-success'
-													: 'bg-base-content/20'}"
-											>
-												<span class="sr-only">{connected ? 'Connected' : 'Not connected'}</span>
-											</span>
-										{/if}
-										{#if tab.id === 'about' && updateAvailable}
-											<span
-												class="ml-auto flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-semibold text-accent"
-											>
-												<ArrowUpCircle class="h-3 w-3" />
-												Update
-											</span>
-										{/if}
-									</button>
-								</li>
-							{/each}
-						</ul>
-					</div>
+					{/if}
 				{/each}
+
+				{#if noMatches}
+					<p class="px-3 py-2 text-sm text-base-content/40">No settings match "{filter}".</p>
+				{/if}
 			</aside>
 
 			<main class="flex-1 min-w-0">
@@ -201,26 +239,25 @@
 					<SettingsMusicSource />
 				{:else if activeTab === 'cache'}
 					<SettingsCache />
-				{:else if activeTab === 'lidarr-connection'}
-					<SettingsLidarrConnection />
-				{:else if activeTab === 'lidarr'}
-					<SettingsLibrarySync />
+				{:else if activeTab === 'library'}
+					<SettingsLibrary />
+				{:else if activeTab === 'connect-apps'}
+					<SettingsConnectApps />
+				{:else if activeTab === 'download-client' && authStore.isAdmin}
+					<div class="space-y-6">
+						<SettingsOnboardingChecklist />
+						<SettingsDownloadClient />
+					</div>
 				{:else if activeTab === 'jellyfin'}
 					<SettingsJellyfin />
 				{:else if activeTab === 'navidrome'}
 					<SettingsNavidrome />
 				{:else if activeTab === 'plex'}
 					<SettingsPlex />
-				{:else if activeTab === 'listenbrainz'}
-					<SettingsListenBrainz />
 				{:else if activeTab === 'youtube'}
 					<SettingsYouTube />
-				{:else if activeTab === 'local-files'}
-					<SettingsLocalFiles />
-				{:else if activeTab === 'lastfm'}
-					<SettingsLastFm />
-				{:else if activeTab === 'scrobbling'}
-					<SettingsScrobbling />
+				{:else if activeTab === 'lastfm' && authStore.isAdmin}
+					<SettingsLastFmApp />
 				{:else if activeTab === 'musicbrainz'}
 					<SettingsMusicBrainz />
 				{:else if activeTab === 'advanced'}

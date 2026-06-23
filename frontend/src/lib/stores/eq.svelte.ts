@@ -7,7 +7,7 @@ import {
 } from '$lib/stores/eqPresets';
 import { tryGetAudioEngine } from '$lib/player/audioElement';
 
-const STORAGE_KEY = 'musicseerr_eq_settings';
+const STORAGE_KEY = 'droppedneedle_eq_settings';
 const PERSIST_DEBOUNCE_MS = 150;
 
 interface StoredEqSettings {

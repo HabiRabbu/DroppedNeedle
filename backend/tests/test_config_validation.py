@@ -17,10 +17,8 @@ from core.exceptions import ConfigurationError
 def _make_settings(**overrides) -> Settings:
     """Build a Settings with sensible defaults, applying overrides."""
     defaults = {
-        "lidarr_url": "http://lidarr:8686",
         "jellyfin_url": "http://jellyfin:8096",
-        "lidarr_api_key": "test-key",
-        "config_file_path": Path("/tmp/musicseerr-test-config.json"),
+        "config_file_path": Path("/tmp/droppedneedle-test-config.json"),
     }
     defaults.update(overrides)
     return Settings(**defaults)
@@ -37,21 +35,15 @@ def _write_config(path: Path, data: dict) -> None:
 class TestValidateConfigCriticalErrors:
     def test_valid_config_creates_settings(self) -> None:
         settings = _make_settings()
-        assert settings.lidarr_url == "http://lidarr:8686"
+        assert settings.jellyfin_url == "http://jellyfin:8096"
 
     def test_invalid_url_scheme_raises(self) -> None:
         with pytest.raises((ConfigurationError, PydanticValidationError)):
-            _make_settings(lidarr_url="ftp://lidarr:8686")
+            _make_settings(jellyfin_url="ftp://jellyfin:8096")
 
     def test_invalid_jellyfin_url_scheme_raises(self) -> None:
         with pytest.raises((ConfigurationError, PydanticValidationError)):
             _make_settings(jellyfin_url="ftp://jellyfin:8096")
-
-    def test_missing_api_key_warns_but_does_not_raise(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.WARNING):
-            settings = _make_settings(lidarr_api_key="")
-        assert settings.lidarr_api_key == ""
-        assert any("LIDARR_API_KEY" in r.message for r in caplog.records)
 
     def test_http_pool_mismatch_warns_but_does_not_raise(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.WARNING):
@@ -111,7 +103,7 @@ class TestLoadFromFileTypeValidation:
 
     def test_invalid_url_in_file_raises(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
-        _write_config(config_path, {"lidarr_url": "ftp://bad-scheme:8686"})
+        _write_config(config_path, {"jellyfin_url": "ftp://bad-scheme:8096"})
 
         settings = _make_settings(config_file_path=config_path)
         with pytest.raises(ConfigurationError, match="(?i)critical configuration"):
@@ -119,12 +111,12 @@ class TestLoadFromFileTypeValidation:
 
     def test_valid_config_file_loads(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
-        _write_config(config_path, {"port": 9999, "lidarr_api_key": "new-key"})
+        _write_config(config_path, {"port": 9999, "contact_email": "new@example.com"})
 
         settings = _make_settings(config_file_path=config_path)
         settings.load_from_file()
         assert settings.port == 9999
-        assert settings.lidarr_api_key == "new-key"
+        assert settings.contact_email == "new@example.com"
 
     def test_invalid_log_level_in_file_raises(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
@@ -144,15 +136,15 @@ class TestLoadFromFileTypeValidation:
 
     def test_url_trailing_slash_stripped_through_file(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
-        _write_config(config_path, {"lidarr_url": "http://lidarr:8686/"})
+        _write_config(config_path, {"jellyfin_url": "http://jellyfin:8096/"})
 
         settings = _make_settings(config_file_path=config_path)
         settings.load_from_file()
-        assert settings.lidarr_url == "http://lidarr:8686"
+        assert settings.jellyfin_url == "http://jellyfin:8096"
 
     def test_failed_load_does_not_partially_mutate(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"
-        _write_config(config_path, {"port": 7777, "lidarr_url": "ftp://bad:1234"})
+        _write_config(config_path, {"port": 7777, "jellyfin_url": "ftp://bad:1234"})
 
         settings = _make_settings(config_file_path=config_path)
         original_port = settings.port
@@ -194,7 +186,7 @@ class TestGetSettingsCacheSafety:
         import core.config as config_module
 
         bad_path = tmp_path / "bad_config.json"
-        _write_config(bad_path, {"lidarr_url": "ftp://invalid"})
+        _write_config(bad_path, {"jellyfin_url": "ftp://invalid"})
 
         saved = config_module._settings
         try:

@@ -1,0 +1,67 @@
+import { page } from '@vitest/browser/context';
+import { describe, expect, it, vi } from 'vitest';
+import { render } from 'vitest-browser-svelte';
+
+const testMutate = vi.fn().mockResolvedValue({
+	valid: true,
+	version: '0.25.1.0',
+	message: 'slskd 0.25.1.0'
+});
+
+vi.mock('$lib/queries/downloads/DownloadClientQueries.svelte', () => ({
+	getDownloadClientConfigQuery: () => ({
+		data: {
+			enabled: false,
+			client_type: 'slskd',
+			url: 'http://slskd:5030',
+			api_key: 'slskd****',
+			verify_downloads: true,
+			min_bitrate_kbps: 128,
+			preflight_score_auto_accept: 0.7,
+			preflight_score_manual_min: 0.5
+		},
+		isLoading: false,
+		isError: false
+	}),
+	getDownloadClientStatusQuery: () => ({
+		data: {
+			// Non-"Connected" status header so the only /Connected/ match is the test result line below.
+			configured: true,
+			client: { status: 'error', version: null, message: 'Not reachable' },
+			mount: { ok: true, reason: 'ok', path: '/data/downloads/slskd' }
+		}
+	}),
+	saveDownloadClientConfig: () => ({
+		mutateAsync: vi.fn().mockResolvedValue({}),
+		isPending: false
+	}),
+	testDownloadClient: () => ({ mutateAsync: testMutate, isPending: false })
+}));
+
+vi.mock('$lib/stores/toast', () => ({ toastStore: { show: vi.fn() } }));
+
+import SettingsDownloadClient from './SettingsDownloadClient.svelte';
+
+describe('SettingsDownloadClient.svelte', () => {
+	it('renders the slskd URL and API key inputs', async () => {
+		render(SettingsDownloadClient);
+		await expect.element(page.getByPlaceholder('http://slskd:5030')).toBeInTheDocument();
+		await expect.element(page.getByPlaceholder('slskd API key')).toBeInTheDocument();
+	});
+
+	it('shows the enable toggle and quality controls', async () => {
+		render(SettingsDownloadClient);
+		await expect.element(page.getByLabelText('Enable slskd download client')).toBeInTheDocument();
+		await expect.element(page.getByText('Download Quality & Verification')).toBeInTheDocument();
+	});
+
+	it('runs Test connection with the current form values and shows the result', async () => {
+		render(SettingsDownloadClient);
+		await page.getByRole('button', { name: 'Test connection' }).click();
+		// Test sends the form config, not an empty body, so the backend validates what's typed.
+		expect(testMutate).toHaveBeenCalledWith(
+			expect.objectContaining({ url: 'http://slskd:5030', api_key: 'slskd****' })
+		);
+		await expect.element(page.getByText(/Connected/)).toBeInTheDocument();
+	});
+});

@@ -7,7 +7,6 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-import msgspec
 
 from core.exceptions import ExternalServiceError, NavidromeApiError, NavidromeAuthError, NavidromeSubsonicError
 from infrastructure.cache.cache_keys import NAVIDROME_PREFIX
@@ -122,7 +121,7 @@ class NavidromeRepository:
             "t": token,
             "s": salt,
             "v": "1.16.1",
-            "c": "musicseerr",
+            "c": "droppedneedle",
             "f": "json",
         }
 

@@ -13,7 +13,7 @@ from core.exception_handlers import client_disconnected_handler
 @pytest.fixture
 def mock_cover_repo():
     mock = MagicMock()
-    mock.get_release_group_cover = AsyncMock(return_value=(b'rg-image', 'image/jpeg', 'lidarr'))
+    mock.get_release_group_cover = AsyncMock(return_value=(b'rg-image', 'image/jpeg', 'library'))
     mock.get_release_cover = AsyncMock(return_value=(b'rel-image', 'image/jpeg', 'jellyfin'))
     mock.get_artist_image = AsyncMock(return_value=(b'artist-image', 'image/png', 'wikidata'))
     mock.get_release_group_cover_etag = AsyncMock(return_value='etag-rg')
@@ -36,7 +36,7 @@ def test_release_group_uses_dynamic_source_header(client):
     response = client.get('/covers/release-group/11111111-1111-1111-1111-111111111111?size=500')
 
     assert response.status_code == 200
-    assert response.headers['x-cover-source'] == 'lidarr'
+    assert response.headers['x-cover-source'] == 'library'
 
 
 def test_release_uses_dynamic_source_header(client):
@@ -47,12 +47,12 @@ def test_release_uses_dynamic_source_header(client):
 
 
 def test_artist_uses_dynamic_source_header(client, mock_cover_repo):
-    mock_cover_repo.get_artist_image = AsyncMock(return_value=(b'artist-image', 'image/png', 'lidarr'))
+    mock_cover_repo.get_artist_image = AsyncMock(return_value=(b'artist-image', 'image/png', 'library'))
 
     response = client.get('/covers/artist/33333333-3333-3333-3333-333333333333?size=250')
 
     assert response.status_code == 200
-    assert response.headers['x-cover-source'] == 'lidarr'
+    assert response.headers['x-cover-source'] == 'library'
 
 
 def test_release_group_uses_placeholder_header_when_missing(client, mock_cover_repo):

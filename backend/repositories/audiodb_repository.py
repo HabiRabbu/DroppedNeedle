@@ -157,9 +157,7 @@ class AudioDBRepository:
             return None
 
     async def _get_artist_by_mbid(self, mbid: str) -> AudioDBArtistResponse | None:
-        t0 = time.monotonic()
         data = await self._request("artist-mb.php", params={"i": mbid})
-        elapsed_ms = (time.monotonic() - t0) * 1000
 
         if data is None:
             return None
@@ -188,9 +186,7 @@ class AudioDBRepository:
             return None
 
     async def _get_album_by_mbid(self, mbid: str) -> AudioDBAlbumResponse | None:
-        t0 = time.monotonic()
         data = await self._request("album-mb.php", params={"i": mbid})
-        elapsed_ms = (time.monotonic() - t0) * 1000
 
         if data is None:
             return None
@@ -219,9 +215,7 @@ class AudioDBRepository:
             return None
 
     async def _search_artist_by_name(self, name: str) -> AudioDBArtistResponse | None:
-        t0 = time.monotonic()
         data = await self._request("search.php", params={"s": name})
-        elapsed_ms = (time.monotonic() - t0) * 1000
 
         if data is None:
             return None
@@ -250,9 +244,7 @@ class AudioDBRepository:
             return None
 
     async def _search_album_by_name(self, artist: str, album: str) -> AudioDBAlbumResponse | None:
-        t0 = time.monotonic()
         data = await self._request("searchalbum.php", params={"s": artist, "a": album})
-        elapsed_ms = (time.monotonic() - t0) * 1000
 
         if data is None:
             return None

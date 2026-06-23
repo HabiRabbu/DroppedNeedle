@@ -32,10 +32,32 @@ export interface PlaylistSummary {
 	source_ref: string | null;
 	created_at: string;
 	updated_at: string;
+	// Ownership / visibility (D4).
+	is_public: boolean;
+	is_owner: boolean;
+	owner_name: string | null;
+	is_redacted: false;
 }
 
 export interface PlaylistDetail extends PlaylistSummary {
 	tracks: PlaylistTrack[];
+}
+
+/** Admin's view of another user's PRIVATE playlist (D4): count + owner only. */
+export interface RedactedPlaylist {
+	id: string;
+	track_count: number;
+	owner_name: string | null;
+	is_redacted: true;
+}
+
+export type PlaylistListItem = PlaylistSummary | RedactedPlaylist;
+export type PlaylistDetailItem = PlaylistDetail | RedactedPlaylist;
+
+export function isRedactedPlaylist(
+	item: PlaylistListItem | PlaylistDetailItem
+): item is RedactedPlaylist {
+	return item.is_redacted === true;
 }
 
 export interface TrackData {
@@ -74,16 +96,20 @@ export function queueItemToTrackData(item: QueueItem): TrackData {
 	};
 }
 
-export async function fetchPlaylists(): Promise<PlaylistSummary[]> {
-	const data = await api.global.get<{ playlists: PlaylistSummary[] }>(API.playlists.list());
+export async function fetchPlaylists(): Promise<PlaylistListItem[]> {
+	const data = await api.global.get<{ playlists: PlaylistListItem[] }>(API.playlists.list());
 	return data.playlists;
 }
 
 export async function fetchPlaylist(
 	id: string,
 	options?: { signal?: AbortSignal }
-): Promise<PlaylistDetail> {
-	return api.global.get<PlaylistDetail>(API.playlists.detail(id), { signal: options?.signal });
+): Promise<PlaylistDetailItem> {
+	return api.global.get<PlaylistDetailItem>(API.playlists.detail(id), { signal: options?.signal });
+}
+
+export async function setPlaylistPublic(id: string, isPublic: boolean): Promise<PlaylistSummary> {
+	return api.global.patch<PlaylistSummary>(API.playlists.share(id), { is_public: isPublic });
 }
 
 export async function createPlaylist(name: string): Promise<PlaylistDetail> {

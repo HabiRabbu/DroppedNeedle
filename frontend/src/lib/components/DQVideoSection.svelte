@@ -216,12 +216,12 @@
 	.dq-yt-btn {
 		background: var(--color-youtube);
 		border: none;
-		color: oklch(var(--b1));
+		color: var(--color-base-100);
 		font-weight: 600;
 	}
 
 	.dq-yt-btn:hover {
 		background: var(--color-youtube-hover);
-		color: oklch(var(--b1));
+		color: var(--color-base-100);
 	}
 </style>

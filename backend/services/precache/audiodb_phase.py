@@ -102,7 +102,7 @@ class AudioDBPhase:
                 else:
                     logger.debug("audiodb.prewarm action=http_client_fallback entity_type=%s mbid=%s", entity_type, mbid[:8])
                     async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-                        response = await client.get(url, headers={"User-Agent": "MusicSeerr/1.0"}, follow_redirects=True)
+                        response = await client.get(url, headers={"User-Agent": "DroppedNeedle/1.0"}, follow_redirects=True)
 
             if response.status_code != 200:
                 logger.debug(
@@ -199,8 +199,6 @@ class AudioDBPhase:
             await status_service.skip_phase('audiodb_prewarm', generation=generation)
             return
 
-        original_total = len(artists) + len(albums)
-        initial_hit_rate = ((original_total - total) / original_total * 100) if original_total > 0 else 100
         await status_service.update_phase('audiodb_prewarm', total, generation=generation)
 
         needed_artists = self.sort_by_cover_priority(needed_artists, "artist")
@@ -243,7 +241,6 @@ class AudioDBPhase:
             async with counter_lock:
                 processed += 1
                 local_processed = processed
-                snap_ok, snap_fail = bytes_ok, bytes_fail
             await status_service.update_progress(local_processed, f"AudioDB: {name}", generation=generation)
 
         async def process_album(album: Any) -> None:
@@ -279,7 +276,6 @@ class AudioDBPhase:
             async with counter_lock:
                 processed += 1
                 local_processed = processed
-                snap_ok, snap_fail = bytes_ok, bytes_fail
             await status_service.update_progress(local_processed, f"AudioDB: {album_name or 'Unknown'}", generation=generation)
 
         chunk = max(concurrency * 4, 20)

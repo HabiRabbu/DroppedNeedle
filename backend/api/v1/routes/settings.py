@@ -1,11 +1,13 @@
+import asyncio
 import logging
 import os
 import msgspec
 from fastapi import APIRouter, Depends, HTTPException
 from api.v1.schemas.settings import (
-    UserPreferences, 
-    LidarrSettings, 
-    LidarrConnectionSettings,
+    UserPreferences,
+    LibrarySyncSettings,
+    LibraryScanScheduleSettings,
+    LibraryScanScheduleResponse,
     JellyfinConnectionSettings,
     JellyfinVerifyResponse,
     JellyfinUserInfo,
@@ -13,11 +15,6 @@ from api.v1.schemas.settings import (
     ListenBrainzConnectionSettings,
     YouTubeConnectionSettings,
     HomeSettings,
-    LidarrVerifyResponse,
-    LocalFilesConnectionSettings,
-    LocalFilesVerifyResponse,
-    LidarrMetadataProfilePreferences,
-    LidarrMetadataProfileSummary,
     LastFmConnectionSettings,
     LastFmConnectionSettingsResponse,
     LastFmVerifyResponse,
@@ -28,6 +25,9 @@ from api.v1.schemas.settings import (
     MusicBrainzConnectionSettings,
     SecuritySettings,
     OIDCConnectionSettings,
+    LibrarySettings,
+    LibraryPathRequest,
+    ACOUSTID_KEY_MASK,
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo
 from api.v1.schemas.common import VerifyConnectionResponse
@@ -35,14 +35,12 @@ from api.v1.schemas.advanced_settings import AdvancedSettingsFrontend, FrontendC
 from core.dependencies import (
     get_preferences_service,
     get_settings_service,
-    get_local_files_service,
     get_oidc_user_auth_service,
 )
 from services.oidc_user_auth_service import OIDCUserAuthService
-from core.exceptions import ConfigurationError, ExternalServiceError
+from core.exceptions import ConfigurationError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep
-from services.local_files_service import LocalFilesService
 from services.preferences_service import PreferencesService
 from services.settings_service import SettingsService
 
@@ -75,31 +73,127 @@ async def update_preferences(
 ):
     try:
         preferences_service.save_preferences(preferences)
-        total_cleared = await settings_service.clear_caches_for_preference_change()
+        await settings_service.clear_caches_for_preference_change()
         return preferences
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating preferences: {e}")
         raise HTTPException(status_code=400, detail="Couldn't save these settings")
 
 
-@router.get("/lidarr", response_model=LidarrSettings)
-async def get_lidarr_settings(
+@router.get("/library/sync", response_model=LibrarySyncSettings)
+async def get_library_sync_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
-    return preferences_service.get_lidarr_settings()
+    return preferences_service.get_library_sync_settings()
 
 
-@router.put("/lidarr", response_model=LidarrSettings)
-async def update_lidarr_settings(
-    lidarr_settings: LidarrSettings = MsgSpecBody(LidarrSettings),
+@router.put("/library/sync", response_model=LibrarySyncSettings)
+async def update_library_sync_settings(
+    library_sync_settings: LibrarySyncSettings = MsgSpecBody(LibrarySyncSettings),
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
     try:
-        preferences_service.save_lidarr_settings(lidarr_settings)
-        return lidarr_settings
+        preferences_service.save_library_sync_settings(library_sync_settings)
+        return library_sync_settings
     except ConfigurationError as e:
-        logger.warning(f"Configuration error updating Lidarr settings: {e}")
-        raise HTTPException(status_code=400, detail="Lidarr settings are incomplete or invalid")
+        logger.warning(f"Configuration error updating library sync settings: {e}")
+        raise HTTPException(status_code=400, detail="Library sync settings are incomplete or invalid")
+
+
+def _server_timezone_label() -> str:
+    """Human label for the server's local timezone, captioning the daily-scan time
+    picker. Prefers the IANA name from TZ, else the local abbreviation."""
+    tz = os.environ.get("TZ", "").strip()
+    if tz:
+        return tz
+    from datetime import datetime
+
+    return datetime.now().astimezone().tzname() or "server time"
+
+
+@router.get("/library/schedule", response_model=LibraryScanScheduleResponse)
+async def get_library_scan_schedule(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    s = preferences_service.get_library_scan_schedule()
+    return LibraryScanScheduleResponse(
+        scan_frequency=s.scan_frequency,
+        daily_scan_time=s.daily_scan_time,
+        last_scan=s.last_scan,
+        last_scan_success=s.last_scan_success,
+        server_timezone=_server_timezone_label(),
+    )
+
+
+@router.put("/library/schedule", response_model=LibraryScanScheduleSettings)
+async def update_library_scan_schedule(
+    schedule: LibraryScanScheduleSettings = MsgSpecBody(LibraryScanScheduleSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    try:
+        preferences_service.save_library_scan_schedule(schedule)
+        return schedule
+    except ConfigurationError as e:
+        logger.warning(f"Configuration error updating library scan schedule: {e}")
+        raise HTTPException(status_code=400, detail="Library scan schedule is incomplete or invalid")
+
+
+@router.get("/library", response_model=LibrarySettings)
+async def get_library_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    return preferences_service.get_library_settings()
+
+
+@router.put("/library", response_model=LibrarySettings)
+async def update_library_settings(
+    settings: LibrarySettings = MsgSpecBody(LibrarySettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    try:
+        preferences_service.save_library_settings(settings)
+        return preferences_service.get_library_settings()
+    except ConfigurationError as e:
+        logger.warning(f"Configuration error updating library settings: {e}")
+        raise HTTPException(status_code=400, detail="Library settings are invalid")
+
+
+@router.post("/library/paths", response_model=LibrarySettings)
+async def add_library_path(
+    body: LibraryPathRequest = MsgSpecBody(LibraryPathRequest),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    candidate = (body.path or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="Library path is required")
+    # validate at add-time so a typo'd/unmounted path fails loudly rather than
+    # saving silently and yielding an empty scan until restart (StartupValidator
+    # only checks paths at boot); isdir runs off the loop, can stall on network fs
+    if not await asyncio.to_thread(os.path.isdir, candidate):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path does not exist or is not a directory: {candidate}",
+        )
+    current = preferences_service.get_library_settings_raw()
+    paths = list(current.library_paths)
+    if candidate not in paths:
+        paths.append(candidate)
+    current.library_paths = paths
+    current.acoustid_api_key = ACOUSTID_KEY_MASK if current.acoustid_api_key else ""
+    preferences_service.save_library_settings(current)
+    return preferences_service.get_library_settings()
+
+
+@router.delete("/library/paths", response_model=LibrarySettings)
+async def remove_library_path(
+    path: str,
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    current = preferences_service.get_library_settings_raw()
+    current.library_paths = [p for p in current.library_paths if p != path]
+    current.acoustid_api_key = ACOUSTID_KEY_MASK if current.acoustid_api_key else ""
+    preferences_service.save_library_settings(current)
+    return preferences_service.get_library_settings()
 
 
 @router.get("/cache-ttls", response_model=FrontendCacheTTLs)
@@ -156,86 +250,6 @@ async def update_advanced_settings(
         raise HTTPException(status_code=400, detail="That settings value isn't valid")
 
 
-@router.get("/lidarr/connection", response_model=LidarrConnectionSettings)
-async def get_lidarr_connection(
-    preferences_service: PreferencesService = Depends(get_preferences_service),
-):
-    return preferences_service.get_lidarr_connection()
-
-
-@router.put("/lidarr/connection", response_model=LidarrConnectionSettings)
-async def update_lidarr_connection(
-    settings: LidarrConnectionSettings = MsgSpecBody(LidarrConnectionSettings),
-    preferences_service: PreferencesService = Depends(get_preferences_service),
-    settings_service: SettingsService = Depends(get_settings_service),
-):
-    try:
-        from repositories.lidarr.base import reset_lidarr_circuit_breaker
-        
-        preferences_service.save_lidarr_connection(settings)
-        reset_lidarr_circuit_breaker()
-        await settings_service.on_lidarr_settings_changed()
-        return settings
-    except ConfigurationError as e:
-        logger.warning(f"Configuration error updating Lidarr connection: {e}")
-        raise HTTPException(status_code=400, detail="Lidarr connection settings are incomplete or invalid")
-
-
-@router.post("/lidarr/verify", response_model=LidarrVerifyResponse)
-async def verify_lidarr_connection(
-    settings: LidarrConnectionSettings = MsgSpecBody(LidarrConnectionSettings),
-    settings_service: SettingsService = Depends(get_settings_service),
-):
-    return await settings_service.verify_lidarr(settings)
-
-
-@router.get(
-    "/lidarr/metadata-profiles",
-    response_model=list[LidarrMetadataProfileSummary],
-)
-async def list_lidarr_metadata_profiles(
-    settings_service: SettingsService = Depends(get_settings_service),
-):
-    try:
-        return await settings_service.list_lidarr_metadata_profiles()
-    except ExternalServiceError as e:
-        logger.warning(f"Lidarr metadata profiles list failed: {e}")
-        raise HTTPException(status_code=502, detail="Couldn't load Lidarr metadata profiles")
-
-
-@router.get(
-    "/lidarr/metadata-profile/preferences",
-    response_model=LidarrMetadataProfilePreferences,
-)
-async def get_lidarr_metadata_profile_preferences(
-    profile_id: int | None = None,
-    settings_service: SettingsService = Depends(get_settings_service),
-):
-    try:
-        return await settings_service.get_lidarr_metadata_profile_preferences(
-            profile_id=profile_id
-        )
-    except ExternalServiceError as e:
-        logger.warning(f"Lidarr metadata profile fetch failed: {e}")
-        raise HTTPException(status_code=502, detail="Couldn't load the Lidarr metadata profile")
-
-
-@router.put(
-    "/lidarr/metadata-profile/preferences",
-    response_model=LidarrMetadataProfilePreferences,
-)
-async def update_lidarr_metadata_profile_preferences(
-    preferences: UserPreferences = MsgSpecBody(UserPreferences),
-    profile_id: int | None = None,
-    settings_service: SettingsService = Depends(get_settings_service),
-):
-    try:
-        return await settings_service.update_lidarr_metadata_profile(
-            preferences, profile_id=profile_id
-        )
-    except ExternalServiceError as e:
-        logger.warning(f"Lidarr metadata profile update failed: {e}")
-        raise HTTPException(status_code=502, detail="Couldn't update the Lidarr metadata profile")
 
 
 @router.get("/jellyfin", response_model=JellyfinConnectionSettings)
@@ -432,36 +446,6 @@ async def update_home_settings(
         raise HTTPException(status_code=400, detail="Home settings are incomplete or invalid")
 
 
-@router.get("/local-files", response_model=LocalFilesConnectionSettings)
-async def get_local_files_settings(
-    preferences_service: PreferencesService = Depends(get_preferences_service),
-):
-    return preferences_service.get_local_files_connection()
-
-
-@router.put("/local-files", response_model=LocalFilesConnectionSettings)
-async def update_local_files_settings(
-    settings: LocalFilesConnectionSettings = MsgSpecBody(LocalFilesConnectionSettings),
-    preferences_service: PreferencesService = Depends(get_preferences_service),
-    settings_service: SettingsService = Depends(get_settings_service),
-):
-    try:
-        preferences_service.save_local_files_connection(settings)
-        await settings_service.on_local_files_settings_changed()
-        return settings
-    except ConfigurationError as e:
-        logger.warning("Configuration error updating local files settings: %s", e)
-        raise HTTPException(status_code=400, detail="Local files settings are incomplete or invalid")
-
-
-@router.post("/local-files/verify", response_model=LocalFilesVerifyResponse)
-async def verify_local_files_connection(
-    settings: LocalFilesConnectionSettings = MsgSpecBody(LocalFilesConnectionSettings),
-    local_service: LocalFilesService = Depends(get_local_files_service),
-) -> LocalFilesVerifyResponse:
-    return await local_service.verify_path(settings.music_path)
-
-
 @router.get("/lastfm", response_model=LastFmConnectionSettingsResponse)
 async def get_lastfm_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
@@ -593,7 +577,6 @@ async def update_security_settings(
 async def verify_hibp_local_file(
     settings: SecuritySettings = MsgSpecBody(SecuritySettings),
 ) -> VerifyConnectionResponse:
-    """Validate a user-supplied HIBP local database path."""
     path = (settings.hibp_local_path or "").strip()
     if not path:
         return VerifyConnectionResponse(valid=False, message="No path provided.")

@@ -5,8 +5,6 @@
 	import { libraryStore } from '$lib/stores/library';
 	import { integrationStore } from '$lib/stores/integration';
 	import { requestAlbum } from '$lib/utils/albumRequest';
-	import { toggleAlbumMonitored } from '$lib/utils/monitorAlbum';
-	import { toastStore } from '$lib/stores/toast';
 	import { formatListenCount } from '$lib/utils/formatting';
 	import { getListenTitle } from '$lib/utils/enrichment';
 	import { Download, Music2 } from 'lucide-svelte';
@@ -31,20 +29,14 @@
 	let listenTitle = $derived(getListenTitle(enrichmentSource, 'album'));
 
 	let requesting = $state(false);
-	let monitoredLoading = $state(false);
 
 	let inLibrary = $derived(
-		libraryStore.isInLibrary(album.musicbrainz_id) || album.in_library || false
+		libraryStore.isInLibrary(album.musicbrainz_id) ||
+			(!$libraryStore.initialized && album.in_library) ||
+			false
 	);
 	let isRequested = $derived(
-		!inLibrary &&
-			!album.in_library &&
-			(album.requested || libraryStore.isRequested(album.musicbrainz_id))
-	);
-	let isMonitored = $derived(
-		!inLibrary &&
-			!isRequested &&
-			(album.monitored || libraryStore.isMonitored(album.musicbrainz_id))
+		!inLibrary && (album.requested || libraryStore.isRequested(album.musicbrainz_id))
 	);
 
 	async function handleRequest(e: Event) {
@@ -64,23 +56,9 @@
 		}
 	}
 
-	async function handleToggleMonitored() {
-		monitoredLoading = true;
-		try {
-			await toggleAlbumMonitored(album.musicbrainz_id, false);
-			album.monitored = false;
-			album = album;
-		} catch {
-			toastStore.show({ message: 'Failed to update monitoring status', type: 'error' });
-		} finally {
-			monitoredLoading = false;
-		}
-	}
-
 	function handleDeleted() {
 		album.in_library = false;
 		album.requested = false;
-		album.monitored = false;
 		album = album;
 		onremoved?.();
 	}
@@ -96,7 +74,7 @@
 </script>
 
 <div
-	class="card bg-base-100 w-full shadow-sm shrink-0 group relative transition-all hover:scale-105 hover:shadow-[0_0_20px_rgba(174,213,242,0.15)]"
+	class="card bg-base-100 w-full shadow-sm shrink-0 group relative transition-all hover:scale-105 hover:glow-primary"
 >
 	<a
 		href={albumHref(album.musicbrainz_id)}
@@ -166,7 +144,7 @@
 		{#if album.type_info && album.type_info !== 'Album'}
 			<span class="badge badge-sm {getTypeBadgeClass(album.type_info)}">{album.type_info}</span>
 		{/if}
-		{#if $integrationStore.lidarr}
+		{#if $integrationStore.download_client}
 			{#if inLibrary}
 				<LibraryBadge
 					status="library"
@@ -183,20 +161,11 @@
 					artistName={album.artist || 'Unknown'}
 					ondeleted={handleDeleted}
 				/>
-			{:else if isMonitored}
-				<LibraryBadge
-					status="monitored"
-					musicbrainzId={album.musicbrainz_id}
-					albumTitle={album.title}
-					artistName={album.artist || 'Unknown'}
-					ontogglemonitored={handleToggleMonitored}
-					{monitoredLoading}
-				/>
 			{/if}
 		{/if}
 	</div>
 
-	{#if $integrationStore.lidarr && !inLibrary && !isRequested}
+	{#if $integrationStore.download_client && !inLibrary && !isRequested}
 		<button
 			class="absolute bottom-2 left-2 z-20 btn btn-square btn-md opacity-0 group-hover:opacity-100 transition-opacity duration-200 border-none shadow-lg"
 			style="background-color: {colors.accent};"

@@ -2,11 +2,6 @@ import msgspec
 from infrastructure.msgspec_fastapi import AppStruct
 
 
-class ProfileSettings(AppStruct):
-    display_name: str = ""
-    avatar_url: str = ""
-
-
 class ServiceConnection(AppStruct):
     name: str
     enabled: bool = False
@@ -26,10 +21,30 @@ class LibraryStats(AppStruct):
 class ProfileResponse(AppStruct):
     display_name: str = ""
     avatar_url: str = ""
+    username: str | None = None
+    username_display: str | None = None
+    email: str | None = None
+    providers: list[str] = msgspec.field(default_factory=list)
     services: list[ServiceConnection] = msgspec.field(default_factory=list)
     library_stats: list[LibraryStats] = msgspec.field(default_factory=list)
 
 
 class ProfileUpdateRequest(AppStruct):
     display_name: str | None = None
-    avatar_url: str | None = None
+
+
+class UsernameUpdateRequest(AppStruct):
+    username: str
+
+
+class EmailUpdateRequest(AppStruct):
+    email: str | None = None
+
+
+class ChangePasswordRequest(AppStruct):
+    current_password: str
+    new_password: str
+
+
+class SetPasswordRequest(AppStruct):
+    new_password: str

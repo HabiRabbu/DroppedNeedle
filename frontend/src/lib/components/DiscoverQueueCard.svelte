@@ -2,6 +2,7 @@
 	import { Disc3, Play, Loader2, RefreshCw } from 'lucide-svelte';
 	import { getQueueCachedData, subscribeQueueCacheChanges } from '$lib/utils/discoverQueueCache';
 	import type { MusicSource } from '$lib/stores/musicSource';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { discoverQueueStatusStore, type QueueBuildStatus } from '$lib/stores/discoverQueueStatus';
 
 	let { onLaunch, source }: { onLaunch: () => void; source: MusicSource } = $props();
@@ -9,7 +10,7 @@
 	let bgStatus = $state<QueueBuildStatus>('unknown');
 
 	function recheckCachedQueue() {
-		const cached = getQueueCachedData(source);
+		const cached = getQueueCachedData(authStore.user?.id ?? 'anon', source);
 		return (cached?.data?.items?.length ?? 0) > 0;
 	}
 
@@ -46,7 +47,7 @@
 <div
 	class="card card-border bg-linear-to-br from-primary/10 via-secondary/8 to-accent/6 w-full shadow-sm relative overflow-hidden
 		{isReady ? 'animate-glow-pulse' : ''}"
-	style={isReady ? 'box-shadow: 0 0 25px rgba(174,213,242,0.2);' : ''}
+	class:glow-primary-strong={isReady}
 >
 	<div
 		class="absolute inset-0 rounded-[inherit] pointer-events-none"

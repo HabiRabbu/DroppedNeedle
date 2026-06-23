@@ -3,7 +3,7 @@ import { api } from '$lib/api/client';
 import { libraryStore } from '$lib/stores/library';
 import { getApiUrl } from '$lib/api/api-utils';
 
-export type SyncStatus = {
+type SyncStatus = {
 	is_syncing: boolean;
 	phase: string | null;
 	total_items: number;

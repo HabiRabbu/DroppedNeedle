@@ -1,12 +1,12 @@
 import { writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
-import { PAGE_SOURCE_KEYS } from '$lib/constants';
+import { API, PAGE_SOURCE_KEYS } from '$lib/constants';
 import { api } from '$lib/api/client';
 
 export type MusicSource = 'listenbrainz' | 'lastfm';
 export type MusicSourcePage = keyof typeof PAGE_SOURCE_KEYS;
 
-const CACHED_SOURCE_KEY = 'musicseerr_primary_source';
+const CACHED_SOURCE_KEY = 'droppedneedle_primary_source';
 export const DEFAULT_SOURCE: MusicSource = 'listenbrainz';
 
 interface MusicSourceState {
@@ -18,12 +18,8 @@ export function isMusicSource(value: unknown): value is MusicSource {
 	return value === 'listenbrainz' || value === 'lastfm';
 }
 
-/**
- * Migrate old raw-string localStorage source values to JSON format.
- * Before v1.3.0, setPageSource() stored raw strings (e.g. `listenbrainz`).
- * PersistedState expects JSON (e.g. `"listenbrainz"`). Must run before
- * any PersistedState constructor reads these keys.
- */
+// pre-v1.3.0 setPageSource() stored raw strings; PersistedState expects JSON, so
+// migrate before any PersistedState constructor reads these keys
 export function migratePageSourceKeys(): void {
 	if (!browser) return;
 	for (const key of Object.values(PAGE_SOURCE_KEYS)) {
@@ -77,8 +73,12 @@ function createMusicSourceStore() {
 					localStorage.removeItem('discover_source');
 					localStorage.removeItem('artist-discovery_source');
 				}
-				const data = await api.global.get<{ source: unknown }>('/api/v1/settings/primary-source');
-				const fetchedSource = isMusicSource(data.source) ? data.source : DEFAULT_SOURCE;
+				const data = await api.global.get<{ primary_music_source: unknown }>(
+					API.me.scrobblePreferences()
+				);
+				const fetchedSource = isMusicSource(data.primary_music_source)
+					? data.primary_music_source
+					: DEFAULT_SOURCE;
 				if (mutationVersion === loadStartedAtVersion) {
 					persistSource(fetchedSource);
 					set({ source: fetchedSource, loaded: true });
@@ -98,7 +98,7 @@ function createMusicSourceStore() {
 	async function save(source: MusicSource): Promise<boolean> {
 		const saveVersion = ++mutationVersion;
 		try {
-			await api.global.put('/api/v1/settings/primary-source', { source });
+			await api.global.put(API.me.scrobblePreferences(), { primary_music_source: source });
 			persistSource(source);
 			if (mutationVersion === saveVersion) {
 				set({ source, loaded: true });
@@ -124,14 +124,12 @@ function createMusicSourceStore() {
 		if (!browser) return fallbackSource;
 		const raw = localStorage.getItem(getPageStorageKey(page));
 		if (raw === null) return fallbackSource;
-		// Handle JSON-encoded values (new format)
 		try {
 			const parsed: unknown = JSON.parse(raw);
 			if (isMusicSource(parsed)) return parsed;
 		} catch {
-			// Fall through to raw check
+			// fall through to raw-string (old format)
 		}
-		// Handle raw string values (old format)
 		if (isMusicSource(raw)) return raw;
 		return fallbackSource;
 	}
@@ -139,6 +137,17 @@ function createMusicSourceStore() {
 	function setPageSource(page: MusicSourcePage, source: MusicSource): void {
 		if (!browser) return;
 		localStorage.setItem(getPageStorageKey(page), JSON.stringify(source));
+	}
+
+	function reset(): void {
+		// wipe cached + per-page choices on user switch so a shared browser never
+		// carries the previous user's source (AMU-5); next load() re-fetches
+		mutationVersion += 1;
+		if (browser) {
+			localStorage.removeItem(CACHED_SOURCE_KEY);
+			for (const key of Object.values(PAGE_SOURCE_KEYS)) localStorage.removeItem(key);
+		}
+		set({ source: DEFAULT_SOURCE, loaded: false });
 	}
 
 	return {
@@ -149,7 +158,8 @@ function createMusicSourceStore() {
 		getSource,
 		getCachedSource,
 		getPageSource,
-		setPageSource
+		setPageSource,
+		reset
 	};
 }
 

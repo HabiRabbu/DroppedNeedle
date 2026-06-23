@@ -1,6 +1,7 @@
 """Tests for discovery precache double-execution prevention and throttling."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,7 +17,10 @@ def _reset_precache_flag():
     _ads_module._discovery_precache_running = False
 
 
-def _make_service(*, lb_configured: bool = True, lastfm_enabled: bool = False):
+def _make_service(
+    *, lb_configured: bool = True, lastfm_enabled: bool = False,
+    client_factory=None, auth_store=None,
+):
     lb_repo = MagicMock()
     lb_repo.is_configured.return_value = lb_configured
 
@@ -38,10 +42,12 @@ def _make_service(*, lb_configured: bool = True, lastfm_enabled: bool = False):
         listenbrainz_repo=lb_repo,
         musicbrainz_repo=MagicMock(),
         library_db=library_db,
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         memory_cache=cache,
         lastfm_repo=lastfm_repo,
         preferences_service=prefs,
+        client_factory=client_factory,
+        auth_store=auth_store,
     )
     return svc
 
@@ -127,7 +133,7 @@ async def test_delay_does_not_hold_semaphore_slot():
     assert len(timestamps) == 4
     # With concurrency=2 and delay=0.15s OUTSIDE semaphore, the 3rd artist
     # can start as soon as a semaphore slot frees (before the delay finishes).
-    # All four API calls should start quickly — the gap between 1st and 3rd
+    # All four API calls should start quickly - the gap between 1st and 3rd
     # should be small since the semaphore isn't held during sleep.
     sorted_ts = sorted(timestamps)
     gap = sorted_ts[2] - sorted_ts[0]
@@ -220,3 +226,53 @@ async def test_worker_timeout_fires_and_updates_progress():
     assert status.update_progress.await_count >= 1
     last_call_args = status.update_progress.call_args
     assert "timed out" in str(last_call_args)
+
+
+@pytest.mark.asyncio
+async def test_precache_uses_first_admin_as_credential_source():
+    """Precache warms a global cache, so it resolves the first admin and threads
+    that id into the per-user fetches."""
+    factory = MagicMock()
+    factory.resolve_listenbrainz = AsyncMock(return_value=MagicMock())  # admin linked
+    factory.resolve_lastfm = AsyncMock(return_value=None)
+    auth_store = MagicMock()
+    auth_store.get_first_admin = AsyncMock(return_value=SimpleNamespace(id="admin-1"))
+    svc = _make_service(lb_configured=False, client_factory=factory, auth_store=auth_store)
+
+    seen = {}
+
+    async def capture(mbid, **kwargs):
+        seen["user_id"] = kwargs.get("user_id")
+        return MagicMock()
+
+    with (
+        patch.object(svc, "get_similar_artists", new_callable=AsyncMock, side_effect=capture),
+        patch.object(svc, "get_top_songs", new_callable=AsyncMock, return_value=MagicMock()),
+        patch.object(svc, "get_top_albums", new_callable=AsyncMock, return_value=MagicMock()),
+    ):
+        result = await svc.precache_artist_discovery(["mbid-a"], delay=0)
+
+    assert result == 1
+    assert seen["user_id"] == "admin-1"
+    factory.resolve_listenbrainz.assert_awaited_with("admin-1")
+
+
+@pytest.mark.asyncio
+async def test_precache_skips_when_no_linked_admin():
+    """A factory with no linked admin has no credential source -> skip (return 0)."""
+    factory = MagicMock()
+    factory.resolve_listenbrainz = AsyncMock(return_value=None)
+    factory.resolve_lastfm = AsyncMock(return_value=None)
+    auth_store = MagicMock()
+    auth_store.get_first_admin = AsyncMock(return_value=None)
+    svc = _make_service(lb_configured=False, client_factory=factory, auth_store=auth_store)
+
+    with (
+        patch.object(svc, "get_similar_artists", new_callable=AsyncMock) as sim,
+        patch.object(svc, "get_top_songs", new_callable=AsyncMock),
+        patch.object(svc, "get_top_albums", new_callable=AsyncMock),
+    ):
+        result = await svc.precache_artist_discovery(["mbid-a"], delay=0)
+
+    assert result == 0
+    sim.assert_not_called()

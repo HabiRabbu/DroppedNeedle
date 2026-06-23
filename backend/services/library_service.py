@@ -1,8 +1,9 @@
 import logging
 import asyncio
+import os
 import time
 from typing import Any, TYPE_CHECKING
-from repositories.protocols import LidarrRepositoryProtocol, CoverArtRepositoryProtocol
+from repositories.protocols import LibraryRepositoryProtocol, CoverArtRepositoryProtocol
 from api.v1.schemas.library import (
     LibraryAlbum,
     LibraryArtist,
@@ -13,17 +14,16 @@ from api.v1.schemas.library import (
     AlbumRemoveResponse,
     ResolvedTrack,
     TrackResolveResponse,
-    TrackResolveRequest,
 )
 from infrastructure.persistence import LibraryDB, SyncStateStore, GenreIndex
 from infrastructure.cache.cache_keys import (
-    lidarr_requested_mbids_key,
+    library_requested_mbids_key,
     SOURCE_RESOLUTION_PREFIX,
-    ALBUM_INFO_PREFIX, ARTIST_INFO_PREFIX, LIDARR_PREFIX,
-    LIDARR_ALBUM_DETAILS_PREFIX, LIDARR_ALBUM_TRACKS_PREFIX,
-    LIDARR_ALBUM_TRACKFILES_PREFIX, LIDARR_ARTIST_ALBUMS_PREFIX,
-    LIDARR_ARTIST_DETAILS_PREFIX, LIDARR_ARTIST_IMAGE_PREFIX,
-    LIDARR_ALBUM_IMAGE_PREFIX, LIDARR_REQUESTED_PREFIX,
+    ALBUM_INFO_PREFIX, ARTIST_INFO_PREFIX, LIBRARY_PREFIX,
+    LIBRARY_ALBUM_DETAILS_PREFIX, LIBRARY_ALBUM_TRACKS_PREFIX,
+    LIBRARY_ALBUM_TRACKFILES_PREFIX, LIBRARY_ARTIST_ALBUMS_PREFIX,
+    LIBRARY_ARTIST_DETAILS_PREFIX, LIBRARY_ARTIST_IMAGE_PREFIX,
+    LIBRARY_ALBUM_IMAGE_PREFIX, LIBRARY_REQUESTED_PREFIX,
 )
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cache.disk_cache import DiskMetadataCache
@@ -48,7 +48,7 @@ MAX_RESOLVE_ITEMS = 50
 class LibraryService:
     def __init__(
         self,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         library_db: LibraryDB,
         cover_repo: CoverArtRepositoryProtocol,
         preferences_service: 'PreferencesService',
@@ -62,7 +62,7 @@ class LibraryService:
         sync_state_store: SyncStateStore | None = None,
         genre_index: GenreIndex | None = None,
     ):
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._library_db = library_db
         self._cover_repo = cover_repo
         self._preferences_service = preferences_service
@@ -76,7 +76,7 @@ class LibraryService:
         self._precache_service: LibraryPrecacheService | None = None
         if self._can_precache:
             self._precache_service = LibraryPrecacheService(
-                lidarr_repo, cover_repo, preferences_service,
+                library_repo, cover_repo, preferences_service,
                 sync_state_store, genre_index, library_db,
                 artist_discovery_service=artist_discovery_service,
                 audiodb_image_service=audiodb_image_service,
@@ -90,9 +90,9 @@ class LibraryService:
 
     def _update_last_sync_timestamp(self) -> None:
         try:
-            lidarr_settings = self._preferences_service.get_lidarr_settings()
-            updated_settings = clone_with_updates(lidarr_settings, {'last_sync': int(time.time())})
-            self._preferences_service.save_lidarr_settings(updated_settings)
+            library_settings = self._preferences_service.get_library_sync_settings()
+            updated_settings = clone_with_updates(library_settings, {'last_sync': int(time.time())})
+            self._preferences_service.save_library_sync_settings(updated_settings)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to update last_sync timestamp: {e}")
 
@@ -113,7 +113,6 @@ class LibraryService:
                     artist=album['artist_name'],
                     album=album['title'],
                     year=album.get('year'),
-                    monitored=bool(album.get('monitored', 1)),
                     quality=None,
                     cover_url=self._normalized_album_cover_url(
                         album.get('mbid'),
@@ -132,25 +131,24 @@ class LibraryService:
             raise ExternalServiceError(f"Failed to fetch library: {e}")
     
     async def get_library_mbids(self) -> list[str]:
-        if not self._lidarr_repo.is_configured():
+        if not self._library_repo.is_configured():
             return []
         try:
-            lidarr_mbids_coro = self._lidarr_repo.get_library_mbids(include_release_ids=False)
+            library_mbids_coro = self._library_repo.get_library_mbids(include_release_ids=False)
             local_mbids_coro = self._library_db.get_all_album_mbids()
             results = await asyncio.gather(
-                lidarr_mbids_coro, local_mbids_coro, return_exceptions=True,
+                library_mbids_coro, local_mbids_coro, return_exceptions=True,
             )
-            lidarr_mbids = results[0] if not isinstance(results[0], BaseException) else set()
+            library_mbids = results[0] if not isinstance(results[0], BaseException) else set()
             local_mbids = results[1] if not isinstance(results[1], BaseException) else []
             if isinstance(results[0], BaseException):
                 logger.warning("Lidarr library mbids fetch failed, degrading: %s", results[0])
             if isinstance(results[1], BaseException):
                 logger.warning("Local library_db mbids fetch failed, degrading: %s", results[1])
-            if isinstance(lidarr_mbids, BaseException) and isinstance(local_mbids, BaseException):
+            if isinstance(library_mbids, BaseException) and isinstance(local_mbids, BaseException):
                 raise ExternalServiceError("Both library mbid sources failed")
-            # Union: Lidarr API + local library_db (catches recently-imported
-            # albums that Lidarr's cached response may not yet reflect).
-            merged = (lidarr_mbids if isinstance(lidarr_mbids, set) else set()) | {m.lower() for m in local_mbids}
+            # union catches recently-imported albums the cached response may not yet reflect
+            merged = (library_mbids if isinstance(library_mbids, set) else set()) | {m.lower() for m in local_mbids}
             return list(merged)
         except ExternalServiceError:
             raise
@@ -159,24 +157,15 @@ class LibraryService:
             raise ExternalServiceError(f"Failed to fetch library mbids: {e}")
 
     async def get_requested_mbids(self) -> list[str]:
-        if not self._lidarr_repo.is_configured():
+        if not self._library_repo.is_configured():
             return []
         try:
-            requested_set = await self._lidarr_repo.get_requested_mbids()
+            requested_set = await self._library_repo.get_requested_mbids()
             return list(requested_set)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to fetch requested mbids: {e}")
             raise ExternalServiceError(f"Failed to fetch requested mbids: {e}")
 
-    async def get_monitored_mbids(self) -> list[str]:
-        if not self._lidarr_repo.is_configured():
-            return []
-        try:
-            return list(await self._lidarr_repo.get_monitored_no_files_mbids())
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Failed to fetch monitored mbids: {e}")
-            raise ExternalServiceError(f"Failed to fetch monitored mbids: {e}")
-    
     async def get_artists(self, limit: int | None = None) -> list[LibraryArtist]:
         try:
             artists_data = await self._library_db.get_artists(limit=limit)
@@ -224,7 +213,6 @@ class LibraryService:
                     artist=album['artist_name'],
                     album=album['title'],
                     year=album.get('year'),
-                    monitored=bool(album.get('monitored', 1)),
                     quality=None,
                     cover_url=self._normalized_album_cover_url(album.get('mbid'), album.get('cover_url')),
                     musicbrainz_id=album.get('mbid'),
@@ -278,8 +266,8 @@ class LibraryService:
     async def get_recently_added(self, limit: int = 20) -> list[LibraryAlbum]:
 
         try:
-            if self._lidarr_repo.is_configured():
-                albums = await self._lidarr_repo.get_recently_imported(limit=limit)
+            if self._library_repo.is_configured():
+                albums = await self._library_repo.get_recently_imported(limit=limit)
             else:
                 albums = []
             
@@ -291,7 +279,6 @@ class LibraryService:
                         artist=album['artist_name'],
                         album=album['title'],
                         year=album.get('year'),
-                        monitored=bool(album.get('monitored', 1)),
                         quality=None,
                         cover_url=self._normalized_album_cover_url(
                             album.get('mbid'),
@@ -310,9 +297,7 @@ class LibraryService:
             raise ExternalServiceError(f"Failed to fetch recently added: {e}")
     
     async def sync_library(self, is_manual: bool = False, force_full: bool = False) -> SyncLibraryResponse:
-        from services.cache_status_service import CacheStatusService
-
-        if not self._lidarr_repo.is_configured():
+        if not self._library_repo.is_configured():
             raise ExternalServiceError("Lidarr is not configured. Set a Lidarr API key in Settings to sync your library.")
 
         try:
@@ -351,14 +336,14 @@ class LibraryService:
                     loop = asyncio.get_running_loop()
                     self._sync_future = loop.create_future()
 
-            # Shield so waiter cancellation doesn't poison the shared future
+            # shield so waiter cancellation doesn't poison the shared future
             if existing_future is not None:
                 return await asyncio.shield(existing_future)
             
             sync_succeeded = False
             try:
-                albums = await self._lidarr_repo.get_library(include_unmonitored=True)
-                artists = await self._lidarr_repo.get_artists_from_library(include_unmonitored=True)
+                albums = await self._library_repo.get_library(include_unmonitored=True)
+                artists = await self._library_repo.get_artists_from_library(include_unmonitored=True)
                 
                 albums_data = [
                     {
@@ -371,7 +356,6 @@ class LibraryService:
                             album.musicbrainz_id,
                             album.cover_url,
                         ),
-                        'monitored': album.monitored,
                         'date_added': album.date_added
                     }
                     for album in albums
@@ -422,12 +406,12 @@ class LibraryService:
                     finally:
                         status_service.set_current_task(None)
                         try:
-                            lidarr_settings = self._preferences_service.get_lidarr_settings()
-                            if sync_started_at >= (lidarr_settings.last_sync or 0):
-                                updated = clone_with_updates(lidarr_settings, {
+                            library_settings = self._preferences_service.get_library_sync_settings()
+                            if sync_started_at >= (library_settings.last_sync or 0):
+                                updated = clone_with_updates(library_settings, {
                                     'last_sync_success': task_success,
                                 })
-                                self._preferences_service.save_lidarr_settings(updated)
+                                self._preferences_service.save_library_sync_settings(updated)
                         except Exception as e:  # noqa: BLE001
                             logger.warning(f"Failed to update last_sync_success: {e}")
 
@@ -435,7 +419,7 @@ class LibraryService:
                 status_service.set_current_task(task)
 
                 self._update_last_sync_timestamp()
-                sync_started_at = self._preferences_service.get_lidarr_settings().last_sync or 0
+                sync_started_at = self._preferences_service.get_library_sync_settings().last_sync or 0
 
                 result = SyncLibraryResponse(
                     status='success',
@@ -453,7 +437,7 @@ class LibraryService:
                 if not sync_succeeded:
                     future = self._sync_future
                     self._sync_future = None
-                    # Suppress "Future exception was never retrieved" if no waiter
+                    # suppress "Future exception was never retrieved" if no waiter
                     if future is not None and future.done() and not future.cancelled():
                         try:
                             future.exception()
@@ -488,28 +472,53 @@ class LibraryService:
             raise ExternalServiceError(f"Failed to clear library cache: {e}")
     
     async def get_library_grouped(self) -> list[LibraryGroupedArtist]:
-        if not self._lidarr_repo.is_configured():
+        if not self._library_repo.is_configured():
             return []
         try:
-            return await self._lidarr_repo.get_library_grouped()
+            return await self._library_repo.get_library_grouped()
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to fetch grouped library: {e}")
             raise ExternalServiceError(f"Failed to fetch grouped library: {e}")
 
+    @staticmethod
+    def _album_artist_identity(rows: list[dict]) -> tuple[str | None, str | None]:
+        """Album-artist (mbid, name) from an album's ``library_files`` rows."""
+        first = rows[0]
+        artist_mbid = (first.get("album_artist_mbid") or "").strip() or None
+        artist_name = first.get("album_artist_name") or first.get("artist_name") or "Unknown"
+        return artist_mbid, artist_name
+
+    @staticmethod
+    def _unlink_paths(paths: list[str]) -> int:
+        # a missing file counts as success (already gone); other OS errors are logged
+        # and skipped so one bad path doesn't abort the rest
+        removed = 0
+        for path in paths:
+            try:
+                os.remove(path)
+                removed += 1
+            except FileNotFoundError:
+                removed += 1
+            except OSError as e:
+                logger.warning("Couldn't delete library file from disk: %s (%s)", path, e)
+        return removed
+
     async def get_album_removal_preview(self, album_mbid: str) -> AlbumRemovePreviewResponse:
         try:
-            album_data = await self._lidarr_repo.get_album_details(album_mbid)
-            if not album_data or not album_data.get("id"):
-                raise ExternalServiceError(f"Album not found in Lidarr: {album_mbid}")
+            rows = await self._library_db.get_library_files_for_album(album_mbid)
+            if not rows:
+                # not in the native library, nothing to remove
+                return AlbumRemovePreviewResponse(success=True, artist_will_be_removed=False)
 
-            artist_mbid = album_data.get("artist_mbid")
-            artist_name = album_data.get("artist_name", "Unknown")
-
-            artist_will_be_removed = False
-            if artist_mbid:
-                artist_albums = await self._lidarr_repo.get_artist_albums(artist_mbid)
-                monitored_count = sum(1 for album in artist_albums if album.get("monitored"))
-                artist_will_be_removed = monitored_count <= 1
+            artist_mbid, artist_name = self._album_artist_identity(rows)
+            # exclude this album (still present at preview time): if the artist has no
+            # other albums, removing this one empties the artist
+            remaining = await self._library_db.count_artist_albums(
+                artist_mbid=artist_mbid,
+                artist_name=artist_name,
+                exclude_release_group_mbid=album_mbid,
+            )
+            artist_will_be_removed = remaining == 0
 
             return AlbumRemovePreviewResponse(
                 success=True,
@@ -524,36 +533,38 @@ class LibraryService:
 
     async def remove_album(self, album_mbid: str, delete_files: bool = False) -> AlbumRemoveResponse:
         try:
-            album_data = await self._lidarr_repo.get_album_details(album_mbid)
-            if not album_data or not album_data.get("id"):
-                raise ExternalServiceError(f"Album not found in Lidarr: {album_mbid}")
+            rows = await self._library_db.get_library_files_for_album(album_mbid)
+            artist_mbid: str | None = None
+            artist_name: str | None = None
+            paths: list[str] = []
 
-            album_id = album_data["id"]
-            artist_mbid = album_data.get("artist_mbid")
-            artist_name = album_data.get("artist_name", "Unknown")
+            if rows:
+                artist_mbid, artist_name = self._album_artist_identity(rows)
+                # soft-delete the DB rows (recoverable via re-import); delete_files
+                # (which the UI now always requests) also unlinks from disk
+                paths = await self._library_db.soft_delete_album_files(album_mbid)
+                if delete_files and paths:
+                    await asyncio.to_thread(self._unlink_paths, paths)
+            else:
+                # ghost album: no active files, but a stale library_albums row may
+                # persist (e.g. failed queued download, or files removed without a
+                # reconcile). fall back to the materialised row for artist identity.
+                cached = await self._library_db.get_album_by_mbid(album_mbid)
+                if cached:
+                    artist_mbid = cached.get("artist_mbid") or None
+                    artist_name = cached.get("artist_name") or None
 
-            await self._lidarr_repo.delete_album(album_id, delete_files=delete_files)
+            # drop the materialised library_albums row too: /basic derives in_library
+            # from this row and the table has no soft-delete, so otherwise the album
+            # keeps reporting "In Library" (blocking re-download) until a full sync
+            await self._library_db.delete_album_by_mbid(album_mbid)
 
-            artist_removed = False
-            if artist_mbid:
-                try:
-                    if self._memory_cache:
-                        await asyncio.gather(
-                            self._memory_cache.delete(f"lidarr_artist_albums:{artist_mbid}"),
-                            self._memory_cache.delete(f"lidarr_artist_details:{artist_mbid}"),
-                        )
-                    artist_albums = await self._lidarr_repo.get_artist_albums(artist_mbid)
-                    if not any(a.get("monitored") for a in artist_albums):
-                        artist_details = await self._lidarr_repo.get_artist_details(artist_mbid)
-                        if artist_details and artist_details.get("id"):
-                            await self._lidarr_repo.delete_artist(
-                                artist_details["id"], delete_files=delete_files
-                            )
-                            artist_removed = True
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        f"Album '{album_mbid}' removed but artist cleanup failed for '{artist_mbid}': {e}"
-                    )
+            # artists are aggregated on read from library_files, so an artist with no
+            # remaining (non-soft-deleted) albums is effectively removed too
+            remaining = await self._library_db.count_artist_albums(
+                artist_mbid=artist_mbid, artist_name=artist_name,
+            )
+            artist_removed = remaining == 0
 
             try:
                 await self._invalidate_caches_after_removal(album_mbid, artist_mbid, artist_removed=artist_removed)
@@ -572,32 +583,32 @@ class LibraryService:
             raise ExternalServiceError(f"Couldn't remove this album: {e}")
 
     async def _invalidate_caches_after_removal(self, album_mbid: str, artist_mbid: str | None, *, artist_removed: bool = False) -> None:
-        await self._library_db.clear()
-
+        # do NOT call library_db.clear() here: it would wipe unrelated sync_state and
+        # the jellyfin/navidrome MBID indexes
         if self._memory_cache:
             keys_to_delete = [
                 f"{ALBUM_INFO_PREFIX}{album_mbid}",
-                f"{LIDARR_ALBUM_DETAILS_PREFIX}{album_mbid}",
-                lidarr_requested_mbids_key(),
+                f"{LIBRARY_ALBUM_DETAILS_PREFIX}{album_mbid}",
+                library_requested_mbids_key(),
             ]
             if artist_mbid:
                 keys_to_delete.extend([
-                    f"{LIDARR_ARTIST_ALBUMS_PREFIX}{artist_mbid}",
-                    f"{LIDARR_ARTIST_DETAILS_PREFIX}{artist_mbid}",
+                    f"{LIBRARY_ARTIST_ALBUMS_PREFIX}{artist_mbid}",
+                    f"{LIBRARY_ARTIST_DETAILS_PREFIX}{artist_mbid}",
                     f"{ARTIST_INFO_PREFIX}{artist_mbid}",
                 ])
             await asyncio.gather(
                 *[self._memory_cache.delete(k) for k in keys_to_delete],
-                self._memory_cache.clear_prefix(f"{LIDARR_PREFIX}library:"),
-                self._memory_cache.clear_prefix(f"{LIDARR_PREFIX}artists:"),
-                self._memory_cache.clear_prefix(LIDARR_ALBUM_IMAGE_PREFIX),
-                self._memory_cache.clear_prefix(LIDARR_ALBUM_DETAILS_PREFIX),
-                self._memory_cache.clear_prefix(LIDARR_ALBUM_TRACKS_PREFIX),
-                self._memory_cache.clear_prefix(LIDARR_ALBUM_TRACKFILES_PREFIX),
-                self._memory_cache.clear_prefix(LIDARR_REQUESTED_PREFIX),
-                self._memory_cache.clear_prefix(LIDARR_ARTIST_IMAGE_PREFIX),
-                self._memory_cache.clear_prefix(LIDARR_ARTIST_DETAILS_PREFIX),
-                self._memory_cache.clear_prefix(LIDARR_ARTIST_ALBUMS_PREFIX),
+                self._memory_cache.clear_prefix(f"{LIBRARY_PREFIX}library:"),
+                self._memory_cache.clear_prefix(f"{LIBRARY_PREFIX}artists:"),
+                self._memory_cache.clear_prefix(LIBRARY_ALBUM_IMAGE_PREFIX),
+                self._memory_cache.clear_prefix(LIBRARY_ALBUM_DETAILS_PREFIX),
+                self._memory_cache.clear_prefix(LIBRARY_ALBUM_TRACKS_PREFIX),
+                self._memory_cache.clear_prefix(LIBRARY_ALBUM_TRACKFILES_PREFIX),
+                self._memory_cache.clear_prefix(LIBRARY_REQUESTED_PREFIX),
+                self._memory_cache.clear_prefix(LIBRARY_ARTIST_IMAGE_PREFIX),
+                self._memory_cache.clear_prefix(LIBRARY_ARTIST_DETAILS_PREFIX),
+                self._memory_cache.clear_prefix(LIBRARY_ARTIST_ALBUMS_PREFIX),
             )
 
         if self._disk_cache:
@@ -618,11 +629,8 @@ class LibraryService:
         self,
         album_mbid: str,
     ) -> dict[str, tuple[str, str, str | None, float | None]]:
-        """Resolve album MBID to {disc:track: (source, source_id, format, duration)}.
-
-        Priority: local -> navidrome -> jellyfin.
-        Uses source_resolution cache (1h TTL).
-        """
+        # resolve to {disc:track: (source, source_id, format, duration)};
+        # priority local -> navidrome -> jellyfin; source_resolution cache (1h TTL)
         if self._memory_cache is None:
             raise ExternalServiceError("Memory cache not available for track resolution")
 
@@ -709,7 +717,6 @@ class LibraryService:
         self,
         items: list,
     ) -> TrackResolveResponse:
-        """Resolve a batch of track items to stream URLs."""
         items = items[:MAX_RESOLVE_ITEMS]
         if not items:
             return TrackResolveResponse(items=[])

@@ -1,5 +1,6 @@
 import { nowPlayingStore } from '$lib/stores/nowPlayingSessions.svelte';
 import { playerStore } from '$lib/stores/player.svelte';
+import { authStore } from '$lib/stores/authStore.svelte';
 import type { NowPlayingSession } from '$lib/types';
 import { SvelteMap } from 'svelte/reactivity';
 
@@ -24,12 +25,12 @@ function buildLocalSession(): NowPlayingSession | null {
 
 	return {
 		id: `local-${src}-${np.trackSourceId ?? np.albumId}`,
-		user_name: '',
+		user_name: authStore.user?.display_name ?? '',
 		track_name: np.trackName ?? '',
 		artist_name: np.artistName,
 		album_name: np.albumName,
 		cover_url: np.coverUrl ?? '',
-		device_name: 'MusicSeerr',
+		device_name: 'DroppedNeedle',
 		is_paused: state === 'paused' || state === 'buffering' || state === 'loading',
 		source: src,
 		progress_ms: playerStore.progress * 1000,

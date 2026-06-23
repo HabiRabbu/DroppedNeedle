@@ -6,8 +6,10 @@ This class assembles them and delegates every public method call.
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from infrastructure.persistence.auth_store import UserRecord
 
 from fastapi import HTTPException
 
@@ -24,7 +26,7 @@ from infrastructure.persistence import LibraryDB, MBIDStore
 from repositories.protocols import (
     ListenBrainzRepositoryProtocol,
     JellyfinRepositoryProtocol,
-    LidarrRepositoryProtocol,
+    LibraryRepositoryProtocol,
     MusicBrainzRepositoryProtocol,
     LastFmRepositoryProtocol,
 )
@@ -34,8 +36,10 @@ from services.discover.homepage_service import DiscoverHomepageService
 from services.discover.integration_helpers import IntegrationHelpers
 from services.discover.mbid_resolution_service import MbidResolutionService
 from services.discover.queue_service import DiscoverQueueService
-from services.discover.radio_service import DiscoverRadioService
 from services.preferences_service import PreferencesService
+from services.per_user_client_factory import PerUserClientFactory
+from services.home.integration_helpers import resolve_source_value
+from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
 
 
 class DiscoverService:
@@ -49,7 +53,7 @@ class DiscoverService:
         self,
         listenbrainz_repo: ListenBrainzRepositoryProtocol,
         jellyfin_repo: JellyfinRepositoryProtocol,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         musicbrainz_repo: MusicBrainzRepositoryProtocol,
         preferences_service: PreferencesService,
         memory_cache: CacheInterface | None = None,
@@ -61,12 +65,16 @@ class DiscoverService:
         genre_index: Any = None,
         radio_service: Any = None,
         playlist_service: Any = None,
+        client_factory: PerUserClientFactory | None = None,
+        listening_prefs_store: UserListeningPrefsStore | None = None,
     ):
         self._integration = IntegrationHelpers(preferences_service)
+        self._client_factory = client_factory
+        self._prefs_store = listening_prefs_store
 
         self._mbid_resolution = MbidResolutionService(
             musicbrainz_repo=musicbrainz_repo,
-            lidarr_repo=lidarr_repo,
+            library_repo=library_repo,
             listenbrainz_repo=listenbrainz_repo,
             library_db=library_db,
             mbid_store=mbid_store,
@@ -91,12 +99,14 @@ class DiscoverService:
             library_db=library_db,
             mbid_store=mbid_store,
             lastfm_repo=lastfm_repo,
+            client_factory=client_factory,
+            listening_prefs_store=listening_prefs_store,
         )
 
         self._homepage = DiscoverHomepageService(
             listenbrainz_repo=listenbrainz_repo,
             jellyfin_repo=jellyfin_repo,
-            lidarr_repo=lidarr_repo,
+            library_repo=library_repo,
             musicbrainz_repo=musicbrainz_repo,
             integration=self._integration,
             mbid_resolution=self._mbid_resolution,
@@ -105,25 +115,35 @@ class DiscoverService:
             audiodb_image_service=audiodb_image_service,
             genre_index=genre_index,
             mbid_store=mbid_store,
+            client_factory=client_factory,
+            listening_prefs_store=listening_prefs_store,
         )
 
         self._radio = radio_service
         self._playlist_service = playlist_service
 
-    async def get_discover_data(self, source: str | None = None):
-        return await self._homepage.get_discover_data(source)
+    async def get_discover_data(self, user_id: str, source: str | None = None):
+        return await self._homepage.get_discover_data(user_id, source)
 
-    async def get_discover_preview(self) -> DiscoverPreview | None:
-        return await self._homepage.get_discover_preview()
+    async def get_discover_preview(self, user_id: str) -> DiscoverPreview | None:
+        return await self._homepage.get_discover_preview(user_id)
 
-    async def refresh_discover_data(self) -> None:
-        return await self._homepage.refresh_discover_data()
+    async def refresh_discover_data(self, user_id: str) -> None:
+        return await self._homepage.refresh_discover_data(user_id)
 
-    async def warm_cache(self, source: str | None = None) -> None:
-        return await self._homepage.warm_cache(source)
+    async def warm_cache(self, user_id: str, source: str | None = None) -> None:
+        return await self._homepage.warm_cache(user_id, source)
 
-    async def build_discover_data(self, source: str | None = None):
-        return await self._homepage.build_discover_data(source)
+    async def build_discover_data(self, user_id: str, source: str | None = None):
+        return await self._homepage.build_discover_data(user_id, source)
+
+    async def resolve_source_for_user(self, user_id: str, source: str | None) -> str:
+        lb = await self._client_factory.is_listenbrainz_linked(user_id) if self._client_factory else False
+        lfm = await self._client_factory.is_lastfm_linked(user_id) if self._client_factory else False
+        primary = "listenbrainz"
+        if self._prefs_store:
+            primary = (await self._prefs_store.get(user_id)).primary_music_source
+        return resolve_source_value(source, primary, lb, lfm)
 
     async def generate_radio(self, request: Any) -> HomeSection:
         if self._radio is None:
@@ -131,17 +151,17 @@ class DiscoverService:
         return await self._radio.generate_radio(request)
 
     async def get_playlist_suggestions(
-        self, request: PlaylistSuggestionsRequest,
+        self, request: PlaylistSuggestionsRequest, requesting: UserRecord,
     ) -> PlaylistSuggestionsResponse:
         profile = await self._playlist_service.analyse_playlist_profile(
-            request.playlist_id,
+            request.playlist_id, requesting,
         )
         if profile is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
         if not profile.artist_mbids:
             raise HTTPException(status_code=422, detail="This playlist has no artist data to base suggestions on")
         section = await self._homepage.build_playlist_suggestions(
-            profile, request.count, request.source,
+            requesting.id, profile, request.count, request.source,
         )
         return PlaylistSuggestionsResponse(
             suggestions=section,
@@ -149,19 +169,23 @@ class DiscoverService:
             profile=profile,
         )
 
-    async def build_queue(self, count: int | None = None, source: str | None = None) -> DiscoverQueueResponse:
-        return await self._queue.build_queue(count, source)
+    async def build_queue(
+        self, user_id: str, count: int | None = None, source: str | None = None
+    ) -> DiscoverQueueResponse:
+        return await self._queue.build_queue(user_id, count, source)
 
     async def validate_queue_mbids(self, mbids: list[str]) -> list[str]:
         return await self._queue.validate_queue_mbids(mbids)
 
     async def ignore_release(
-        self, release_group_mbid: str, artist_mbid: str, release_name: str, artist_name: str
+        self, user_id: str, release_group_mbid: str, artist_mbid: str, release_name: str, artist_name: str
     ) -> None:
-        return await self._queue.ignore_release(release_group_mbid, artist_mbid, release_name, artist_name)
+        return await self._queue.ignore_release(
+            user_id, release_group_mbid, artist_mbid, release_name, artist_name
+        )
 
-    async def get_ignored_releases(self) -> list[DiscoverIgnoredRelease]:
-        return await self._queue.get_ignored_releases()
+    async def get_ignored_releases(self, user_id: str) -> list[DiscoverIgnoredRelease]:
+        return await self._queue.get_ignored_releases(user_id)
 
     async def enrich_queue_item(self, release_group_mbid: str) -> DiscoverQueueEnrichment:
         return await self._enrichment.enrich_queue_item(release_group_mbid)

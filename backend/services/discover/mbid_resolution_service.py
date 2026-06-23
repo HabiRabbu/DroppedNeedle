@@ -5,7 +5,7 @@ from typing import Any
 from api.v1.schemas.discover import DiscoverQueueItemLight
 from infrastructure.persistence import LibraryDB, MBIDStore
 from repositories.protocols import (
-    LidarrRepositoryProtocol,
+    LibraryRepositoryProtocol,
     ListenBrainzRepositoryProtocol,
     MusicBrainzRepositoryProtocol,
 )
@@ -17,13 +17,13 @@ class MbidResolutionService:
     def __init__(
         self,
         musicbrainz_repo: MusicBrainzRepositoryProtocol,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         listenbrainz_repo: ListenBrainzRepositoryProtocol,
         library_db: LibraryDB | None = None,
         mbid_store: MBIDStore | None = None,
     ) -> None:
         self._mb_repo = musicbrainz_repo
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._lb_repo = listenbrainz_repo
         self._library_db = library_db
         self._mbid_store = mbid_store
@@ -219,18 +219,18 @@ class MbidResolutionService:
             release_ids, allow_passthrough=False,
         )
 
-    async def get_library_artist_mbids(self, lidarr_configured: bool) -> set[str]:
-        if not lidarr_configured:
+    async def get_library_artist_mbids(self, library_configured: bool) -> set[str]:
+        if not library_configured:
             return set()
         try:
-            artists = await self._lidarr_repo.get_artists_from_library(include_unmonitored=True)
+            artists = await self._library_repo.get_artists_from_library(include_unmonitored=True)
             return {a.get("mbid", "").lower() for a in artists if a.get("mbid")}
         except Exception:  # noqa: BLE001
             logger.warning("Failed to fetch library artists from Lidarr")
             return set()
 
-    async def get_library_album_mbids(self, lidarr_configured: bool) -> set[str]:
-        if not lidarr_configured:
+    async def get_library_album_mbids(self, library_configured: bool) -> set[str]:
+        if not library_configured:
             if self._library_db:
                 try:
                     return await self._library_db.get_all_album_mbids()
@@ -238,7 +238,7 @@ class MbidResolutionService:
                     logger.warning("Failed to fetch album MBIDs from library cache")
             return set()
         try:
-            return await self._lidarr_repo.get_library_mbids(include_release_ids=False)
+            return await self._library_repo.get_library_mbids(include_release_ids=False)
         except Exception:  # noqa: BLE001
             logger.warning("Failed to fetch library album MBIDs from Lidarr")
             return set()

@@ -7,7 +7,7 @@ with code that previously imported from `repositories.protocols`.
 from repositories.protocols.coverart import CoverArtRepositoryProtocol as CoverArtRepositoryProtocol
 from repositories.protocols.jellyfin import JellyfinRepositoryProtocol as JellyfinRepositoryProtocol
 from repositories.protocols.lastfm import LastFmRepositoryProtocol as LastFmRepositoryProtocol
-from repositories.protocols.lidarr import LidarrRepositoryProtocol as LidarrRepositoryProtocol
+from repositories.protocols.library import LibraryRepositoryProtocol as LibraryRepositoryProtocol
 from repositories.protocols.listenbrainz import ListenBrainzRepositoryProtocol as ListenBrainzRepositoryProtocol
 from repositories.protocols.musicbrainz import MusicBrainzRepositoryProtocol as MusicBrainzRepositoryProtocol
 from repositories.protocols.navidrome import NavidromeRepositoryProtocol as NavidromeRepositoryProtocol
@@ -25,7 +25,7 @@ __all__ = [
     "CoverArtRepositoryProtocol",
     "JellyfinRepositoryProtocol",
     "LastFmRepositoryProtocol",
-    "LidarrRepositoryProtocol",
+    "LibraryRepositoryProtocol",
     "ListenBrainzRepositoryProtocol",
     "MusicBrainzRepositoryProtocol",
     "NavidromeRepositoryProtocol",

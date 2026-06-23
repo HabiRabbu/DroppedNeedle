@@ -36,7 +36,7 @@ def _make_artist_info(**overrides) -> ArtistInfo:
 def _make_artist_service(audiodb_service=None) -> ArtistService:
     return ArtistService(
         mb_repo=MagicMock(),
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         wikidata_repo=MagicMock(),
         preferences_service=MagicMock(),
         memory_cache=MagicMock(),
@@ -145,8 +145,8 @@ async def test_artist_detail_audiodb_no_data_fields_none():
     audiodb_service.fetch_and_cache_artist_images = AsyncMock(return_value=None)
     svc = _make_artist_service(audiodb_service)
     artist = _make_artist_info(
-        fanart_url="https://lidarr.example.com/fanart.jpg",
-        banner_url="https://lidarr.example.com/banner.jpg",
+        fanart_url="https://library.example.com/fanart.jpg",
+        banner_url="https://library.example.com/banner.jpg",
     )
 
     result = await svc._apply_audiodb_artist_images(
@@ -161,5 +161,5 @@ async def test_artist_detail_audiodb_no_data_fields_none():
     assert result.logo_url is None
     assert result.clearart_url is None
     assert result.cutout_url is None
-    assert result.fanart_url == "https://lidarr.example.com/fanart.jpg"
-    assert result.banner_url == "https://lidarr.example.com/banner.jpg"
+    assert result.fanart_url == "https://library.example.com/fanart.jpg"
+    assert result.banner_url == "https://library.example.com/banner.jpg"

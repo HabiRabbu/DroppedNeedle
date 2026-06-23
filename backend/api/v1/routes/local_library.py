@@ -4,9 +4,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.v1.schemas.local_files import (
+    CrateResponse,
+    DecadesResponse,
     LocalAlbumMatch,
     LocalAlbumSummary,
     LocalPaginatedResponse,
+    LocalSearchResponse,
     LocalStorageStats,
     LocalTrackInfo,
 )
@@ -24,14 +27,16 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/local", tags=["local-files
 async def get_local_albums(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    sort_by: Literal["name", "date_added", "year"] = "name",
+    sort_by: Literal["name", "date_added", "year", "random", "rediscover"] = "name",
     sort_order: Literal["asc", "desc"] = Query(default="asc"),
     q: str | None = Query(default=None, min_length=1),
+    decade: int | None = Query(default=None),
     service: LocalFilesService = Depends(get_local_files_service),
 ) -> LocalPaginatedResponse:
     try:
         return await service.get_albums(
-            limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order, search_query=q
+            limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order,
+            search_query=q, decade=decade,
         )
     except ExternalServiceError as e:
         logger.error("Failed to get local albums: %s", e)
@@ -51,26 +56,26 @@ async def match_local_album(
 
 
 @router.get(
-    "/albums/{album_id}/tracks", response_model=list[LocalTrackInfo]
+    "/albums/{mbid}/tracks", response_model=list[LocalTrackInfo]
 )
 async def get_local_album_tracks(
-    album_id: int,
+    mbid: str,
     service: LocalFilesService = Depends(get_local_files_service),
 ) -> list[LocalTrackInfo]:
     try:
-        return await service.get_album_tracks_by_id(album_id)
+        return await service.get_album_tracks_by_id(mbid)
     except ExternalServiceError as e:
-        logger.error("Failed to get local album tracks %d: %s", album_id, e)
+        logger.error("Failed to get local album tracks %s: %s", mbid, e)
         raise HTTPException(
             status_code=502, detail="Failed to get local album tracks"
         )
 
 
-@router.get("/search", response_model=list[LocalAlbumSummary])
+@router.get("/search", response_model=LocalSearchResponse)
 async def search_local(
     q: str = Query(min_length=1),
     service: LocalFilesService = Depends(get_local_files_service),
-) -> list[LocalAlbumSummary]:
+) -> LocalSearchResponse:
     try:
         return await service.search(q)
     except ExternalServiceError as e:
@@ -99,3 +104,28 @@ async def get_local_stats(
     service: LocalFilesService = Depends(get_local_files_service),
 ) -> LocalStorageStats:
     return await service.get_storage_stats()
+
+
+@router.get("/suggestions", response_model=CrateResponse)
+async def get_local_suggestions(
+    limit: int = Query(default=12, ge=1, le=40),
+    decade: int | None = Query(default=None),
+    service: LocalFilesService = Depends(get_local_files_service),
+) -> CrateResponse:
+    try:
+        items = await service.get_crate_suggestions(limit=limit, decade=decade)
+        return CrateResponse(items=items)
+    except ExternalServiceError as e:
+        logger.error("Failed to get crate suggestions: %s", e)
+        raise HTTPException(status_code=502, detail="Failed to get suggestions")
+
+
+@router.get("/decades", response_model=DecadesResponse)
+async def get_local_decades(
+    service: LocalFilesService = Depends(get_local_files_service),
+) -> DecadesResponse:
+    try:
+        return DecadesResponse(items=await service.get_decades())
+    except ExternalServiceError as e:
+        logger.error("Failed to get decades: %s", e)
+        raise HTTPException(status_code=502, detail="Failed to get decades")

@@ -20,7 +20,8 @@ vi.mock('$lib/api/playlists', () => ({
 	createPlaylist: (...args: unknown[]) => mockCreatePlaylist(...args),
 	addTracksToPlaylist: (...args: unknown[]) => mockAddTracksToPlaylist(...args),
 	checkTrackMembership: (...args: unknown[]) => mockCheckTrackMembership(...args),
-	queueItemToTrackData: (item: QueueItem) => mockQueueItemToTrackData(item)
+	queueItemToTrackData: (item: QueueItem) => mockQueueItemToTrackData(item),
+	isRedactedPlaylist: (p: { is_redacted?: boolean } | null | undefined) => p?.is_redacted === true
 }));
 
 function makeTrack(overrides: Partial<QueueItem> = {}): QueueItem {
@@ -46,8 +47,13 @@ function makePlaylists() {
 			total_duration: 600,
 			cover_urls: [],
 			custom_cover_url: null,
+			source_ref: null,
 			created_at: '2026-01-01',
-			updated_at: '2026-01-01'
+			updated_at: '2026-01-01',
+			is_public: false,
+			is_owner: true,
+			owner_name: null,
+			is_redacted: false
 		},
 		{
 			id: 'p2',
@@ -56,8 +62,13 @@ function makePlaylists() {
 			total_duration: 300,
 			cover_urls: [],
 			custom_cover_url: null,
+			source_ref: null,
 			created_at: '2026-01-02',
-			updated_at: '2026-01-02'
+			updated_at: '2026-01-02',
+			is_public: false,
+			is_owner: true,
+			owner_name: null,
+			is_redacted: false
 		}
 	];
 }
@@ -110,7 +121,7 @@ describe('AddToPlaylistModal.svelte', () => {
 		const result = renderModal();
 		(result.component as unknown as ModalRef).open([makeTrack()]);
 
-		await expect.element(page.getByText('No playlists yet')).toBeVisible();
+		await expect.element(page.getByText("You haven't created any playlists yet.")).toBeVisible();
 	});
 
 	it('clicking add button calls addTracksToPlaylist with correct tracks', async () => {
@@ -139,7 +150,7 @@ describe('AddToPlaylistModal.svelte', () => {
 		await expect.element(page.getByText('My Playlist')).toBeVisible();
 		await page.getByLabelText('Add to My Playlist').click();
 
-		await expect.element(page.getByLabelText('Already in playlist').first()).toBeVisible();
+		await expect.element(page.getByLabelText('Already added').first()).toBeVisible();
 	});
 
 	it('clicking add on same playlist twice is a no-op (addedSet guard)', async () => {
@@ -150,7 +161,7 @@ describe('AddToPlaylistModal.svelte', () => {
 
 		await expect.element(page.getByText('My Playlist')).toBeVisible();
 		await page.getByLabelText('Add to My Playlist').click();
-		await expect.element(page.getByLabelText('Already in playlist').first()).toBeVisible();
+		await expect.element(page.getByLabelText('Already added').first()).toBeVisible();
 
 		expect(mockAddTracksToPlaylist).toHaveBeenCalledOnce();
 	});
@@ -173,9 +184,9 @@ describe('AddToPlaylistModal.svelte', () => {
 		const result = renderModal();
 		(result.component as unknown as ModalRef).open([makeTrack()]);
 
-		await expect.element(page.getByText('No playlists yet')).toBeVisible();
+		await expect.element(page.getByText("You haven't created any playlists yet.")).toBeVisible();
 
-		const input = page.getByPlaceholder('New playlist name...');
+		const input = page.getByPlaceholder('New playlist name');
 		await input.fill('Fresh');
 		await page.getByLabelText('Create playlist').click();
 
@@ -204,7 +215,7 @@ describe('AddToPlaylistModal.svelte', () => {
 		(result.component as unknown as ModalRef).open([makeTrack()]);
 
 		await expect.element(page.getByText('My Playlist')).toBeVisible();
-		const tickBtn = page.getByLabelText('Already in playlist').first();
+		const tickBtn = page.getByLabelText('Already added').first();
 		await expect.element(tickBtn).toBeVisible();
 		expect(tickBtn.element().hasAttribute('disabled')).toBe(true);
 	});
@@ -218,7 +229,7 @@ describe('AddToPlaylistModal.svelte', () => {
 		(result.component as unknown as ModalRef).open([track1, track2]);
 
 		await expect.element(page.getByText('My Playlist')).toBeVisible();
-		const partialBtn = page.getByLabelText('Add new tracks to My Playlist');
+		const partialBtn = page.getByLabelText('Add the remaining tracks to My Playlist');
 		await expect.element(partialBtn).toBeVisible();
 	});
 
@@ -232,7 +243,7 @@ describe('AddToPlaylistModal.svelte', () => {
 		(result.component as unknown as ModalRef).open([track1, track2]);
 
 		await expect.element(page.getByText('My Playlist')).toBeVisible();
-		await page.getByLabelText('Add new tracks to My Playlist').click();
+		await page.getByLabelText('Add the remaining tracks to My Playlist').click();
 
 		await vi.waitFor(() => {
 			expect(mockAddTracksToPlaylist).toHaveBeenCalledOnce();

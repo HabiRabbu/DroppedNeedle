@@ -45,6 +45,21 @@ def get_jellyfin_user_auth_service() -> "JellyfinUserAuthService":
 
 
 @singleton
+def get_user_import_service() -> "UserImportService":
+    from services.user_import_service import UserImportService
+    from core.dependencies.repo_providers import (
+        get_jellyfin_repository,
+        get_plex_repository,
+    )
+    return UserImportService(
+        auth_store = get_auth_store(),
+        jellyfin_repository = get_jellyfin_repository(),
+        plex_repository = get_plex_repository(),
+        preferences_service = get_preferences_service(),
+    )
+
+
+@singleton
 def get_oidc_user_auth_service() -> "OIDCUserAuthService":
     from services.oidc_user_auth_service import OIDCUserAuthService
     from core.dependencies.cache_providers import get_cache

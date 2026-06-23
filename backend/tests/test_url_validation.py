@@ -52,5 +52,5 @@ def test_blocks_no_hostname():
 
 
 def test_custom_label_in_error():
-    with pytest.raises(ValidationError, match="Lidarr URL"):
-        validate_service_url("", label="Lidarr URL")
+    with pytest.raises(ValidationError, match="Download Client URL"):
+        validate_service_url("", label="Download Client URL")

@@ -10,7 +10,7 @@ vi.mock('$lib/player/audioElement', () => ({
 	tryGetAudioEngine: vi.fn(() => mockEngine)
 }));
 
-const STORAGE_KEY = 'musicseerr_eq_settings';
+const STORAGE_KEY = 'droppedneedle_eq_settings';
 
 const storage = new Map<string, string>();
 const mockLocalStorage = {

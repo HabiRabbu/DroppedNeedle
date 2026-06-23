@@ -49,7 +49,7 @@
 		{#if tintColor}
 			<div
 				class="absolute inset-0"
-				style:background={`linear-gradient(to right, ${tintColor}, oklch(var(--b1) / 0.98) 55%, transparent)`}
+				style:background={`linear-gradient(to right, ${tintColor}, oklch(from var(--color-base-100) l c h / 0.98) 55%, transparent)`}
 			></div>
 		{/if}
 		<div

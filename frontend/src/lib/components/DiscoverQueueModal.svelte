@@ -10,6 +10,7 @@
 		type QueueCacheData
 	} from '$lib/utils/discoverQueueCache';
 	import type { MusicSource } from '$lib/stores/musicSource';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { discoverQueueStatusStore } from '$lib/stores/discoverQueueStatus';
 	import { getCacheTTLs } from '$lib/stores/cacheTtl';
 	import { resolveQueueCloseAction } from '$lib/utils/discoverQueueActions';
@@ -176,7 +177,7 @@
 				await fetchNewQueue();
 			}
 		} catch {
-			// ignore fetch failures
+			/* empty */
 		}
 	}
 
@@ -267,7 +268,7 @@
 				{ signal: abortController?.signal }
 			);
 		} catch {
-			// ignore request failure
+			/* empty */
 		}
 
 		queue = queue.filter((_, i) => i !== currentIndex);
@@ -285,7 +286,7 @@
 		enrichmentCache.clear();
 		inFlightEnrich.clear();
 		ytSearchCache.clear();
-		removeQueueCachedData(source);
+		removeQueueCachedData(authStore.user?.id ?? 'anon', source);
 		if (getCacheTTLs().discoverQueueAutoGenerate) {
 			discoverQueueStatusStore.triggerGenerate(false, source);
 		}
@@ -299,12 +300,13 @@
 				currentIndex,
 				queueId
 			},
+			authStore.user?.id ?? 'anon',
 			source
 		);
 	}
 
 	function loadQueueFromStorage(): QueueCacheData | null {
-		const cached = getQueueCachedData(source);
+		const cached = getQueueCachedData(authStore.user?.id ?? 'anon', source);
 		if (!cached) return null;
 		return cached.data;
 	}
@@ -325,7 +327,7 @@
 				signal: abortController?.signal
 			});
 		} catch {
-			// ignore quota fetch failure
+			/* empty */
 		}
 	}
 

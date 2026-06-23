@@ -200,7 +200,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if auth.lower().startswith("bearer "):
             return auth[7:].strip() or None
         # httpOnly session cookie (browser)
-        return request.cookies.get("musicseerr_session") or None
+        return request.cookies.get("droppedneedle_session") or None
 
     @staticmethod
     def _unauthorized(detail: str) -> MsgSpecJSONResponse:

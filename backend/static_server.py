@@ -1,8 +1,13 @@
+import mimetypes
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+
+# slim base images omit woff2 from mime.types; register it so fonts serve as font/woff2
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("font/woff", ".woff")
 
 _NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
 
@@ -35,6 +40,9 @@ def mount_frontend(app: FastAPI):
     if (img_dir := build_dir / "img").exists():
         app.mount("/img", StaticFiles(directory=img_dir, html=False), name="img")
 
+    if (fonts_dir := build_dir / "fonts").exists():
+        app.mount("/fonts", StaticFiles(directory=fonts_dir, html=False), name="fonts")
+
     @app.get("/robots.txt")
     async def serve_robots():
         if robots := resolve_asset("robots.txt"):
@@ -50,6 +58,12 @@ def mount_frontend(app: FastAPI):
     @app.get("/logo_wide.png")
     async def serve_logo_wide():
         if logo := resolve_asset("logo_wide.png"):
+            return FileResponse(logo)
+        raise HTTPException(status_code=404, detail="Not found")
+
+    @app.get("/logo_icon.png")
+    async def serve_logo_icon():
+        if logo := resolve_asset("logo_icon.png"):
             return FileResponse(logo)
         raise HTTPException(status_code=404, detail="Not found")
 

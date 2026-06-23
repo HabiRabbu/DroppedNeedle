@@ -15,9 +15,93 @@
 	--color-accent-content: #0f1a0a;
 }
 
+/* Self-hosted (SIL OFL) so no external font calls; Latin + Latin-ext subsets */
+@font-face {
+	font-family: 'Space Grotesk';
+	font-style: normal;
+	font-weight: 300 700;
+	font-display: swap;
+	src: url('/fonts/spacegrotesk-latin.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+		U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: 'Space Grotesk';
+	font-style: normal;
+	font-weight: 300 700;
+	font-display: swap;
+	src: url('/fonts/spacegrotesk-latinext.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+		U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+		U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'Hanken Grotesk';
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url('/fonts/hankengrotesk-latin.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+		U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF,
+		U+FFFD;
+}
+@font-face {
+	font-family: 'Hanken Grotesk';
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url('/fonts/hankengrotesk-latinext.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+		U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+		U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'Space Mono';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url('/fonts/spacemono-400-latin.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+		U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF,
+		U+FFFD;
+}
+@font-face {
+	font-family: 'Space Mono';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url('/fonts/spacemono-400-latinext.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+		U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+		U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'Space Mono';
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url('/fonts/spacemono-700-latin.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+		U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF,
+		U+FFFD;
+}
+@font-face {
+	font-family: 'Space Mono';
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url('/fonts/spacemono-700-latinext.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+		U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+		U+2C60-2C7F, U+A720-A7FF;
+}
+
 @theme {
-	/* Narrow-phone cutoff: below this the topbar (home link + search + profile)
-	   no longer fits on one row, so non-essential items hide via max-xs:. */
+	--font-sans: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+	--font-display: 'Space Grotesk', 'Hanken Grotesk', system-ui, sans-serif;
+	--font-mono: 'Space Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+	/* below this the topbar no longer fits on one row, so non-essential items hide via max-xs: */
 	--breakpoint-xs: 380px;
 	--animate-shimmer: shimmer 2s ease-in-out infinite;
 	--animate-glow-pulse: glow-pulse 2.5s ease-in-out infinite;
@@ -169,6 +253,10 @@
 }
 
 :root {
+	/* rgb-triplet mirror of --color-primary; keep in sync with the theme token */
+	--color-primary-rgb: 174 213 242;
+	/* reusable film-grain texture; opacity tuned per-surface via --grain-opacity */
+	--grain-texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='ms-grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23ms-grain)'/%3E%3C/svg%3E");
 	--brand-library: 34 197 94;
 	--brand-listenbrainz: 251 146 60;
 	--brand-jellyfin: 168 85 247;
@@ -188,16 +276,45 @@
 	--ms-page-bottom-gap: 1rem;
 }
 
+/* colour derives from --color-primary, so a rebrand only needs the theme token changed */
+@utility glow-primary {
+	box-shadow: 0 0 20px oklch(from var(--color-primary) l c h / 0.15);
+}
+@utility glow-primary-soft {
+	box-shadow: 0 0 24px oklch(from var(--color-primary) l c h / 0.12);
+}
+@utility glow-primary-strong {
+	box-shadow: 0 0 25px oklch(from var(--color-primary) l c h / 0.2);
+}
+
+/* film-grain overlay; sits behind content, opacity set per surface via --grain-opacity */
+@utility grain {
+	position: relative;
+	isolation: isolate;
+	&::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		z-index: -1;
+		pointer-events: none;
+		background-image: var(--grain-texture);
+		background-size: 180px 180px;
+		opacity: var(--grain-opacity, 0.06);
+		mix-blend-mode: overlay;
+	}
+}
+
 html {
 	min-height: 100%;
-	background: #0d120a;
+	background: var(--color-base-100);
 }
 
 body {
 	min-height: 100%;
 	min-height: 100dvh;
-	background: #0d120a;
+	background: var(--color-base-100);
 	overscroll-behavior-y: none;
+	font-family: var(--font-sans);
 }
 
 button,
@@ -208,47 +325,79 @@ textarea {
 	touch-action: manipulation;
 }
 
-.musicseerr-app-shell {
+.droppedneedle-app-shell {
+	position: relative;
+	isolation: isolate;
 	max-width: 100vw;
 	min-height: 100dvh;
 	overflow-x: clip;
 	background:
 		radial-gradient(circle at 50% -12rem, rgb(var(--brand-library) / 0.12), transparent 22rem),
-		#0d120a;
+		var(--color-base-100);
 }
 
-.musicseerr-topbar {
+/* ultra-faint global grain so every surface shares the same film stock */
+.droppedneedle-app-shell::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	background-image: var(--grain-texture);
+	background-size: 180px 180px;
+	opacity: 0.05;
+	mix-blend-mode: overlay;
+}
+
+.droppedneedle-topbar {
 	min-height: calc(4rem + var(--ms-safe-top));
 	padding-top: var(--ms-safe-top);
 }
 
-.musicseerr-main-content {
+.droppedneedle-main-content {
+	display: flex;
+	flex-direction: column;
+	/* fill at least the viewport below the topbar so a short page's footer still anchors to the bottom */
+	min-height: calc(100dvh - 4rem - var(--ms-safe-top));
 	max-width: 100vw;
 	min-width: 0;
 	overflow-x: clip;
 	padding-bottom: calc(var(--ms-bottom-nav-offset) + var(--ms-page-bottom-gap));
 }
 
-.musicseerr-main-content > * {
+.droppedneedle-main-content > * {
 	min-width: 0;
 }
 
-.musicseerr-main-content :where(p, li, code, pre) {
+.droppedneedle-main-content :where(p, li, code, pre) {
 	max-width: 100%;
 	overflow-wrap: anywhere;
 }
 
-.musicseerr-main-content :where(img, video, canvas, svg) {
+.droppedneedle-main-content :where(img, video, canvas, svg) {
 	max-width: 100%;
 }
 
-.musicseerr-main-content.musicseerr-player-visible {
+/* app headings + modal titles use the display face */
+.droppedneedle-main-content :is(h1, h2),
+.modal-box :is(h1, h2, h3) {
+	font-family: var(--font-display);
+}
+
+/* structural labels go uppercase; content names keep their case via .hero-title */
+.droppedneedle-main-content :is(h1, h2):not(.hero-title),
+.modal-box :is(h1, h2, h3):not(.hero-title) {
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+}
+
+.droppedneedle-main-content.droppedneedle-player-visible {
 	padding-bottom: calc(
 		var(--ms-bottom-nav-offset) + var(--ms-player-height) + var(--ms-page-bottom-gap)
 	);
 }
 
-.musicseerr-bottom-nav {
+.droppedneedle-bottom-nav {
 	position: fixed;
 	right: 0;
 	bottom: 0;
@@ -265,7 +414,7 @@ textarea {
 	box-shadow: 0 -10px 28px rgb(0 0 0 / 0.34);
 }
 
-.musicseerr-bottom-nav__item {
+.droppedneedle-bottom-nav__item {
 	position: relative;
 	display: inline-flex;
 	min-width: 0;
@@ -281,17 +430,17 @@ textarea {
 	text-align: center;
 }
 
-.musicseerr-bottom-nav__item svg {
+.droppedneedle-bottom-nav__item svg {
 	width: 1.35rem;
 	height: 1.35rem;
 }
 
-.musicseerr-bottom-nav__item.active {
+.droppedneedle-bottom-nav__item.active {
 	color: oklch(from var(--color-accent) l c h);
 	background: oklch(from var(--color-accent) l c h / 0.11);
 }
 
-.musicseerr-bottom-nav__badge {
+.droppedneedle-bottom-nav__badge {
 	position: absolute;
 	top: 0.35rem;
 	right: max(0.6rem, 20%);
@@ -306,21 +455,21 @@ textarea {
 	line-height: 1rem;
 }
 
-.musicseerr-player-bar {
+.droppedneedle-player-bar {
 	bottom: var(--ms-bottom-nav-offset);
 	height: var(--ms-player-height);
 }
 
-.musicseerr-player-inner {
+.droppedneedle-player-inner {
 	height: 100%;
 }
 
-.musicseerr-playback-toast {
+.droppedneedle-playback-toast {
 	bottom: calc(var(--ms-bottom-nav-offset) + 0.75rem);
 	width: min(calc(100vw - 1rem), 28rem);
 }
 
-.musicseerr-playback-toast.musicseerr-playback-toast--player {
+.droppedneedle-playback-toast.droppedneedle-playback-toast--player {
 	bottom: calc(var(--ms-bottom-nav-offset) + var(--ms-player-height) + 0.75rem);
 }
 
@@ -330,11 +479,11 @@ textarea {
 		--ms-player-height: 5.25rem;
 	}
 
-	.musicseerr-bottom-nav {
+	.droppedneedle-bottom-nav {
 		padding-inline: 0.35rem;
 	}
 
-	.musicseerr-bottom-nav__item {
+	.droppedneedle-bottom-nav__item {
 		font-size: 0.625rem;
 		min-height: 3.25rem;
 	}
@@ -347,35 +496,33 @@ textarea {
 		--ms-player-height: 5.625rem;
 	}
 
-	/* The base `.musicseerr-bottom-nav` rule is unlayered, so it outranks Tailwind's
-	   utilities layer — `md:hidden` in the markup can't hide it. Hide it here instead so
-	   the side sidebar (md:drawer-open) is the only nav from the md breakpoint up. */
-	.musicseerr-bottom-nav {
+	/* the base `.droppedneedle-bottom-nav` rule is unlayered, so it outranks Tailwind's utilities layer and `md:hidden` can't hide it; hide it here instead */
+	.droppedneedle-bottom-nav {
 		display: none;
 	}
 
-	.musicseerr-topbar {
+	.droppedneedle-topbar {
 		min-height: 4rem;
 		padding-top: 0;
 	}
 
-	.musicseerr-main-content {
+	.droppedneedle-main-content {
 		padding-bottom: 0;
 	}
 
-	.musicseerr-main-content.musicseerr-player-visible {
+	.droppedneedle-main-content.droppedneedle-player-visible {
 		padding-bottom: 6rem;
 	}
 
-	.musicseerr-player-bar {
+	.droppedneedle-player-bar {
 		bottom: 0;
 	}
 
-	.musicseerr-playback-toast {
+	.droppedneedle-playback-toast {
 		bottom: 1rem;
 	}
 
-	.musicseerr-playback-toast.musicseerr-playback-toast--player {
+	.droppedneedle-playback-toast.droppedneedle-playback-toast--player {
 		bottom: 6.5rem;
 	}
 }
@@ -387,6 +534,33 @@ textarea {
 	&:hover {
 		background-color: rgb(var(--brand-lastfm) / 0.85);
 		border-color: rgb(var(--brand-lastfm) / 0.85);
+	}
+}
+
+@utility btn-listenbrainz {
+	background-color: rgb(var(--brand-listenbrainz));
+	color: #1a1205;
+	border-color: rgb(var(--brand-listenbrainz));
+	&:hover {
+		background-color: rgb(var(--brand-listenbrainz) / 0.85);
+		border-color: rgb(var(--brand-listenbrainz) / 0.85);
+	}
+}
+
+@utility input-soft {
+	border-radius: 0.85rem;
+	background: oklch(from var(--color-base-100) l c h / 0.7);
+	border: 1px solid oklch(from var(--color-base-content) l c h / 0.12);
+	transition:
+		border-color 0.2s ease,
+		box-shadow 0.2s ease,
+		background 0.2s ease;
+	&:focus,
+	&:focus-visible {
+		outline: none;
+		border-color: oklch(from var(--color-primary) l c h / 0.5);
+		box-shadow: 0 0 0 3px oklch(from var(--color-primary) l c h / 0.16);
+		background: oklch(from var(--color-base-100) l c h / 0.92);
 	}
 }
 
@@ -576,8 +750,8 @@ textarea {
 
 @utility section-divider-glow {
 	height: 2px;
-	background: linear-gradient(to right, transparent, oklch(var(--p) / 0.15), transparent);
-	box-shadow: 0 0 8px oklch(var(--p) / 0.06);
+	background: linear-gradient(to right, transparent, oklch(from var(--color-primary) l c h / 0.15), transparent);
+	box-shadow: 0 0 8px oklch(from var(--color-primary) l c h / 0.06);
 }
 
 .now-playing-bars {
@@ -590,7 +764,7 @@ textarea {
 	display: block;
 	width: 3px;
 	border-radius: 1px;
-	background: oklch(var(--p));
+	background: var(--color-primary);
 	animation: now-playing-bar 1.2s ease-in-out infinite;
 }
 .now-playing-bars span:nth-child(1) {
@@ -625,13 +799,159 @@ textarea {
 	width: 2px;
 }
 
+@keyframes spin-vinyl {
+	to {
+		transform: rotate(360deg);
+	}
+}
+.vinyl-spin {
+	animation: spin-vinyl 4.2s linear infinite;
+}
+.vinyl-spin.is-paused {
+	animation-play-state: paused;
+}
+
+.turntable-platter {
+	background:
+		repeating-radial-gradient(
+			circle at center,
+			oklch(from var(--color-base-content) l c h / 0.05) 0px,
+			oklch(from var(--color-base-content) l c h / 0.05) 1px,
+			transparent 2px,
+			transparent 4px
+		),
+		radial-gradient(circle at 33% 27%, oklch(from var(--color-base-content) l c h / 0.1), transparent 58%),
+		radial-gradient(circle at center, var(--color-base-300), var(--color-base-100) 95%);
+	box-shadow:
+		inset 0 0 0 1px oklch(from var(--color-base-content) l c h / 0.08),
+		inset 0 0 40px oklch(from var(--color-base-100) l c h / 0.9),
+		0 30px 60px -22px oklch(from var(--color-base-100) l c h / 0.85);
+}
+
+.tonearm {
+	transform-origin: 88% 12%;
+	transform: rotate(-3deg);
+	transition: transform 0.9s var(--ease-overshoot);
+}
+.tonearm.is-playing {
+	transform: rotate(-31deg);
+}
+
+.deck-halo {
+	background: radial-gradient(circle at center, oklch(from var(--color-accent) l c h / 0.16), transparent 66%);
+}
+
+.crate-card {
+	transition:
+		transform 0.2s var(--ease-spring),
+		box-shadow 0.2s var(--ease-spring),
+		border-color 0.2s ease;
+}
+.crate-card:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 12px 24px -14px oklch(from var(--color-base-100) l c h / 0.9);
+}
+.crate-card.is-dragging {
+	opacity: 0.4;
+}
+
+.deck-droptarget {
+	transition:
+		box-shadow 0.25s ease,
+		transform 0.25s var(--ease-spring);
+}
+.deck-droptarget.is-over {
+	box-shadow:
+		0 0 0 3px oklch(from var(--color-accent) l c h / 0.55),
+		0 0 40px oklch(from var(--color-accent) l c h / 0.35);
+	transform: scale(1.01);
+}
+
+.deck-visualiser {
+	opacity: 0;
+	filter: blur(2px);
+	transition: opacity 0.9s ease;
+	-webkit-mask-image: linear-gradient(to top, #000 0%, #000 42%, transparent 78%);
+	mask-image: linear-gradient(to top, #000 0%, #000 42%, transparent 78%);
+}
+.deck-visualiser.is-active {
+	opacity: 0.2;
+}
+
+.decade-card {
+	transition:
+		transform 0.2s var(--ease-spring),
+		box-shadow 0.2s var(--ease-spring),
+		border-color 0.2s ease;
+}
+.decade-card:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 14px 28px -18px oklch(from var(--color-base-100) l c h / 0.9);
+}
+
+/* transition matches the 250ms tick interval that updates it */
+.countdown-ring {
+	transition: stroke-dashoffset 0.25s linear;
+}
+
+.search-row {
+	transition:
+		transform 0.2s var(--ease-spring),
+		box-shadow 0.2s var(--ease-spring),
+		border-color 0.2s ease;
+}
+.search-row:hover {
+	transform: translateY(-2px);
+	box-shadow: 0 12px 24px -14px oklch(from var(--color-base-100) l c h / 0.9);
+}
+.search-row.is-dragging {
+	opacity: 0.4;
+}
+
+.crate-sweep {
+	background: linear-gradient(115deg, transparent 28%, oklch(from var(--color-accent) l c h / 0.18) 50%, transparent 72%);
+	animation: crate-sweep 0.75s ease-out;
+}
+@keyframes crate-sweep {
+	0% {
+		transform: translateY(-100%);
+		opacity: 0;
+	}
+	25% {
+		opacity: 1;
+	}
+	100% {
+		transform: translateY(100%);
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.vinyl-spin {
+		animation: none !important;
+	}
+	.tonearm,
+	.crate-card,
+	.search-row,
+	.countdown-ring,
+	.deck-droptarget,
+	.decade-card,
+	.decade-card img,
+	.decade-card svg {
+		transition: none !important;
+	}
+	.deck-visualiser {
+		opacity: 0 !important;
+		transition: none !important;
+	}
+}
+
 dialog.whats-new-modal::backdrop {
 	backdrop-filter: blur(16px) saturate(0.8);
 	-webkit-backdrop-filter: blur(16px) saturate(0.8);
 	background: rgba(0, 0, 0, 0.6);
 }
 
-/* Release notes prose styling - ensures readable list spacing and bullet visibility */
 .release-notes-prose :is(ul, ol) {
 	padding-left: 1.25em;
 	margin-top: 0.5em;

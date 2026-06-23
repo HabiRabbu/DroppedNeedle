@@ -47,6 +47,44 @@ export function computeUpcomingLength(
 	return Math.max(0, queueLength - currentIndex - 1);
 }
 
+// Album tracks sit in consecutive runs sharing a non-empty albumId; no albumId means a solo block.
+function albumKeyAt(queue: QueueItem[], idx: number): string {
+	const id = queue[idx]?.albumId;
+	return id ? `id:${id}` : `solo:${idx}`;
+}
+
+// Gates album-skip controls: only true with >=2 consecutive tracks sharing an albumId.
+export function queueHasAlbums(queue: QueueItem[]): boolean {
+	for (let i = 1; i < queue.length; i++) {
+		const id = queue[i]?.albumId;
+		if (id && id === queue[i - 1]?.albumId) return true;
+	}
+	return false;
+}
+
+export function computeNextAlbumIndex(queue: QueueItem[], currentIndex: number): number | null {
+	if (currentIndex < 0 || currentIndex >= queue.length) return null;
+	const curKey = albumKeyAt(queue, currentIndex);
+	for (let i = currentIndex + 1; i < queue.length; i++) {
+		if (albumKeyAt(queue, i) !== curKey) return i;
+	}
+	return null;
+}
+
+// Mid-album restarts the current album; at its start jumps to the previous album block.
+export function computePreviousAlbumIndex(queue: QueueItem[], currentIndex: number): number | null {
+	if (currentIndex < 0 || currentIndex >= queue.length) return null;
+	const curKey = albumKeyAt(queue, currentIndex);
+	let startOfCurrent = currentIndex;
+	while (startOfCurrent > 0 && albumKeyAt(queue, startOfCurrent - 1) === curKey) startOfCurrent--;
+	if (currentIndex > startOfCurrent) return startOfCurrent;
+	if (startOfCurrent === 0) return null;
+	const prevKey = albumKeyAt(queue, startOfCurrent - 1);
+	let startOfPrev = startOfCurrent - 1;
+	while (startOfPrev > 0 && albumKeyAt(queue, startOfPrev - 1) === prevKey) startOfPrev--;
+	return startOfPrev;
+}
+
 export function performCleanup(
 	queue: QueueItem[],
 	currentIndex: number,

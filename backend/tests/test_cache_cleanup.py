@@ -276,7 +276,7 @@ class TestRequestHistoryPruning:
         conn.execute(
             "CREATE TABLE request_history ("
             "musicbrainz_id_lower TEXT PRIMARY KEY, status TEXT, "
-            "requested_at TEXT, completed_at TEXT, lidarr_album_id TEXT)"
+            "requested_at TEXT, completed_at TEXT, download_task_id TEXT)"
         )
         old_date = "2020-01-01T00:00:00"
         recent_date = datetime.now().isoformat()

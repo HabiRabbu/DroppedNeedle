@@ -13,7 +13,7 @@
 	const status = fromStore(serviceStatusStore);
 
 	const dismissedVersion = new PersistedState<string | null>(
-		'musicseerr_update_banner_dismissed',
+		'droppedneedle_update_banner_dismissed',
 		null
 	);
 
@@ -40,7 +40,7 @@
 		>
 			<ArrowUpCircle class="h-4 w-4 shrink-0" />
 			<span>
-				A new version of MusicSeerr is available
+				A new version of DroppedNeedle is available
 				{#if latestVersion}
 					<span class="font-semibold">({latestVersion})</span>
 				{/if}

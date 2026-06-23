@@ -59,19 +59,18 @@
 				loadingTracks={state.loadingTracks}
 				inLibrary={state.inLibrary}
 				isRequested={state.isRequested}
-				albumMonitored={state.albumMonitored}
 				requesting={state.requesting}
 				refreshing={state.refreshing}
-				pollingForSources={state.pollingForSources}
-				lidarrConfigured={$integrationStore.lidarr}
-				monitorToggleLoading={state.monitorToggleLoading}
-				artistMonitored={state.artistMonitored}
-				artistInLidarr={state.artistInLidarr}
+				headerDownloadTask={state.headerDownloadTask}
+				downloadClientConfigured={$integrationStore.download_client}
+				libraryInLibrary={state.libraryInLibrary}
+				libraryTrackCount={state.libraryTrackCount}
+				mbTrackCount={state.tracksInfo?.total_tracks ?? 0}
+				releaseGroupMbid={album.musicbrainz_id}
 				onrequest={state.handleRequest}
 				ondelete={state.handleDeleteClick}
 				onrefresh={state.refreshAll}
 				onartistclick={state.goToArtist}
-				ontogglemonitored={state.handleToggleMonitored}
 			/>
 
 			{#if state.loadingTracks}
@@ -160,6 +159,10 @@
 						localfilesEnabled={$integrationStore.localfiles}
 						navidromeEnabled={$integrationStore.navidrome}
 						plexEnabled={$integrationStore.plex}
+						libraryTracksByRecording={state.libraryTracksByRecording}
+						libraryTracksByPosition={state.libraryTracksByPosition}
+						trackDownloadTasks={state.trackDownloadTasks}
+						releaseGroupMbid={album.musicbrainz_id}
 						onPlaySourceTrack={state.playSourceTrack}
 						onTrackGenerated={state.handleTrackGenerated}
 						onQuotaUpdate={state.handleQuotaUpdate}
@@ -193,11 +196,10 @@
 				</div>
 			{/if}
 
-			{#if $integrationStore.lastfm}
+			{#if state.loadingLastfm || state.lastfmEnrichment}
 				<LastFmAlbumEnrichmentComponent
 					enrichment={state.lastfmEnrichment}
 					loading={state.loadingLastfm}
-					enabled={$integrationStore.lastfm}
 				/>
 			{/if}
 

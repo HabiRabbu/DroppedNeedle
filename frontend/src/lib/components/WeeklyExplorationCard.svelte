@@ -43,7 +43,7 @@
 
 <div
 	class="flex w-44 shrink-0 flex-col rounded-xl bg-base-100 shadow-sm
-	transition-all duration-200 hover:shadow-[0_0_24px_rgba(174,213,242,0.12)]"
+	transition-all duration-200 hover:glow-primary-soft"
 >
 	{#if albumHref}
 		<a
@@ -138,7 +138,7 @@
 	</div>
 
 	<div class="mt-auto flex items-center justify-center gap-3 px-2 pb-1 pt-0.5">
-		{#if albumMbid && $integrationStore.lidarr && !isRequested}
+		{#if albumMbid && $integrationStore.download_client && !isRequested}
 			<AlbumRequestButton
 				mbid={albumMbid}
 				artistName={track.artist_name}

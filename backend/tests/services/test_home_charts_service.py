@@ -48,9 +48,9 @@ def _make_service(
     lfm_repo.get_global_top_artists = AsyncMock(return_value=[])
     lfm_repo.get_user_top_albums = AsyncMock(return_value=[])
 
-    lidarr_repo = AsyncMock()
-    lidarr_repo.get_library = AsyncMock(return_value=[])
-    lidarr_repo.get_artists_from_library = AsyncMock(return_value=[])
+    library_repo = AsyncMock()
+    library_repo.get_library = AsyncMock(return_value=[])
+    library_repo.get_artists_from_library = AsyncMock(return_value=[])
 
     mb_repo = AsyncMock()
     prefs = _make_prefs(
@@ -62,7 +62,7 @@ def _make_service(
 
     service = HomeChartsService(
         listenbrainz_repo=lb_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         musicbrainz_repo=mb_repo,
         lastfm_repo=lfm_repo,
         preferences_service=prefs,

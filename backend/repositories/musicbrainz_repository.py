@@ -40,7 +40,8 @@ class MusicBrainzRepository(MusicBrainzArtistMixin, MusicBrainzAlbumMixin):
         query: str,
         limits: dict[str, int],
         buckets: Optional[list[str]] = None,
-        included_secondary_types: Optional[set[str]] = None
+        included_secondary_types: Optional[set[str]] = None,
+        included_primary_types: Optional[set[str]] = None
     ) -> dict[str, list[SearchResult]]:
         tasks = []
         task_keys = []
@@ -53,7 +54,8 @@ class MusicBrainzRepository(MusicBrainzArtistMixin, MusicBrainzAlbumMixin):
             tasks.append(self.search_albums(
                 query,
                 limit=limits.get("albums", 10),
-                included_secondary_types=included_secondary_types
+                included_secondary_types=included_secondary_types,
+                included_primary_types=included_primary_types
             ))
             task_keys.append("albums")
 

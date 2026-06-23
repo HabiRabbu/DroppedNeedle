@@ -11,7 +11,10 @@ _UNSET = object()
 
 
 class PlaylistRecord:
-    __slots__ = ("id", "name", "cover_image_path", "created_at", "updated_at", "source_ref")
+    __slots__ = (
+        "id", "name", "cover_image_path", "created_at", "updated_at",
+        "source_ref", "user_id", "is_public",
+    )
 
     def __init__(
         self,
@@ -21,6 +24,8 @@ class PlaylistRecord:
         created_at: str,
         updated_at: str,
         source_ref: Optional[str] = None,
+        user_id: Optional[str] = None,
+        is_public: bool = False,
     ):
         self.id = id
         self.name = name
@@ -28,12 +33,15 @@ class PlaylistRecord:
         self.created_at = created_at
         self.updated_at = updated_at
         self.source_ref = source_ref
+        self.user_id = user_id
+        self.is_public = is_public
 
 
 class PlaylistSummaryRecord:
     __slots__ = (
         "id", "name", "cover_image_path", "created_at", "updated_at",
         "track_count", "total_duration", "cover_urls", "source_ref",
+        "user_id", "is_public",
     )
 
     def __init__(
@@ -47,6 +55,8 @@ class PlaylistSummaryRecord:
         total_duration: Optional[int],
         cover_urls: list[str],
         source_ref: Optional[str] = None,
+        user_id: Optional[str] = None,
+        is_public: bool = False,
     ):
         self.id = id
         self.name = name
@@ -57,6 +67,8 @@ class PlaylistSummaryRecord:
         self.total_duration = total_duration
         self.cover_urls = cover_urls
         self.source_ref = source_ref
+        self.user_id = user_id
+        self.is_public = is_public
 
 
 class PlaylistTrackRecord:
@@ -64,7 +76,7 @@ class PlaylistTrackRecord:
         "id", "playlist_id", "position", "track_name", "artist_name",
         "album_name", "album_id", "artist_id", "track_source_id", "cover_url",
         "source_type", "available_sources", "format", "track_number", "disc_number",
-        "duration", "created_at", "plex_rating_key",
+        "duration", "created_at", "plex_rating_key", "library_file_id",
     )
 
     def __init__(
@@ -87,6 +99,7 @@ class PlaylistTrackRecord:
         duration: Optional[int],
         created_at: str,
         plex_rating_key: Optional[str] = None,
+        library_file_id: Optional[str] = None,
     ):
         self.id = id
         self.playlist_id = playlist_id
@@ -106,16 +119,17 @@ class PlaylistTrackRecord:
         self.duration = duration
         self.created_at = created_at
         self.plex_rating_key = plex_rating_key
+        self.library_file_id = library_file_id
 
 def get_cache_dir() -> Path:
       from core.config import get_settings
       return get_settings().library_db_path
 
 class PlaylistRepository:
-    def __init__(self, db_path: Path = get_cache_dir()):
+    def __init__(self, db_path: Path = get_cache_dir(), write_lock: Optional[threading.Lock] = None):
         self.db_path = db_path
         self._local = threading.local()
-        self._write_lock = threading.Lock()
+        self._write_lock = write_lock or threading.Lock()
         self._ensure_tables()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -184,6 +198,15 @@ class PlaylistRepository:
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
+            # links a compat entry to its owned library file so the shims can stream it
+            # (NULL for legacy outbound entries). Plain column, no FK: playlist dbs can be
+            # isolated from library_files, which soft-deletes anyway; the shim resolves a
+            # dangling id to None and skips it.
+            try:
+                conn.execute("ALTER TABLE playlist_tracks ADD COLUMN library_file_id TEXT")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
             conn.execute("""
                 UPDATE playlist_tracks
                 SET cover_url = '/api/v1/covers/' || SUBSTR(cover_url, LENGTH('/api/covers/') + 1)
@@ -194,29 +217,50 @@ class PlaylistRepository:
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
+            # Per-user ownership + visibility (D4). user_id is nullable in DDL (an
+            # additive ALTER cannot be NOT NULL on a populated table); it is backfilled
+            # to the first admin and treated NOT NULL by app logic (AMU-1).
+            try:
+                conn.execute("ALTER TABLE playlists ADD COLUMN user_id TEXT")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE playlists ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            # Replace the GLOBAL source_ref uniqueness with a PER-USER one so two users
+            # can each import the same source playlist without colliding (D4). SQLite
+            # treats NULL as distinct in a unique index, so pre-backfill (NULL, source_ref)
+            # rows never collide.
+            conn.execute("DROP INDEX IF EXISTS idx_playlists_source_ref")
             conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_source_ref
-                ON playlists(source_ref) WHERE source_ref IS NOT NULL
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_user_source_ref
+                ON playlists(user_id, source_ref) WHERE source_ref IS NOT NULL
             """)
             conn.commit()
         finally:
             conn.close()
 
 
-    def create_playlist(self, name: str, source_ref: Optional[str] = None) -> PlaylistRecord:
+    def create_playlist(
+        self, name: str, source_ref: Optional[str] = None, user_id: Optional[str] = None,
+    ) -> PlaylistRecord:
         playlist_id = str(uuid4())
         now = datetime.now(timezone.utc).isoformat()
         with self._write_lock:
             conn = self._get_connection()
             conn.execute(
-                "INSERT INTO playlists (id, name, cover_image_path, created_at, updated_at, source_ref) "
-                "VALUES (?, ?, NULL, ?, ?, ?)",
-                (playlist_id, name, now, now, source_ref),
+                "INSERT INTO playlists (id, name, cover_image_path, created_at, updated_at, source_ref, user_id) "
+                "VALUES (?, ?, NULL, ?, ?, ?, ?)",
+                (playlist_id, name, now, now, source_ref, user_id),
             )
             conn.commit()
         return PlaylistRecord(
             id=playlist_id, name=name, cover_image_path=None,
             created_at=now, updated_at=now, source_ref=source_ref,
+            user_id=user_id, is_public=False,
         )
 
     def get_playlist(self, playlist_id: str) -> Optional[PlaylistRecord]:
@@ -226,34 +270,60 @@ class PlaylistRepository:
         ).fetchone()
         return self._row_to_playlist(row) if row else None
 
-    def get_by_source_ref(self, source_ref: str) -> Optional[PlaylistRecord]:
+    def get_by_source_ref(
+        self, source_ref: str, user_id: Optional[str] = None,
+    ) -> Optional[PlaylistRecord]:
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM playlists WHERE source_ref = ?", (source_ref,)
-        ).fetchone()
+        if user_id is None:
+            row = conn.execute(
+                "SELECT * FROM playlists WHERE source_ref = ?", (source_ref,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM playlists WHERE source_ref = ? AND user_id = ?",
+                (source_ref, user_id),
+            ).fetchone()
         return self._row_to_playlist(row) if row else None
 
-    def get_imported_source_ids(self, prefix: str) -> set[str]:
-        """Return the set of source IDs imported for a given prefix (e.g. 'plex:')."""
+    def get_imported_source_ids(self, prefix: str, user_id: Optional[str] = None) -> set[str]:
+        """Return the set of source IDs imported for a given prefix (e.g. 'plex:').
+
+        Scoped to ``user_id`` when given so the import banner only reflects the
+        requesting user's imports (D4).
+        """
         conn = self._get_connection()
-        rows = conn.execute(
-            "SELECT source_ref FROM playlists WHERE source_ref LIKE ?",
-            (f"{prefix}%",),
-        ).fetchall()
+        if user_id is None:
+            rows = conn.execute(
+                "SELECT source_ref FROM playlists WHERE source_ref LIKE ?",
+                (f"{prefix}%",),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT source_ref FROM playlists WHERE source_ref LIKE ? AND user_id = ?",
+                (f"{prefix}%", user_id),
+            ).fetchall()
         plen = len(prefix)
         return {row["source_ref"][plen:] for row in rows if row["source_ref"]}
 
-    def get_all_playlists(self) -> list[PlaylistSummaryRecord]:
+    def get_all_playlists(self, user_id: Optional[str] = None) -> list[PlaylistSummaryRecord]:
         conn = self._get_connection()
-        rows = conn.execute("""
+        base_select = """
             SELECT p.*,
                    COUNT(pt.id) AS track_count,
                    SUM(pt.duration) AS total_duration
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
-            GROUP BY p.id
-            ORDER BY p.updated_at DESC
-        """).fetchall()
+        """
+        if user_id is None:
+            rows = conn.execute(
+                base_select + " GROUP BY p.id ORDER BY p.updated_at DESC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                base_select
+                + " WHERE p.user_id = ? OR p.is_public = 1 GROUP BY p.id ORDER BY p.updated_at DESC",
+                (user_id,),
+            ).fetchall()
 
         results: list[PlaylistSummaryRecord] = []
         for row in rows:
@@ -274,8 +344,47 @@ class PlaylistRepository:
                 total_duration=row["total_duration"],
                 cover_urls=cover_urls,
                 source_ref=row["source_ref"],
+                user_id=row["user_id"] if "user_id" in row.keys() else None,
+                is_public=bool(row["is_public"]) if "is_public" in row.keys() else False,
             ))
         return results
+
+    def get_summary(self, playlist_id: str) -> Optional[PlaylistSummaryRecord]:
+        conn = self._get_connection()
+        row = conn.execute(
+            """
+            SELECT p.*,
+                   COUNT(pt.id) AS track_count,
+                   SUM(pt.duration) AS total_duration
+            FROM playlists p
+            LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+            WHERE p.id = ?
+            GROUP BY p.id
+            """,
+            (playlist_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cover_urls = [
+            r["cover_url"] for r in conn.execute(
+                "SELECT DISTINCT cover_url FROM playlist_tracks "
+                "WHERE playlist_id = ? AND cover_url IS NOT NULL LIMIT 4",
+                (playlist_id,),
+            ).fetchall()
+        ]
+        return PlaylistSummaryRecord(
+            id=row["id"],
+            name=row["name"],
+            cover_image_path=row["cover_image_path"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            track_count=row["track_count"],
+            total_duration=row["total_duration"],
+            cover_urls=cover_urls,
+            source_ref=row["source_ref"] if "source_ref" in row.keys() else None,
+            user_id=row["user_id"] if "user_id" in row.keys() else None,
+            is_public=bool(row["is_public"]) if "is_public" in row.keys() else False,
+        )
 
     def update_playlist(
         self,
@@ -307,6 +416,9 @@ class PlaylistRepository:
         return PlaylistRecord(
             id=playlist_id, name=new_name, cover_image_path=new_cover,
             created_at=existing["created_at"], updated_at=now,
+            source_ref=existing["source_ref"] if "source_ref" in existing.keys() else None,
+            user_id=existing["user_id"] if "user_id" in existing.keys() else None,
+            is_public=bool(existing["is_public"]) if "is_public" in existing.keys() else False,
         )
 
     def delete_playlist(self, playlist_id: str) -> bool:
@@ -317,6 +429,36 @@ class PlaylistRepository:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def set_public(self, playlist_id: str, is_public: bool) -> Optional[PlaylistRecord]:
+        with self._write_lock:
+            conn = self._get_connection()
+            existing = conn.execute(
+                "SELECT * FROM playlists WHERE id = ?", (playlist_id,)
+            ).fetchone()
+            if not existing:
+                return None
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE playlists SET is_public = ?, updated_at = ? WHERE id = ?",
+                (1 if is_public else 0, now, playlist_id),
+            )
+            conn.commit()
+            updated = conn.execute(
+                "SELECT * FROM playlists WHERE id = ?", (playlist_id,)
+            ).fetchone()
+        return self._row_to_playlist(updated)
+
+    def assign_unowned_to(self, user_id: str) -> int:
+        """Backfill ownerless playlists to ``user_id`` (the first admin, D7). Idempotent."""
+        with self._write_lock:
+            conn = self._get_connection()
+            cursor = conn.execute(
+                "UPDATE playlists SET user_id = ? WHERE user_id IS NULL",
+                (user_id,),
+            )
+            conn.commit()
+            return cursor.rowcount
 
     def add_tracks(
         self,
@@ -373,8 +515,8 @@ class PlaylistRepository:
                     "(id, playlist_id, position, track_name, artist_name, album_name, "
                     "album_id, artist_id, track_source_id, cover_url, source_type, "
                     "available_sources, format, track_number, disc_number, duration, "
-                    "plex_rating_key, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "plex_rating_key, library_file_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         track_id, playlist_id, pos,
                         track["track_name"], track["artist_name"], track["album_name"],
@@ -382,7 +524,8 @@ class PlaylistRepository:
                         track.get("track_source_id"), track.get("cover_url"),
                         track["source_type"], available_sources_json,
                         track.get("format"), track.get("track_number"), track.get("disc_number"),
-                        track.get("duration"), track.get("plex_rating_key"), now,
+                        track.get("duration"), track.get("plex_rating_key"),
+                        track.get("library_file_id"), now,
                     ),
                 )
                 created_records.append(PlaylistTrackRecord(
@@ -396,6 +539,7 @@ class PlaylistRepository:
                     disc_number=track.get("disc_number"),
                     duration=track.get("duration"), created_at=now,
                     plex_rating_key=track.get("plex_rating_key"),
+                    library_file_id=track.get("library_file_id"),
                 ))
 
             conn.execute(
@@ -649,12 +793,14 @@ class PlaylistRepository:
         return self._row_to_track(row)
 
     def check_track_membership(
-        self, tracks: list[tuple[str, str, str]],
+        self, tracks: list[tuple[str, str, str]], user_id: Optional[str] = None,
     ) -> dict[str, list[int]]:
         """Check which playlists already contain the given tracks.
 
         Args:
             tracks: list of (track_name, artist_name, album_name) tuples.
+            user_id: when given, only the caller's own playlists are considered, so
+                membership never leaks another user's playlist IDs (D4).
 
         Returns:
             dict mapping playlist_id to list of input indices that are already present.
@@ -663,11 +809,20 @@ class PlaylistRepository:
             return {}
 
         conn = self._get_connection()
-        rows = conn.execute(
-            "SELECT playlist_id, LOWER(track_name) AS tn, "
-            "LOWER(artist_name) AS an, LOWER(album_name) AS aln "
-            "FROM playlist_tracks"
-        ).fetchall()
+        if user_id is None:
+            rows = conn.execute(
+                "SELECT playlist_id, LOWER(track_name) AS tn, "
+                "LOWER(artist_name) AS an, LOWER(album_name) AS aln "
+                "FROM playlist_tracks"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT pt.playlist_id, LOWER(pt.track_name) AS tn, "
+                "LOWER(pt.artist_name) AS an, LOWER(pt.album_name) AS aln "
+                "FROM playlist_tracks pt JOIN playlists p ON p.id = pt.playlist_id "
+                "WHERE p.user_id = ?",
+                (user_id,),
+            ).fetchall()
 
         lookup: dict[str, set[tuple[str, str, str]]] = {}
         for row in rows:
@@ -714,6 +869,8 @@ class PlaylistRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             source_ref=row["source_ref"] if "source_ref" in row.keys() else None,
+            user_id=row["user_id"] if "user_id" in row.keys() else None,
+            is_public=bool(row["is_public"]) if "is_public" in row.keys() else False,
         )
 
     @classmethod
@@ -737,4 +894,5 @@ class PlaylistRepository:
             duration=row["duration"],
             created_at=row["created_at"],
             plex_rating_key=row["plex_rating_key"] if "plex_rating_key" in row.keys() else None,
+            library_file_id=row["library_file_id"] if "library_file_id" in row.keys() else None,
         )

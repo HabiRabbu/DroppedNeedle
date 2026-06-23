@@ -1,14 +1,10 @@
 import asyncio
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
+from api.v1.schemas.common import StatusMessageResponse
 from api.v1.schemas.library import (
     LibraryResponse,
-    LibraryArtistsResponse,
-    LibraryAlbumsResponse,
-    PaginatedLibraryAlbumsResponse,
-    PaginatedLibraryArtistsResponse,
     RecentlyAddedResponse,
-    LibraryStatsResponse,
     AlbumRemoveResponse,
     AlbumRemovePreviewResponse,
     SyncLibraryResponse,
@@ -16,11 +12,23 @@ from api.v1.schemas.library import (
     LibraryGroupedResponse,
     TrackResolveRequest,
     TrackResolveResponse,
+    NativeAlbumsResponse,
+    NativeArtistsResponse,
+    NativeTrackPage,
+    NativeTracksResponse,
+    NativeLibraryStatsResponse,
+    LibraryAlbumStatusResponse,
+    LibraryTrackResponse,
+    TrackTagUpdateRequest,
 )
-from core.dependencies import get_library_service
+from core.dependencies import get_library_service, get_library_manager, get_library_scanner
 from core.exceptions import ExternalServiceError
 from infrastructure.msgspec_fastapi import MsgSpecRoute, MsgSpecBody
+from middleware import CurrentAdminDep, CurrentUserDep
+from models.audio import AudioTag
 from services.library_service import LibraryService
+from services.native.library_manager import LibraryManager
+from services.native.library_scanner import LibraryScanner
 
 logger = logging.getLogger(__name__)
 
@@ -35,48 +43,68 @@ async def get_library(
     return LibraryResponse(library=library)
 
 
-@router.get("/artists", response_model=PaginatedLibraryArtistsResponse)
+@router.get("/artists", response_model=NativeArtistsResponse)
 async def get_library_artists(
+    current_user: CurrentUserDep,
     limit: int = 50,
     offset: int = 0,
     sort_by: str = "name",
     sort_order: str = "asc",
     q: str | None = None,
-    library_service: LibraryService = Depends(get_library_service)
+    library_manager: LibraryManager = Depends(get_library_manager),
 ):
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
-    allowed_sort = {"name", "album_count", "date_added"}
-    if sort_by not in allowed_sort:
+    if sort_by not in ("name", "album_count", "date_added"):
         sort_by = "name"
     if sort_order not in ("asc", "desc"):
         sort_order = "asc"
-    artists, total = await library_service.get_artists_paginated(
-        limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order, search=q,
+    search = (q or "").strip() or None
+    items, total = await library_manager.get_artists(
+        limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order, q=search
     )
-    return PaginatedLibraryArtistsResponse(artists=artists, total=total, offset=offset, limit=limit)
+    return NativeArtistsResponse(items=items, total=total)
 
 
-@router.get("/albums", response_model=PaginatedLibraryAlbumsResponse)
+@router.get("/albums", response_model=NativeAlbumsResponse)
 async def get_library_albums(
-    limit: int = 50,
-    offset: int = 0,
-    sort_by: str = "date_added",
-    sort_order: str = "desc",
+    current_user: CurrentUserDep,
+    page: int = 1,
+    page_size: int = 50,
+    sort: str = "recent",
     q: str | None = None,
-    library_service: LibraryService = Depends(get_library_service)
+    file_format: str | None = Query(default=None, alias="format"),
+    library_manager: LibraryManager = Depends(get_library_manager),
 ):
-    limit = max(1, min(limit, 100))
-    offset = max(0, offset)
-    allowed_sort = {"date_added", "artist", "title", "year"}
-    if sort_by not in allowed_sort:
-        sort_by = "date_added"
-    if sort_order not in ("asc", "desc"):
-        sort_order = "desc"
-    albums, total = await library_service.get_albums_paginated(
-        limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order, search=q,
+    page_size = max(1, min(page_size, 100))
+    if sort not in ("recent", "title", "artist"):
+        sort = "recent"
+    search = (q or "").strip() or None
+    fmt = (file_format or "").strip().lower() or None
+    items, total = await library_manager.get_albums_page(
+        page=page, page_size=page_size, sort=sort, q=search, file_format=fmt
     )
-    return PaginatedLibraryAlbumsResponse(albums=albums, total=total, offset=offset, limit=limit)
+    return NativeAlbumsResponse(items=items, total=total)
+
+
+@router.get("/tracks", response_model=NativeTrackPage)
+async def get_library_tracks(
+    current_user: CurrentUserDep,
+    limit: int = 48,
+    offset: int = 0,
+    sort: str = "recent",
+    q: str | None = None,
+    library_manager: LibraryManager = Depends(get_library_manager),
+):
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    if sort not in ("recent", "title", "artist", "album"):
+        sort = "recent"
+    search = (q or "").strip() or None
+    items, total = await library_manager.get_tracks_page(
+        limit=limit, offset=offset, sort=sort, q=search
+    )
+    return NativeTrackPage(items=items, total=total, offset=offset, limit=limit)
 
 
 @router.get("/recently-added", response_model=RecentlyAddedResponse)
@@ -101,23 +129,23 @@ async def sync_library(
         raise
 
 
-@router.get("/stats", response_model=LibraryStatsResponse)
+@router.get("/stats", response_model=NativeLibraryStatsResponse)
 async def get_library_stats(
-    library_service: LibraryService = Depends(get_library_service)
+    current_user: CurrentUserDep,
+    library_manager: LibraryManager = Depends(get_library_manager),
 ):
-    return await library_service.get_stats()
+    return await library_manager.get_stats()
 
 
 @router.get("/mbids", response_model=LibraryMbidsResponse)
 async def get_library_mbids(
     library_service: LibraryService = Depends(get_library_service)
 ):
-    mbids, requested, monitored = await asyncio.gather(
+    mbids, requested = await asyncio.gather(
         library_service.get_library_mbids(),
         library_service.get_requested_mbids(),
-        library_service.get_monitored_mbids(),
     )
-    return LibraryMbidsResponse(mbids=mbids, requested_mbids=requested, monitored_mbids=monitored)
+    return LibraryMbidsResponse(mbids=mbids, requested_mbids=requested)
 
 
 @router.get("/grouped", response_model=LibraryGroupedResponse)
@@ -159,3 +187,81 @@ async def resolve_tracks(
     library_service: LibraryService = Depends(get_library_service),
 ):
     return await library_service.resolve_tracks_batch(body.items)
+
+
+@router.get("/albums/{mbid}/tracks", response_model=NativeTracksResponse)
+async def get_native_album_tracks(
+    mbid: str,
+    current_user: CurrentUserDep,
+    library_manager: LibraryManager = Depends(get_library_manager),
+):
+    tracks = await library_manager.get_tracks(mbid)
+    return NativeTracksResponse(items=tracks)
+
+
+@router.get("/albums/{mbid}/status", response_model=LibraryAlbumStatusResponse)
+async def get_native_album_status(
+    mbid: str,
+    current_user: CurrentUserDep,
+    library_manager: LibraryManager = Depends(get_library_manager),
+):
+    # live download progress comes from GET /downloads?release_group_mbid=..., not here
+    return await library_manager.get_album_status(mbid)
+
+
+@router.get("/tracks/{file_id}/tags", response_model=AudioTag)
+async def get_track_tags(
+    file_id: str,
+    current_user: CurrentAdminDep,
+    scanner: LibraryScanner = Depends(get_library_scanner),
+):
+    return await scanner.read_track_tags(file_id)
+
+
+@router.post("/tracks/{file_id}", response_model=LibraryTrackResponse)
+async def update_track_tags(
+    file_id: str,
+    current_user: CurrentAdminDep,
+    body: TrackTagUpdateRequest = MsgSpecBody(TrackTagUpdateRequest),
+    scanner: LibraryScanner = Depends(get_library_scanner),
+):
+    new_tag = AudioTag(
+        title=body.title,
+        artist=body.artist,
+        album=body.album,
+        track_number=body.track_number,
+        album_artist=body.album_artist,
+        disc_number=body.disc_number,
+        year=body.year,
+        genre=body.genre,
+        musicbrainz_release_group_id=body.musicbrainz_release_group_id,
+        musicbrainz_release_id=body.musicbrainz_release_id,
+        musicbrainz_recording_id=body.musicbrainz_recording_id,
+        musicbrainz_artist_id=body.musicbrainz_artist_id,
+        musicbrainz_album_artist_id=body.musicbrainz_album_artist_id,
+    )
+    return await scanner.update_track_tags(file_id, new_tag)
+
+
+def _log_rescan_exception(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Album rescan task failed: %s", task.exception())
+
+
+@router.post("/albums/{mbid}/rescan", status_code=202, response_model=StatusMessageResponse)
+async def rescan_native_album(
+    mbid: str,
+    current_user: CurrentAdminDep,
+    scanner: LibraryScanner = Depends(get_library_scanner),
+):
+    from core.task_registry import TaskRegistry
+
+    task = asyncio.create_task(scanner.rescan_album(mbid))
+    try:
+        TaskRegistry.get_instance().register(f"library-rescan-{mbid}", task)
+    except RuntimeError:
+        # rescan already running; idempotent no-op
+        task.cancel()
+        return StatusMessageResponse(status="accepted", message="Album rescan already running")
+    task.add_done_callback(_log_rescan_exception)
+    return StatusMessageResponse(status="accepted", message="Album rescan started")

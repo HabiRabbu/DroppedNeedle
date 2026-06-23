@@ -53,13 +53,13 @@ def _make_service(
     library_db = _make_library_db()
     memory_cache = _make_memory_cache()
     mb_repo = AsyncMock()
-    lidarr_repo = AsyncMock()
+    library_repo = AsyncMock()
 
     svc = ArtistDiscoveryService(
         listenbrainz_repo=lb_repo,
         musicbrainz_repo=mb_repo,
         library_db=library_db,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         memory_cache=memory_cache,
         lastfm_repo=lastfm_repo,
         preferences_service=prefs,
@@ -264,8 +264,8 @@ class TestGetTopAlbumsSource:
         ]
         svc, lb_repo, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_albums.return_value = lastfm_albums
-        svc._lidarr_repo.get_library_mbids = AsyncMock(return_value={"alb-x"})
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_library_mbids = AsyncMock(return_value={"alb-x"})
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         result = await svc.get_top_albums("mbid-123", count=10, source="lastfm")
 
@@ -354,8 +354,8 @@ class TestGetTopAlbumsSource:
             ),
         ]
 
-        svc._lidarr_repo.get_library_mbids = AsyncMock(return_value={"rg-a"})
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value={"rg-b"})
+        svc._library_repo.get_library_mbids = AsyncMock(return_value={"rg-a"})
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value={"rg-b"})
 
         async def _resolve_release_group(release_mbid: str):
             return {"rel-a": "rg-a", "rel-b": "rg-b"}.get(release_mbid)
@@ -374,7 +374,7 @@ class TestGetTopAlbumsSource:
         assert result.albums[1].requested is True
 
     @pytest.mark.asyncio
-    async def test_lb_top_albums_survive_lidarr_lookup_failure(self):
+    async def test_lb_top_albums_survive_library_lookup_failure(self):
         svc, lb_repo, _, _ = _make_service()
         lb_repo.get_artist_top_release_groups.return_value = [
             ListenBrainzReleaseGroup(
@@ -384,8 +384,8 @@ class TestGetTopAlbumsSource:
                 release_group_mbid="rg-1",
             )
         ]
-        svc._lidarr_repo.get_library_mbids = AsyncMock(side_effect=Exception("lidarr down"))
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_library_mbids = AsyncMock(side_effect=Exception("library down"))
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         result = await svc.get_top_albums("mbid-123", count=10)
 
@@ -403,8 +403,8 @@ class TestGetTopAlbumsSource:
         ]
         svc, _, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_albums.return_value = lastfm_albums
-        svc._lidarr_repo.get_library_mbids = AsyncMock(return_value={"alb-upper"})
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value={"alb-spaced"})
+        svc._library_repo.get_library_mbids = AsyncMock(return_value={"alb-upper"})
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value={"alb-spaced"})
 
         result = await svc.get_top_albums("mbid-123", count=10, source="lastfm")
 
@@ -424,8 +424,8 @@ class TestGetTopAlbumsSource:
         ]
         svc, _, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_albums.return_value = lastfm_albums
-        svc._lidarr_repo.get_library_mbids = AsyncMock(return_value={"release-mbid-a"})
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_library_mbids = AsyncMock(return_value={"release-mbid-a"})
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         svc._mb_repo.get_release_group_id_from_release = AsyncMock(
             side_effect=AssertionError("Resolution should not be called")
@@ -445,8 +445,8 @@ class TestGetTopAlbumsSource:
         ]
         svc, _, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_albums.return_value = lastfm_albums
-        svc._lidarr_repo.get_library_mbids = AsyncMock(return_value=set())
-        svc._lidarr_repo.get_requested_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_library_mbids = AsyncMock(return_value=set())
+        svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         result = await svc.get_top_albums("mbid-123", count=10, source="lastfm")
 
@@ -522,3 +522,99 @@ class TestDedupeSimilarArtists:
 
     def test_empty_input(self):
         assert _dedupe_similar_artists([]) == []
+
+
+def _make_factory(lb_repo=None, lastfm_repo=None) -> MagicMock:
+    factory = MagicMock()
+    factory.resolve_listenbrainz = AsyncMock(return_value=lb_repo)
+    factory.resolve_lastfm = AsyncMock(return_value=lastfm_repo)
+    return factory
+
+
+def _make_peruser_service(*, lb_repo=None, lastfm_repo=None) -> ArtistDiscoveryService:
+    """A service wired with a per-user client_factory (the production path).
+
+    The injected global lb_repo is is_configured()==False to prove the gate goes
+    through the factory, not the dead global repo.
+    """
+    return ArtistDiscoveryService(
+        listenbrainz_repo=_make_lb_repo(configured=False),
+        musicbrainz_repo=AsyncMock(),
+        library_db=_make_library_db(),
+        library_repo=AsyncMock(),
+        memory_cache=_make_memory_cache(),
+        lastfm_repo=lastfm_repo,
+        preferences_service=_make_prefs(),
+        client_factory=_make_factory(lb_repo=lb_repo, lastfm_repo=lastfm_repo),
+    )
+
+
+class TestPerUserResolution:
+    """With a client_factory present, the configured gate follows the requesting
+    user's own ListenBrainz/Last.fm link - not the (dead) global repo."""
+
+    @pytest.mark.asyncio
+    async def test_linked_listenbrainz_admits_and_resolves_user(self):
+        lb_repo = _make_lb_repo()
+        svc = _make_peruser_service(lb_repo=lb_repo)
+
+        result = await svc.get_similar_artists("mbid-123", count=5, user_id="user-1")
+
+        assert result.configured is True
+        svc._client_factory.resolve_listenbrainz.assert_awaited_once_with("user-1")
+        lb_repo.get_similar_artists.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unlinked_listenbrainz_returns_not_configured(self):
+        svc = _make_peruser_service(lb_repo=None)
+
+        result = await svc.get_similar_artists("mbid-123", count=5, user_id="user-1")
+
+        assert result.configured is False
+
+    @pytest.mark.asyncio
+    async def test_missing_user_id_returns_not_configured(self):
+        lb_repo = _make_lb_repo()
+        svc = _make_peruser_service(lb_repo=lb_repo)
+
+        result = await svc.get_similar_artists("mbid-123", count=5)
+
+        assert result.configured is False
+        lb_repo.get_similar_artists.assert_not_called()
+        svc._client_factory.resolve_listenbrainz.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_top_songs_follow_user_link(self):
+        linked = _make_peruser_service(lb_repo=_make_lb_repo())
+        unlinked = _make_peruser_service(lb_repo=None)
+
+        assert (await linked.get_top_songs("mbid-123", count=5, user_id="user-1")).configured is True
+        assert (await unlinked.get_top_songs("mbid-123", count=5, user_id="user-1")).configured is False
+
+    @pytest.mark.asyncio
+    async def test_top_albums_follow_user_link(self):
+        linked = _make_peruser_service(lb_repo=_make_lb_repo())
+        unlinked = _make_peruser_service(lb_repo=None)
+
+        assert (await linked.get_top_albums("mbid-123", count=5, user_id="user-1")).configured is True
+        assert (await unlinked.get_top_albums("mbid-123", count=5, user_id="user-1")).configured is False
+
+    @pytest.mark.asyncio
+    async def test_linked_lastfm_admits(self):
+        lastfm_repo = _make_lastfm_repo()
+        svc = _make_peruser_service(lastfm_repo=lastfm_repo)
+
+        result = await svc.get_similar_artists("mbid-123", count=5, source="lastfm", user_id="user-1")
+
+        assert result.source == "lastfm"
+        assert result.configured is True
+        svc._client_factory.resolve_lastfm.assert_awaited_once_with("user-1")
+
+    @pytest.mark.asyncio
+    async def test_unlinked_lastfm_returns_not_configured(self):
+        svc = _make_peruser_service(lastfm_repo=None)
+
+        result = await svc.get_similar_artists("mbid-123", count=5, source="lastfm", user_id="user-1")
+
+        assert result.source == "lastfm"
+        assert result.configured is False

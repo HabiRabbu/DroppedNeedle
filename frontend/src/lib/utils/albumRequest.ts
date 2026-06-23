@@ -1,6 +1,5 @@
 import { errorModal } from '$lib/stores/errorModal';
 import { libraryStore } from '$lib/stores/library';
-import { notifyRequestCountChanged } from '$lib/utils/requestsApi';
 import { api, ApiError } from '$lib/api/client';
 
 export type AlbumRequestResult = {
@@ -53,7 +52,6 @@ export async function requestBatch(
 		for (const item of items) {
 			libraryStore.addRequested(item.musicbrainz_id);
 		}
-		notifyRequestCountChanged();
 
 		return {
 			success: response.success,
@@ -78,19 +76,6 @@ export async function requestBatch(
 	}
 }
 
-export async function cancelBatch(
-	musicbrainzIds: string[]
-): Promise<{ success: boolean; cancelled: number; failed: number }> {
-	try {
-		return await api.global.post<{ success: boolean; cancelled: number; failed: number }>(
-			'/api/v1/requests/batch/cancel',
-			{ musicbrainz_ids: musicbrainzIds }
-		);
-	} catch {
-		return { success: false, cancelled: 0, failed: 0 };
-	}
-}
-
 export async function requestAlbum(
 	musicbrainzId: string,
 	context?: AlbumRequestContext
@@ -107,24 +92,11 @@ export async function requestAlbum(
 		});
 
 		libraryStore.addRequested(musicbrainzId);
-		notifyRequestCountChanged();
 		return { success: true };
 	} catch (e) {
 		if (e instanceof ApiError) {
 			const errorDetail = e.message || 'Unknown error';
-
-			if (errorDetail.includes('Metadata Profile') || errorDetail.includes('Cannot add this')) {
-				const albumTypeMatch = errorDetail.match(/Cannot add this (\w+)/);
-				const albumType = albumTypeMatch ? albumTypeMatch[1] : 'release';
-
-				errorModal.show(
-					`Cannot Add ${albumType}`,
-					errorDetail,
-					'Go to Lidarr -> Settings -> Profiles -> Metadata Profiles, and enable the appropriate release types in your active profile. After enabling, refresh the artist in Lidarr.'
-				);
-			} else {
-				errorModal.show('Request Failed', errorDetail, '');
-			}
+			errorModal.show('Request Failed', errorDetail, '');
 
 			return { success: false, error: errorDetail };
 		}

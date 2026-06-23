@@ -22,17 +22,23 @@ from core.exception_handlers import (
     starlette_http_exception_handler,
     validation_error_handler,
 )
+from core.exception_handlers import (
+    conflict_error_handler,
+    permission_denied_handler,
+)
 from core.exceptions import (
     ClientDisconnectedError,
     ConfigurationError,
+    ConflictError,
     ExternalServiceError,
+    PermissionDeniedError,
     ResourceNotFoundError,
     SourceResolutionError,
     ValidationError,
 )
 from infrastructure.resilience.retry import CircuitOpenError
 from infrastructure.persistence.auth_store import UserRecord
-from middleware import _get_current_admin
+from middleware import _get_current_admin, _get_current_user
 
 
 def mock_admin_user() -> UserRecord:
@@ -45,9 +51,28 @@ def mock_admin_user() -> UserRecord:
     )
 
 
+def mock_user(role: str = "user", user_id: str = "test-user-id") -> UserRecord:
+    """A fake authenticated user (default non-admin) for ownership tests."""
+    return UserRecord(
+        id=user_id,
+        display_name="Test User",
+        role=role,
+        created_at="2024-01-01T00:00:00Z",
+    )
+
+
 def override_admin_auth(app: FastAPI) -> None:
     """Bypass the admin-auth dependency for routers gated by `_get_current_admin`."""
     app.dependency_overrides[_get_current_admin] = mock_admin_user
+
+
+def override_user_auth(app: FastAPI, role: str = "user", user_id: str = "test-user-id") -> None:
+    """Bypass the user-auth dependency (`_get_current_user`) with a chosen role/id.
+
+    Used by the request-ownership tests (403 vs 200) — the route resolves
+    ``CurrentUserDep`` via ``_get_current_user``.
+    """
+    app.dependency_overrides[_get_current_user] = lambda: mock_user(role=role, user_id=user_id)
 
 
 def add_production_exception_handlers(app: FastAPI) -> FastAPI:
@@ -57,6 +82,8 @@ def add_production_exception_handlers(app: FastAPI) -> FastAPI:
     app.add_exception_handler(CircuitOpenError, circuit_open_error_handler)
     app.add_exception_handler(ValidationError, validation_error_handler)
     app.add_exception_handler(ConfigurationError, configuration_error_handler)
+    app.add_exception_handler(PermissionDeniedError, permission_denied_handler)
+    app.add_exception_handler(ConflictError, conflict_error_handler)
     app.add_exception_handler(SourceResolutionError, source_resolution_error_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handler)

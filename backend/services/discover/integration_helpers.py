@@ -24,9 +24,13 @@ class IntegrationHelpers:
         jf_settings = self._preferences.get_jellyfin_connection()
         return jf_settings.enabled and bool(jf_settings.jellyfin_url) and bool(jf_settings.api_key)
 
-    def is_lidarr_configured(self) -> bool:
-        lidarr_connection = self._preferences.get_lidarr_connection()
-        return bool(lidarr_connection.lidarr_url) and bool(lidarr_connection.lidarr_api_key)
+    def is_download_client_configured(self) -> bool:
+        dc = self._preferences.get_download_client_settings()
+        return dc.enabled and bool(dc.url)
+
+    def is_library_configured(self) -> bool:
+        # The native library scanner is always present.
+        return True
 
     def is_youtube_api_enabled(self) -> bool:
         yt_settings = self._preferences.get_youtube_connection()
@@ -69,9 +73,13 @@ class IntegrationHelpers:
             lastfm_mbid_max_lookups=adv.discover_queue_lastfm_mbid_max_lookups,
         )
 
-    def get_discover_cache_key(self, source: str | None = None) -> str:
-        resolved = self.resolve_source(source)
-        return f"{DISCOVER_CACHE_KEY}:{resolved}"
+    def get_discover_cache_key(
+        self, user_id: str, resolved_source: str, lb_enabled: bool = False, lfm_enabled: bool = False
+    ) -> str:
+        # Per-user dimension (Phase 5); the caller resolves the source per user. The
+        # enable flags are part of the key (matching Home) so connecting/disconnecting
+        # a service busts the cache instead of serving stale unlinked content.
+        return f"{DISCOVER_CACHE_KEY}:{user_id}:{resolved_source}:{lb_enabled}:{lfm_enabled}"
 
     def get_home_settings(self) -> HomeSettings:
         return self._preferences.get_home_settings()
@@ -80,7 +88,8 @@ class IntegrationHelpers:
         return DiscoverIntegrationStatus(
             listenbrainz=self.is_listenbrainz_enabled(),
             jellyfin=self.is_jellyfin_enabled(),
-            lidarr=self.is_lidarr_configured(),
+            download_client=self.is_download_client_configured(),
+            library=self.is_library_configured(),
             youtube=self.is_youtube_api_enabled(),
             lastfm=self.is_lastfm_enabled(),
         )

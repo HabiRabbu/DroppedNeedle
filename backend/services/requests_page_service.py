@@ -12,15 +12,14 @@ from api.v1.schemas.requests_page import (
     RequestHistoryItem,
     RequestHistoryResponse,
     RetryRequestResponse,
-    StatusMessage,
 )
+from core.exceptions import PermissionDeniedError
 from infrastructure.cover_urls import prefer_release_group_cover_url
 from infrastructure.persistence.request_history import RequestHistoryRecord, RequestHistoryStore
-from repositories.protocols import LidarrRepositoryProtocol
-from services.request_utils import extract_cover_url, parse_eta, resolve_display_status
+from repositories.protocols import LibraryRepositoryProtocol
 
 if TYPE_CHECKING:
-    from infrastructure.queue.request_queue import RequestQueue
+    from services.native.download_service import DownloadService
 
 logger = logging.getLogger(__name__)
 
@@ -28,26 +27,23 @@ _CANCELLABLE_STATUSES = {"pending", "downloading"}
 _RETRYABLE_STATUSES = {"failed", "cancelled", "incomplete"}
 _CLEARABLE_STATUSES = {"imported", "incomplete", "failed", "cancelled"}
 
-_QUEUE_CACHE_TTL = 10
 _LIBRARY_MBIDS_CACHE_TTL = 30
 
 
 class RequestsPageService:
     def __init__(
         self,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         request_history: RequestHistoryStore,
         library_mbids_fn: Callable[..., Coroutine[Any, Any, set[str]]],
         on_import_callback: Callable[[RequestHistoryRecord], Coroutine[Any, Any, None]] | None = None,
-        request_queue: Optional["RequestQueue"] = None,
+        download_service: Optional["DownloadService"] = None,
     ):
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._request_history = request_history
         self._library_mbids_fn = library_mbids_fn
         self._on_import_callback = on_import_callback
-        self._request_queue = request_queue
-        self._queue_cache: list[dict] | None = None
-        self._queue_cache_time: float = 0
+        self._download_service = download_service
         self._library_mbids_cache: set[str] | None = None
         self._library_mbids_cache_time: float = 0
 
@@ -59,28 +55,19 @@ class RequestsPageService:
         if not active_records:
             return ActiveRequestsResponse(items=[], count=0)
 
-        queue_by_mbid = await self._load_queue_map(
-            {r.musicbrainz_id for r in active_records}
-        )
         library_mbids = await self._fetch_library_mbids()
 
         items: list[ActiveRequestItem] = []
         for record in active_records:
-            # awaiting_approval records aren't in Lidarr, show them directly
+            # awaiting_approval records have no download task yet
             if record.status == "awaiting_approval":
                 items.append(self._build_pending_item(record))
                 continue
 
-            queue_item = queue_by_mbid.get(record.musicbrainz_id)
-
-            if queue_item:
-                await self._sync_active_record(record, queue_item)
-                items.append(self._build_active_item_from_queue(record, queue_item))
-            else:
-                completed = await self._check_if_completed(record, library_mbids)
-                if completed:
-                    continue
-                items.append(self._build_pending_item(record))
+            completed = await self._check_if_completed(record, library_mbids)
+            if completed:
+                continue
+            items.append(self._build_pending_item(record))
 
         return ActiveRequestsResponse(items=items, count=len(items))
 
@@ -160,18 +147,30 @@ class RequestsPageService:
                 success=False, message=f"Request is not awaiting approval (status: {record.status})"
             )
         await self._request_history.async_record_review(musicbrainz_id, "pending", reviewer_id, reviewer_name)
-        if self._request_queue:
+        # approving dispatches the native pipeline directly; link the new task id
+        # (the 'already_in_library' sentinel is guarded)
+        if self._download_service is not None:
             try:
-                await self._request_queue.enqueue(musicbrainz_id)
+                task_id = await self._download_service.request_album(
+                    user_id=record.user_id or "",
+                    release_group_mbid=musicbrainz_id,
+                    artist_name=record.artist_name or "Unknown",
+                    album_title=record.album_title or "Unknown",
+                    year=record.year,
+                )
             except Exception as e:  # noqa: BLE001
-                logger.error(f"Failed to enqueue approved request {musicbrainz_id}: {e}")
+                logger.error(f"Failed to dispatch approved request {musicbrainz_id}: {e}")
                 await self._request_history.async_update_status(
                     musicbrainz_id, "failed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
                 )
                 return CancelRequestResponse(
-                    success=False, message=f"Approved but failed to queue: {record.album_title}"
+                    success=False, message=f"Approved but failed to start: {record.album_title}"
                 )
+            from services.native.download_service import ALREADY_IN_LIBRARY
+
+            if task_id != ALREADY_IN_LIBRARY:
+                await self._request_history.async_update_download_task_id(musicbrainz_id, task_id)
         return CancelRequestResponse(success=True, message=f"Approved: {record.album_title}")
 
     async def reject_request(
@@ -191,17 +190,17 @@ class RequestsPageService:
         return CancelRequestResponse(success=True, message=f"Rejected: {record.album_title}")
 
     async def cancel_request(
-        self, musicbrainz_id: str, user_id: str | None = None
+        self, musicbrainz_id: str, *, user_id: str, user_role: str
     ) -> CancelRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
             return CancelRequestResponse(
                 success=False, message="Request not found"
             )
-        if user_id is not None and record.user_id != user_id:
-            return CancelRequestResponse(success=False, message="Request not found")
+        if user_role != "admin" and record.user_id != user_id:
+            raise PermissionDeniedError("Cannot cancel another user's request")
 
-        # awaiting_approval requests haven't reached Lidarr, cancel directly
+        # awaiting_approval requests never dispatched, cancel directly
         if record.status == "awaiting_approval":
             now_iso = datetime.now(timezone.utc).isoformat()
             await self._request_history.async_update_status(
@@ -218,40 +217,15 @@ class RequestsPageService:
                 message=f"Cannot cancel request with status '{record.status}'",
             )
 
-        # Cancel from local queue first
-        queue_cancelled = False
-        if self._request_queue:
-            queue_cancelled = await self._request_queue.cancel(musicbrainz_id)
-
-        try:
-            queue_items = await self._get_cached_queue()
-        except Exception as e:  # noqa: BLE001
-            logger.error("Failed to fetch queue for cancel: %s", e)
-            return CancelRequestResponse(
-                success=False, message="Failed to reach Lidarr"
-            )
-
-        queue_id = None
-        for item in queue_items:
-            album_data = item.get("album", {})
-            if album_data.get("foreignAlbumId", "").lower() == musicbrainz_id.lower():
-                queue_id = item.get("id")
-                break
-
-        if queue_id:
-            removed = await self._lidarr_repo.remove_queue_item(queue_id)
-            if not removed:
-                return CancelRequestResponse(
-                    success=False, message="Couldn't remove the item from the download queue"
+        # best-effort: a missing/already-terminal task must not block marking cancelled
+        if record.download_task_id and self._download_service is not None:
+            try:
+                await self._download_service.cancel_task(
+                    record.download_task_id, user_id, user_role
                 )
-            self._invalidate_queue_cache()
-        elif not queue_cancelled:
-            # Not in the local queue or Lidarr's download queue
-            library_mbids = await self._fetch_library_mbids()
-            if musicbrainz_id.lower() in library_mbids:
-                return CancelRequestResponse(
-                    success=False,
-                    message="Album already imported, cannot cancel",
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "cancel_request: native task cancel failed for %s: %s", musicbrainz_id, e
                 )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -265,15 +239,15 @@ class RequestsPageService:
         )
 
     async def retry_request(
-        self, musicbrainz_id: str, user_id: str | None = None
+        self, musicbrainz_id: str, *, user_id: str, user_role: str
     ) -> RetryRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
             return RetryRequestResponse(
                 success=False, message="Request not found"
             )
-        if user_id is not None and record.user_id != user_id:
-            return RetryRequestResponse(success=False, message="Request not found")
+        if user_role != "admin" and record.user_id != user_id:
+            raise PermissionDeniedError("Cannot retry another user's request")
 
         if record.status not in _RETRYABLE_STATUSES:
             return RetryRequestResponse(
@@ -281,68 +255,44 @@ class RequestsPageService:
                 message=f"Cannot retry request with status '{record.status}'",
             )
 
-        # If we have a Lidarr album ID, try a targeted search first
-        if record.lidarr_album_id:
-            result = await self._lidarr_repo.trigger_album_search(
-                [record.lidarr_album_id]
-            )
-            if result:
-                await self._request_history.async_update_status(musicbrainz_id, "pending")
-                return RetryRequestResponse(
-                    success=True,
-                    message=f"Retrying search for {record.album_title}",
-                )
-
-        # Route through queue for dedup, per-artist locking, and history callbacks
-        if self._request_queue:
-            try:
-                await self._request_history.async_update_status(musicbrainz_id, "pending")
-                enqueued = await self._request_queue.enqueue(musicbrainz_id)
-                if enqueued:
-                    return RetryRequestResponse(
-                        success=True,
-                        message=f"Re-requested {record.album_title}",
-                    )
-                return RetryRequestResponse(
-                    success=True,
-                    message=f"Request already in queue for {record.album_title}",
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.error("Retry via queue failed for %s: %s", musicbrainz_id, e)
-                return RetryRequestResponse(
-                    success=False, message=f"Retry failed: {e}"
-                )
-
-        # Fallback: direct add_album (only if no queue available)
+        # re-dispatch through the native pipeline (mirrors approve_request); link the
+        # new task id (sentinel-guarded)
+        if self._download_service is None:
+            return RetryRequestResponse(success=False, message="Downloads unavailable")
         try:
-            add_result = await self._lidarr_repo.add_album(musicbrainz_id)
-            payload = add_result.get("payload", {})
-            if payload and isinstance(payload, dict):
-                new_id = payload.get("id")
-                if new_id:
-                    await self._request_history.async_update_lidarr_album_id(
-                        musicbrainz_id, new_id
-                    )
             await self._request_history.async_update_status(musicbrainz_id, "pending")
-            return RetryRequestResponse(
-                success=True,
-                message=f"Re-requested {record.album_title}",
+            task_id = await self._download_service.request_album(
+                user_id=record.user_id or user_id or "",
+                release_group_mbid=musicbrainz_id,
+                artist_name=record.artist_name or "Unknown",
+                album_title=record.album_title or "Unknown",
+                year=record.year,
             )
         except Exception as e:  # noqa: BLE001
             logger.error("Retry failed for %s: %s", musicbrainz_id, e)
-            return RetryRequestResponse(
-                success=False, message=f"Retry failed: {e}"
-            )
+            return RetryRequestResponse(success=False, message=f"Retry failed: {e}")
 
-    async def clear_history_item(self, musicbrainz_id: str, user_id: str | None = None) -> bool:
+        from services.native.download_service import ALREADY_IN_LIBRARY
+
+        if task_id != ALREADY_IN_LIBRARY:
+            await self._request_history.async_update_download_task_id(musicbrainz_id, task_id)
+        return RetryRequestResponse(
+            success=True, message=f"Re-requested {record.album_title}"
+        )
+
+    async def clear_history_item(self, musicbrainz_id: str, *, user_id: str, user_role: str) -> bool:
         record = await self._request_history.async_get_record(musicbrainz_id)
-        if not record or record.status not in _CLEARABLE_STATUSES:
+        if not record:
             return False
-        if user_id is not None:
-            if record.user_id != user_id:
-                return False
-            return await self._request_history.async_dismiss_record(user_id, musicbrainz_id)
-        return await self._request_history.async_delete_record(musicbrainz_id)
+        # ownership checked before clearability so a non-owner gets 403, not a
+        # misleading 200/False, on another user's row
+        if user_role != "admin" and record.user_id != user_id:
+            raise PermissionDeniedError("Cannot clear another user's request")
+        if record.status not in _CLEARABLE_STATUSES:
+            return False
+        if user_role == "admin":
+            return await self._request_history.async_delete_record(musicbrainz_id)
+        return await self._request_history.async_dismiss_record(user_id, musicbrainz_id)
 
     async def get_active_count(self, user_id: str | None = None) -> int:
         if user_id is not None:
@@ -363,7 +313,7 @@ class RequestsPageService:
         queue_mbids: set[str] = set()
         for item in queue_items:
             album_data = item.get("album", {})
-            mbid = album_data.get("foreignAlbumId")
+            mbid = album_data.get("musicbrainz_id")
             if mbid:
                 queue_mbids.add(mbid.lower())
 
@@ -393,124 +343,6 @@ class RequestsPageService:
                 return self._library_mbids_cache
             return set()
 
-    async def _get_cached_queue(self) -> list[dict]:
-        now = _time.monotonic()
-        if self._queue_cache is not None and (now - self._queue_cache_time) < _QUEUE_CACHE_TTL:
-            return self._queue_cache
-        try:
-            queue_items = await self._lidarr_repo.get_queue_details()
-            self._queue_cache = queue_items
-            self._queue_cache_time = now
-            return queue_items
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to fetch Lidarr queue: %s", e)
-            return self._queue_cache or []
-
-    def _invalidate_queue_cache(self) -> None:
-        self._queue_cache = None
-        self._queue_cache_time = 0
-
-    async def _load_queue_map(
-        self, active_mbids: set[str]
-    ) -> dict[str, dict]:
-        queue_items = await self._get_cached_queue()
-
-        normalized_active = {m.lower() for m in active_mbids}
-        queue_by_mbid: dict[str, dict] = {}
-        for item in queue_items:
-            album_data = item.get("album", {})
-            mbid = album_data.get("foreignAlbumId")
-            if mbid and mbid.lower() in normalized_active:
-                queue_by_mbid[mbid] = item
-        return queue_by_mbid
-
-    async def _sync_active_record(
-        self,
-        record: RequestHistoryRecord,
-        queue_item: dict,
-    ) -> None:
-        if record.status != "downloading":
-            await self._request_history.async_update_status(
-                record.musicbrainz_id, "downloading"
-            )
-
-        if not record.cover_url:
-            album_data = queue_item.get("album", {})
-            cover_url = extract_cover_url(album_data)
-            if cover_url:
-                await self._request_history.async_update_cover_url(
-                    record.musicbrainz_id, cover_url
-                )
-                record.cover_url = cover_url
-
-    @staticmethod
-    def _build_active_item_from_queue(
-        record: RequestHistoryRecord,
-        queue_item: dict,
-    ) -> ActiveRequestItem:
-        album_data = queue_item.get("album", {})
-        artist_data = album_data.get("artist", {}) or queue_item.get("artist", {})
-
-        cover_url = prefer_release_group_cover_url(
-            record.musicbrainz_id,
-            record.cover_url or extract_cover_url(album_data),
-            size=500,
-        )
-        artist_mbid = record.artist_mbid or artist_data.get("foreignArtistId")
-
-        size = queue_item.get("size")
-        sizeleft = queue_item.get("sizeleft")
-        progress = (
-            round((size - (sizeleft or 0)) / size * 100, 1)
-            if size and size > 0
-            else None
-        )
-
-        eta = parse_eta(queue_item.get("estimatedCompletionTime"))
-
-        status_messages = [
-            StatusMessage(
-                title=msg.get("title"),
-                messages=msg.get("messages") or [],
-            )
-            for msg in (queue_item.get("statusMessages") or [])
-        ] or None
-
-        download_state = queue_item.get("trackedDownloadState")
-        display_status = resolve_display_status(download_state)
-
-        quality_data = queue_item.get("quality", {})
-        quality_name = None
-        if isinstance(quality_data, dict):
-            quality_obj = quality_data.get("quality", {})
-            if isinstance(quality_obj, dict):
-                quality_name = quality_obj.get("name")
-
-        return ActiveRequestItem(
-            musicbrainz_id=record.musicbrainz_id,
-            artist_name=record.artist_name,
-            album_title=record.album_title,
-            artist_mbid=artist_mbid,
-            year=record.year,
-            cover_url=cover_url,
-            requested_at=datetime.fromisoformat(record.requested_at),
-            status=display_status,
-            progress=progress,
-            eta=eta,
-            size=size,
-            size_remaining=sizeleft,
-            download_status=queue_item.get("trackedDownloadStatus"),
-            download_state=download_state,
-            status_messages=status_messages,
-            error_message=queue_item.get("errorMessage"),
-            lidarr_queue_id=queue_item.get("id"),
-            quality=quality_name,
-            protocol=queue_item.get("protocol"),
-            download_client=queue_item.get("downloadClient"),
-            user_id=record.user_id,
-            requested_by_name=record.requested_by_name,
-        )
-
     @staticmethod
     def _build_pending_item(record: RequestHistoryRecord) -> ActiveRequestItem:
         return ActiveRequestItem(
@@ -533,7 +365,7 @@ class RequestsPageService:
             download_status=None,
             download_state=None,
             status_messages=None,
-            lidarr_queue_id=None,
+            library_queue_id=None,
             user_id=record.user_id,
             requested_by_name=record.requested_by_name,
         )
@@ -551,41 +383,6 @@ class RequestsPageService:
             )
             await self._notify_import(record)
             return True
-
-        if record.lidarr_album_id:
-            try:
-                history = await self._lidarr_repo.get_history_for_album(
-                    record.lidarr_album_id
-                )
-                for event in history:
-                    event_type = event.get("eventType", "")
-                    if event_type in (
-                        "downloadImported",
-                        "trackFileImported",
-                    ):
-                        await self._request_history.async_update_status(
-                            record.musicbrainz_id,
-                            "imported",
-                            completed_at=now_iso,
-                        )
-                        await self._notify_import(record)
-                        return True
-                    if event_type == "albumImportIncomplete":
-                        await self._request_history.async_update_status(
-                            record.musicbrainz_id,
-                            "incomplete",
-                            completed_at=now_iso,
-                        )
-                        return True
-                    if event_type == "downloadFailed":
-                        await self._request_history.async_update_status(
-                            record.musicbrainz_id,
-                            "failed",
-                            completed_at=now_iso,
-                        )
-                        return True
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Lidarr history check failed for %s: %s", record.musicbrainz_id, e)
 
         return False
 

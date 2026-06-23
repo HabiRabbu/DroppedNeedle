@@ -20,7 +20,6 @@ export type Album = {
 	musicbrainz_id: string;
 	in_library: boolean;
 	requested?: boolean;
-	monitored?: boolean;
 	cover_url?: string | null;
 	album_thumb_url?: string | null;
 	album_back_url?: string | null;
@@ -37,25 +36,6 @@ export type Album = {
 	score?: number;
 };
 
-export type LibraryAlbum = {
-	artist: string;
-	album: string;
-	year?: number | null;
-	monitored: boolean;
-	quality?: string | null;
-	cover_url?: string | null;
-	musicbrainz_id?: string | null;
-	artist_mbid?: string | null;
-	date_added?: number | null;
-};
-
-export type SearchResults = {
-	artists: Artist[];
-	albums: Album[];
-	top_artist?: Artist | null;
-	top_album?: Album | null;
-};
-
 export type SuggestResult = {
 	type: 'artist' | 'album';
 	title: string;
@@ -64,7 +44,6 @@ export type SuggestResult = {
 	musicbrainz_id: string;
 	in_library: boolean;
 	requested?: boolean;
-	monitored?: boolean;
 	disambiguation?: string | null;
 	score: number;
 };
@@ -94,11 +73,6 @@ export type AlbumEnrichmentRequest = {
 	album_name: string;
 };
 
-export type EnrichmentBatchRequest = {
-	artists: ArtistEnrichmentRequest[];
-	albums: AlbumEnrichmentRequest[];
-};
-
 export type EnrichmentResponse = {
 	artists: ArtistEnrichment[];
 	albums: AlbumEnrichment[];
@@ -113,7 +87,6 @@ export type ReleaseGroup = {
 	first_release_date?: string;
 	in_library: boolean;
 	requested?: boolean;
-	monitored?: boolean;
 };
 
 export type ExternalLink = {
@@ -148,9 +121,10 @@ export type ArtistInfoBasic = {
 	aliases: string[];
 	external_links: ExternalLink[];
 	in_library: boolean;
-	in_lidarr?: boolean;
-	monitored?: boolean;
+	// per-user follow state; artist page reads it from the dedicated /follow query
+	followed?: boolean;
 	auto_download?: boolean;
+	auto_download_state?: 'none' | 'pending' | 'approved' | 'rejected' | 'revoked';
 	release_group_count?: number;
 };
 
@@ -176,7 +150,6 @@ export type ArtistReleases = {
 export type UserPreferences = {
 	primary_types: string[];
 	secondary_types: string[];
-	release_statuses: string[];
 };
 
 export type ReleaseTypeOption = {
@@ -193,35 +166,6 @@ export type Track = {
 	recording_id?: string | null;
 };
 
-export type AlbumInfo = {
-	title: string;
-	musicbrainz_id: string;
-	artist_name: string;
-	artist_id: string;
-	release_date?: string | null;
-	year?: number | null;
-	type?: string | null;
-	label?: string | null;
-	barcode?: string | null;
-	country?: string | null;
-	disambiguation?: string | null;
-	tracks: Track[];
-	total_tracks: number;
-	total_length?: number | null;
-	in_library: boolean;
-	requested?: boolean;
-	monitored?: boolean;
-	cover_url?: string | null;
-	album_thumb_url?: string | null;
-	album_back_url?: string | null;
-	album_cdart_url?: string | null;
-	album_spine_url?: string | null;
-	album_3d_case_url?: string | null;
-	album_3d_flat_url?: string | null;
-	album_3d_face_url?: string | null;
-	album_3d_thumb_url?: string | null;
-};
-
 export type AlbumBasicInfo = {
 	title: string;
 	musicbrainz_id: string;
@@ -233,7 +177,6 @@ export type AlbumBasicInfo = {
 	disambiguation?: string | null;
 	in_library: boolean;
 	requested?: boolean;
-	monitored?: boolean;
 	cover_url?: string | null;
 	album_thumb_url?: string | null;
 };
@@ -247,26 +190,12 @@ export type AlbumTracksInfo = {
 	country?: string | null;
 };
 
-export type LidarrConnectionSettings = {
-	lidarr_url: string;
-	lidarr_api_key: string;
-	quality_profile_id: number;
-	metadata_profile_id: number;
-	root_folder_path: string;
-};
-
 export type JellyfinConnectionSettings = {
 	jellyfin_url: string;
 	api_key: string;
 	user_id: string;
 	enabled: boolean;
 	login_enabled: boolean;
-};
-
-export type ListenBrainzConnectionSettings = {
-	username: string;
-	user_token: string;
-	enabled: boolean;
 };
 
 export type OIDCConnectionSettings = {
@@ -291,7 +220,6 @@ export type HomeArtist = {
 	image_url: string | null;
 	listen_count: number | null;
 	in_library: boolean;
-	monitored?: boolean;
 };
 
 export type HomeAlbum = {
@@ -304,7 +232,6 @@ export type HomeAlbum = {
 	listen_count: number | null;
 	in_library: boolean;
 	requested?: boolean;
-	monitored?: boolean;
 };
 
 export type HomeTrack = {
@@ -426,107 +353,16 @@ export type DiscoverResponse = {
 	service_status: Record<string, string> | null;
 };
 
-export type RadioRequest = {
-	seed_type: 'artist' | 'album' | 'genre';
-	seed_id: string;
-	count?: number;
-	source?: string | null;
-};
-
 export type PlaylistProfile = {
 	artist_mbids: string[];
 	genre_distribution: Record<string, string[]>;
 	track_count: number;
 };
 
-export type PlaylistSuggestionsRequest = {
-	playlist_id: string;
-	count?: number;
-};
-
 export type PlaylistSuggestionsResponse = {
 	suggestions: HomeSection;
 	playlist_id: string;
 	profile: PlaylistProfile;
-};
-
-export type QualityProfile = {
-	id: number;
-	name: string;
-};
-
-export type MetadataProfile = {
-	id: number;
-	name: string;
-};
-
-export type RootFolder = {
-	id: string;
-	path: string;
-};
-
-export type LidarrVerifyResponse = {
-	success: boolean;
-	message: string;
-	quality_profiles: QualityProfile[];
-	metadata_profiles: MetadataProfile[];
-	root_folders: RootFolder[];
-};
-
-export type LidarrMetadataProfilePreferences = {
-	profile_id: number;
-	profile_name: string;
-	primary_types: string[];
-	secondary_types: string[];
-	release_statuses: string[];
-};
-
-export type TrendingTimeRange = {
-	range_key: string;
-	label: string;
-	featured: HomeArtist | null;
-	items: HomeArtist[];
-	total_count: number;
-};
-
-export type TrendingArtistsResponse = {
-	this_week: TrendingTimeRange;
-	this_month: TrendingTimeRange;
-	this_year: TrendingTimeRange;
-	all_time: TrendingTimeRange;
-};
-
-export type PopularTimeRange = {
-	range_key: string;
-	label: string;
-	featured: HomeAlbum | null;
-	items: HomeAlbum[];
-	total_count: number;
-};
-
-export type PopularAlbumsResponse = {
-	this_week: PopularTimeRange;
-	this_month: PopularTimeRange;
-	this_year: PopularTimeRange;
-	all_time: PopularTimeRange;
-};
-
-export type TrendingArtistsRangeResponse = {
-	range_key: string;
-	label: string;
-	items: HomeArtist[];
-	offset: number;
-	limit: number;
-	has_more: boolean;
-};
-
-export type PopularAlbumsRangeResponse = {
-	range_key: string;
-	label: string;
-	items: HomeAlbum[];
-	offset: number;
-	limit: number;
-	has_more: boolean;
 };
 
 export type GenreLibrarySection = {
@@ -556,7 +392,6 @@ export type SimilarArtist = {
 	name: string;
 	listen_count: number;
 	in_library: boolean;
-	monitored?: boolean;
 	image_url?: string | null;
 };
 
@@ -603,7 +438,6 @@ export type TopAlbum = {
 	listen_count: number;
 	in_library: boolean;
 	requested?: boolean;
-	monitored?: boolean;
 	cover_url?: string | null;
 };
 
@@ -621,7 +455,6 @@ export type DiscoveryAlbum = {
 	year?: number | null;
 	in_library: boolean;
 	requested?: boolean;
-	monitored?: boolean;
 	cover_url?: string | null;
 };
 
@@ -640,7 +473,6 @@ export type DiscoverQueueItemLight = {
 	recommendation_reason: string;
 	is_wildcard: boolean;
 	in_library: boolean;
-	monitored?: boolean;
 };
 
 export type DiscoverQueueEnrichment = {
@@ -684,27 +516,6 @@ export type DiscoverQueueResponse = {
 	queue_id: string;
 };
 
-export type QueueStatusResponse = {
-	status: 'idle' | 'building' | 'ready' | 'error';
-	source: string;
-	queue_id?: string;
-	item_count?: number;
-	built_at?: number;
-	stale?: boolean;
-	error?: string;
-};
-
-export type QueueGenerateResponse = {
-	action: 'started' | 'already_building' | 'already_ready';
-	status: string;
-	source: string;
-	queue_id?: string;
-	item_count?: number;
-	built_at?: number;
-	stale?: boolean;
-	error?: string;
-};
-
 export type MoreByArtistResponse = {
 	albums: DiscoveryAlbum[];
 	artist_name: string;
@@ -725,13 +536,6 @@ export type YouTubeLink = {
 export type YouTubeLinkResponse = {
 	link: YouTubeLink;
 	quota: YouTubeQuotaStatus;
-};
-
-export type YouTubeLinkGenerateRequest = {
-	artist_name: string;
-	album_name: string;
-	album_id: string;
-	cover_url?: string | null;
 };
 
 export type YouTubeTrackLink = {
@@ -784,7 +588,7 @@ export type ActiveRequestItem = {
 	download_state?: string | null;
 	status_messages?: StatusMessage[] | null;
 	error_message?: string | null;
-	lidarr_queue_id?: number | null;
+	library_queue_id?: number | null;
 	quality?: string | null;
 	protocol?: string | null;
 	download_client?: string | null;
@@ -803,7 +607,6 @@ export type RequestHistoryItem = {
 	completed_at?: string | null;
 	status: string;
 	in_library: boolean;
-	monitored?: boolean;
 	user_id?: string | null;
 	requested_by_name?: string | null;
 	reviewed_by_name?: string | null;
@@ -860,12 +663,6 @@ export type JellyfinPaginatedResponse = {
 	total: number;
 	offset: number;
 	limit: number;
-};
-
-export type JellyfinSearchResponse = {
-	albums: JellyfinAlbumSummary[];
-	artists: JellyfinArtistSummary[];
-	tracks: JellyfinTrackInfo[];
 };
 
 export type JellyfinLibraryStats = {
@@ -989,11 +786,6 @@ export type NavidromeGenreSongsResponse = {
 	genre: string;
 };
 
-export type NavidromeMusicFolder = {
-	id: string;
-	name: string;
-};
-
 export type NavidromeLibraryStats = {
 	total_tracks: number;
 	total_albums: number;
@@ -1105,12 +897,6 @@ export type PlexLibrarySection = {
 	title: string;
 };
 
-export type HubStat = {
-	label: string;
-	value: number | null;
-	href?: string;
-};
-
 export type BrowseHeroCard = {
 	label: string;
 	value: number | null;
@@ -1184,7 +970,7 @@ export type JellyfinHubResponse = {
 };
 
 export type LocalTrackInfo = {
-	track_file_id: number;
+	track_file_id: string;
 	title: string;
 	track_number: number;
 	disc_number?: number | null;
@@ -1197,14 +983,13 @@ export type LocalTrackInfo = {
 
 export type LocalAlbumMatch = {
 	found: boolean;
-	lidarr_album_id?: number | null;
+	musicbrainz_id?: string | null;
 	tracks: LocalTrackInfo[];
 	total_size_bytes: number;
 	primary_format?: string | null;
 };
 
 export type LocalAlbumSummary = {
-	lidarr_album_id: number;
 	musicbrainz_id: string;
 	name: string;
 	artist_name: string;
@@ -1216,6 +1001,37 @@ export type LocalAlbumSummary = {
 	cover_url?: string | null;
 	date_added?: string | null;
 };
+
+export type CrateReason = 'recent' | 'rediscover' | 'surprise' | 'same_era';
+
+export type CrateTrack = {
+	track_file_id: string;
+	title: string;
+	album_name: string;
+	artist_name: string;
+	album_mbid?: string | null;
+	cover_url?: string | null;
+	format?: string;
+	year?: number | null;
+	duration_seconds?: number | null;
+	reason: CrateReason;
+};
+
+export type CrateResponse = { items: CrateTrack[] };
+
+export type LocalSearchResponse = {
+	albums: LocalAlbumSummary[];
+	tracks: CrateTrack[];
+};
+
+export type DecadeShelf = {
+	decade: number;
+	label: string;
+	album_count: number;
+	albums: LocalAlbumSummary[];
+};
+
+export type DecadesResponse = { items: DecadeShelf[] };
 
 export type LocalPaginatedResponse = {
 	items: LocalAlbumSummary[];
@@ -1241,42 +1057,12 @@ export type LocalStorageStats = {
 	format_breakdown: Record<string, FormatInfo>;
 };
 
-export type LocalFilesConnectionSettings = {
-	enabled: boolean;
-	music_path: string;
-	lidarr_root_path: string;
-};
-
-export type LastFmConnectionSettings = {
-	api_key: string;
-	shared_secret: string;
-	session_key: string;
-	username: string;
-	enabled: boolean;
-};
-
 export type LastFmConnectionSettingsResponse = {
 	api_key: string;
 	shared_secret: string;
 	session_key: string;
 	username: string;
 	enabled: boolean;
-};
-
-export type LastFmVerifyResponse = {
-	valid: boolean;
-	message: string;
-};
-
-export type LastFmAuthTokenResponse = {
-	token: string;
-	auth_url: string;
-};
-
-export type LastFmAuthSessionResponse = {
-	username: string;
-	success: boolean;
-	message: string;
 };
 
 export type ScrobbleSettings = {
@@ -1382,7 +1168,7 @@ export type SourcePlaylistDetail = {
 };
 
 export type SourceImportResult = {
-	musicseerr_playlist_id: string;
+	droppedneedle_playlist_id: string;
 	tracks_imported: number;
 	tracks_failed: number;
 	already_imported: boolean;
@@ -1512,14 +1298,6 @@ export type PlexAnalyticsResponse = {
 	entries_analyzed: number;
 };
 
-export type NavidromeAlbumInfo = {
-	album_id: string;
-	notes: string;
-	musicbrainz_id: string;
-	lastfm_url: string;
-	image_url: string;
-};
-
 export type LyricLine = {
 	text: string;
 	start_seconds: number | null;
@@ -1552,3 +1330,405 @@ export type JellyfinFilterFacets = {
 	tags: string[];
 	studios: string[];
 };
+
+export type AlbumSort = 'recent' | 'title' | 'artist';
+
+export type TrackSort = 'recent' | 'title' | 'artist' | 'album';
+
+export type NativeTrackListItem = {
+	track_file_id: string;
+	title: string;
+	album_name: string;
+	artist_name: string;
+	album_mbid?: string | null;
+	cover_url?: string | null;
+	format: string;
+	track_number: number;
+	disc_number: number;
+	duration_seconds?: number | null;
+};
+
+export type NativeTrackPage = {
+	items: NativeTrackListItem[];
+	total: number;
+	offset: number;
+	limit: number;
+};
+
+export interface LibraryAlbumSummary {
+	release_group_mbid: string;
+	album_title: string;
+	album_artist_name: string | null;
+	track_count: number;
+	total_size_bytes: number;
+	quality_format: string | null;
+	year: number | null;
+	is_compilation: boolean;
+	cover_url: string | null;
+	last_imported_at: number | null;
+}
+
+export interface NativeAlbumsResponse {
+	items: LibraryAlbumSummary[];
+	total: number;
+}
+
+export type ArtistSort = 'name' | 'album_count' | 'date_added';
+
+export interface LibraryArtistSummary {
+	artist_name: string;
+	artist_mbid: string | null;
+	album_count: number;
+	track_count: number;
+	date_added: number | null;
+}
+
+export interface NativeArtistsResponse {
+	items: LibraryArtistSummary[];
+	total: number;
+}
+
+export interface LibraryTrack {
+	id: string;
+	recording_mbid: string | null;
+	disc_number: number;
+	track_number: number;
+	track_title: string;
+	artist_name: string | null;
+	file_path: string;
+	file_format: string | null;
+	bit_rate: number | null;
+	sample_rate: number | null;
+	bit_depth: number | null;
+	duration_seconds: number | null;
+	file_size_bytes: number;
+}
+
+export type LibraryFileMeta = LibraryTrack;
+
+export interface LibraryAlbumStatus {
+	in_library: boolean;
+	track_count: number;
+	tracks: LibraryTrack[];
+}
+
+export interface LibraryStats {
+	total_albums: number;
+	total_artists: number;
+	total_tracks: number;
+	total_size_bytes: number;
+	format_breakdown: Record<string, number>;
+	unmatched_count: number;
+	last_scan_at: number | null;
+	recently_added: LibraryAlbumSummary[];
+}
+
+export interface ManualReviewEntry {
+	id: number;
+	file_path: string;
+	extracted_title: string | null;
+	extracted_artist: string | null;
+	extracted_album: string | null;
+	extracted_year: number | null;
+	track_number: number | null;
+	disc_number: number | null;
+	file_format: string | null;
+	duration: number | null;
+	file_size: number | null;
+	fingerprint: string | null;
+	fingerprint_score: number | null;
+	candidate_mbids: string[];
+	source: string;
+	created_at: number | null;
+}
+
+export interface LibraryUnmatchedResponse {
+	items: ManualReviewEntry[];
+	total: number;
+}
+
+export interface UnmatchedBatchItem {
+	review_id: number;
+	recording_mbid: string | null;
+}
+
+export interface UnmatchedBatchResolveRequest {
+	release_group_mbid: string;
+	items: UnmatchedBatchItem[];
+}
+
+export interface UnmatchedBatchResolveResponse {
+	resolved: number;
+	failed: { review_id: number; error: string }[];
+}
+
+export type ScanStatus = 'idle' | 'scanning' | 'complete' | 'cancelled' | 'failed';
+
+export interface LibraryScanStatus {
+	status: ScanStatus;
+	total_files: number;
+	processed_files: number;
+	matched_files: number;
+	failed_files: number;
+	started_at: number | null;
+	updated_at: number | null;
+}
+
+export interface LibrarySettings {
+	library_paths: string[];
+	staging_path: string;
+	naming_template: string;
+	acoustid_api_key: string;
+}
+
+export type ScanFrequency =
+	| 'manual'
+	| '5min'
+	| '10min'
+	| '30min'
+	| '1hr'
+	| '6hr'
+	| '12hr'
+	| '24hr'
+	| '3d'
+	| '7d'
+	| 'daily';
+
+export interface LibraryScanSchedule {
+	scan_frequency: ScanFrequency;
+	/** HH:MM (server-local) used when scan_frequency is 'daily'. */
+	daily_scan_time: string;
+	last_scan: number | null;
+	last_scan_success: boolean;
+	/** Server timezone label for the daily-time caption; present on reads only. */
+	server_timezone?: string;
+}
+
+export interface TrackTagUpdate {
+	title: string;
+	artist: string;
+	album: string;
+	track_number: number;
+	album_artist: string | null;
+	disc_number: number;
+	year: number | null;
+	genre: string | null;
+	musicbrainz_release_group_id: string | null;
+	musicbrainz_release_id: string | null;
+	musicbrainz_recording_id: string | null;
+	musicbrainz_artist_id: string | null;
+	musicbrainz_album_artist_id: string | null;
+}
+
+export type UnmatchedResolution = 'accept' | 'reject' | 'manual_id';
+
+export interface LibraryActionResponse {
+	status: string;
+	message: string;
+}
+
+export interface DownloadClientConfig {
+	enabled: boolean;
+	client_type: string;
+	url: string;
+	api_key: string;
+	verify_downloads: boolean;
+	min_bitrate_kbps: number;
+	quality_min: string;
+	quality_max: string;
+	flac_mp3_only: boolean;
+	preflight_score_auto_accept: number;
+	preflight_score_manual_min: number;
+}
+
+export interface DownloadsMountStatus {
+	ok: boolean;
+	reason: string;
+	path: string;
+}
+
+export interface DownloadClientHealth {
+	status: 'ok' | 'error';
+	version?: string | null;
+	message?: string | null;
+}
+
+export interface DownloadClientStatus {
+	configured: boolean;
+	client: DownloadClientHealth;
+	mount: DownloadsMountStatus;
+}
+
+export interface TestConnectionResult {
+	valid: boolean;
+	version?: string | null;
+	message: string;
+}
+
+export interface DownloadSearchResultFile {
+	username: string;
+	filename: string;
+	parent_directory: string;
+	size: number;
+	extension: string;
+	bitrate?: number | null;
+	bit_depth?: number | null;
+	sample_rate?: number | null;
+	duration?: number | null;
+	has_free_slot: boolean;
+	upload_speed: number;
+}
+
+export type CandidateTier = 'auto' | 'manual' | 'rejected';
+
+export interface ScoredCandidate {
+	username: string;
+	parent_directory: string;
+	files: DownloadSearchResultFile[];
+	coherence: number;
+	file_confidence: number;
+	final_score: number;
+	tier: CandidateTier;
+}
+
+export interface SearchAlbumResponse {
+	status: string;
+	job_id: string | null;
+}
+
+export interface SearchJobView {
+	job_id: string;
+	status: string;
+	artist_name: string;
+	album_title: string;
+	candidate_count: number;
+	top_score?: number | null;
+	candidates: ScoredCandidate[];
+}
+
+export interface PickResponse {
+	task_id: string;
+}
+
+export type DownloadStatus =
+	| 'queued'
+	| 'downloading'
+	| 'processing'
+	| 'completed'
+	| 'partial'
+	| 'failed'
+	| 'cancelled';
+
+// mirrors backend DownloadTaskResponse (api/v1/schemas/download.py)
+export interface DownloadTask {
+	id: string;
+	user_id: string;
+	download_type: string;
+	release_group_mbid: string;
+	recording_mbid: string | null;
+	artist_name: string;
+	album_title: string;
+	track_title: string | null;
+	year: number | null;
+	status: DownloadStatus;
+	progress_percent: number;
+	total_size_bytes: number | null;
+	downloaded_bytes: number;
+	files_total: number;
+	files_completed: number;
+	files_failed: number;
+	source_username: string | null;
+	search_job_id: string | null;
+	candidate_index: number | null;
+	preflight_score: number | null;
+	final_path: string | null;
+	error_message: string | null;
+	retry_count: number;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface DownloadListResponse {
+	items: DownloadTask[];
+	page: number;
+	page_size: number;
+}
+
+// SSE payload on the `download:{task_id}` channel `progress` event
+export interface DownloadProgress {
+	bytes_downloaded: number;
+	bytes_total: number;
+	files_completed: number;
+	files_total: number;
+	progress_percent: number;
+}
+
+// mirrors backend RequestAcceptedResponse (api/v1/schemas/request.py)
+// status is one of: "pending" | "awaiting_approval" | "downloading"
+export interface RequestAccepted {
+	success: boolean;
+	message: string;
+	musicbrainz_id: string;
+	status: string;
+}
+
+export interface TrackRequestResponse {
+	status: string;
+	task_id?: string | null;
+}
+
+export interface CancelDownloadResponse {
+	success: boolean;
+	status?: string;
+}
+
+export interface RetryDownloadResponse {
+	success: boolean;
+	task_id: string;
+}
+
+export interface QuarantineEntry {
+	id: number;
+	client_id: string;
+	username: string;
+	filename: string;
+	reason: string;
+	quarantined_at: number;
+	release_group_mbid?: string | null;
+}
+
+export interface QuarantineListResponse {
+	items: QuarantineEntry[];
+	page: number;
+}
+
+// Connect Apps (inbound OpenSubsonic + Jellyfin compatibility)
+export interface ConnectAppsSettings {
+	subsonic_enabled: boolean;
+	jellyfin_enabled: boolean;
+	transcoding_enabled: boolean;
+	transcode_default_format: 'mp3' | 'opus';
+	transcode_max_bitrate_kbps: number;
+	advertise_server_name: string;
+	advertise_server_version: string;
+	discover_mode: 'local-only' | 'lazy-mb' | 'use-scrobble-targets';
+}
+
+export interface AppPasswordView {
+	id: string;
+	name: string;
+	created_at: string;
+	last_used_at: string | null;
+	last_client: string | null;
+}
+
+export interface AppPasswordListResponse {
+	items: AppPasswordView[];
+	cap: number;
+	active_count: number;
+}
+
+export interface AppPasswordCreateResponse {
+	secret: string;
+	app_password: AppPasswordView;
+}

@@ -1,12 +1,15 @@
 import asyncio
 import logging
+from typing import Optional
+
 from api.v1.schemas.discovery import (
     DiscoveryAlbum,
     SimilarAlbumsResponse,
     MoreByArtistResponse,
 )
-from repositories.protocols import ListenBrainzRepositoryProtocol, MusicBrainzRepositoryProtocol, LidarrRepositoryProtocol
+from repositories.protocols import ListenBrainzRepositoryProtocol, MusicBrainzRepositoryProtocol, LibraryRepositoryProtocol
 from infrastructure.persistence import LibraryDB
+from services.per_user_client_factory import PerUserClientFactory
 
 logger = logging.getLogger(__name__)
 
@@ -17,38 +20,56 @@ class AlbumDiscoveryService:
         listenbrainz_repo: ListenBrainzRepositoryProtocol,
         musicbrainz_repo: MusicBrainzRepositoryProtocol,
         library_db: LibraryDB,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
+        client_factory: Optional[PerUserClientFactory] = None,
     ):
         self._lb_repo = listenbrainz_repo
         self._mb_repo = musicbrainz_repo
         self._library_db = library_db
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
+        self._client_factory = client_factory
+
+    async def _resolve_listenbrainz(
+        self, user_id: str | None
+    ) -> Optional[ListenBrainzRepositoryProtocol]:
+        """Per-user ListenBrainz client.
+
+        A known user (user_id present) with a factory always resolves strictly to
+        their own connection - never the global repo - so an unlinked user gets
+        None. Anonymous/background callers (e.g. album radio) and unit tests (no
+        factory) fall back to the legacy global repo when it is configured.
+        """
+        if self._client_factory is not None and user_id:
+            return await self._client_factory.resolve_listenbrainz(user_id)
+        return self._lb_repo if self._lb_repo.is_configured() else None
 
     async def get_similar_albums(
         self,
         album_mbid: str,
         artist_mbid: str,
-        count: int = 10
+        count: int = 10,
+        user_id: str | None = None,
     ) -> SimilarAlbumsResponse:
-        if not self._lb_repo.is_configured():
+        lb_repo = await self._resolve_listenbrainz(user_id)
+        if lb_repo is None:
             return SimilarAlbumsResponse(configured=False)
 
         try:
-            similar_artists = await self._lb_repo.get_similar_artists(artist_mbid, max_similar=5)
+            similar_artists = await lb_repo.get_similar_artists(artist_mbid, max_similar=5)
             if not similar_artists:
                 return SimilarAlbumsResponse(albums=[])
 
             try:
                 library_album_mbids, requested_album_mbids = await asyncio.gather(
-                    self._lidarr_repo.get_library_mbids(),
-                    self._lidarr_repo.get_requested_mbids()
+                    self._library_repo.get_library_mbids(),
+                    self._library_repo.get_requested_mbids()
                 )
             except Exception:  # noqa: BLE001
                 library_album_mbids = set()
                 requested_album_mbids = set()
 
             tasks = [
-                self._lb_repo.get_artist_top_release_groups(a.artist_mbid, count=3)
+                lb_repo.get_artist_top_release_groups(a.artist_mbid, count=3)
                 for a in similar_artists[:5]
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -95,8 +116,8 @@ class AlbumDiscoveryService:
 
             try:
                 library_album_mbids, requested_album_mbids = await asyncio.gather(
-                    self._lidarr_repo.get_library_mbids(),
-                    self._lidarr_repo.get_requested_mbids()
+                    self._library_repo.get_library_mbids(),
+                    self._library_repo.get_requested_mbids()
                 )
             except Exception:  # noqa: BLE001
                 library_album_mbids = set()

@@ -1,0 +1,132 @@
+name: Native Engine CI
+
+# Phase 9 gate for the native library + download engine. Scoped to the native engine;
+# does NOT replace backend-ci.yml / frontend-ci.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'Makefile'
+      - '.github/workflows/native-engine-ci.yml'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'Makefile'
+      - '.github/workflows/native-engine-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-integration:
+    name: Unit + Integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-dev.txt
+
+      - name: Backend lint (ruff)
+        run: |
+          pip install ruff==0.6.9
+          ruff check backend
+
+      - name: Backend unit + integration tests
+        working-directory: ./backend
+        run: python -m pytest
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '25'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend lint + format + type check
+        working-directory: ./frontend
+        run: |
+          pnpm run lint
+          pnpm run format:check
+          pnpm run check
+
+      - name: Frontend server tests (incl. integration-coverage)
+        working-directory: ./frontend
+        run: pnpm exec vitest run --project server
+
+  e2e:
+    name: E2E (mock slskd)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-dev.txt
+
+      # Mock-only e2e. The real-slskd container test (-m e2e) is opt-in: it needs a
+      # provisioned slskd (API key / shared folders) and self-skips otherwise.
+      - name: E2E (mock-only)
+        run: python -m pytest tests/e2e tests/infrastructure/test_e2e_download.py -m "not e2e"
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-dev.txt
+
+      - name: Security tests (no-secrets-in-logs, auth matrix, api-key masking)
+        run: python -m pytest tests/security

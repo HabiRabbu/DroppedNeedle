@@ -29,7 +29,7 @@ from infrastructure.integration_result import IntegrationResult
 
 if TYPE_CHECKING:
     from repositories.musicbrainz_repository import MusicBrainzRepository
-    from repositories.lidarr import LidarrRepository
+    from repositories.protocols.library import LibraryRepositoryProtocol
     from repositories.jellyfin_repository import JellyfinRepository
     from services.audiodb_image_service import AudioDBImageService
 
@@ -44,7 +44,6 @@ def _record_degradation(msg: str) -> None:
         ctx.record(IntegrationResult.error(source=_SOURCE, msg=msg))
 
 COVER_ART_ARCHIVE_BASE = "https://coverartarchive.org"
-from core.config import get_settings
 COVER_NEGATIVE_TTL_SECONDS = 4 * 3600
 COVER_MEMORY_MAX_ENTRIES = 128
 COVER_MEMORY_MAX_BYTES = 16 * 1024 * 1024
@@ -60,11 +59,11 @@ _coverart_circuit_breaker = CircuitBreaker(
     name="coverart"
 )
 
-_lidarr_cover_circuit_breaker = CircuitBreaker(
+_library_cover_circuit_breaker = CircuitBreaker(
     failure_threshold=5,
     success_threshold=2,
     timeout=60.0,
-    name="coverart_lidarr",
+    name="coverart_library",
 )
 
 _jellyfin_cover_circuit_breaker = CircuitBreaker(
@@ -176,7 +175,7 @@ class CoverArtRepository:
         http_client: httpx.AsyncClient,
         cache: CacheInterface,
         mb_repo: Optional['MusicBrainzRepository'] = None,
-        lidarr_repo: Optional['LidarrRepository'] = None,
+        library_repo: Optional['LibraryRepositoryProtocol'] = None,
         jellyfin_repo: Optional['JellyfinRepository'] = None,
         audiodb_service: Optional['AudioDBImageService'] = None,
         cache_dir: Path = _default_cache_dir(),
@@ -188,7 +187,7 @@ class CoverArtRepository:
         self._client = http_client
         self._cache = cache
         self._mb_repo = mb_repo
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._jellyfin_repo = jellyfin_repo
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +205,7 @@ class CoverArtRepository:
             write_cache_fn=self._disk_cache.write,
             cache=cache,
             mb_repo=mb_repo,
-            lidarr_repo=lidarr_repo,
+            library_repo=library_repo,
             jellyfin_repo=jellyfin_repo,
             audiodb_service=audiodb_service,
             user_agent=self._client.headers.get("User-Agent"),
@@ -214,7 +213,7 @@ class CoverArtRepository:
         self._album_fetcher = AlbumCoverFetcher(
             http_get_fn=self._http_get,
             write_cache_fn=self._disk_cache.write,
-            lidarr_repo=lidarr_repo,
+            library_repo=library_repo,
             mb_repo=mb_repo,
             jellyfin_repo=jellyfin_repo,
             audiodb_service=audiodb_service,
@@ -358,11 +357,11 @@ class CoverArtRepository:
 
     @with_retry(
         max_attempts=3,
-        circuit_breaker=_lidarr_cover_circuit_breaker,
+        circuit_breaker=_library_cover_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
     )
-    async def _http_get_lidarr(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
-        return await self._perform_http_get(url, priority, "lidarr", **kwargs)
+    async def _http_get_library(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
+        return await self._perform_http_get(url, priority, "library", **kwargs)
 
     @with_retry(
         max_attempts=3,
@@ -406,8 +405,8 @@ class CoverArtRepository:
         request_source = source or self._infer_source_from_url(url)
         if request_source == "coverart":
             return await self._http_get_coverart(url, priority, **kwargs)
-        if request_source == "lidarr":
-            return await self._http_get_lidarr(url, priority, **kwargs)
+        if request_source == "library":
+            return await self._http_get_library(url, priority, **kwargs)
         if request_source == "jellyfin":
             return await self._http_get_jellyfin(url, priority, **kwargs)
         if request_source == "wikidata":
@@ -678,7 +677,7 @@ class CoverArtRepository:
 
         debug_info["circuit_breakers"] = {
             "coverart": _coverart_circuit_breaker.get_state(),
-            "lidarr": _lidarr_cover_circuit_breaker.get_state(),
+            "library": _library_cover_circuit_breaker.get_state(),
             "jellyfin": _jellyfin_cover_circuit_breaker.get_state(),
             "wikidata": _wikidata_cover_circuit_breaker.get_state(),
             "wikimedia": _wikimedia_cover_circuit_breaker.get_state(),
@@ -697,15 +696,15 @@ class CoverArtRepository:
                 except Exception as e:  # noqa: BLE001
                     debug_info["disk_cache"][f"meta_{size}"] = f"Error reading: {e}"
 
-        if self._lidarr_repo:
-            debug_info["lidarr"]["configured"] = True
+        if self._library_repo:
+            debug_info["library"]["configured"] = True
             try:
-                image_url = await self._lidarr_repo.get_artist_image_url(artist_id)
+                image_url = await self._library_repo.get_artist_image_url(artist_id)
                 if image_url:
-                    debug_info["lidarr"]["has_image_url"] = True
-                    debug_info["lidarr"]["image_url"] = image_url
+                    debug_info["library"]["has_image_url"] = True
+                    debug_info["library"]["image_url"] = image_url
             except Exception as e:  # noqa: BLE001
-                debug_info["lidarr"]["error"] = str(e)
+                debug_info["library"]["error"] = str(e)
 
         cache_key = f"{ARTIST_WIKIDATA_PREFIX}{artist_id}"
         cached_wikidata = await self._cache.get(cache_key)

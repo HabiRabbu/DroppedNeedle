@@ -1,4 +1,4 @@
-"""Integration tests — SettingsService invalidation methods clear the right cache keys."""
+"""Integration tests - SettingsService invalidation methods clear the right cache keys."""
 
 import pytest
 
@@ -11,7 +11,7 @@ from infrastructure.cache.cache_keys import (
     JELLYFIN_PREFIX,
     LB_PREFIX,
     LFM_PREFIX,
-    LIDARR_ARTIST_ALBUMS_PREFIX,
+    LIBRARY_ARTIST_ALBUMS_PREFIX,
     LOCAL_FILES_PREFIX,
     SOURCE_RESOLUTION_PREFIX,
     musicbrainz_prefixes,
@@ -37,14 +37,14 @@ async def test_clear_musicbrainz_cache():
 
     mb_keys = [f"{p}dummy" for p in musicbrainz_prefixes()]
     extra_keys = [f"{ARTIST_INFO_PREFIX}art1", f"{ALBUM_INFO_PREFIX}alb1"]
-    lidarr_keys = [f"{LIDARR_ARTIST_ALBUMS_PREFIX}mbid1", f"{LIDARR_ARTIST_ALBUMS_PREFIX}mbid2"]
+    library_keys = [f"{LIBRARY_ARTIST_ALBUMS_PREFIX}mbid1", f"{LIBRARY_ARTIST_ALBUMS_PREFIX}mbid2"]
     unrelated = ["unrelated:key"]
-    await _populate(cache, mb_keys + extra_keys + lidarr_keys + unrelated)
+    await _populate(cache, mb_keys + extra_keys + library_keys + unrelated)
 
     cleared = await service.clear_caches_for_preference_change()
 
-    assert cleared == len(mb_keys) + len(extra_keys) + len(lidarr_keys)
-    for key in mb_keys + extra_keys + lidarr_keys:
+    assert cleared == len(mb_keys) + len(extra_keys) + len(library_keys)
+    for key in mb_keys + extra_keys + library_keys:
         assert await cache.get(key) is None
     assert await cache.get("unrelated:key") == "v"
 
@@ -117,7 +117,7 @@ async def test_unrelated_keys_survive():
     survivor_keys = [
         f"{LOCAL_FILES_PREFIX}scan",
         f"{SOURCE_RESOLUTION_PREFIX}:t1",
-        f"{LIDARR_ARTIST_ALBUMS_PREFIX}mbid1",
+        f"{LIBRARY_ARTIST_ALBUMS_PREFIX}mbid1",
     ]
     target_keys = [f"{p}x" for p in musicbrainz_prefixes()]
     await _populate(cache, survivor_keys + target_keys)
@@ -148,6 +148,63 @@ async def test_update_home_settings_route_clears_cache():
     mock_prefs.save_home_settings.assert_called_once_with(mock_settings_obj)
     mock_settings_svc.clear_home_cache.assert_awaited_once()
     assert result is mock_settings_obj
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_jellyfin_settings_change_clears_user_import_service():
+    """Phase 6: configuring Jellyfin must rebuild the import service singleton so a
+    newly-configured server is enumerable without an app restart."""
+    from unittest.mock import patch, MagicMock, AsyncMock
+
+    service, _cache = await _build_service()
+    mbid = MagicMock()
+    mbid.clear_jellyfin_mbid_index = AsyncMock()
+    import_fn = MagicMock()
+    auth_fn = MagicMock()
+
+    with (
+        patch("core.dependencies.get_jellyfin_repository", MagicMock()),
+        patch("core.dependencies.get_jellyfin_playback_service", MagicMock()),
+        patch("core.dependencies.get_jellyfin_library_service", MagicMock()),
+        patch("core.dependencies.get_home_service", MagicMock()),
+        patch("core.dependencies.get_home_charts_service", MagicMock()),
+        patch("core.dependencies.get_mbid_store", MagicMock(return_value=mbid)),
+        patch("core.dependencies.auth_providers.get_user_import_service", import_fn),
+        patch("core.dependencies.auth_providers.get_jellyfin_user_auth_service", auth_fn),
+    ):
+        await service.on_jellyfin_settings_changed()
+
+    import_fn.cache_clear.assert_called_once()
+    auth_fn.cache_clear.assert_called_once()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_plex_settings_change_clears_user_import_service():
+    """Phase 6: configuring Plex must rebuild the import service singleton too."""
+    from unittest.mock import patch, MagicMock, AsyncMock
+
+    service, _cache = await _build_service()
+    mbid = MagicMock()
+    mbid.clear_plex_mbid_indexes = AsyncMock()
+    plex_repo = MagicMock()
+    plex_repo.clear_cache = AsyncMock()
+    import_fn = MagicMock()
+    auth_fn = MagicMock()
+
+    with (
+        patch("core.dependencies.get_plex_repository", MagicMock(return_value=plex_repo)),
+        patch("core.dependencies.get_plex_library_service", MagicMock()),
+        patch("core.dependencies.get_plex_playback_service", MagicMock()),
+        patch("core.dependencies.get_home_service", MagicMock()),
+        patch("core.dependencies.get_home_charts_service", MagicMock()),
+        patch("core.dependencies.get_mbid_store", MagicMock(return_value=mbid)),
+        patch("core.dependencies.auth_providers.get_user_import_service", import_fn),
+        patch("core.dependencies.auth_providers.get_plex_user_auth_service", auth_fn),
+    ):
+        await service.on_plex_settings_changed(enabled=False)
+
+    import_fn.cache_clear.assert_called_once()
+    auth_fn.cache_clear.assert_called_once()
 
 
 @pytest.mark.asyncio(loop_scope="function")

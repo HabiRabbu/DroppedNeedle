@@ -175,7 +175,7 @@
 								{#if !form.testResult?.success && !form.wasAlreadySecondaryEnabled}
 									Test and get a valid connection to enable
 								{:else}
-									Let users sign in to Musicseerr with their Jellyfin account
+									Let users sign in to DroppedNeedle with their Jellyfin account
 								{/if}
 							</p>
 						</div>

@@ -17,7 +17,7 @@
 {#if href}
 	<a
 		{href}
-		class="card bg-base-100 w-full shadow-sm shrink-0 transition-all hover:scale-105 hover:shadow-[0_0_20px_rgba(174,213,242,0.15)] focus-visible:ring-2 focus-visible:ring-primary group relative"
+		class="card bg-base-100 w-full shadow-sm shrink-0 transition-all hover:scale-105 hover:glow-primary focus-visible:ring-2 focus-visible:ring-primary group relative"
 		aria-label="Open {name}"
 	>
 		{#if mbid}

@@ -11,7 +11,7 @@
 	import PlaylistMosaic from '$lib/components/PlaylistMosaic.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import type { MenuItem } from '$lib/components/ContextMenu.svelte';
-	import { Play, Shuffle, Pencil, Check, X, Tv, Sparkles } from 'lucide-svelte';
+	import { Play, Shuffle, Pencil, Check, X, Tv, Sparkles, Globe, Lock } from 'lucide-svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
 	import { getSourceColor, getSourceLabel } from '$lib/utils/sources';
@@ -19,15 +19,39 @@
 
 	interface Props {
 		playlist: PlaylistDetail;
+		canEdit?: boolean;
+		canDelete?: boolean;
+		sharePending?: boolean;
 		onplayall: () => void;
 		onshuffleall: () => void;
 		ondeleteclick: () => void;
 		onplaylistupdate: (updated: PlaylistDetail) => void;
+		onshare?: (isPublic: boolean) => void;
 	}
 
-	let { playlist, onplayall, onshuffleall, ondeleteclick, onplaylistupdate }: Props = $props();
+	let {
+		playlist,
+		canEdit = false,
+		canDelete = false,
+		sharePending = false,
+		onplayall,
+		onshuffleall,
+		ondeleteclick,
+		onplaylistupdate,
+		onshare
+	}: Props = $props();
 
 	import { Trash2 } from 'lucide-svelte';
+
+	let ownerInitials = $derived(
+		(playlist.owner_name ?? '')
+			.trim()
+			.split(/\s+/)
+			.map((w) => w[0])
+			.slice(0, 2)
+			.join('')
+			.toUpperCase() || '?'
+	);
 
 	let sourceType = $derived(playlist.source_ref?.split(':')[0] ?? null);
 	let sourceColor = $derived(sourceType ? getSourceColor(sourceType) : null);
@@ -196,29 +220,31 @@
 				<span class="loading loading-spinner loading-md"></span>
 			</div>
 		{/if}
-		<div
-			class="absolute bottom-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
-		>
-			<button
-				type="button"
-				class="btn btn-circle btn-xs bg-base-100/80 hover:bg-base-100 border-0"
-				onclick={triggerCoverUpload}
-				aria-label="Upload cover image"
-				disabled={uploading}
+		{#if canEdit}
+			<div
+				class="absolute bottom-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
 			>
-				<Pencil class="h-3 w-3" />
-			</button>
-			{#if playlist.custom_cover_url}
 				<button
 					type="button"
-					class="btn btn-circle btn-xs bg-base-100/80 hover:bg-error/80 border-0"
-					onclick={() => void removeCover()}
-					aria-label="Remove custom cover"
+					class="btn btn-circle btn-xs bg-base-100/80 hover:bg-base-100 border-0"
+					onclick={triggerCoverUpload}
+					aria-label="Upload cover image"
+					disabled={uploading}
 				>
-					<X class="h-3 w-3" />
+					<Pencil class="h-3 w-3" />
 				</button>
-			{/if}
-		</div>
+				{#if playlist.custom_cover_url}
+					<button
+						type="button"
+						class="btn btn-circle btn-xs bg-base-100/80 hover:bg-error/80 border-0"
+						onclick={() => void removeCover()}
+						aria-label="Remove custom cover"
+					>
+						<X class="h-3 w-3" />
+					</button>
+				{/if}
+			</div>
+		{/if}
 		<input
 			type="file"
 			accept="image/jpeg,image/png,image/webp"
@@ -233,7 +259,7 @@
 			Playlist
 		</span>
 
-		{#if editingName}
+		{#if editingName && canEdit}
 			<div class="flex items-center gap-2">
 				<input
 					type="text"
@@ -259,20 +285,24 @@
 					<X class="h-4 w-4 text-error" />
 				</button>
 			</div>
-		{:else}
+		{:else if canEdit}
 			<button
 				type="button"
 				onclick={startEditName}
 				class="group/name flex items-center gap-2 text-left"
 				aria-label="Edit playlist name"
 			>
-				<h1 class="text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold leading-tight truncate">
+				<h1 class="hero-title text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold leading-tight truncate">
 					{playlist.name}
 				</h1>
 				<Pencil
 					class="h-4 w-4 shrink-0 text-base-content/30 opacity-0 group-hover/name:opacity-100 transition-opacity"
 				/>
 			</button>
+		{:else}
+			<h1 class="hero-title text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold leading-tight truncate">
+				{playlist.name}
+			</h1>
 		{/if}
 
 		<div class="flex flex-wrap items-center gap-2 text-sm text-base-content/60">
@@ -329,7 +359,38 @@
 				<Sparkles class="h-4 w-4" />
 				Discover
 			</button>
-			<ContextMenu items={getHeaderMenuItems()} position="end" size="sm" />
+
+			{#if canEdit}
+				<label class="ml-1 flex cursor-pointer items-center gap-2" title="Toggle who can see this playlist">
+					{#if playlist.is_public}
+						<Globe class="h-4 w-4 text-success" />
+					{:else}
+						<Lock class="h-4 w-4 text-base-content/50" />
+					{/if}
+					<span class="text-sm text-base-content/70">{playlist.is_public ? 'Public' : 'Private'}</span>
+					<input
+						type="checkbox"
+						class="toggle toggle-sm toggle-success"
+						checked={playlist.is_public}
+						disabled={sharePending}
+						onchange={(e) => onshare?.(e.currentTarget.checked)}
+						aria-label={playlist.is_public ? 'Make playlist private' : 'Make playlist public'}
+					/>
+				</label>
+			{:else if !playlist.is_owner && playlist.owner_name}
+				<span class="ml-1 inline-flex items-center gap-1.5 text-sm text-base-content/60">
+					<span class="avatar avatar-placeholder">
+						<span class="w-5 h-5 rounded-full bg-accent text-accent-content">
+							<span class="text-[9px] font-semibold leading-none">{ownerInitials}</span>
+						</span>
+					</span>
+					Shared by {playlist.owner_name}
+				</span>
+			{/if}
+
+			{#if canDelete}
+				<ContextMenu items={getHeaderMenuItems()} position="end" size="sm" />
+			{/if}
 		</div>
 	</div>
 </div>

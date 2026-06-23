@@ -1,5 +1,8 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+_UID = "u1"
 
 from api.v1.schemas.settings import (
     ListenBrainzConnectionSettings,
@@ -52,10 +55,10 @@ def _make_prefs(
     jf_settings.user_id = ""
     prefs.get_jellyfin_connection.return_value = jf_settings
 
-    lidarr = MagicMock()
-    lidarr.lidarr_url = ""
-    lidarr.lidarr_api_key = ""
-    prefs.get_lidarr_connection.return_value = lidarr
+    download_client = MagicMock()
+    download_client.enabled = False
+    download_client.url = ""
+    prefs.get_download_client_settings.return_value = download_client
 
     yt = MagicMock()
     yt.enabled = False
@@ -95,7 +98,7 @@ def _make_service(
     lfm_repo.get_artist_top_albums = AsyncMock(return_value=[])
 
     jf_repo = AsyncMock()
-    lidarr_repo = AsyncMock()
+    library_repo = AsyncMock()
     mb_repo = AsyncMock()
     mb_repo.search_release_groups_by_tag = AsyncMock(return_value=[])
     mb_repo.get_release_group_id_from_release = AsyncMock(return_value=None)
@@ -107,13 +110,26 @@ def _make_service(
         primary_source=primary_source,
     )
 
+    # factory resolves the user's client; return the same mock repos so assertions hold
+    factory = MagicMock()
+    factory.resolve_listenbrainz = AsyncMock(return_value=lb_repo if lb_enabled else None)
+    factory.resolve_lastfm = AsyncMock(return_value=lfm_repo if lfm_enabled else None)
+    factory.resolve_listenbrainz_username = AsyncMock(return_value="lbuser" if lb_enabled else None)
+    factory.resolve_lastfm_username = AsyncMock(return_value="lfmuser" if lfm_enabled else None)
+    factory.is_listenbrainz_linked = AsyncMock(return_value=lb_enabled)
+    factory.is_lastfm_linked = AsyncMock(return_value=lfm_enabled)
+    prefs_store = MagicMock()
+    prefs_store.get = AsyncMock(return_value=SimpleNamespace(primary_music_source=primary_source))
+
     service = DiscoverService(
         listenbrainz_repo=lb_repo,
         jellyfin_repo=jf_repo,
-        lidarr_repo=lidarr_repo,
+        library_repo=library_repo,
         musicbrainz_repo=mb_repo,
         preferences_service=prefs,
         lastfm_repo=lfm_repo,
+        client_factory=factory,
+        listening_prefs_store=prefs_store,
     )
     return service, lb_repo, lfm_repo, prefs
 
@@ -121,7 +137,6 @@ def _make_service(
 class TestBuildQueueSourceRouting:
     @pytest.mark.asyncio
     async def test_build_queue_uses_lastfm_when_source_is_lastfm(self):
-        """When source=lastfm and Last.fm is enabled, anonymous queue should call Last.fm APIs."""
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=False, lfm_enabled=True, primary_source="lastfm"
         )
@@ -132,41 +147,38 @@ class TestBuildQueueSourceRouting:
             LastFmAlbum(name="Album1", mbid="album-mbid-1", playcount=100, artist_name="Artist1"),
         ]
 
-        result = await service.build_queue(count=5, source="lastfm")
+        result = await service.build_queue(_UID,count=5, source="lastfm")
         assert result is not None
         lfm_repo.get_global_top_artists.assert_awaited()
         lb_repo.get_sitewide_top_release_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_build_queue_uses_listenbrainz_when_source_is_lb(self):
-        """When source=listenbrainz, anonymous queue should call LB APIs."""
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
         lb_repo.get_sitewide_top_release_groups.return_value = []
 
-        result = await service.build_queue(count=5, source="listenbrainz")
+        result = await service.build_queue(_UID,count=5, source="listenbrainz")
         assert result is not None
         lb_repo.get_sitewide_top_release_groups.assert_awaited()
         lfm_repo.get_global_top_artists.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_build_queue_none_source_uses_global_default(self):
-        """When source=None, queue should use the global primary source."""
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=False, lfm_enabled=True, primary_source="lastfm"
         )
         lfm_repo.get_global_top_artists.return_value = []
 
-        result = await service.build_queue(count=5, source=None)
+        result = await service.build_queue(_UID,count=5, source=None)
         assert result is not None
         lfm_repo.get_global_top_artists.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_build_queue_returns_valid_response(self):
-        """build_queue should return a DiscoverQueueResponse with queue_id."""
         service, _, _, _ = _make_service(lb_enabled=False, lfm_enabled=False)
-        result = await service.build_queue(count=5)
+        result = await service.build_queue(_UID,count=5)
         assert result is not None
         assert result.queue_id
         assert isinstance(result.items, list)
@@ -175,7 +187,6 @@ class TestBuildQueueSourceRouting:
 class TestBuildQueuePersonalizedSourceRouting:
     @pytest.mark.asyncio
     async def test_personalized_queue_lastfm_uses_lastfm_similar(self):
-        """Personalized queue with lastfm source should call Last.fm similar artists."""
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
         )
@@ -184,14 +195,13 @@ class TestBuildQueuePersonalizedSourceRouting:
         ]
         lfm_repo.get_similar_artists.return_value = []
 
-        await service.build_queue(count=5, source="lastfm")
+        await service.build_queue(_UID,count=5, source="lastfm")
         lfm_repo.get_user_top_artists.assert_awaited()
         lfm_repo.get_similar_artists.assert_awaited()
         lb_repo.get_similar_artists.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_personalized_queue_lb_uses_lb_similar(self):
-        """Personalized queue with listenbrainz source should call LB similar artists."""
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
@@ -200,7 +210,7 @@ class TestBuildQueuePersonalizedSourceRouting:
         ]
         lb_repo.get_similar_artists.return_value = []
 
-        await service.build_queue(count=5, source="listenbrainz")
+        await service.build_queue(_UID,count=5, source="listenbrainz")
         lb_repo.get_user_top_artists.assert_awaited()
         lb_repo.get_similar_artists.assert_awaited()
         lfm_repo.get_similar_artists.assert_not_awaited()
@@ -221,7 +231,7 @@ class TestLastFmQueueDataQuality:
             LastFmAlbum(name="Album1", mbid="release-mbid-1", playcount=100, artist_name="Artist1"),
         ]
 
-        result = await service.build_queue(count=5, source="lastfm")
+        result = await service.build_queue(_UID,count=5, source="lastfm")
 
         assert any(item.release_group_mbid == "rg-mbid-1" for item in result.items)
         service._mbid_resolution._mb_repo.get_release_group_id_from_release.assert_awaited()
@@ -234,7 +244,7 @@ class TestLastFmQueueDataQuality:
         lfm_repo.get_user_top_artists.return_value = []
         lfm_repo.get_global_top_artists.return_value = []
 
-        await service.build_queue(count=5, source="lastfm")
+        await service.build_queue(_UID,count=5, source="lastfm")
 
         lb_repo.get_user_top_artists.assert_not_awaited()
 
@@ -253,7 +263,7 @@ class TestLastFmQueueDataQuality:
             LastFmAlbum(name="Album1", mbid="release-mbid-1", playcount=100, artist_name="Artist1"),
         ]
 
-        result = await service.build_queue(count=5, source="lastfm")
+        result = await service.build_queue(_UID,count=5, source="lastfm")
 
         assert result.items
         assert any(item.release_group_mbid == "release-mbid-1" for item in result.items)
@@ -328,7 +338,7 @@ class TestLastFmQueueResilience:
             side_effect=_search_release_groups_by_tag
         )
 
-        result = await service.build_queue(count=5, source="lastfm")
+        result = await service.build_queue(_UID,count=5, source="lastfm")
 
         assert result.items
         assert any(item.release_group_mbid == "rg-fallback-1" for item in result.items)

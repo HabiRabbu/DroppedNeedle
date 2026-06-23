@@ -254,7 +254,7 @@ class MusicBrainzArtistMixin:
                 continue
             try:
                 await self.get_release_group_by_id(rg_id, priority=RequestPriority.BACKGROUND_SYNC)
-            except (CircuitOpenError, ExternalServiceError, httpx.HTTPError) as exc:
+            except (CircuitOpenError, ExternalServiceError, httpx.HTTPError):
                 pass
 
     async def get_artist_release_groups(
@@ -279,6 +279,25 @@ class MusicBrainzArtistMixin:
             logger.error(f"Failed to fetch release groups for artist {artist_mbid} at offset {offset}: {e}")
             _record_mb_degradation(f"release groups failed: {e}")
             return [], 0
+
+    async def get_artist_release_groups_or_raise(
+        self,
+        artist_mbid: str,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Like get_artist_release_groups but PROPAGATES failures (CircuitOpenError,
+        ExternalServiceError, httpx errors) instead of masking them as an empty
+        result. The follow poller needs to tell 'this artist has no releases' apart
+        from 'MusicBrainz is unavailable', so it never seeds an empty baseline or
+        treats a back-catalog as new on a transient error."""
+        result = await mb_api_get(
+            "/release-group",
+            params={"artist": artist_mbid, "limit": limit, "offset": offset},
+            priority=RequestPriority.BACKGROUND_SYNC,
+            decode_type=_ArtistReleaseGroupsPayload,
+        )
+        return result.release_groups, int(result.release_group_count)
 
     async def get_release_groups_by_artist(
         self,

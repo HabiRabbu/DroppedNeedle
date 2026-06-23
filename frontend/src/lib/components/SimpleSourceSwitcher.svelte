@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { type MusicSource } from '$lib/stores/musicSource';
-	import { integrationStore } from '$lib/stores/integration';
-	import { fromStore } from 'svelte/store';
+	import { getConnectionsQuery } from '$lib/queries/connections/ConnectionsQuery.svelte';
 
 	interface Props {
 		currentSource: MusicSource;
@@ -10,12 +9,13 @@
 
 	let { currentSource, onSourceChange }: Props = $props();
 
-	const integrationState = fromStore(integrationStore);
+	const connectionsQuery = getConnectionsQuery();
+	const connections = $derived(connectionsQuery.data?.connections ?? []);
 
 	let switching = $state(false);
 
-	let lbEnabled = $derived(integrationState.current.listenbrainz);
-	let lfmEnabled = $derived(integrationState.current.lastfm);
+	let lbEnabled = $derived(connections.some((c) => c.service === 'listenbrainz'));
+	let lfmEnabled = $derived(connections.some((c) => c.service === 'lastfm'));
 	let showSwitcher = $derived(lbEnabled && lfmEnabled);
 
 	async function handleSwitch(source: MusicSource) {

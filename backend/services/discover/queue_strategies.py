@@ -150,7 +150,7 @@ async def build_similar_artist_pools_lastfm(
                     artist_albums_pair,
                     exclude=excluded_mbids | pool_seen,
                     target=albums_per,
-                    reason=f"Similar to seed (via Last.fm)",
+                    reason="Similar to seed (via Last.fm)",
                 )
                 for item in items:
                     pools[i].append(item)

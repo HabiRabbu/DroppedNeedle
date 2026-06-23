@@ -28,6 +28,14 @@
 	import LocalFilesIcon from '$lib/components/LocalFilesIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
+	import LibraryFormatBadge from '$lib/components/library/LibraryFormatBadge.svelte';
+	import LibraryTrackRow from '$lib/components/library/LibraryTrackRow.svelte';
+	import { ChevronDown } from 'lucide-svelte';
+	import { SvelteSet } from 'svelte/reactivity';
+	import type { LibraryFileMeta, DownloadTask } from '$lib/types';
+	import TrackRequestButton from '$lib/components/downloads/TrackRequestButton.svelte';
+	import TrackDownloadStatus from '$lib/components/downloads/TrackDownloadStatus.svelte';
+	import { integrationStore } from '$lib/stores/integration';
 
 	interface Props {
 		album: AlbumBasicInfo;
@@ -53,6 +61,10 @@
 		localfilesEnabled: boolean;
 		navidromeEnabled: boolean;
 		plexEnabled: boolean;
+		libraryTracksByRecording?: Map<string, LibraryFileMeta>;
+		libraryTracksByPosition?: Map<string, LibraryFileMeta>;
+		trackDownloadTasks?: Map<string, DownloadTask>;
+		releaseGroupMbid?: string;
 		onPlaySourceTrack: (
 			source: 'jellyfin' | 'local' | 'navidrome' | 'plex',
 			trackPosition: number,
@@ -94,11 +106,21 @@
 		localfilesEnabled,
 		navidromeEnabled,
 		plexEnabled,
+		libraryTracksByRecording = new Map(),
+		libraryTracksByPosition = new Map(),
+		trackDownloadTasks = new Map(),
+		releaseGroupMbid = '',
 		onPlaySourceTrack,
 		onTrackGenerated,
 		onQuotaUpdate,
 		getTrackContextMenuItems
 	}: Props = $props();
+
+	const expandedRows = new SvelteSet<number>();
+	function toggleRow(idx: number) {
+		if (expandedRows.has(idx)) expandedRows.delete(idx);
+		else expandedRows.add(idx);
+	}
 </script>
 
 <div class="bg-base-200 rounded-box overflow-visible">
@@ -162,6 +184,16 @@
 					navidromeTrack !== null ||
 					plexTrack !== null}
 				{@const showPreview = youtubeApiConfigured && !hasAnySource}
+				{@const libMeta =
+					(track.recording_id ? libraryTracksByRecording.get(track.recording_id) : undefined) ??
+					libraryTracksByPosition.get(
+						getDiscTrackKey({ disc_number: trackDiscNumber, track_number: track.position })
+					)}
+				{@const trackTask =
+					track.recording_id ? (trackDownloadTasks.get(track.recording_id) ?? null) : null}
+				{@const showTrackDownload = !libMeta && !!trackTask}
+				{@const showRequest =
+					!libMeta && !trackTask && !!track.recording_id && $integrationStore.download_client}
 				<li
 					class="list-row group hover:bg-base-300/50 transition-colors p-3 sm:p-4"
 					style={isCurrentlyPlaying ? `background-color: ${colors.accent}20;` : ''}
@@ -180,6 +212,12 @@
 							{/if}
 						</div>
 
+						{#if libMeta}
+							<div class="shrink-0">
+								<LibraryFormatBadge format={libMeta.file_format} size="badge-xs" />
+							</div>
+						{/if}
+
 						<div class="flex-1 min-w-0">
 							<div
 								class="font-medium truncate"
@@ -187,14 +225,30 @@
 							>
 								{track.title}
 							</div>
+							{#if libMeta?.artist_name && libMeta.artist_name !== album.artist_name}
+								<div class="truncate text-xs text-base-content/60">{libMeta.artist_name}</div>
+							{/if}
 						</div>
 
 						<div class="text-base-content/60 text-sm shrink-0">
 							{formatDuration(track.length)}
 						</div>
 
-						{#if youtubeEnabled || showPreview || showJellyfinBtn || showLocalBtn || showNavidromeBtn || showPlexBtn}
+						{#if youtubeEnabled || showPreview || showJellyfinBtn || showLocalBtn || showNavidromeBtn || showPlexBtn || showRequest || showTrackDownload}
 							<div class="flex items-center gap-1.5 shrink-0 ml-auto">
+								{#if showTrackDownload && trackTask}
+									<TrackDownloadStatus task={trackTask} />
+								{/if}
+								{#if showRequest && track.recording_id}
+									<TrackRequestButton
+										recordingMbid={track.recording_id}
+										trackTitle={track.title}
+										artistName={album.artist_name}
+										albumMbid={releaseGroupMbid || album.musicbrainz_id}
+										albumTitle={album.title}
+										durationSeconds={track.length ? Math.round(track.length / 1000) : null}
+									/>
+								{/if}
 								{#if showPreview}
 									<TrackPreviewButton
 										artist={album.artist_name}
@@ -298,8 +352,29 @@
 								</div>
 							</div>
 						{/if}
+
+						{#if libMeta}
+							<button
+								class="btn btn-ghost btn-xs btn-circle shrink-0"
+								onclick={() => toggleRow(row.globalIndex)}
+								aria-label={expandedRows.has(row.globalIndex)
+									? 'Hide file details'
+									: 'Show file details'}
+							>
+								<ChevronDown
+									class="h-4 w-4 transition-transform {expandedRows.has(row.globalIndex)
+										? 'rotate-180'
+										: ''}"
+								/>
+							</button>
+						{/if}
 					</div>
 				</li>
+				{#if libMeta && expandedRows.has(row.globalIndex)}
+					<li class="list-row p-0">
+						<LibraryTrackRow meta={libMeta} {releaseGroupMbid} />
+					</li>
+				{/if}
 			{/each}
 		{/each}
 	</ul>

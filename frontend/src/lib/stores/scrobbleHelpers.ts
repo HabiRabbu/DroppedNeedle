@@ -1,7 +1,7 @@
 export const SCROBBLE_PERCENT_THRESHOLD = 0.5;
 export const SCROBBLE_TIME_THRESHOLD_MS = 240_000;
 export const NOW_PLAYING_DEBOUNCE_MS = 3000;
-export const SEEK_TOLERANCE_S = 3;
+const SEEK_TOLERANCE_S = 3;
 export const MIN_TRACK_DURATION_MS = 30_000;
 export const LOOP_RESET_TOLERANCE_S = 3;
 

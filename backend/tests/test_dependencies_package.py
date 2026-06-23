@@ -8,8 +8,12 @@ from core.dependencies._registry import _singleton_registry, clear_all_singleton
 
 
 class TestSingletonRegistry:
-    def test_registry_has_expected_count(self):
-        assert len(_singleton_registry) == 62
+    def test_registry_is_populated(self):
+        # A floor, not an exact count: providers are only ever added, so an exact
+        # assertion just churns a magic number each phase. This catches a registry
+        # that failed to populate (decorator regression); per-entry correctness is
+        # covered by test_all_entries_have_cache_clear below. Phase 4b reached 71.
+        assert len(_singleton_registry) >= 71
 
     def test_all_entries_have_cache_clear(self):
         for fn in _singleton_registry:

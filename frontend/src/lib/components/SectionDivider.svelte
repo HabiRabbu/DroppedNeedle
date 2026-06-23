@@ -16,7 +16,7 @@
 		</span>
 	{/if}
 	<span
-		class="text-[11px] font-semibold uppercase tracking-[0.15em] text-base-content/35 whitespace-nowrap select-none"
+		class="font-display text-[12px] font-semibold uppercase tracking-[0.18em] text-base-content/40 whitespace-nowrap select-none"
 	>
 		{label}
 	</span>

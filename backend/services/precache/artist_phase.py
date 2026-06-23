@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from repositories.protocols import LidarrRepositoryProtocol, CoverArtRepositoryProtocol
+from repositories.protocols import LibraryRepositoryProtocol, CoverArtRepositoryProtocol
 from repositories.coverart_disk_cache import get_cache_filename
 from services.cache_status_service import CacheStatusService
 from infrastructure.cache.cache_keys import ARTIST_INFO_PREFIX
@@ -17,13 +17,13 @@ logger = logging.getLogger(__name__)
 class ArtistPhase:
     def __init__(
         self,
-        lidarr_repo: LidarrRepositoryProtocol,
+        library_repo: LibraryRepositoryProtocol,
         cover_repo: CoverArtRepositoryProtocol,
         preferences_service: Any,
         genre_index: Any,
         sync_state_store: Any,
     ):
-        self._lidarr_repo = lidarr_repo
+        self._library_repo = library_repo
         self._cover_repo = cover_repo
         self._preferences_service = preferences_service
         self._genre_index = genre_index

@@ -3,17 +3,24 @@
 	import { onDestroy, untrack } from 'svelte';
 	import {
 		deletePlaylist,
-		fetchPlaylist,
 		resolvePlaylistSources,
-		type PlaylistDetail
+		isRedactedPlaylist,
+		type PlaylistDetail,
+		type PlaylistDetailItem,
+		type RedactedPlaylist
 	} from '$lib/api/playlists';
 	import { playlistTrackToQueueItem } from '$lib/player/queueHelpers';
 	import { playerStore } from '$lib/stores/player.svelte';
 	import { toastStore } from '$lib/stores/toast';
+	import { authStore } from '$lib/stores/authStore.svelte';
 	import { getCacheTTL } from '$lib/stores/cacheTtl';
+	import { getPlaylistDetailQuery } from '$lib/queries/playlists/PlaylistQuery.svelte';
+	import { createSetPlaylistPublicMutation } from '$lib/queries/playlists/PlaylistMutations.svelte';
+	import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
+	import { PlaylistQueryKeyFactory } from '$lib/queries/playlists/PlaylistQueryKeyFactory';
 	import { extractDominantColor, DEFAULT_GRADIENT } from '$lib/utils/colors';
 	import { getApiUrl } from '$lib/api/api-utils';
-	import { Music } from 'lucide-svelte';
+	import { Music, Lock } from 'lucide-svelte';
 	import BackButton from '$lib/components/BackButton.svelte';
 	import HeroBackdrop from '$lib/components/HeroBackdrop.svelte';
 	import type { PageData } from './$types';
@@ -23,26 +30,52 @@
 
 	let { data }: { data: PageData } = $props();
 
+	const detailQuery = getPlaylistDetailQuery(
+		() => data.playlistId,
+		() => true
+	);
+	const shareMutation = createSetPlaylistPublicMutation();
+
+	// A local mutable copy of the (full) playlist so child components can keep
+	// applying optimistic updates; redaction/loading/error leave it null.
 	let playlist = $state<PlaylistDetail | null>(null);
-	let loading = $state(true);
-	let loadError = $state<string | null>(null);
-	let activeLoadToken = 0;
 	let deleting = $state(false);
 
 	let deleteModal = $state<ReturnType<typeof DeletePlaylistModal> | null>(null);
 	let trackList = $state<ReturnType<typeof PlaylistTrackList> | null>(null);
 	let header = $state<ReturnType<typeof PlaylistHeader> | null>(null);
 
-	const SOURCES_CACHE_PREFIX = 'musicseerr_playlist_sources_';
+	let redacted = $derived(
+		detailQuery.data && isRedactedPlaylist(detailQuery.data)
+			? (detailQuery.data as RedactedPlaylist)
+			: null
+	);
+	let loading = $derived(detailQuery.isLoading);
+	let loadError = $derived.by(() => {
+		if (!detailQuery.isError) return null;
+		const msg = detailQuery.error instanceof Error ? detailQuery.error.message : '';
+		return /404|not found/i.test(msg) ? 'Playlist not found' : "Couldn't load this playlist";
+	});
+
+	let isOwner = $derived(playlist?.is_owner ?? false);
+	let canDelete = $derived((playlist?.is_owner ?? false) || authStore.isAdmin);
+
+	// Source-resolution cache is namespaced per user so two accounts on a shared
+	// browser never read each other's resolved sources (AMU-5).
+	const SOURCES_CACHE_PREFIX = 'droppedneedle_playlist_sources_';
+	function sourcesCacheKey(playlistId: string): string {
+		return `${SOURCES_CACHE_PREFIX}${authStore.user?.id ?? 'anon'}_${playlistId}`;
+	}
 
 	function getSourcesFromCache(playlistId: string): Record<string, string[]> | null {
 		try {
-			const raw = localStorage.getItem(SOURCES_CACHE_PREFIX + playlistId);
+			const key = sourcesCacheKey(playlistId);
+			const raw = localStorage.getItem(key);
 			if (!raw) return null;
 			const cached = JSON.parse(raw) as { ts: number; data: Record<string, string[]> };
 			const ttl = getCacheTTL('playlistSources');
 			if (Date.now() - cached.ts > ttl) {
-				localStorage.removeItem(SOURCES_CACHE_PREFIX + playlistId);
+				localStorage.removeItem(key);
 				return null;
 			}
 			return cached.data;
@@ -51,20 +84,20 @@
 		}
 	}
 
-	function setSourcesCache(playlistId: string, data: Record<string, string[]>) {
+	function setSourcesCache(playlistId: string, sources: Record<string, string[]>) {
 		try {
 			localStorage.setItem(
-				SOURCES_CACHE_PREFIX + playlistId,
-				JSON.stringify({ ts: Date.now(), data })
+				sourcesCacheKey(playlistId),
+				JSON.stringify({ ts: Date.now(), data: sources })
 			);
 		} catch {
-			/* storage full — non-critical */
+			/* storage full - non-critical */
 		}
 	}
 
 	function invalidateSourcesCache(playlistId: string) {
 		try {
-			localStorage.removeItem(SOURCES_CACHE_PREFIX + playlistId);
+			localStorage.removeItem(sourcesCacheKey(playlistId));
 		} catch {
 			/* ignore */
 		}
@@ -93,45 +126,25 @@
 				setSourcesCache(playlistId, sources);
 			}
 		} catch {
-			// non-critical — tracks keep their stored available_sources
+			// non-critical - tracks keep their stored available_sources
 		}
 	}
 
-	async function loadPlaylist(playlistId: string) {
-		const token = ++activeLoadToken;
-		loading = true;
-		loadError = null;
-		playlist = null;
-		trackList?.clearReorderState();
-		header?.cleanupPreview();
-
-		try {
-			const loaded = await fetchPlaylist(playlistId);
-			if (token !== activeLoadToken) return;
-			playlist = loaded ?? null;
-			if (!playlist) {
-				loadError = "Couldn't load this playlist";
-			} else {
-				void resolveAndCacheSources(playlistId);
-			}
-		} catch (e) {
-			if (token !== activeLoadToken) return;
-			if (e instanceof Error && /404|not found/i.test(e.message)) {
-				loadError = 'Playlist not found';
-			} else {
-				loadError = "Couldn't load this playlist";
-			}
-		} finally {
-			if (token === activeLoadToken) {
-				loading = false;
-			}
-		}
-	}
-
+	let lastSyncedData: PlaylistDetailItem | undefined;
 	$effect(() => {
-		const playlistId = data.playlistId;
+		const d = detailQuery.data;
+		if (d === lastSyncedData) return;
+		lastSyncedData = d;
 		untrack(() => {
-			void loadPlaylist(playlistId);
+			trackList?.clearReorderState();
+			header?.cleanupPreview();
+			if (d && !isRedactedPlaylist(d)) {
+				// Clone so optimistic child mutations never touch the query cache.
+				playlist = { ...d, tracks: d.tracks.map((t) => ({ ...t })) };
+				void resolveAndCacheSources(d.id);
+			} else {
+				playlist = null;
+			}
 		});
 	});
 
@@ -180,11 +193,28 @@
 		playlist = updatedPlaylist;
 	}
 
+	async function handleShare(isPublic: boolean) {
+		if (!playlist || shareMutation.isPending) return;
+		try {
+			const updated = await shareMutation.mutateAsync({ id: playlist.id, isPublic });
+			playlist = { ...playlist, is_public: updated.is_public };
+			toastStore.show({
+				message: updated.is_public ? 'Playlist is now public' : 'Playlist is now private',
+				type: 'success'
+			});
+		} catch {
+			toastStore.show({ message: "Couldn't update sharing", type: 'error' });
+		}
+	}
+
 	async function confirmDelete() {
 		if (!playlist || deleting) return;
 		deleting = true;
 		try {
 			await deletePlaylist(playlist.id);
+			await invalidateQueriesWithPersister({
+				queryKey: PlaylistQueryKeyFactory.list(authStore.user?.id)
+			});
 			toastStore.show({ message: 'Playlist deleted', type: 'success' });
 			await goto('/playlists');
 		} catch {
@@ -213,14 +243,13 @@
 	});
 
 	onDestroy(() => {
-		activeLoadToken += 1;
 		trackList?.clearReorderState();
 		header?.cleanupPreview();
 	});
 </script>
 
 <svelte:head>
-	<title>{playlist?.name ?? 'Playlist'} - Musicseerr</title>
+	<title>{playlist?.name ?? 'Playlist'} - DroppedNeedle</title>
 </svelte:head>
 
 <div class="w-full px-2 sm:px-4 lg:px-8 py-4 sm:py-8 max-w-7xl mx-auto">
@@ -251,11 +280,24 @@
 			<h2 class="text-lg font-semibold text-base-content/80">Couldn't load this playlist</h2>
 			<p class="text-sm text-base-content/60">{loadError}</p>
 			<div class="flex items-center gap-2">
-				<button class="btn btn-sm btn-accent" onclick={() => void loadPlaylist(data.playlistId)}>
+				<button class="btn btn-sm btn-accent" onclick={() => void detailQuery.refetch()}>
 					Retry
 				</button>
 				<BackButton fallback="/playlists" />
 			</div>
+		</div>
+	{:else if redacted}
+		<div class="flex flex-col items-center justify-center py-20 gap-4 text-center">
+			<div class="flex items-center justify-center rounded-full bg-base-200 p-5">
+				<Lock class="h-12 w-12 text-base-content/30" />
+			</div>
+			<h2 class="text-lg font-semibold italic text-base-content/70">Private playlist</h2>
+			<p class="text-sm text-base-content/60">
+				{redacted.track_count} track{redacted.track_count === 1 ? '' : 's'}{redacted.owner_name
+					? ` · owned by ${redacted.owner_name}`
+					: ''}
+			</p>
+			<BackButton fallback="/playlists" />
 		</div>
 	{:else if !playlist}
 		<div class="flex flex-col items-center justify-center py-20 gap-4">
@@ -292,10 +334,14 @@
 					<PlaylistHeader
 						bind:this={header}
 						{playlist}
+						canEdit={isOwner}
+						{canDelete}
+						sharePending={shareMutation.isPending}
 						onplayall={playAll}
 						onshuffleall={shuffleAll}
 						ondeleteclick={() => deleteModal?.showModal()}
 						onplaylistupdate={handlePlaylistUpdate}
+						onshare={handleShare}
 					/>
 				</div>
 			</div>
@@ -303,6 +349,7 @@
 			<PlaylistTrackList
 				bind:this={trackList}
 				{playlist}
+				readonly={!isOwner}
 				ontrackchange={() => {}}
 				onsourcechange={handleSourceChange}
 				onplaytrack={playFromTrack}

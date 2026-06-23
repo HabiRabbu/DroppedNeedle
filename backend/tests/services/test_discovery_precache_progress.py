@@ -30,7 +30,7 @@ def _make_service(*, lb_configured: bool = True, lastfm_enabled: bool = False):
         listenbrainz_repo=lb_repo,
         musicbrainz_repo=MagicMock(),
         library_db=library_db,
-        lidarr_repo=MagicMock(),
+        library_repo=MagicMock(),
         memory_cache=cache,
         lastfm_repo=lastfm_repo,
         preferences_service=prefs,

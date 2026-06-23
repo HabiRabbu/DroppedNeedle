@@ -3,10 +3,9 @@ import { CACHE_KEYS, CACHE_TTL } from '$lib/constants';
 import { createLocalStorageCache } from '$lib/utils/localStorageCache';
 import { api } from '$lib/api/client';
 
-export interface LibraryState {
+interface LibraryState {
 	mbidSet: Set<string>;
 	requestedSet: Set<string>;
-	monitoredSet: Set<string>;
 	loading: boolean;
 	lastUpdated: number | null;
 	initialized: boolean;
@@ -15,7 +14,6 @@ export interface LibraryState {
 const initialState: LibraryState = {
 	mbidSet: new Set(),
 	requestedSet: new Set(),
-	monitoredSet: new Set(),
 	loading: false,
 	lastUpdated: null,
 	initialized: false
@@ -24,7 +22,6 @@ const initialState: LibraryState = {
 type LibraryCacheData = {
 	mbids: string[];
 	requested: string[];
-	monitored: string[];
 };
 
 function createLibraryStore() {
@@ -36,24 +33,18 @@ function createLibraryStore() {
 
 	function normalizeCachedData(data: LibraryCacheData | string[]): LibraryCacheData {
 		if (Array.isArray(data)) {
-			return { mbids: data, requested: [], monitored: [] };
+			return { mbids: data, requested: [] };
 		}
 		return {
 			mbids: data.mbids ?? [],
-			requested: data.requested ?? [],
-			monitored: data.monitored ?? []
+			requested: data.requested ?? []
 		};
 	}
 
-	function persistState(
-		mbidSet: Set<string>,
-		requestedSet: Set<string>,
-		monitoredSet: Set<string>
-	) {
+	function persistState(mbidSet: Set<string>, requestedSet: Set<string>) {
 		cache.set({
 			mbids: [...mbidSet],
-			requested: [...requestedSet],
-			monitored: [...monitoredSet]
+			requested: [...requestedSet]
 		});
 	}
 
@@ -66,9 +57,8 @@ function createLibraryStore() {
 			const normalized = normalizeCachedData(cached.data);
 			const mbids = normalized.mbids.map((m) => m.toLowerCase());
 			const requested = normalized.requested.map((m) => m.toLowerCase());
-			const monitored = normalized.monitored.map((m) => m.toLowerCase());
 
-			if (mbids.length === 0 && requested.length === 0 && monitored.length === 0) {
+			if (mbids.length === 0 && requested.length === 0) {
 				await fetchLibraryMbids(false);
 				return;
 			}
@@ -77,7 +67,6 @@ function createLibraryStore() {
 				...s,
 				mbidSet: new Set(mbids),
 				requestedSet: new Set(requested),
-				monitoredSet: new Set(monitored),
 				lastUpdated: cached.timestamp,
 				initialized: true
 			}));
@@ -100,23 +89,20 @@ function createLibraryStore() {
 			const data = await api.global.get<{
 				mbids?: string[];
 				requested_mbids?: string[];
-				monitored_mbids?: string[];
 			}>('/api/v1/library/mbids');
 			const mbids: string[] = (data.mbids || []).map((m: string) => m.toLowerCase());
 			const requested: string[] = (data.requested_mbids || []).map((m: string) => m.toLowerCase());
-			const monitored: string[] = (data.monitored_mbids || []).map((m: string) => m.toLowerCase());
 
 			update((s) => ({
 				...s,
 				mbidSet: new Set(mbids),
 				requestedSet: new Set(requested),
-				monitoredSet: new Set(monitored),
 				loading: false,
 				lastUpdated: Date.now(),
 				initialized: true
 			}));
 
-			cache.set({ mbids, requested, monitored });
+			cache.set({ mbids, requested });
 		} catch {
 			if (!background) {
 				update((s) => ({ ...s, loading: false, initialized: true }));
@@ -136,10 +122,8 @@ function createLibraryStore() {
 			newSet.add(mbid.toLowerCase());
 			const newRequested = new Set(s.requestedSet);
 			newRequested.delete(mbid.toLowerCase());
-			const newMonitored = new Set(s.monitoredSet);
-			newMonitored.delete(mbid.toLowerCase());
-			persistState(newSet, newRequested, newMonitored);
-			return { ...s, mbidSet: newSet, requestedSet: newRequested, monitoredSet: newMonitored };
+			persistState(newSet, newRequested);
+			return { ...s, mbidSet: newSet, requestedSet: newRequested };
 		});
 	}
 
@@ -149,10 +133,8 @@ function createLibraryStore() {
 			newSet.delete(mbid.toLowerCase());
 			const newRequested = new Set(s.requestedSet);
 			newRequested.delete(mbid.toLowerCase());
-			const newMonitored = new Set(s.monitoredSet);
-			newMonitored.delete(mbid.toLowerCase());
-			persistState(newSet, newRequested, newMonitored);
-			return { ...s, mbidSet: newSet, requestedSet: newRequested, monitoredSet: newMonitored };
+			persistState(newSet, newRequested);
+			return { ...s, mbidSet: newSet, requestedSet: newRequested };
 		});
 	}
 
@@ -164,10 +146,8 @@ function createLibraryStore() {
 			const lower = mbid.toLowerCase();
 			const newRequested = new Set(s.requestedSet);
 			newRequested.add(lower);
-			const newMonitored = new Set(s.monitoredSet);
-			newMonitored.delete(lower);
-			persistState(s.mbidSet, newRequested, newMonitored);
-			return { ...s, requestedSet: newRequested, monitoredSet: newMonitored };
+			persistState(s.mbidSet, newRequested);
+			return { ...s, requestedSet: newRequested };
 		});
 	}
 
@@ -176,29 +156,6 @@ function createLibraryStore() {
 		const lower = mbid.toLowerCase();
 		const state = get({ subscribe });
 		return state.requestedSet.has(lower) && !state.mbidSet.has(lower);
-	}
-
-	function isMonitored(mbid: string | null | undefined): boolean {
-		if (!mbid) return false;
-		const state = get({ subscribe });
-		return (
-			state.monitoredSet.has(mbid.toLowerCase()) &&
-			!state.mbidSet.has(mbid.toLowerCase()) &&
-			!state.requestedSet.has(mbid.toLowerCase())
-		);
-	}
-
-	function setMonitored(mbid: string, monitored: boolean) {
-		update((s) => {
-			const newMonitored = new Set(s.monitoredSet);
-			if (monitored) {
-				newMonitored.add(mbid.toLowerCase());
-			} else {
-				newMonitored.delete(mbid.toLowerCase());
-			}
-			persistState(s.mbidSet, s.requestedSet, newMonitored);
-			return { ...s, monitoredSet: newMonitored };
-		});
 	}
 
 	async function refresh() {
@@ -225,8 +182,6 @@ function createLibraryStore() {
 		removeMbid,
 		isRequested,
 		addRequested,
-		isMonitored,
-		setMonitored,
 		updateCacheTTL: cache.updateTTL
 	};
 }

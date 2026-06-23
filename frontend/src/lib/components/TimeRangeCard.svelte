@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, Bookmark, Search } from 'lucide-svelte';
+	import { Check, Search } from 'lucide-svelte';
 	import type { HomeAlbum, HomeArtist } from '$lib/types';
 	import { formatListenCount } from '$lib/utils/formatting';
 	import AlbumImage from './AlbumImage.svelte';
@@ -82,11 +82,6 @@
 						<Check class="h-3 w-3" />
 						In Library
 					</div>
-				{:else if item.monitored && !('requested' in item && item.requested)}
-					<div class="badge badge-neutral">
-						<Bookmark class="h-3 w-3" />
-						Monitored
-					</div>
 				{/if}
 			</div>
 			{#if isAlbum(item) && item.mbid && item.in_library}
@@ -131,10 +126,6 @@
 				{#if item.in_library}
 					<div class="badge badge-success badge-sm absolute left-1 top-1 z-20">
 						<Check class="h-3 w-3" />
-					</div>
-				{:else if item.monitored && !('requested' in item && item.requested)}
-					<div class="badge badge-neutral badge-sm absolute left-1 top-1 z-20">
-						<Bookmark class="h-3 w-3" />
 					</div>
 				{/if}
 				{#if item.mbid && item.in_library}

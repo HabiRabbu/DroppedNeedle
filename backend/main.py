@@ -7,18 +7,17 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from core.dependencies import (
-    get_request_queue, 
-    get_cache, 
+    get_cache,
     get_library_service,
     get_preferences_service,
     init_app_state, 
     cleanup_app_state
 )
-from core.tasks import start_cache_cleanup_task, start_library_sync_task, start_disk_cache_cleanup_task, start_home_cache_warming_task, start_genre_cache_warming_task, start_discover_cache_warming_task, start_artist_discovery_cache_warming_task, start_audiodb_sweep_task, start_request_status_sync_task, start_memory_maintenance_task
+from core.tasks import start_cache_cleanup_task, start_library_auto_scan_task, start_disk_cache_cleanup_task, start_genre_cache_warming_task, start_artist_discovery_cache_warming_task, start_audiodb_sweep_task, start_request_status_sync_task, start_memory_maintenance_task, start_poll_new_releases_task
 from core.task_registry import TaskRegistry
 from core.config import get_settings
-from core.dependencies.auth_providers import get_auth_service
-from core.exceptions import ResourceNotFoundError, ExternalServiceError, SourceResolutionError, ValidationError, ConfigurationError, ClientDisconnectedError
+from core.dependencies.auth_providers import get_auth_service, get_auth_store
+from core.exceptions import ResourceNotFoundError, ExternalServiceError, SourceResolutionError, ValidationError, ConfigurationError, ClientDisconnectedError, PermissionDeniedError, ConflictError
 from core.exception_handlers import (
     resource_not_found_handler,
     external_service_error_handler,
@@ -26,6 +25,8 @@ from core.exception_handlers import (
     source_resolution_error_handler,
     validation_error_handler,
     configuration_error_handler,
+    permission_denied_handler,
+    conflict_error_handler,
     general_exception_handler,
     http_exception_handler,
     starlette_http_exception_handler,
@@ -37,8 +38,9 @@ from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
 from middleware import DegradationMiddleware, HSTSMiddleware, PerformanceMiddleware, RateLimitMiddleware, AuthMiddleware
 from static_server import mount_frontend
 from api.v1.routes import (
-    search, requests, library, status, queue, covers, artists, albums, settings, home, discover, profile, playlists
+    search, requests, library, status, covers, artists, albums, settings, home, discover, profile, playlists, following
 )
+from api.v1.routes import library_scan as library_scan_routes
 from api.v1.routes import cache as cache_routes
 from api.v1.routes import cache_status as cache_status_routes
 from api.v1.routes import youtube as youtube_routes
@@ -49,30 +51,241 @@ from api.v1.routes import navidrome_library as navidrome_library_routes
 from api.v1.routes import local_library as local_library_routes
 from api.v1.routes import lastfm as lastfm_routes
 from api.v1.routes import scrobble as scrobble_routes
+from api.v1.routes import me_connections as me_connections_routes
 from api.v1.routes import plex_library as plex_library_routes
 from api.v1.routes import plex_auth as plex_auth_routes
 from api.v1.routes import version as version_routes
 from api.v1.routes import download as download_routes
 from api.v1.routes import auth as auth_routes
+from api.v1.routes import download_client as download_client_routes
+from api.v1.routes import downloads_search as downloads_search_routes
+from api.v1.routes import downloads as downloads_routes
+from api.v1.routes import tracks as tracks_routes
+from api.v1.routes import quarantine as quarantine_routes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+_ORPHAN_STAGING_MAX_AGE_SECONDS = 7 * 24 * 3600
+
+
+async def _cleanup_orphan_staging(store, staging_path) -> None:
+    """Delete staging/{task_id}/ dirs older than 7 days with no download_tasks row.
+    Best-effort; one bad entry never aborts the sweep, a failure never blocks startup."""
+    import shutil as _shutil
+    import time as _time
+
+    if staging_path is None or not staging_path.exists():
+        return
+    cutoff = _time.time() - _ORPHAN_STAGING_MAX_AGE_SECONDS
+    try:
+        entries = await asyncio.to_thread(lambda: list(staging_path.iterdir()))
+    except OSError as exc:
+        logger.warning("startup.orphan_sweep_skipped", extra={"error": str(exc)})
+        return
+    removed = 0
+    for entry in entries:
+        try:
+            if not entry.is_dir() or entry.stat().st_mtime >= cutoff:
+                continue
+            if await store.get_task(entry.name) is not None:
+                continue
+            await asyncio.to_thread(_shutil.rmtree, entry, ignore_errors=True)
+            removed += 1
+        except OSError as exc:  # noqa: BLE001 - one bad dir must not abort the sweep
+            logger.warning("startup.orphan_sweep_entry_failed", extra={"error": str(exc)})
+    if removed:
+        logger.info("startup.orphan_staging_swept", extra={"removed": removed})
+
+
+async def _migrate_shared_avatar_to_first_admin(auth_store, cache_dir) -> None:
+    """One-time: move the legacy shared avatar to the first admin's per-user avatar.
+    Idempotent and best-effort - never blocks startup."""
+    import shutil
+
+    try:
+        admin = await auth_store.get_first_admin()
+        if admin is None or admin.avatar_url:
+            return
+        legacy_dir = cache_dir / "profile"
+        source = next(
+            (
+                legacy_dir / f"avatar{ext}"
+                for ext in (".jpg", ".png", ".webp", ".gif")
+                if (legacy_dir / f"avatar{ext}").exists()
+            ),
+            None,
+        )
+        if source is None:
+            return
+        avatars_dir = cache_dir / "avatars"
+        avatars_dir.mkdir(parents=True, exist_ok=True)
+        dest = avatars_dir / f"{admin.id}{source.suffix}"
+        await asyncio.to_thread(shutil.move, str(source), str(dest))
+        await auth_store.update_user_profile(
+            admin.id, avatar_url=f"/api/v1/profile/avatar/{admin.id}"
+        )
+        logger.info("Migrated legacy shared avatar to first admin %s", admin.id[:8])
+    except Exception as exc:  # noqa: BLE001 - migration must never block startup
+        logger.warning("Shared-avatar migration skipped: %s", exc)
+
+
+async def _migrate_playlists_owner_to_admin(auth_store, playlist_repo) -> None:
+    """One-time: assign ownerless playlists to the first admin as private.
+    Idempotent (only touches user_id IS NULL rows), best-effort, never blocks startup."""
+    try:
+        admin = await auth_store.get_first_admin()
+        if admin is None:
+            return
+        count = await asyncio.to_thread(playlist_repo.assign_unowned_to, admin.id)
+        if count:
+            logger.info("Backfilled %d ownerless playlist(s) to first admin %s", count, admin.id[:8])
+    except Exception as exc:  # noqa: BLE001 - migration must never block startup
+        logger.warning("Playlist owner backfill skipped: %s", exc)
+
+
+async def _migrate_global_connection_to_first_admin(
+    auth_store, preferences_service, user_connections_store, user_listening_prefs_store
+) -> None:
+    """One-time: seed the first admin's per-user connections + listening prefs from the
+    existing global config, so an upgrading operator keeps their personalization/scrobbling
+    instead of dropping to the trending fallback. Idempotent, best-effort, never blocks
+    startup. The app api_key/shared_secret stay global and are not copied into user_connections."""
+    try:
+        admin = await auth_store.get_first_admin()
+        if admin is None:
+            return
+        existing = {r.service for r in await user_connections_store.list_for_user(admin.id)}
+        seeded: list[str] = []
+
+        lb = preferences_service.get_listenbrainz_connection()
+        if "listenbrainz" not in existing and lb.enabled and lb.user_token:
+            await user_connections_store.upsert(
+                admin.id, "listenbrainz", {"user_token": lb.user_token, "username": lb.username}
+            )
+            seeded.append("listenbrainz")
+
+        lf = preferences_service.get_lastfm_connection()
+        if "lastfm" not in existing and lf.session_key:
+            await user_connections_store.upsert(
+                admin.id, "lastfm", {"session_key": lf.session_key, "username": lf.username}
+            )
+            seeded.append("lastfm")
+
+        existing_prefs = await user_listening_prefs_store.get(admin.id)
+        if not existing_prefs.updated_at:  # empty => no row yet
+            scrobble = preferences_service.get_scrobble_settings()
+            source = preferences_service.get_primary_music_source().source
+            meaningful = bool(
+                seeded
+                or scrobble.scrobble_to_lastfm
+                or scrobble.scrobble_to_listenbrainz
+                or source != "listenbrainz"
+            )
+            if meaningful:
+                await user_listening_prefs_store.upsert(
+                    admin.id,
+                    scrobble_to_lastfm=scrobble.scrobble_to_lastfm,
+                    scrobble_to_listenbrainz=scrobble.scrobble_to_listenbrainz,
+                    primary_music_source=source,
+                )
+        if seeded:
+            logger.info("Backfilled global connection(s) %s to first admin %s", seeded, admin.id[:8])
+    except Exception as exc:  # noqa: BLE001 - migration must never block startup
+        logger.warning("Global-connection backfill skipped: %s", exc)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Musicseerr...")
+    logger.info("Starting DroppedNeedle...")
     
     settings = get_settings()
     configured_level = getattr(logging, settings.log_level, logging.INFO)
     logging.getLogger().setLevel(configured_level)
 
+    from core.config import migrate_legacy_config
+    migrate_legacy_config()
+
     await init_app_state(app)
     await get_auth_service().cleanup_expired_tokens()
-    
+
+    # order matters: backfill_usernames must run before migrate_local_provider_to_username
+    # (the latter copies each user's username into the local provider_uid). Idempotent.
+    _auth_store = get_auth_store()
+    await _auth_store.backfill_usernames()
+    await _auth_store.migrate_local_provider_to_username()
+    await _migrate_shared_avatar_to_first_admin(_auth_store, settings.cache_dir)
+    from core.dependencies.repo_providers import get_playlist_repository
+    await _migrate_playlists_owner_to_admin(_auth_store, get_playlist_repository())
+    from core.dependencies import (
+        get_user_connections_store,
+        get_user_listening_prefs_store,
+    )
+    await _migrate_global_connection_to_first_admin(
+        _auth_store,
+        get_preferences_service(),
+        get_user_connections_store(),
+        get_user_listening_prefs_store(),
+    )
+    # Phase 5: rebuild a legacy global ignored_releases table into the per-user shape,
+    # assigning existing rows to the first admin. Idempotent (no-op once per-user).
+    _first_admin = await _auth_store.get_first_admin()
+    if _first_admin is not None:
+        from core.dependencies import get_mbid_store
+        _ignored_migrated = await get_mbid_store().migrate_ignored_releases_to_user(_first_admin.id)
+        if _ignored_migrated:
+            logger.info("Migrated %d legacy ignored releases to the first admin", _ignored_migrated)
+
     preferences_service = get_preferences_service()
     settings.instance_id = preferences_service.get_instance_id()
     advanced_settings = preferences_service.get_advanced_settings()
+
+    # validate config off-thread; log and continue rather than refuse to start, so a
+    # bad path can't lock the owner out of the /settings/library UI
+    from pathlib import Path as _Path
+
+    from core.exceptions import ConfigurationError
+    from core.startup_validator import StartupValidator
+
+    _library_settings = preferences_service.get_library_settings()
+    try:
+        await asyncio.to_thread(
+            StartupValidator(
+                [_Path(p) for p in _library_settings.library_paths],
+                _Path(_library_settings.staging_path) if _library_settings.staging_path else None,
+                slskd_downloads_path=_Path(get_settings().slskd_downloads_path),
+            ).validate
+        )
+        logger.info(
+            "startup.library_validated",
+            extra={
+                "library_path_count": len(_library_settings.library_paths),
+                "staging_configured": bool(_library_settings.staging_path),
+                "slskd_downloads_path": str(get_settings().slskd_downloads_path),
+            },
+        )
+    except ConfigurationError as exc:
+        # a bad path is operator-fixable at /settings/library, never fatal
+        logger.error("startup.config_invalid", extra={"error": str(exc)})
+
+    from core.dependencies import get_download_orchestrator, get_library_scanner
+    from core.tasks import start_download_resume_task, start_library_scan_resume_task
+
+    start_library_scan_resume_task(
+        get_library_scanner(),
+        [_Path(p) for p in _library_settings.library_paths],
+    )
+
+    start_download_resume_task(get_download_orchestrator())
+
+    from core.dependencies import get_download_store as _get_download_store
+    _orphan_task = asyncio.create_task(
+        _cleanup_orphan_staging(
+            _get_download_store(),
+            _Path(_library_settings.staging_path) if _library_settings.staging_path else None,
+        )
+    )
+    TaskRegistry.get_instance().register("orphan-staging-cleanup", _orphan_task)
 
     cache = get_cache()
     start_cache_cleanup_task(cache, interval=advanced_settings.memory_cache_cleanup_interval)
@@ -89,11 +302,34 @@ async def lifespan(app: FastAPI):
     )
     
     library_service = get_library_service()
-    start_library_sync_task(library_service, preferences_service)
+    from core.dependencies import get_scan_state_store
+    start_library_auto_scan_task(
+        get_library_scanner(), get_scan_state_store(), preferences_service
+    )
 
-    request_queue = get_request_queue()
-    await request_queue.start()
-    
+    # warn (non-fatal) if the download client is unconfigured/unreachable
+    from core.dependencies import get_download_client_repository, get_download_store
+    try:
+        await get_download_store().delete_expired_search_jobs()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Download search-job cleanup skipped: %s", exc)
+    try:
+        _dl_client = get_download_client_repository()
+        if not _dl_client.is_configured():
+            logger.warning("startup.download_client_unconfigured")
+        else:
+            _dl_health = await _dl_client.health_check()
+            logger.info(
+                "startup.download_client_health", extra={"status": _dl_health.status}
+            )
+            if _dl_health.status != "ok":
+                logger.warning(
+                    "startup.download_client_unhealthy",
+                    extra={"status": _dl_health.status, "detail": _dl_health.message},
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup.download_client_check_skipped", extra={"error": str(exc)})
+
     from core.tasks import warm_library_cache
     from core.dependencies import get_album_service, get_library_db, get_sync_state_store
     
@@ -145,16 +381,12 @@ async def lifespan(app: FastAPI):
         resume_task.add_done_callback(lambda t: logger.error("Resume sync failed: %s", t.exception()) if t.exception() else None)
         TaskRegistry.get_instance().register("library-sync-resume", resume_task)
 
+    # Phase 5: Home/Discover are per-user now - no boot-time prewarm (it would build
+    # for the retired global account and is unbounded across users). Warming is
+    # on-demand on the first per-user request; the existing skeleton covers the cold
+    # load (L2). Only the account-less genre warm remains.
     from core.dependencies import get_home_service
-    start_home_cache_warming_task(get_home_service())
     start_genre_cache_warming_task(get_home_service())
-
-    from core.dependencies import get_discover_service, get_discover_queue_manager
-    start_discover_cache_warming_task(
-        get_discover_service(),
-        queue_manager=get_discover_queue_manager(),
-        preferences_service=get_preferences_service(),
-    )
 
     from core.dependencies import get_artist_discovery_service
     start_artist_discovery_cache_warming_task(
@@ -218,6 +450,9 @@ async def lifespan(app: FastAPI):
 
     start_request_status_sync_task(requests_page_service)
 
+    from core.dependencies import get_new_release_service
+    start_poll_new_releases_task(get_new_release_service())
+
     from core.tasks import start_orphan_cover_demotion_task, start_store_prune_task
     from core.dependencies import get_request_history_store, get_mbid_store, get_youtube_store
 
@@ -236,17 +471,12 @@ async def lifespan(app: FastAPI):
         interval=advanced_settings.store_prune_interval_hours * 3600,
     )
     
-    logger.info("Musicseerr started successfully")
+    logger.info("DroppedNeedle started successfully")
     
     try:
         yield
     finally:
-        logger.info("Shutting down Musicseerr...")
-
-        try:
-            await request_queue.stop()
-        except Exception as e:  # noqa: BLE001
-            logger.error("Error stopping request queue: %s", e)
+        logger.info("Shutting down DroppedNeedle...")
 
         registry = TaskRegistry.get_instance()
         settings = get_settings()
@@ -257,11 +487,11 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.error("Error during cleanup: %s", e)
         
-        logger.info("Musicseerr shut down successfully")
+        logger.info("DroppedNeedle shut down successfully")
 
 
 app = FastAPI(
-    title="Musicseerr",
+    title="DroppedNeedle",
     description="Music request and management system",
     version="1.0.0",
     docs_url="/api/v1/docs",
@@ -277,6 +507,8 @@ app.add_exception_handler(ExternalServiceError, external_service_error_handler)
 app.add_exception_handler(SourceResolutionError, source_resolution_error_handler)
 app.add_exception_handler(ValidationError, validation_error_handler)
 app.add_exception_handler(ConfigurationError, configuration_error_handler)
+app.add_exception_handler(PermissionDeniedError, permission_denied_handler)
+app.add_exception_handler(ConflictError, conflict_error_handler)
 app.add_exception_handler(CircuitOpenError, circuit_open_error_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handler)
@@ -320,20 +552,29 @@ if app_settings.debug:
         allow_headers=["*"],
     )
 
+# Compat hardening, scoped to /subsonic + /jellyfin. Added last so CompatCORS is
+# outermost and OPTIONS preflights short-circuit before rate-limit + auth.
+from api.compat.common.ratelimit import CompatRateLimitMiddleware  # noqa: E402
+from api.compat.common.cors import CompatCORSMiddleware  # noqa: E402
+
+app.add_middleware(CompatRateLimitMiddleware)
+app.add_middleware(CompatCORSMiddleware)
+
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "Musicseerr backend running"}
+    return {"status": "ok", "message": "DroppedNeedle backend running"}
 
 
 v1_router = APIRouter(prefix="/api/v1")
 v1_router.include_router(search.router)
 v1_router.include_router(requests.router)
 v1_router.include_router(library.router)
-v1_router.include_router(queue.router)
+v1_router.include_router(library_scan_routes.router)
 v1_router.include_router(status.router)
 v1_router.include_router(covers.router)
 v1_router.include_router(artists.router)
+v1_router.include_router(following.router)
 v1_router.include_router(albums.router)
 v1_router.include_router(settings.router)
 v1_router.include_router(home.router)
@@ -350,11 +591,41 @@ v1_router.include_router(plex_auth_routes.router)
 v1_router.include_router(local_library_routes.router)
 v1_router.include_router(lastfm_routes.router)
 v1_router.include_router(scrobble_routes.router)
+v1_router.include_router(me_connections_routes.router)
 v1_router.include_router(profile.router)
 v1_router.include_router(playlists.router)
 v1_router.include_router(version_routes.router)
 v1_router.include_router(download_routes.router)
 v1_router.include_router(auth_routes.router)
+v1_router.include_router(download_client_routes.router)
+v1_router.include_router(downloads_search_routes.router)
+# quarantine + search routers declare literal /downloads/{quarantine,search}/* paths;
+# they MUST be registered before downloads_routes, whose catch-all GET /downloads/{task_id}
+# would otherwise capture the literal segment (e.g. /downloads/quarantine).
+v1_router.include_router(quarantine_routes.router)
+v1_router.include_router(downloads_routes.router)
+v1_router.include_router(tracks_routes.router)
+from api.v1.routes import connect_apps_routes  # noqa: E402
+
+v1_router.include_router(connect_apps_routes.router)
 app.include_router(v1_router)
+
+# Compat shims mount at the app root (not /api/v1) so clients append native paths;
+# must register before mount_frontend's SPA catch-all.
+from api.compat.subsonic.router import router as subsonic_router  # noqa: E402
+from api.compat.jellyfin.router import router as jellyfin_router  # noqa: E402
+
+app.include_router(subsonic_router)
+app.include_router(jellyfin_router)
+
+# Canonicalise compat path casing before routing (some clients lowercase the path).
+# After the shims (needs their routes) and outside the rate-limiter so its exact-path
+# check sees the canonical form.
+from api.compat.common.path_case import CompatPathCaseMiddleware  # noqa: E402
+
+app.add_middleware(
+    CompatPathCaseMiddleware,
+    routes=[*subsonic_router.routes, *jellyfin_router.routes],
+)
 
 mount_frontend(app)

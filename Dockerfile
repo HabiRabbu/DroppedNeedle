@@ -1,6 +1,3 @@
-##
-# Stage 1 — Build frontend
-##
 FROM node:25-alpine AS frontend-build
 
 WORKDIR /app/frontend
@@ -8,7 +5,6 @@ WORKDIR /app/frontend
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 
-# Install pnpm
 RUN npm install -g pnpm@10.33.0
 
 COPY frontend/package.json ./
@@ -20,24 +16,18 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 COPY frontend/ .
 RUN pnpm run build
 
-##
-# Stage 2 — Install Python dependencies
-##
 FROM python:3.13.5-slim AS python-deps
 
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --prefix=/install -r /tmp/requirements.txt
 
-##
-# Stage 3 — Final runtime image
-##
 FROM python:3.13.5-slim
 
 ARG COMMIT_TAG
 ARG BUILD_DATE
 
-LABEL org.opencontainers.image.title="MusicSeerr" \
-      org.opencontainers.image.description="Music request and discovery app for Lidarr" \
+LABEL org.opencontainers.image.title="DroppedNeedle" \
+      org.opencontainers.image.description="Music request and discovery app with a built-in native library + download engine" \
       org.opencontainers.image.url="https://github.com/habirabbu/musicseerr" \
       org.opencontainers.image.source="https://github.com/habirabbu/musicseerr" \
       org.opencontainers.image.version="${COMMIT_TAG}" \
@@ -53,21 +43,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# libchromaprint-tools provides fpcalc (Tier-3 fingerprinting). Its version is
+# pinned reproducibly via the pinned python:3.13.5-slim (bookworm) base; apt
+# version-pinning is avoided because Debian drops old versions from the mirror.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl tini gosu \
+    && apt-get install -y --no-install-recommends curl tini gosu libchromaprint-tools ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-deps /install /usr/local
 
-RUN groupadd -r -g 911 musicseerr \
-    && useradd -r -u 911 -g musicseerr -d /app -s /sbin/nologin musicseerr
+# Bake the user at the entrypoint's default PUID/PGID (1000) so the common
+# deployment needs no runtime usermod/groupmod remap (which can stall startup).
+RUN groupadd -r -g 1000 droppedneedle \
+    && useradd -r -u 1000 -g droppedneedle -d /app -s /sbin/nologin droppedneedle
 
 COPY backend/ .
 COPY --from=frontend-build /app/frontend/build ./static
 COPY entrypoint.sh /entrypoint.sh
 
 RUN mkdir -p /app/cache /app/config \
-    && chown -R musicseerr:musicseerr /app \
+    && chown -R droppedneedle:droppedneedle /app \
     && chmod +x /entrypoint.sh
 
 EXPOSE ${PORT}

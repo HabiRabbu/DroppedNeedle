@@ -38,6 +38,9 @@ import {
 	computeNextIndex,
 	computePreviousIndex,
 	computeUpcomingLength,
+	computeNextAlbumIndex,
+	computePreviousAlbumIndex,
+	queueHasAlbums,
 	performCleanup
 } from './playerQueueOps';
 import {
@@ -115,6 +118,14 @@ function createPlayerStore() {
 	});
 	const currentQueueItem = $derived(queue.length > 0 ? queue[currentIndex] : null);
 	const queueLength = $derived(queue.length);
+	// Album-skip is disabled under shuffle, which has no album boundaries.
+	const hasAlbumsInQueue = $derived(queueHasAlbums(queue));
+	const hasNextAlbum = $derived(
+		!shuffleEnabled && hasAlbumsInQueue && computeNextAlbumIndex(queue, currentIndex) !== null
+	);
+	const hasPreviousAlbum = $derived(
+		!shuffleEnabled && hasAlbumsInQueue && computePreviousAlbumIndex(queue, currentIndex) !== null
+	);
 	const currentTrackNumber = $derived(
 		shuffleEnabled && shuffleOrder.length > 0
 			? shuffleOrder.indexOf(currentIndex) + 1 || currentIndex + 1
@@ -435,6 +446,12 @@ function createPlayerStore() {
 		get hasPrevious() {
 			return hasPrevious;
 		},
+		get hasNextAlbum() {
+			return hasNextAlbum;
+		},
+		get hasPreviousAlbum() {
+			return hasPreviousAlbum;
+		},
 		get shuffleEnabled() {
 			return shuffleEnabled;
 		},
@@ -511,6 +528,31 @@ function createPlayerStore() {
 
 		previousTrack(): void {
 			const idx = getPreviousIndex();
+			if (idx !== null) void loadQueueItem(idx);
+		},
+
+		nextAlbum(): void {
+			if (!hasNextAlbum) return;
+			const idx = computeNextAlbumIndex(queue, currentIndex);
+			if (idx !== null)
+				void loadQueueItem(idx).then(() => {
+					const c = performCleanup(
+						queue,
+						currentIndex,
+						shuffleEnabled,
+						shuffleOrder,
+						MAX_HISTORY_LENGTH
+					);
+					queue = c.newQueue;
+					currentIndex = c.newIndex;
+					shuffleOrder = c.newShuffleOrder;
+					persist();
+				});
+		},
+
+		previousAlbum(): void {
+			if (!hasPreviousAlbum) return;
+			const idx = computePreviousAlbumIndex(queue, currentIndex);
 			if (idx !== null) void loadQueueItem(idx);
 		},
 

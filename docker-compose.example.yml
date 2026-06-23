@@ -1,24 +1,35 @@
+# DroppedNeedle Native - example compose.
+#
+# DroppedNeedle talks to your OWN slskd instance over its HTTP API. It does not join
+# the Soulseek network itself, and this file does not start slskd for you. Run slskd
+# yourself, then point DroppedNeedle at it in Settings > Download Client (URL + X-API-Key).
+#
+# A commented-out slskd service is at the bottom if you want to run one alongside.
+# See the README (Setup and slskd Setup sections) for the full walkthrough.
+
 services:
-  musicseerr:
-    image: ghcr.io/habirabbu/musicseerr:latest
-    # Built from main on every push - may break: ghcr.io/habirabbu/musicseerr:dev
-    container_name: musicseerr
+  droppedneedle:
+    image: habirabbu/droppedneedle:latest
+    # dev tag is built from main on every push and may break: habirabbu/droppedneedle:dev
+    container_name: droppedneedle
     environment:
-      - PUID=1000            # User ID — run `id` on your host to find yours
-      - PGID=1000            # Group ID — run `id` on your host to find yours
-      #                        Unraid: use 99/100 (nobody:users) unless you changed Unraid's defaults.
-      #                        If using Docker --user, PUID/PGID are ignored (user mapping is external).
-      - PORT=8688            # Internal port (must match the right side of "ports" below)
-      - TZ=Etc/UTC           # Timezone — e.g. America/New_York, Europe/London
+      - PUID=1000            # Run `id` on your host to find yours. Unraid: usually 99.
+      - PGID=1000            # Run `id` on your host to find yours. Unraid: usually 100.
+      #                        Ignored if you start the container with Docker --user.
+      - PORT=8688            # Must match the container-side port under "ports" below.
+      - TZ=Etc/UTC           # e.g. America/New_York, Europe/London
+      - SLSKD_DOWNLOADS_PATH=/slskd-downloads  # container path of the slskd downloads mount below
     ports:
-      - "8688:8688"         # <host-port>:<container-port> — change the left side to remap
+      - "8688:8688"          # host:container. Change the left side to use a different host port.
     volumes:
-      - ./config:/app/config  # Persistent app configuration
-      - ./cache:/app/cache    # Cover art & metadata cache
-      # Optional: mount your music library for local file playback
-      # The left side is the host path to your music (same as Lidarr's root folder).
-      # The right side (/music) must match the "Music Directory Path" in Settings > Local Files.
-      # - /path/to/music:/music:ro
+      - ./config:/app/config       # App configuration
+      - ./cache:/app/cache         # Cover art and metadata cache
+      - /path/to/music:/music:rw   # Your music library (read-write: imports land here)
+      # Mount slskd's downloads directory read-write, on the SAME filesystem as /music.
+      # On a finished download the engine moves files from here into the library with an
+      # atomic rename, which only works within one filesystem. Skip this and downloads
+      # finish in slskd but never import.
+      - /path/to/slskd/downloads:/slskd-downloads:rw
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
@@ -26,3 +37,19 @@ services:
       timeout: 10s
       start_period: 15s
       retries: 3
+
+# Optional: run slskd alongside DroppedNeedle. You are responsible for slskd and its shares.
+#  slskd:
+#    image: slskd/slskd:0.25.1   # Pinned. Requires >= 0.25.0.
+#    container_name: droppedneedle-slskd
+#    restart: unless-stopped
+#    ports:
+#      - "5030:5030"
+#    volumes:
+#      - ./slskd/config:/app   # slskd.yml lives here
+#      # slskd needs at least one shared folder (slskd.yml: shares.directories) or the
+#      # Soulseek network will ban it. Mount this same downloads path as the droppedneedle
+#      # service's /slskd-downloads above, on the same filesystem as /music.
+#      - /path/to/slskd/downloads:/downloads:rw
+#    environment:
+#      - SLSKD_REMOTE_CONFIGURATION=true
