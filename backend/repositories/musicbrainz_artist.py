@@ -261,13 +261,14 @@ class MusicBrainzArtistMixin:
         self,
         artist_mbid: str,
         offset: int = 0,
-        limit: int = 50
+        limit: int = 50,
+        priority: RequestPriority = RequestPriority.BACKGROUND_SYNC,
     ) -> tuple[list[dict[str, Any]], int]:
         try:
             result = await mb_api_get(
                 "/release-group",
                 params={"artist": artist_mbid, "limit": limit, "offset": offset},
-                priority=RequestPriority.BACKGROUND_SYNC,
+                priority=priority,
                 decode_type=_ArtistReleaseGroupsPayload,
             )
 
@@ -302,7 +303,10 @@ class MusicBrainzArtistMixin:
     async def get_release_groups_by_artist(
         self,
         artist_mbid: str,
-        limit: int = 10
+        limit: int = 10,
+        priority: RequestPriority = RequestPriority.BACKGROUND_SYNC,
     ) -> list[dict[str, Any]]:
-        release_groups, _ = await self.get_artist_release_groups(artist_mbid, offset=0, limit=limit)
+        release_groups, _ = await self.get_artist_release_groups(
+            artist_mbid, offset=0, limit=limit, priority=priority
+        )
         return release_groups

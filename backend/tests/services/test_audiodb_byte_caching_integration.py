@@ -28,13 +28,13 @@ def _response(
 
 @pytest.mark.asyncio
 async def test_album_byte_path_cache_hit_downloads_and_caches():
-    """8.5.a — Full chain: AudioDB cache hit → CDN download → disk write.
+    """8.5.a - Full chain: AudioDB cache hit → CDN download → disk write.
     CoverArtArchive is NOT called (short-circuited)."""
     audiodb_response = _response(content=b"fake-jpeg-bytes")
     http_get = AsyncMock(return_value=audiodb_response)
     write_cache = AsyncMock()
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(
+    audiodb_service.get_cached_album_images = AsyncMock(
         return_value=AudioDBAlbumImages(
             album_thumb_url=AUDIODB_CDN_URL,
             is_negative=False,
@@ -62,14 +62,14 @@ async def test_album_byte_path_cache_hit_downloads_and_caches():
 
 @pytest.mark.asyncio
 async def test_artist_byte_path_cache_hit_downloads_and_caches():
-    """8.5.b — Full chain: AudioDB cache hit → CDN download → disk write.
+    """8.5.b - Full chain: AudioDB cache hit → CDN download → disk write.
     Wikidata is NOT called (short-circuited)."""
     http_get = AsyncMock(
         return_value=_response(content=b"fake-artist-bytes"),
     )
     write_cache = AsyncMock()
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_artist_images = AsyncMock(
+    audiodb_service.get_cached_artist_images = AsyncMock(
         return_value=AudioDBArtistImages(
             thumb_url=AUDIODB_ARTIST_CDN_URL,
             is_negative=False,
@@ -98,7 +98,7 @@ async def test_artist_byte_path_cache_hit_downloads_and_caches():
 
 @pytest.mark.asyncio
 async def test_album_byte_path_cdn_404_falls_through_to_caa():
-    """8.5.c — CDN returns 404 → AudioDB falls through → CoverArtArchive is called."""
+    """8.5.c - CDN returns 404 → AudioDB falls through → CoverArtArchive is called."""
     cdn_404 = _response(status_code=404)
     caa_ok = _response(content=b"caa-bytes", content_type="image/png")
 
@@ -110,7 +110,7 @@ async def test_album_byte_path_cdn_404_falls_through_to_caa():
     http_get = AsyncMock(side_effect=_route_http_get)
     write_cache = AsyncMock()
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(
+    audiodb_service.get_cached_album_images = AsyncMock(
         return_value=AudioDBAlbumImages(
             album_thumb_url=AUDIODB_CDN_URL,
             is_negative=False,
@@ -136,7 +136,7 @@ async def test_album_byte_path_cdn_404_falls_through_to_caa():
 
 @pytest.mark.asyncio
 async def test_album_byte_path_cdn_invalid_content_type_falls_through():
-    """8.5.d — CDN returns text/html → AudioDB falls through → CoverArtArchive called."""
+    """8.5.d - CDN returns text/html → AudioDB falls through → CoverArtArchive called."""
     cdn_html = _response(status_code=200, content_type="text/html")
     caa_ok = _response(content=b"caa-bytes", content_type="image/jpeg")
 
@@ -148,7 +148,7 @@ async def test_album_byte_path_cdn_invalid_content_type_falls_through():
     http_get = AsyncMock(side_effect=_route_http_get)
     write_cache = AsyncMock()
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(
+    audiodb_service.get_cached_album_images = AsyncMock(
         return_value=AudioDBAlbumImages(
             album_thumb_url=AUDIODB_CDN_URL,
             is_negative=False,

@@ -20,6 +20,7 @@ from infrastructure.http.disconnect import DisconnectCallable, check_disconnecte
 
 if TYPE_CHECKING:
     from services.audiodb_image_service import AudioDBImageService
+    from services.audiodb_browse_queue import AudioDBBrowseQueue
     from repositories.musicbrainz_repository import MusicBrainzRepository
     from repositories.protocols.library import LibraryRepositoryProtocol
     from repositories.jellyfin_repository import JellyfinRepository
@@ -108,6 +109,7 @@ class ArtistImageFetcher:
         library_repo: 'LibraryRepositoryProtocol' | None = None,
         jellyfin_repo: 'JellyfinRepository' | None = None,
         audiodb_service: 'AudioDBImageService' | None = None,
+        audiodb_browse_queue: 'AudioDBBrowseQueue' | None = None,
         user_agent: str | None = None,
     ):
         self._http_get = http_get_fn
@@ -117,6 +119,7 @@ class ArtistImageFetcher:
         self._library_repo = library_repo
         self._jellyfin_repo = jellyfin_repo
         self._audiodb_service = audiodb_service
+        self._audiodb_browse_queue = audiodb_browse_queue
         resolved_user_agent = user_agent
         if not resolved_user_agent or resolved_user_agent.lower().startswith("python-httpx"):
             resolved_user_agent = DEFAULT_EXTERNAL_USER_AGENT
@@ -208,8 +211,15 @@ class ArtistImageFetcher:
         if self._audiodb_service is None:
             return None
         try:
-            images = await self._audiodb_service.fetch_and_cache_artist_images(artist_id)
-            if images is None or images.is_negative or not images.thumb_url:
+            # cache-only on the hot path: a live AudioDB lookup is throttled to the
+            # shared free key and would serialise the grid. warm misses in the
+            # background; fall through to local/Wikidata now.
+            images = await self._audiodb_service.get_cached_artist_images(artist_id)
+            if images is None:
+                if self._audiodb_browse_queue is not None:
+                    await self._audiodb_browse_queue.enqueue("artist", artist_id)
+                return None
+            if images.is_negative or not images.thumb_url:
                 return None
             if not validate_audiodb_image_url(images.thumb_url):
                 logger.warning("[IMG:AudioDB] Rejected unsafe URL for artist %s", artist_id[:8])

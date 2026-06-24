@@ -49,7 +49,7 @@ def _make_artist_service(audiodb_service=None) -> ArtistService:
 async def test_album_chain_audiodb_none_falls_to_coverart_archive():
     http_get = AsyncMock(return_value=_response(content=b"caa-cover"))
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(return_value=None)
+    audiodb_service.get_cached_album_images = AsyncMock(return_value=None)
     fetcher = AlbumCoverFetcher(
         http_get_fn=http_get,
         write_cache_fn=AsyncMock(),
@@ -64,7 +64,7 @@ async def test_album_chain_audiodb_none_falls_to_coverart_archive():
 
     assert result is not None
     assert result == (b"caa-cover", "image/jpeg", "cover-art-archive")
-    audiodb_service.fetch_and_cache_album_images.assert_awaited_once_with("release-group-id")
+    audiodb_service.get_cached_album_images.assert_awaited_once_with("release-group-id")
     http_get.assert_awaited_once()
 
 
@@ -72,7 +72,7 @@ async def test_album_chain_audiodb_none_falls_to_coverart_archive():
 async def test_album_chain_audiodb_negative_falls_to_coverart_archive():
     http_get = AsyncMock(return_value=_response(content=b"caa-cover"))
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(
+    audiodb_service.get_cached_album_images = AsyncMock(
         return_value=AudioDBAlbumImages(is_negative=True),
     )
     fetcher = AlbumCoverFetcher(
@@ -89,7 +89,7 @@ async def test_album_chain_audiodb_negative_falls_to_coverart_archive():
 
     assert result is not None
     assert result == (b"caa-cover", "image/jpeg", "cover-art-archive")
-    audiodb_service.fetch_and_cache_album_images.assert_awaited_once_with("release-group-id")
+    audiodb_service.get_cached_album_images.assert_awaited_once_with("release-group-id")
 
 
 @pytest.mark.asyncio
@@ -121,7 +121,7 @@ async def test_artist_chain_audiodb_none_falls_to_wikidata():
 async def test_full_chain_audiodb_and_coverart_both_empty():
     http_get = AsyncMock(return_value=_response(status_code=404))
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(return_value=None)
+    audiodb_service.get_cached_album_images = AsyncMock(return_value=None)
     fetcher = AlbumCoverFetcher(
         http_get_fn=http_get,
         write_cache_fn=AsyncMock(),
@@ -135,7 +135,7 @@ async def test_full_chain_audiodb_and_coverart_both_empty():
     )
 
     assert result is None
-    audiodb_service.fetch_and_cache_album_images.assert_awaited_once()
+    audiodb_service.get_cached_album_images.assert_awaited_once()
     fetcher._get_cover_from_best_release.assert_awaited_once()
 
 

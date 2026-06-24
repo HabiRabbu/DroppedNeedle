@@ -19,6 +19,7 @@ from infrastructure.cache.cache_keys import ARTIST_INFO_PREFIX
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cache.disk_cache import DiskMetadataCache
 from infrastructure.validators import validate_mbid
+from infrastructure.queue.priority_queue import RequestPriority
 from core.exceptions import ResourceNotFoundError
 from services.audiodb_image_service import AudioDBImageService
 from repositories.audiodb_models import AudioDBArtistImages
@@ -407,7 +408,8 @@ class ArtistService:
 
         while batches_scanned < _MAX_SCAN_BATCHES:
             release_groups, mb_total = await self._mb_repo.get_artist_release_groups(
-                artist_id, raw_offset, _SCAN_BATCH
+                artist_id, raw_offset, _SCAN_BATCH,
+                priority=RequestPriority.USER_INITIATED,
             )
             if source_total is None:
                 source_total = mb_total

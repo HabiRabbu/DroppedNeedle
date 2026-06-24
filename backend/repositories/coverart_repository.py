@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from repositories.protocols.library import LibraryRepositoryProtocol
     from repositories.jellyfin_repository import JellyfinRepository
     from services.audiodb_image_service import AudioDBImageService
+    from services.audiodb_browse_queue import AudioDBBrowseQueue
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,11 @@ _generic_cover_circuit_breaker = CircuitBreaker(
     name="coverart_generic",
 )
 
-_coverart_rate_limiter = TokenBucketRateLimiter(rate=1.0, capacity=1)
+# CAA imposes no rate limit and serves bytes via the Internet Archive CDN, so the
+# IMAGE_FETCH semaphore (10) + circuit breaker + 429/Retry-After are the real
+# governors. A generous bucket stays polite while removing the head-of-line stall
+# that made cold cover grids load ~1 image/second.
+_coverart_rate_limiter = TokenBucketRateLimiter(rate=10.0, capacity=20)
 
 _deduplicator = RequestDeduplicator()
 
@@ -178,6 +183,7 @@ class CoverArtRepository:
         library_repo: Optional['LibraryRepositoryProtocol'] = None,
         jellyfin_repo: Optional['JellyfinRepository'] = None,
         audiodb_service: Optional['AudioDBImageService'] = None,
+        audiodb_browse_queue: Optional['AudioDBBrowseQueue'] = None,
         cache_dir: Path = _default_cache_dir(),
         cover_cache_max_size_mb: Optional[int] = None,
         cover_memory_cache_max_entries: int = COVER_MEMORY_MAX_ENTRIES,
@@ -208,6 +214,7 @@ class CoverArtRepository:
             library_repo=library_repo,
             jellyfin_repo=jellyfin_repo,
             audiodb_service=audiodb_service,
+            audiodb_browse_queue=audiodb_browse_queue,
             user_agent=self._client.headers.get("User-Agent"),
         )
         self._album_fetcher = AlbumCoverFetcher(
@@ -217,6 +224,7 @@ class CoverArtRepository:
             mb_repo=mb_repo,
             jellyfin_repo=jellyfin_repo,
             audiodb_service=audiodb_service,
+            audiodb_browse_queue=audiodb_browse_queue,
         )
 
         try:

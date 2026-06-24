@@ -37,8 +37,8 @@ export function saveDownloadClientConfig() {
 		onSuccess: async () => {
 			await invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.clientConfig() });
 			await invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.clientStatus() });
-			// Home reads integration_status.download_client; invalidate so the
-			// "Configure Download Client" prompt clears immediately after saving.
+			// Home reads integration_status.download_client; invalidate or its
+			// "Configure Download Client" prompt lingers until the cache expires
 			await invalidateQueriesWithPersister({ queryKey: HomeQueryKeyFactory.prefix });
 		}
 	}));

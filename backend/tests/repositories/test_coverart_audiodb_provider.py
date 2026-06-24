@@ -28,7 +28,7 @@ async def test_album_fetch_from_audiodb_downloads_and_writes_cache():
     http_get = AsyncMock(return_value=_response())
     write_cache = AsyncMock()
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(
+    audiodb_service.get_cached_album_images = AsyncMock(
         return_value=AudioDBAlbumImages(album_thumb_url="https://r2.theaudiodb.com/album.jpg")
     )
     fetcher = AlbumCoverFetcher(
@@ -40,7 +40,7 @@ async def test_album_fetch_from_audiodb_downloads_and_writes_cache():
     result = await fetcher._fetch_from_audiodb("release-group-id", Path("/tmp/album.bin"))
 
     assert result == (b"img", "image/jpeg", "audiodb")
-    audiodb_service.fetch_and_cache_album_images.assert_awaited_once_with("release-group-id")
+    audiodb_service.get_cached_album_images.assert_awaited_once_with("release-group-id")
     http_get.assert_awaited_once()
     await asyncio.sleep(0)
     assert write_cache.await_count == 1
@@ -58,7 +58,7 @@ async def test_album_fetch_from_audiodb_downloads_and_writes_cache():
 async def test_album_fetch_from_audiodb_skips_when_cache_not_usable(cached_value):
     http_get = AsyncMock(return_value=_response())
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(return_value=cached_value)
+    audiodb_service.get_cached_album_images = AsyncMock(return_value=cached_value)
     fetcher = AlbumCoverFetcher(
         http_get_fn=http_get,
         write_cache_fn=AsyncMock(),
@@ -96,7 +96,7 @@ async def test_album_fetch_from_audiodb_returns_none_for_invalid_download(status
     http_get = AsyncMock(return_value=_response(status_code=status_code, content_type=content_type))
     write_cache = AsyncMock()
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(
+    audiodb_service.get_cached_album_images = AsyncMock(
         return_value=AudioDBAlbumImages(album_thumb_url="https://r2.theaudiodb.com/album.jpg")
     )
     fetcher = AlbumCoverFetcher(
@@ -115,7 +115,7 @@ async def test_album_fetch_from_audiodb_returns_none_for_invalid_download(status
 @pytest.mark.asyncio
 async def test_album_fetch_from_audiodb_returns_none_on_exception():
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock(
+    audiodb_service.get_cached_album_images = AsyncMock(
         return_value=AudioDBAlbumImages(album_thumb_url="https://r2.theaudiodb.com/album.jpg")
     )
     http_get = AsyncMock(side_effect=RuntimeError("boom"))
@@ -139,7 +139,7 @@ async def test_release_cover_skips_audiodb_when_release_group_id_unavailable():
     mb_repo = MagicMock()
     mb_repo.get_release_group_id_from_release = AsyncMock(return_value=None)
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_album_images = AsyncMock()
+    audiodb_service.get_cached_album_images = AsyncMock()
     fetcher = AlbumCoverFetcher(
         http_get_fn=http_get,
         write_cache_fn=AsyncMock(),
@@ -151,7 +151,7 @@ async def test_release_cover_skips_audiodb_when_release_group_id_unavailable():
     result = await fetcher.fetch_release_cover("release-id", None, Path("/tmp/release.bin"))
 
     assert result == (b"cover", "image/jpeg", "cover-art-archive")
-    audiodb_service.fetch_and_cache_album_images.assert_not_awaited()
+    audiodb_service.get_cached_album_images.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_artist_fetch_from_audiodb_downloads_and_writes_cache():
     http_get = AsyncMock(return_value=_response())
     write_cache = AsyncMock()
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_artist_images = AsyncMock(
+    audiodb_service.get_cached_artist_images = AsyncMock(
         return_value=AudioDBArtistImages(thumb_url="https://r2.theaudiodb.com/artist.jpg")
     )
     fetcher = ArtistImageFetcher(
@@ -233,7 +233,7 @@ async def test_artist_fetch_from_audiodb_downloads_and_writes_cache():
     result = await fetcher._fetch_from_audiodb("artist-id", Path("/tmp/artist.bin"))
 
     assert result == (b"img", "image/jpeg", "audiodb")
-    audiodb_service.fetch_and_cache_artist_images.assert_awaited_once_with("artist-id")
+    audiodb_service.get_cached_artist_images.assert_awaited_once_with("artist-id")
     http_get.assert_awaited_once()
     await asyncio.sleep(0)
     assert write_cache.await_count == 1
@@ -251,7 +251,7 @@ async def test_artist_fetch_from_audiodb_downloads_and_writes_cache():
 async def test_artist_fetch_from_audiodb_skips_when_cache_not_usable(cached_value):
     http_get = AsyncMock(return_value=_response())
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_artist_images = AsyncMock(return_value=cached_value)
+    audiodb_service.get_cached_artist_images = AsyncMock(return_value=cached_value)
     fetcher = ArtistImageFetcher(
         http_get_fn=http_get,
         write_cache_fn=AsyncMock(),
@@ -269,7 +269,7 @@ async def test_artist_fetch_from_audiodb_skips_when_cache_not_usable(cached_valu
 async def test_artist_fetch_from_audiodb_reraises_transient_exception():
     http_get = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_artist_images = AsyncMock(
+    audiodb_service.get_cached_artist_images = AsyncMock(
         return_value=AudioDBArtistImages(thumb_url="https://r2.theaudiodb.com/artist.jpg")
     )
     fetcher = ArtistImageFetcher(
@@ -287,7 +287,7 @@ async def test_artist_fetch_from_audiodb_reraises_transient_exception():
 async def test_artist_fetch_from_audiodb_handles_non_transient_exception():
     http_get = AsyncMock(side_effect=RuntimeError("boom"))
     audiodb_service = MagicMock()
-    audiodb_service.fetch_and_cache_artist_images = AsyncMock(
+    audiodb_service.get_cached_artist_images = AsyncMock(
         return_value=AudioDBArtistImages(thumb_url="https://r2.theaudiodb.com/artist.jpg")
     )
     fetcher = ArtistImageFetcher(
@@ -300,6 +300,28 @@ async def test_artist_fetch_from_audiodb_handles_non_transient_exception():
     result = await fetcher._fetch_from_audiodb("artist-id", Path("/tmp/artist.bin"))
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_artist_fetch_from_audiodb_cache_miss_enqueues_warm():
+    audiodb_service = MagicMock()
+    audiodb_service.get_cached_artist_images = AsyncMock(return_value=None)
+    audiodb_service.fetch_and_cache_artist_images = AsyncMock()
+    browse_queue = MagicMock()
+    browse_queue.enqueue = AsyncMock()
+    fetcher = ArtistImageFetcher(
+        http_get_fn=AsyncMock(),
+        write_cache_fn=AsyncMock(),
+        cache=MagicMock(),
+        audiodb_service=audiodb_service,
+        audiodb_browse_queue=browse_queue,
+    )
+
+    result = await fetcher._fetch_from_audiodb("artist-id", Path("/tmp/artist.bin"))
+
+    assert result is None
+    browse_queue.enqueue.assert_awaited_once_with("artist", "artist-id")
+    audiodb_service.fetch_and_cache_artist_images.assert_not_awaited()
 
 
 @pytest.mark.asyncio

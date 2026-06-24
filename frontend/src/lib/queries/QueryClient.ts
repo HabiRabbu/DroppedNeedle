@@ -65,7 +65,7 @@ export const queryClient = new QueryClient({
 			retry: false,
 			refetchOnWindowFocus: true,
 			staleTime: 1000 * 60 * 1, // 1 minute,
-			gcTime: 1000 * 30, // 30 seconds
+			gcTime: 1000 * 60 * 5, // 5 min: keep results in memory so back-nav is instant (30s evicted before staleTime, forcing a skeleton + IDB rehydrate each return)
 			persister: queryPersister.persisterFn
 		}
 	}

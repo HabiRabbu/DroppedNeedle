@@ -11,6 +11,7 @@ from services.album_enrichment_service import AlbumEnrichmentService
 from services.navidrome_library_service import NavidromeLibraryService
 from middleware import CurrentUserDep
 from infrastructure.validators import is_unknown_mbid
+from infrastructure.queue.priority_queue import RequestPriority
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.msgspec_fastapi import MsgSpecRoute
 
@@ -148,7 +149,9 @@ async def get_more_by_artist(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or unknown artist ID"
         )
-    return await discovery_service.get_more_by_artist(artist_id, album_id, count)
+    return await discovery_service.get_more_by_artist(
+        artist_id, album_id, count, priority=RequestPriority.USER_INITIATED
+    )
 
 
 @router.get("/{album_id}/lastfm", response_model=LastFmAlbumEnrichment)

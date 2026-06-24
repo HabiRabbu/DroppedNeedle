@@ -303,6 +303,7 @@ def get_coverart_repository() -> "CoverArtRepository":
     library_repo = get_library_repository()
     jellyfin_repo = get_jellyfin_repository()
     audiodb_service = get_audiodb_image_service()
+    audiodb_browse_queue = get_audiodb_browse_queue()
     http_client = _get_configured_http_client()
     cache_dir = settings.cache_dir / "covers"
     return CoverArtRepository(
@@ -312,6 +313,7 @@ def get_coverart_repository() -> "CoverArtRepository":
         library_repo,
         jellyfin_repo,
         audiodb_service=audiodb_service,
+        audiodb_browse_queue=audiodb_browse_queue,
         cache_dir=cache_dir,
         cover_cache_max_size_mb=settings.cover_cache_max_size_mb,
         cover_memory_cache_max_entries=advanced.cover_memory_cache_max_entries,

@@ -14,6 +14,7 @@ from core.exceptions import ClientDisconnectedError
 
 if TYPE_CHECKING:
     from services.audiodb_image_service import AudioDBImageService
+    from services.audiodb_browse_queue import AudioDBBrowseQueue
     from repositories.protocols.library import LibraryRepositoryProtocol
     from repositories.musicbrainz_repository import MusicBrainzRepository
     from repositories.jellyfin_repository import JellyfinRepository
@@ -62,6 +63,7 @@ class AlbumCoverFetcher:
         mb_repo: 'MusicBrainzRepository' | None = None,
         jellyfin_repo: 'JellyfinRepository' | None = None,
         audiodb_service: 'AudioDBImageService' | None = None,
+        audiodb_browse_queue: 'AudioDBBrowseQueue' | None = None,
     ):
         self._http_get = http_get_fn
         self._write_disk_cache = write_cache_fn
@@ -69,6 +71,7 @@ class AlbumCoverFetcher:
         self._mb_repo = mb_repo
         self._jellyfin_repo = jellyfin_repo
         self._audiodb_service = audiodb_service
+        self._audiodb_browse_queue = audiodb_browse_queue
 
     async def fetch_release_group_cover(
         self,
@@ -147,8 +150,15 @@ class AlbumCoverFetcher:
         if self._audiodb_service is None:
             return None
         try:
-            cached_images = await self._audiodb_service.fetch_and_cache_album_images(release_group_id)
-            if cached_images is None or cached_images.is_negative or not cached_images.album_thumb_url:
+            # cache-only on the hot path: a live AudioDB lookup is throttled to the
+            # shared free key and would serialise the whole grid. warm misses in the
+            # background; fall through to CAA now.
+            cached_images = await self._audiodb_service.get_cached_album_images(release_group_id)
+            if cached_images is None:
+                if self._audiodb_browse_queue is not None:
+                    await self._audiodb_browse_queue.enqueue("album", release_group_id)
+                return None
+            if cached_images.is_negative or not cached_images.album_thumb_url:
                 return None
             if not validate_audiodb_image_url(cached_images.album_thumb_url):
                 logger.warning("[IMG:AudioDB] Rejected unsafe URL for album %s", release_group_id[:8])

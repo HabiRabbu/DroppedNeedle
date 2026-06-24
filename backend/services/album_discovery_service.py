@@ -9,6 +9,7 @@ from api.v1.schemas.discovery import (
 )
 from repositories.protocols import ListenBrainzRepositoryProtocol, MusicBrainzRepositoryProtocol, LibraryRepositoryProtocol
 from infrastructure.persistence import LibraryDB
+from infrastructure.queue.priority_queue import RequestPriority
 from services.per_user_client_factory import PerUserClientFactory
 
 logger = logging.getLogger(__name__)
@@ -104,12 +105,14 @@ class AlbumDiscoveryService:
         self,
         artist_mbid: str,
         exclude_album_mbid: str,
-        count: int = 10
+        count: int = 10,
+        priority: RequestPriority = RequestPriority.BACKGROUND_SYNC,
     ) -> MoreByArtistResponse:
         try:
             release_groups = await self._mb_repo.get_release_groups_by_artist(
                 artist_mbid,
-                limit=count + 5
+                limit=count + 5,
+                priority=priority,
             )
             if not release_groups:
                 return MoreByArtistResponse(albums=[], artist_name="")
