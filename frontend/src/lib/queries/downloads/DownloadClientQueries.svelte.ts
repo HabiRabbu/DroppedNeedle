@@ -2,6 +2,7 @@ import { createMutation, createQuery, queryOptions } from '@tanstack/svelte-quer
 
 import { api } from '$lib/api/client';
 import { API, CACHE_TTL } from '$lib/constants';
+import { HomeQueryKeyFactory } from '$lib/queries/HomeQueryKeyFactory';
 import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 import type { DownloadClientConfig, DownloadClientStatus, TestConnectionResult } from '$lib/types';
 
@@ -36,6 +37,9 @@ export function saveDownloadClientConfig() {
 		onSuccess: async () => {
 			await invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.clientConfig() });
 			await invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.clientStatus() });
+			// Home reads integration_status.download_client; invalidate so the
+			// "Configure Download Client" prompt clears immediately after saving.
+			await invalidateQueriesWithPersister({ queryKey: HomeQueryKeyFactory.prefix });
 		}
 	}));
 }
