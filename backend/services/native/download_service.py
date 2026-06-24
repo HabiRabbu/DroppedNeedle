@@ -240,6 +240,25 @@ class DownloadService:
         if existing:
             return existing.id
 
+        # Folder naming uses the request's year ({album} ({year})); compact request
+        # buttons don't always supply it. Backfill from the release group when missing,
+        # or the folder is created as "Album ()". After dedup, so it runs once per new
+        # request; best-effort, since a MusicBrainz failure must not fail the download
+        # over a missing year.
+        if year is None and release_group_mbid and self._mb is not None:
+            try:
+                album_meta = await self._mb.get_release_group(release_group_mbid)
+            except Exception:  # noqa: BLE001 - year is best-effort, never block the request
+                logger.warning(
+                    "Year backfill failed for %s; requesting without a year",
+                    release_group_mbid,
+                )
+                album_meta = None
+            if album_meta is not None:
+                year = album_meta.year
+                artist_name = artist_name or album_meta.artist_name
+                album_title = album_title or album_meta.title
+
         task = await self._store.create_task(
             user_id=user_id,
             download_type=download_type,

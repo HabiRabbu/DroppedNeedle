@@ -117,7 +117,8 @@ class StartupValidator:
         if existing_libs and not same_fs:
             problems.append(
                 f"slskd downloads path {path} is not on the same filesystem as the "
-                f"library (st_dev mismatch) - atomic import move (os.rename) will fail"
+                f"library (st_dev mismatch); imports fall back to a copy instead of an "
+                f"atomic move (slower) but still work"
             )
         return problems
 

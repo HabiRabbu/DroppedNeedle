@@ -7,11 +7,12 @@
 		mbid: string;
 		artistName: string;
 		albumName: string;
+		year?: number | null;
 		artistMbid?: string;
 		size?: 'sm' | 'md';
 	}
 
-	let { mbid, artistName, albumName, artistMbid, size = 'sm' }: Props = $props();
+	let { mbid, artistName, albumName, year, artistMbid, size = 'sm' }: Props = $props();
 
 	let requesting = $state(false);
 
@@ -24,6 +25,7 @@
 			await requestAlbum(mbid, {
 				artist: artistName || undefined,
 				album: albumName,
+				year: year ?? undefined,
 				artistMbid
 			});
 		} finally {

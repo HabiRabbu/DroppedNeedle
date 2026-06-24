@@ -4,6 +4,7 @@
 		CircleX,
 		FolderTree,
 		HardDriveDownload,
+		Info,
 		ShieldCheck,
 		TriangleAlert
 	} from 'lucide-svelte';
@@ -60,9 +61,7 @@
 	const MOUNT_REASONS: Record<string, string> = {
 		not_set: 'No slskd downloads folder is mounted into DroppedNeedle.',
 		missing: "The mounted downloads folder doesn't exist.",
-		not_writable: 'The downloads mount is read-only - imports MOVE files, so it must be writable.',
-		different_filesystem:
-			'The downloads mount is on a different disk than your library, so atomic imports will fail.'
+		not_writable: 'The downloads mount is read-only - imports MOVE files, so it must be writable.'
 	};
 
 	function currentConfig(): DownloadClientConfig | null {
@@ -242,6 +241,22 @@
 							<CircleCheck class="size-4" aria-hidden="true" />
 							Reachable on the same disk as your library
 							{#if mount.path}<code class="text-base-content/60">{mount.path}</code>{/if}
+						</div>
+					{:else if mount?.reason === 'different_filesystem'}
+						<div class="alert alert-info items-start text-sm">
+							<Info class="size-5 shrink-0" aria-hidden="true" />
+							<div class="space-y-1">
+								<p>
+									Your downloads and library are on different filesystems. Imports still work -
+									DroppedNeedle copies each file into the library instead of moving it instantly, so
+									it's a bit slower and briefly needs room for both copies.
+								</p>
+								<p class="text-base-content/70">
+									For instant moves, keep slskd's downloads and your music library on the same
+									filesystem.
+									{#if mount.path}<code class="text-base-content/60">{mount.path}</code>{/if}
+								</p>
+							</div>
 						</div>
 					{:else if mount}
 						<div class="alert alert-warning items-start text-sm">

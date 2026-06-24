@@ -214,6 +214,32 @@ async def test_request_album_creates_task_and_dispatches():
 
 
 @pytest.mark.asyncio
+async def test_request_album_backfills_year_when_missing():
+    # A compact request button sends no year; the service backfills it from the
+    # release group so the album folder isn't created as "Album ()".
+    service, store, _client, _orchestrator, _matcher, mb = _make_service_with_mb()
+    store.get_active_task_for_album.return_value = None
+
+    await service.request_album("u1", "rg", "Radiohead", "OK Computer")  # year omitted
+
+    mb.get_release_group.assert_awaited_once_with("rg")
+    assert store.create_task.await_args.kwargs["year"] == 2001  # from the mb stub
+
+
+@pytest.mark.asyncio
+async def test_request_album_year_backfill_failure_still_creates_task():
+    # The year is a nicety: a MusicBrainz failure must not fail the download.
+    service, store, _client, _orchestrator, _matcher, mb = _make_service_with_mb()
+    store.get_active_task_for_album.return_value = None
+    mb.get_release_group = AsyncMock(side_effect=RuntimeError("MB down"))
+
+    result = await service.request_album("u1", "rg", "Radiohead", "OK Computer")
+
+    assert result == "task1"  # request still succeeded
+    assert store.create_task.await_args.kwargs["year"] is None  # degraded gracefully
+
+
+@pytest.mark.asyncio
 async def test_request_track_already_in_library():
     service, store, _bus, _client, _scorer, orchestrator = _make_service()
     service._library.has_track.return_value = True

@@ -328,6 +328,7 @@ class FileProcessor:
                     source.unlink()
                 except OSError:
                     logger.warning("Could not remove leftover source %s", source)
+                self._prune_empty_source_dirs(source)
             else:
                 # copy/tag/rename are blocking I/O -> run off the event loop
                 await asyncio.to_thread(
@@ -413,6 +414,27 @@ class FileProcessor:
                 source.unlink()
             except OSError:
                 logger.warning("Imported but could not remove slskd source %s", source)
+        self._prune_empty_source_dirs(source)
+
+    def _prune_empty_source_dirs(self, source: Path) -> None:
+        """Remove the now-empty folders slskd left behind after a file is moved out of
+        the downloads dir, walking up to but not including the mount root. ``rmdir``
+        only deletes empty dirs, so a half-imported album (siblings still present) is
+        left alone. Best-effort: never fails the import."""
+        mount = self._slskd_downloads_path
+        if mount is None:
+            return
+        try:
+            mount = mount.resolve()
+            directory = source.parent.resolve()
+        except OSError:
+            return
+        while directory != mount and mount in directory.parents:
+            try:
+                directory.rmdir()  # only succeeds when empty
+            except OSError:
+                return  # non-empty (other tracks pending) or already gone -> stop
+            directory = directory.parent
 
     @staticmethod
     def _build_target_tag(manifest: DownloadManifest, file_tag: AudioTag) -> AudioTag:

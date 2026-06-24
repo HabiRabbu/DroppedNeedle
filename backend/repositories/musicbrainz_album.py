@@ -3,6 +3,7 @@ from typing import Any
 
 import msgspec
 
+from models.album import AlbumInfo
 from models.search import SearchResult
 from services.preferences_service import PreferencesService
 from infrastructure.cache.memory_cache import CacheInterface
@@ -282,6 +283,25 @@ class MusicBrainzAlbumMixin:
             logger.error(f"Failed to fetch release group {mbid}: {e}")
             _record_mb_degradation(f"release group fetch failed: {e}")
             return None
+
+    async def get_release_group(self, release_group_mbid: str) -> AlbumInfo | None:
+        """Fetch a release group and map it to ``AlbumInfo`` (the
+        MusicBrainzRepository protocol method). Used to backfill an album's
+        year/title/artist when a request omits them."""
+        rg = await self.get_release_group_by_id(release_group_mbid)
+        if not rg:
+            return None
+        credit = (rg.get("artist-credit") or [{}])[0]
+        artist = credit.get("artist") if isinstance(credit, dict) else None
+        return AlbumInfo(
+            title=rg.get("title") or "Unknown Album",
+            musicbrainz_id=rg.get("id") or release_group_mbid,
+            artist_name=extract_artist_name(rg) or "Unknown Artist",
+            artist_id=(artist.get("id") if isinstance(artist, dict) else "") or "",
+            release_date=rg.get("first-release-date"),
+            year=parse_year(rg.get("first-release-date")),
+            type=rg.get("primary-type"),
+        )
 
     async def get_release_by_id(
         self,

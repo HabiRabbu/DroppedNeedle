@@ -252,7 +252,40 @@ async def test_process_downloaded_cross_mount_copies(tmp_path: Path, monkeypatch
     assert len(result.succeeded) == 1
     assert Path(result.succeeded[0]).exists()
     assert not src.exists()              # slskd source removed after the cross-mount copy
+    assert not (downloads / "A").exists()  # and the now-empty leftover folder pruned
     assert await manager.has_album("rg-1") is True
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_prunes_empty_leftover_dirs(tmp_path: Path):
+    """After the file is moved out, the now-empty folders slskd created are pruned -
+    walking up nested dirs - but never the downloads mount root itself."""
+    fp, _manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
+    _place(downloads, "Artist - Album/CD1/track.flac")
+    manifest = _manifest(ExpectedFile(filename="Artist - Album/CD1/track.flac", size=1))
+
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1
+    assert not (downloads / "Artist - Album" / "CD1").exists()
+    assert not (downloads / "Artist - Album").exists()
+    assert downloads.exists()  # the mount root must survive
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_keeps_dir_with_remaining_sibling(tmp_path: Path):
+    """A half-imported album - a sibling file still in the same folder - must keep its
+    folder: rmdir only removes empty dirs, so pending tracks/cover art are never lost."""
+    fp, _manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
+    _place(downloads, "A/good.flac")
+    (downloads / "A" / "cover.jpg").write_bytes(b"jpg")  # keeps the dir non-empty
+    manifest = _manifest(ExpectedFile(filename="A/good.flac", size=1))
+
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1
+    assert (downloads / "A").exists()                 # not pruned: sibling remains
+    assert (downloads / "A" / "cover.jpg").exists()
 
 
 @pytest.mark.asyncio
