@@ -7,6 +7,7 @@ os.environ.setdefault("ROOT_APP_DIR", tempfile.mkdtemp())
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from api.v1.schemas.settings import PlexConnectionSettings
@@ -169,3 +170,40 @@ class TestVerifyPlex:
             result = await service.verify_plex(settings)
             assert result.valid is False
             assert result.libraries == []
+
+
+class TestGetPlexRepositoryClientId:
+    """Regression for the admin Plex-user-import bug: plex.tv account endpoints
+    return 400 without X-Plex-Client-Identifier. An admin who set up Plex by
+    pasting a token never ran the OAuth flow that creates `plex_client_id`, so the
+    header was dropped and enumeration silently returned []. The provider has to
+    create the id, not just read it."""
+
+    def test_configures_client_id_even_when_setting_absent(self):
+        from core.dependencies import repo_providers
+
+        prefs = MagicMock()
+        prefs.get_plex_connection_raw.return_value = MagicMock(
+            enabled=True, plex_url="http://plex:32400", plex_token="tok"
+        )
+        # The bug condition: the setting was never created (token-paste setup).
+        prefs.get_setting.return_value = None
+        prefs.get_or_create_setting.return_value = "created-client-id"
+
+        with patch.object(repo_providers, "get_preferences_service", return_value=prefs), \
+             patch.object(repo_providers, "get_cache", return_value=AsyncMock()), \
+             patch.object(
+                 repo_providers,
+                 "_get_configured_http_client",
+                 return_value=AsyncMock(spec=httpx.AsyncClient),
+             ):
+            repo_providers.get_plex_repository.cache_clear()
+            try:
+                repo = repo_providers.get_plex_repository()
+            finally:
+                repo_providers.get_plex_repository.cache_clear()
+
+        prefs.get_or_create_setting.assert_called_once()
+        assert repo._client_id == "created-client-id"
+        # The header that plex.tv 400s without now reaches the API.
+        assert repo._build_headers()["X-Plex-Client-Identifier"] == "created-client-id"

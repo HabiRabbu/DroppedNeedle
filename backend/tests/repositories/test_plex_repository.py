@@ -731,6 +731,65 @@ class TestAccountAuthCalls:
                 await repo.get_account_profile("user-token", "client-123")
 
 
+class TestEnumerateUsers:
+    @pytest.mark.asyncio
+    async def test_sends_client_identifier_and_merges_home_friends(self):
+        # plex.tv /api/v2/home/users returns 400 without X-Plex-Client-Identifier
+        # (verified live; see plex_API_NOTES.md). enumerate_users must send it on
+        # both calls, or admin import comes back silently empty.
+        repo, _, _ = _make_repo()  # configured with client-id-123
+
+        home = MagicMock(spec=httpx.Response)
+        home.status_code = 200
+        home.json.return_value = {
+            "users": [
+                {
+                    "uuid": "u1",
+                    "username": "alice",
+                    "title": "Alice",
+                    "email": "a@b.com",
+                    "thumb": "http://t/a",
+                }
+            ]
+        }
+        friends = MagicMock(spec=httpx.Response)
+        friends.status_code = 200
+        friends.json.return_value = []
+
+        captured_headers: list[dict] = []
+        captured_urls: list[str] = []
+
+        async def _get(url, headers=None):
+            captured_urls.append(url)
+            captured_headers.append(headers or {})
+            return home if "home/users" in url else friends
+
+        with patch("httpx.AsyncClient") as MockClient:
+            instance = AsyncMock()
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            instance.get = AsyncMock(side_effect=_get)
+            MockClient.return_value = instance
+
+            accounts = await repo.enumerate_users()
+
+        assert len(captured_headers) == 2
+        assert all(
+            h.get("X-Plex-Client-Identifier") == "client-id-123"
+            for h in captured_headers
+        )
+        assert any("home/users" in u for u in captured_urls)
+        assert any("friends" in u for u in captured_urls)
+        assert [a.uuid for a in accounts] == ["u1"]
+        assert accounts[0].source == "home"
+
+    @pytest.mark.asyncio
+    async def test_no_token_returns_empty(self):
+        repo, _, _ = _make_repo(configured=False)
+        accounts = await repo.enumerate_users()
+        assert accounts == []
+
+
 class TestClearCache:
     @pytest.mark.asyncio
     async def test_clears_plex_prefix(self):

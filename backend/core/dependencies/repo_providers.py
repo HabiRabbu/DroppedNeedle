@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 import httpx
 
@@ -135,7 +136,12 @@ def get_plex_repository() -> "PlexRepository":
     plex_settings = preferences.get_plex_connection_raw()
     repo = PlexRepository(http_client=http_client, cache=cache)
     if plex_settings.enabled:
-        client_id = preferences.get_setting("plex_client_id") or ""
+        # plex.tv account calls (the admin user import) return 400 without
+        # X-Plex-Client-Identifier, and the id is otherwise created only by the Plex
+        # OAuth login flow - an admin who set up Plex by pasting a token has none yet.
+        client_id = preferences.get_or_create_setting(
+            "plex_client_id", lambda: str(uuid.uuid4())
+        )
         repo.configure(
             url=plex_settings.plex_url,
             token=plex_settings.plex_token,
