@@ -197,6 +197,23 @@ async def test_process_task_no_match_fails(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_process_task_unconfigured_client_fails_clearly(tmp_path: Path):
+    """An unconfigured client (e.g. blank slskd URL) must fail with a readable
+    message before search, not a raw httpx 'missing protocol' error."""
+    client = _StubClient()
+    client.is_configured = lambda: False
+    store, orch, _fp = _build(tmp_path, client=client, scorer_result=[_candidate(0.9)])
+    task = await _new_task(store)
+
+    await orch.process_task(task.id)
+
+    final = await store.get_task(task.id)
+    assert final.status == "failed"
+    assert "not configured" in (final.error_message or "")
+    client.enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_enqueue_failure_marks_failed_without_quarantine(tmp_path: Path):
     client = _StubClient()
     client.enqueue = AsyncMock(side_effect=RuntimeError("boom"))

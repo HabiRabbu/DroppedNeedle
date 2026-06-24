@@ -163,6 +163,10 @@ class DownloadOrchestrator:
         )
 
         try:
+            if not self._client.is_configured():
+                raise OrchestrationError(
+                    "Download client is not configured - check the slskd URL in Settings"
+                )
             if task.search_job_id is None or task.candidate_index is None:
                 if not await self._search_score_autopick(task):
                     return  # parked for review or failed; status already set

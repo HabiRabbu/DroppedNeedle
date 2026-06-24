@@ -97,6 +97,34 @@ def test_put_config_forwards_masked_sentinel():
     assert saved.url == "http://new:5030"
 
 
+def test_put_config_busts_orchestrator_singleton(monkeypatch):
+    """Regression: the orchestrator is built eagerly at startup and holds its
+    slskd client, so saving settings must clear its singleton too - otherwise
+    downloads keep running against the old/empty URL."""
+    from core.dependencies import get_download_orchestrator
+
+    spy = MagicMock()
+    monkeypatch.setattr(get_download_orchestrator, "cache_clear", spy)
+
+    app = _app()
+    app.dependency_overrides[_get_current_admin] = mock_admin_user
+    response = build_test_client(app).put(
+        "/download-client/config",
+        json={
+            "enabled": True,
+            "client_type": "slskd",
+            "url": "http://new:5030",
+            "api_key": DOWNLOAD_CLIENT_API_KEY_MASK,
+            "verify_downloads": True,
+            "min_bitrate_kbps": 128,
+            "preflight_score_auto_accept": 0.7,
+            "preflight_score_manual_min": 0.5,
+        },
+    )
+    assert response.status_code == 200
+    spy.assert_called_once()
+
+
 def test_test_connection_admin_verifies_submitted_form_values():
     # The fix: /test verifies the credentials in the request body (what the admin
     # typed), NOT the stored config - so it works before the first save.

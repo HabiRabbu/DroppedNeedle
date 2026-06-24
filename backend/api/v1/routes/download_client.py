@@ -42,11 +42,14 @@ async def update_config(
 ):
     preferences.save_download_client_settings(settings)
     # bust the whole download-client singleton chain so new settings take effect
-    # immediately; scorer/matcher/DownloadService capture these at construction and
-    # hold the client, so they must be cleared too, not just slskd client/repository
+    # immediately; scorer/matcher/DownloadService/orchestrator capture these at
+    # construction and hold the client, so they must be cleared too, not just slskd
+    # client/repository. The orchestrator is built eagerly at startup (resume task),
+    # so omitting it leaves every download running against the old/empty URL.
     from core.dependencies import (
         get_album_preflight_scorer,
         get_download_client_repository as _dc,
+        get_download_orchestrator,
         get_download_service,
         get_slskd_client,
         get_slskd_repository,
@@ -59,6 +62,7 @@ async def update_config(
         _dc,
         get_album_preflight_scorer,
         get_track_matcher,
+        get_download_orchestrator,
         get_download_service,
     ):
         provider.cache_clear()
