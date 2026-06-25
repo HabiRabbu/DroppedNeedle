@@ -796,6 +796,7 @@ def get_download_service() -> "DownloadService":
         orchestrator=get_download_orchestrator(),
         matcher=get_musicbrainz_matcher(),
         musicbrainz=get_musicbrainz_repository(),
+        album_service=get_album_service(),
         auto_accept_threshold=dc.preflight_score_auto_accept,
         manual_threshold=dc.preflight_score_manual_min,
         enabled=dc.enabled,

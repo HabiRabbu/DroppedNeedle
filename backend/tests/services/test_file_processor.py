@@ -238,12 +238,15 @@ async def test_process_downloaded_import_error_is_per_file(tmp_path: Path):
     fp, manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
     _place(downloads, "A/good.flac")
     _place(downloads, "A/bad.flac")
-    # Distinct titles -> distinct library targets (no same-target collision) and a
-    # stable signal for the flaky tagger now that tags are written on the staged copy.
+    # Distinct titles AND track numbers -> two distinct tracks with distinct library
+    # targets (no same-target collision, no position-dedup) and a stable signal for the
+    # flaky tagger now that tags are written on the staged copy.
     tagger = AudioTagger()
-    for rel, title in (("A/good.flac", "Good Track"), ("A/bad.flac", "Bad Track")):
+    for rel, title, track in (("A/good.flac", "Good Track", 1), ("A/bad.flac", "Bad Track", 2)):
         existing, _ = tagger.read_tags(downloads / rel)
-        tagger.write_mb_tags(downloads / rel, msgspec.structs.replace(existing, title=title))
+        tagger.write_mb_tags(
+            downloads / rel, msgspec.structs.replace(existing, title=title, track_number=track)
+        )
 
     real_write = AudioTagger().write_mb_tags
     def flaky_write(path, tag):
@@ -377,6 +380,58 @@ async def test_process_downloaded_fingerprint_failopen_when_disabled(tmp_path: P
 
     assert len(result.succeeded) == 1   # disabled fingerprint never blocks the import
     assert await manager.has_album("rg-1") is True
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_missing_file_is_not_quarantined(tmp_path: Path):
+    """slskd 'delivered' a file we can't find on a healthy mount (folder-name
+    sanitisation / nesting / mount-path mismatch). That's a local/config fault, NOT a
+    bad peer: it must fail with SOURCE_FILE_MISSING, which is not a quarantine reason,
+    so the peer is never blacklisted (AUD: 'watched it finish in slskd, then failed')."""
+    from services.native.file_processor import SOURCE_FILE_MISSING
+
+    fp, _manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
+    (downloads / "A").mkdir(parents=True, exist_ok=True)  # folder present, file absent
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1))
+
+    result = await fp.process_downloaded(manifest)
+
+    assert result.succeeded == []
+    assert result.failed[0].reason == SOURCE_FILE_MISSING
+    assert SOURCE_FILE_MISSING not in QUARANTINE_REASONS
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_skips_duplicate_track_position(tmp_path: Path):
+    """A second source file for a track the album already holds (a re-pull or a
+    different-format copy: same disc+track, different path) is skipped, not written as
+    a duplicate, and its leftover slskd source is removed. The completeness count
+    already deduped by position - this stops the *files* doubling on disk."""
+    import msgspec
+
+    fp, manager, _client, _library, downloads = _make_processor(tmp_path, verify=False)
+    tagger = AudioTagger()
+    # two different on-disk sources, both album track 1 (the fixture is track 1, disc 1);
+    # only the title differs, so they render to different library paths
+    for rel, title in (("A/first.flac", "Take One"), ("B/second.flac", "Take Two")):
+        _place(downloads, rel)
+        existing, _ = tagger.read_tags(downloads / rel)
+        tagger.write_mb_tags(downloads / rel, msgspec.structs.replace(existing, title=title))
+
+    r1 = await fp.process_downloaded(_manifest(ExpectedFile(filename="A/first.flac", size=1)))
+    assert len(r1.succeeded) == 1
+
+    r2 = await fp.process_downloaded(
+        _manifest(ExpectedFile(filename="B/second.flac", size=1), task_id="t2")
+    )
+
+    # the duplicate position counts a success (already present) but isn't re-written
+    assert len(r2.succeeded) == 1
+    assert r2.failed == []
+    assert Path(r2.succeeded[0]) == Path(r1.succeeded[0])   # points at the kept copy
+    rows = await manager.get_file_rows_for_album("rg-1")
+    assert len(rows) == 1                                   # NO duplicate row
+    assert not (downloads / "B" / "second.flac").exists()  # leftover source removed
 
 
 @pytest.mark.asyncio

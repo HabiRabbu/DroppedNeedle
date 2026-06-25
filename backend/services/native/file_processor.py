@@ -49,6 +49,11 @@ IMPORT_FAILED = "import failed - could not write the file into the library"
 # not a quarantine reason: a per-track download whose duration doesn't match the
 # requested recording is the WRONG track, not a bad file - fail over, don't blacklist
 WRONG_TRACK = "wrong_track"
+# not a quarantine reason: slskd reported the transfer finished but the file isn't
+# where we look on the downloads mount (folder-name sanitisation, deeper nesting, or a
+# downloads-mount path mismatch). The peer delivered fine; the fault is local, so
+# failing over to another peer hits the same wall - never blacklist the source.
+SOURCE_FILE_MISSING = "downloaded file not found on the downloads mount"
 
 
 class VerifyStatus:
@@ -285,9 +290,12 @@ class FileProcessor:
                 raise AlreadyImported(
                     Path(existing["file_path"]), filename=expected.filename
                 )
-            # (c) mount healthy, never imported -> genuinely missing
+            # (c) mount healthy but the file isn't where we look -> a local locate
+            # failure, not the peer's fault (SOURCE_FILE_MISSING is non-quarantine)
             raise VerificationFailed(
-                f"Missing file: {expected.filename}", filename=expected.filename
+                f"Missing file: {expected.filename}",
+                reason=SOURCE_FILE_MISSING,
+                filename=expected.filename,
             )
 
         # mutagen is sync; wrap in to_thread, mirroring the scanner
@@ -297,6 +305,42 @@ class FileProcessor:
             raise VerificationFailed(
                 f"Cannot read tags: {exc}", reason="corrupt", filename=expected.filename
             ) from exc
+
+        target_tag = self._build_target_tag(manifest, tag)
+        target_path = self._library_paths[0] / self._naming.format_path(
+            manifest.naming_template, target_tag, info.file_format
+        )
+
+        # Position-level dedup, before the expensive verification below: if the album
+        # already holds a file at this (disc, track), don't write a second copy. Stops
+        # the flac-vs-mp3 / failover re-pull duplicate (completeness dedupes by position,
+        # but the files themselves never were) and skips fingerprinting a copy we
+        # discard. Known track numbers only; an untagged file (track 0) falls through to
+        # the path check below.
+        if target_tag.track_number:
+            present = await self._library.get_file_at_position(
+                manifest.release_group_mbid,
+                target_tag.disc_number or 1,
+                target_tag.track_number,
+            )
+            if present is not None and present.get("file_path") != str(target_path):
+                logger.info(
+                    "process.duplicate_position",
+                    extra={
+                        "task_id": manifest.task_id,
+                        "file": _basename(expected.filename),
+                        "disc": target_tag.disc_number or 1,
+                        "track": target_tag.track_number,
+                    },
+                )
+                # the track is already in the library from another source - drop the
+                # redundant slskd copy and keep the existing import (counted a success)
+                try:
+                    source.unlink()
+                except OSError:
+                    logger.warning("Could not remove duplicate source %s", source)
+                self._prune_empty_source_dirs(source)
+                return Path(present["file_path"])
 
         # duration sanity, always on: catches "right filename, wrong audio".
         # Tolerance is the larger of 15s or 10% of the expected length, so normal
@@ -328,14 +372,9 @@ class FileProcessor:
                     filename=expected.filename,
                 )
 
-        target_tag = self._build_target_tag(manifest, tag)
-
         # mutating phase (stage -> tag -> publish -> insert): an I/O or DB error must
         # fail just this file, not abort the album and orphan files imported earlier
         try:
-            target_path = self._library_paths[0] / self._naming.format_path(
-                manifest.naming_template, target_tag, info.file_format
-            )
             target_path.parent.mkdir(parents=True, exist_ok=True)
 
             if target_path.exists():

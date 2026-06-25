@@ -403,6 +403,16 @@ class LibraryManager(LibraryStub):
         """Raw active rows for one album (rescan needs source/confidence/MBIDs)."""
         return await self._db.get_library_files_for_album(release_group_mbid)
 
+    async def get_file_at_position(
+        self, release_group_mbid: str, disc_number: int, track_number: int
+    ) -> dict | None:
+        """The active library row occupying one (disc, track) slot of an album, if
+        any. The import path uses it to avoid writing a second file for a track the
+        library already holds (a re-pull or a different-format copy)."""
+        return await self._db.get_active_file_at_position(
+            release_group_mbid, disc_number, track_number
+        )
+
     async def get_imported_file(
         self, download_task_id: str, filename: str
     ) -> dict | None:

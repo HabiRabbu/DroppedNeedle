@@ -239,6 +239,73 @@ async def test_request_album_year_backfill_failure_still_creates_task():
     assert store.create_task.await_args.kwargs["year"] is None  # degraded gracefully
 
 
+def _with_album_service(service, *, total_tracks=12, raises=False):
+    """Attach a stub AlbumService so the track-count backfill has a resolver."""
+    album_service = MagicMock()
+    if raises:
+        album_service.get_album_tracks_info = AsyncMock(side_effect=RuntimeError("MB down"))
+    else:
+        album_service.get_album_tracks_info = AsyncMock(
+            return_value=SimpleNamespace(total_tracks=total_tracks)
+        )
+    service._album_service = album_service
+    return album_service
+
+
+@pytest.mark.asyncio
+async def test_request_album_backfills_track_count_from_musicbrainz():
+    # The bug: every request path omits track_count, so the orchestrator's completeness
+    # gate can't tell a 2-of-12 source from a full album and accepts the partial. The
+    # service must backfill the count from MusicBrainz.
+    service, store, _bus, _client, _scorer, _orch = _make_service()
+    store.get_active_task_for_album.return_value = None
+    album_service = _with_album_service(service, total_tracks=12)
+
+    await service.request_album("u1", "rg", "Artist", "Album", year=1999)
+
+    album_service.get_album_tracks_info.assert_awaited_once_with("rg")
+    assert store.create_task.await_args.kwargs["track_count"] == 12
+
+
+@pytest.mark.asyncio
+async def test_request_album_track_count_backfill_failure_still_creates_task():
+    # The completeness target is best-effort: a MusicBrainz failure must not block the
+    # download (it degrades to the unknown-count behaviour, never an error).
+    service, store, _bus, _client, _scorer, _orch = _make_service()
+    store.get_active_task_for_album.return_value = None
+    _with_album_service(service, raises=True)
+
+    result = await service.request_album("u1", "rg", "Artist", "Album", year=1999)
+
+    assert result == "task1"
+    assert store.create_task.await_args.kwargs["track_count"] is None
+
+
+@pytest.mark.asyncio
+async def test_request_album_keeps_explicit_track_count_without_mb_call():
+    # A caller that already knows the count -> no MusicBrainz round-trip, value kept.
+    service, store, _bus, _client, _scorer, _orch = _make_service()
+    store.get_active_task_for_album.return_value = None
+    album_service = _with_album_service(service, total_tracks=99)
+
+    await service.request_album("u1", "rg", "Artist", "Album", year=1999, track_count=10)
+
+    assert store.create_task.await_args.kwargs["track_count"] == 10
+    album_service.get_album_tracks_info.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_album_backfills_track_count_for_scorer_and_pick():
+    # The manual search path feeds the scorer + the eventual picked task; backfill the
+    # count there too so a partial folder can be down-ranked.
+    service, store, *_ = _make_service()
+    _with_album_service(service, total_tracks=8)
+
+    await service.search_album("u1", "A", "B", release_group_mbid="rg")
+
+    assert store.create_search_job.await_args.kwargs["track_count"] == 8
+
+
 @pytest.mark.asyncio
 async def test_request_track_already_in_library():
     service, store, _bus, _client, _scorer, orchestrator = _make_service()

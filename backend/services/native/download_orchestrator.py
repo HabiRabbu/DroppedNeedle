@@ -52,6 +52,15 @@ _OUT_STALLED = "stalled"       # an active transfer stopped making progress
 _OUT_QUEUED = "queued_timeout"  # stuck in the peer's remote upload queue too long
 _OUT_DEADLINE = "deadline"     # hit the 6-hour absolute ceiling
 
+# Terminal "couldn't finish" messages. The mount one is used when slskd delivered the
+# files but we then couldn't find them on the downloads mount - a local/config fault,
+# not an absence of sources, so it must not read as "Soulseek had nothing".
+_NO_SOURCE_MSG = "No working source found on Soulseek"
+_FILES_NOT_FOUND_MSG = (
+    "Files downloaded, but couldn't be found in the slskd downloads folder - check "
+    "the slskd downloads path points to where slskd saves completed files"
+)
+
 
 class OrchestrationError(Exception):
     """Module-internal control-flow signal (enqueue/poll/timeout failures). Always
@@ -483,6 +492,7 @@ class DownloadOrchestrator:
         iteration skips the enqueue and polls the transfers a restart left behind."""
         from services.native.file_processor import (
             DOWNLOADS_MOUNT_UNAVAILABLE,
+            SOURCE_FILE_MISSING,
             WRONG_TRACK,
         )
 
@@ -491,6 +501,7 @@ class DownloadOrchestrator:
         first = True
         imported_any = False
         wrong_track = False
+        source_missing = False
         while True:
             enqueued = True
             if not (first and resume):
@@ -531,6 +542,8 @@ class DownloadOrchestrator:
                     imported_any = True
                 if any(f.reason == WRONG_TRACK for f in result.failed):
                     wrong_track = True
+                if any(f.reason == SOURCE_FILE_MISSING for f in result.failed):
+                    source_missing = True
                 await self._cancel_transfers(task)
 
                 # A missing/unwritable downloads mount is an environment fault, not
@@ -562,7 +575,9 @@ class DownloadOrchestrator:
                 if task.download_type == "track" and wrong_track and not imported_any:
                     await self._fallback_track_repull(task)
                     return
-                await self._settle_incomplete(task, imported_any)
+                await self._settle_incomplete(
+                    task, imported_any, source_missing=source_missing
+                )
                 return
             task = nxt
             await self._bus.publish(
@@ -712,21 +727,25 @@ class DownloadOrchestrator:
         # source before settling, rather than declaring done on the first track.
         return bool(result and result.succeeded and not result.failed)
 
-    async def _settle_incomplete(self, task, imported_any: bool) -> None:  # noqa: ANN001
+    async def _settle_incomplete(  # noqa: ANN001
+        self, task, imported_any: bool, *, source_missing: bool = False
+    ) -> None:
         """No candidates/attempts left and the download still isn't whole. A track
         either imported (already finalized 'completed') or it didn't ('failed'); an
-        album keeps whatever landed as 'partial', or 'failed' if nothing did."""
+        album keeps whatever landed as 'partial', or 'failed' if nothing did.
+
+        ``source_missing`` flips the failure message: slskd delivered the files but we
+        couldn't find them on the mount, which is a local/config fault - blaming
+        Soulseek for it sent users chasing the wrong problem (AUD: 'watched it finish
+        in slskd, then it said no source')."""
+        fail_msg = _FILES_NOT_FOUND_MSG if source_missing else _NO_SOURCE_MSG
         if task.download_type == "track":
-            await self._finalize(
-                task, "failed", error_message="No working source found on Soulseek"
-            )
+            await self._finalize(task, "failed", error_message=fail_msg)
             return
         if await self._imported_track_count(task) > 0:
             await self._finalize(task, "partial")
         else:
-            await self._finalize(
-                task, "failed", error_message="No working source found on Soulseek"
-            )
+            await self._finalize(task, "failed", error_message=fail_msg)
 
     async def _finalize(self, task, status, *, error_message=None) -> None:  # noqa: ANN001
         if task.download_type == "track":

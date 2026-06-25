@@ -1144,6 +1144,26 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
+    async def get_active_file_at_position(
+        self, release_group_mbid: str, disc_number: int, track_number: int
+    ) -> dict[str, Any] | None:
+        """The single active (non-deleted) file occupying one album (disc, track)
+        slot, or None. Used by the download import to dedupe a re-pull / alternate-
+        format copy of a track the library already holds. MBID is stored lower-cased,
+        so normalize the input the same way."""
+        normalized = _normalize(release_group_mbid)
+
+        def operation(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            row = conn.execute(
+                "SELECT * FROM library_files WHERE release_group_mbid = ? "
+                "AND disc_number = ? AND track_number = ? AND deleted_at IS NULL "
+                "ORDER BY imported_at LIMIT 1",
+                (normalized, disc_number, track_number),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return await self._read(operation)
+
     async def get_library_files_for_task(self, download_task_id: str) -> list[dict[str, Any]]:
         """Active rows imported by one download task (crash-idempotency reconcile)."""
 

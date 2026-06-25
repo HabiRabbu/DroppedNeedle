@@ -28,6 +28,7 @@ from services.native.library_manager import LibraryManager
 
 if TYPE_CHECKING:
     from repositories.protocols.musicbrainz import MusicBrainzRepository
+    from services.album_service import AlbumService
     from services.native.musicbrainz_matcher import MusicBrainzMatcher
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class DownloadService:
         *,
         matcher: "MusicBrainzMatcher | None" = None,
         musicbrainz: "MusicBrainzRepository | None" = None,
+        album_service: "AlbumService | None" = None,
         auto_accept_threshold: float = 0.70,
         manual_threshold: float = 0.50,
         enabled: bool = True,
@@ -86,6 +88,7 @@ class DownloadService:
         self._orchestrator = orchestrator
         self._matcher = matcher
         self._mb = musicbrainz
+        self._album_service = album_service
         self._auto = auto_accept_threshold
         self._manual = manual_threshold
         self._enabled = enabled
@@ -97,6 +100,32 @@ class DownloadService:
             raise ConfigurationError(
                 "The download client is disabled. Enable it in Settings to start downloads."
             )
+
+    async def _ensure_track_count(
+        self, release_group_mbid: str | None, track_count: int | None
+    ) -> int | None:
+        """Backfill an album's track count from MusicBrainz when the request omitted
+        it (every request/auto-download path does today). Without it the preflight
+        scorer can't down-rank a partial folder and the orchestrator's completeness
+        gate accepts a 2-of-12 source as 'complete'. Best-effort: a MusicBrainz failure
+        must never block the download. Reuses the album page's resolver so the gate's
+        'expected' matches the track count the user sees on the album."""
+        if (
+            track_count is not None
+            or not release_group_mbid
+            or self._album_service is None
+        ):
+            return track_count
+        try:
+            info = await self._album_service.get_album_tracks_info(release_group_mbid)
+        except Exception:  # noqa: BLE001 - track count is best-effort, never block
+            logger.warning(
+                "Track-count backfill failed for %s; downloading without a "
+                "completeness target",
+                release_group_mbid,
+            )
+            return None
+        return info.total_tracks or None
 
     async def search_album(
         self,
@@ -112,6 +141,7 @@ class DownloadService:
         if release_group_mbid and await self._library.has_album(release_group_mbid):
             return ALREADY_IN_LIBRARY
 
+        track_count = await self._ensure_track_count(release_group_mbid, track_count)
         job = await self._store.create_search_job(
             user_id=user_id,
             artist_name=artist_name,
@@ -258,6 +288,11 @@ class DownloadService:
                 year = album_meta.year
                 artist_name = artist_name or album_meta.artist_name
                 album_title = album_title or album_meta.title
+
+        # Backfill the album track count (best-effort) so the completeness gate and
+        # scorer can tell a partial source from a full one. Skipped for per-track
+        # downloads, which already carry track_count=1.
+        track_count = await self._ensure_track_count(release_group_mbid, track_count)
 
         task = await self._store.create_task(
             user_id=user_id,
