@@ -22,6 +22,7 @@ NPM    ?= pnpm
 	backend-test-album-refresh \
 	backend-test-artist-monitoring \
 	backend-test-artist-page \
+	backend-test-local-stats \
 	backend-test-artist-releases-dedup \
 	backend-test-artist-discovery \
 	backend-test-audiodb \
@@ -152,6 +153,9 @@ test-compat: backend-test-compat frontend-test-connect-apps ## Connect Apps: ful
 
 backend-test-album-refresh: $(BACKEND_VENV_STAMP) ## Run album refresh endpoint tests
 	$(PYTEST) tests/routes/test_album_refresh.py tests/services/test_navidrome_cache_invalidation.py -v
+
+backend-test-local-stats: $(BACKEND_VENV_STAMP) ## Listening Room stats sourced from the library DB (home entry-card parity)
+	$(PYTEST) tests/services/test_local_files_service.py tests/test_advanced_settings_roundtrip.py -v
 
 backend-test-artist-monitoring: $(BACKEND_VENV_STAMP) ## Run MUS-15B artist monitoring tests
 	$(PYTEST) tests/test_artist_monitoring.py -v

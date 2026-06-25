@@ -20,7 +20,6 @@ def _make_preferences(library_paths: list[str] | None = None) -> MagicMock:
     prefs.get_library_settings.return_value = lib
     advanced = MagicMock()
     advanced.cache_ttl_local_files_recently_added = 120
-    advanced.cache_ttl_local_files_storage_stats = 300
     prefs.get_advanced_settings.return_value = advanced
     return prefs
 
@@ -307,36 +306,43 @@ async def test_get_recently_added_caches_result(service):
 
 
 @pytest.mark.asyncio
-async def test_get_storage_stats_uses_cache(service):
+async def test_get_storage_stats_sources_counts_from_library(service):
+    # Counts come from the library aggregate (get_stats); only disk-free is a real fs read.
     svc, library_repo, music_dir, cache = service
-    cached_data = {
-        "total_tracks": 42,
-        "total_albums": 5,
-        "total_artists": 3,
-        "total_size_bytes": 1000000,
-        "total_size_human": "976.6 KB",
-        "disk_free_bytes": 500000000,
-        "disk_free_human": "476.8 MB",
-        "format_breakdown": {},
-    }
-    cache.get = AsyncMock(return_value=cached_data)
+    library_repo.get_stats = AsyncMock(return_value=SimpleNamespace(
+        total_tracks=1685,
+        total_albums=177,
+        total_artists=85,
+        total_size_bytes=1_000_000,
+        format_breakdown={"flac": 1092, "mp3": 544},
+    ))
 
     stats = await svc.get_storage_stats()
-    assert stats.total_tracks == 42
-    cache.set.assert_not_called()
+
+    assert stats.total_tracks == 1685
+    assert stats.total_albums == 177
+    assert stats.total_artists == 85
+    assert stats.total_size_bytes == 1_000_000
+    assert stats.total_size_human  # humanised, non-empty
+    assert stats.disk_free_bytes > 0  # real disk_usage on the tmp root
+    assert stats.format_breakdown["flac"].count == 1092
+    assert stats.format_breakdown["mp3"].count == 544
+    library_repo.get_stats.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_get_storage_stats_walks_library_paths(service):
-    svc, library_repo, music_dir, cache = service
-    audio_file = music_dir / "artist" / "album" / "track.flac"
-    audio_file.parent.mkdir(parents=True)
-    audio_file.write_bytes(b"\x00" * 50)
+async def test_get_storage_stats_empty_when_no_roots(service):
+    # No configured/existing library root -> zeroed stats, no DB hit.
+    _, _, _, cache = service
+    library_repo = AsyncMock()
+    prefs = _make_preferences([])
+    svc = LocalFilesService(library_repo=library_repo, preferences_service=prefs, cache=cache)
 
     stats = await svc.get_storage_stats()
-    assert stats.total_tracks == 1
-    assert stats.total_artists == 1
-    assert cache.set.called
+
+    assert stats.total_tracks == 0
+    assert stats.total_albums == 0
+    library_repo.get_stats.assert_not_awaited()
 
 
 def _crate_row(fid: str, **o) -> dict:

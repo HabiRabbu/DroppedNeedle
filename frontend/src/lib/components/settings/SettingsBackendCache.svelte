@@ -85,14 +85,6 @@
 		unit="min"
 	/>
 	<SettingsNumberField
-		label="Local Stats (Backend)"
-		description="Default: 5 minutes"
-		bind:value={data.cache_ttl_local_files_storage_stats}
-		min={1}
-		max={60}
-		unit="min"
-	/>
-	<SettingsNumberField
 		label="Jellyfin Recent (Backend)"
 		description="Default: 5 minutes"
 		bind:value={data.cache_ttl_jellyfin_recently_played}

@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import random
 import re
 import shutil
@@ -66,7 +65,6 @@ def sanitize_filename(name: str) -> str:
 
 
 class LocalFilesService:
-    _DEFAULT_STORAGE_STATS_TTL = 300
     _DEFAULT_RECENTLY_ADDED_TTL = 120
 
     def __init__(
@@ -92,12 +90,6 @@ class LocalFilesService:
             return self._preferences.get_advanced_settings().cache_ttl_local_files_recently_added
         except Exception:  # noqa: BLE001
             return self._DEFAULT_RECENTLY_ADDED_TTL
-
-    def _get_storage_stats_ttl(self) -> int:
-        try:
-            return self._preferences.get_advanced_settings().cache_ttl_local_files_storage_stats
-        except Exception:  # noqa: BLE001
-            return self._DEFAULT_STORAGE_STATS_TTL
 
     def _resolve_and_validate_path(self, library_path: str) -> Path:
         canonical = Path(library_path).resolve()
@@ -590,82 +582,27 @@ class LocalFilesService:
         return summaries
 
     async def get_storage_stats(self) -> LocalStorageStats:
-        ttl_seconds = self._get_storage_stats_ttl()
-        cache_key = "local_files_storage_stats"
-        cached = await self._cache.get(cache_key)
-        if cached and isinstance(cached, dict):
-            try:
-                return LocalStorageStats(**cached)
-            except (TypeError, ValueError):
-                logger.debug("Ignoring invalid cached local storage stats payload")
-
+        """Counts come from the same library aggregate (``get_stats``) the "Manage
+        your Library" card uses, so the two home cards can't disagree and on-disk
+        junk (empty/stub dirs, NAS metadata, unsupported formats) can't skew them.
+        Only disk-free is read from the filesystem."""
         roots = [root for root in self._get_library_roots() if root.exists()]
         if not roots:
             return LocalStorageStats()
-        stats = await asyncio.to_thread(self._scan_storage_sync, roots)
-
-        await self._cache.set(
-            cache_key, to_jsonable(stats), ttl_seconds=ttl_seconds
-        )
-        return stats
-
-    def _scan_storage_sync(self, roots: list[Path]) -> LocalStorageStats:
-        total_tracks = 0
-        total_size = 0
-        format_breakdown: dict[str, dict[str, int]] = {}
-        album_dirs: set[str] = set()
-        artist_dirs: set[str] = set()
-
-        for root in roots:
-            try:
-                for dirpath, _dirs, files in os.walk(root):
-                    rel = Path(dirpath).relative_to(root)
-                    parts = rel.parts
-                    if len(parts) >= 1:
-                        artist_dirs.add(f"{root}::{parts[0]}")
-                    if len(parts) >= 2:
-                        album_dirs.add(f"{root}::{parts[0]}/{parts[1]}")
-
-                    for fname in files:
-                        ext = Path(fname).suffix.lower()
-                        if ext not in AUDIO_EXTENSIONS:
-                            continue
-                        total_tracks += 1
-                        fp = Path(dirpath) / fname
-                        try:
-                            sz = fp.stat().st_size
-                        except OSError:
-                            sz = 0
-                        total_size += sz
-
-                        fmt = ext.lstrip(".")
-                        if fmt not in format_breakdown:
-                            format_breakdown[fmt] = {"count": 0, "size_bytes": 0}
-                        format_breakdown[fmt]["count"] += 1
-                        format_breakdown[fmt]["size_bytes"] += sz
-
-            except PermissionError:
-                logger.warning("Permission denied scanning music directory: %s", root)
-
+        stats = await self._library_repo.get_stats()
         disk = shutil.disk_usage(roots[0])
-
-        typed_breakdown: dict[str, FormatInfo] = {}
-        for fmt_name, fmt_data in format_breakdown.items():
-            typed_breakdown[fmt_name] = FormatInfo(
-                count=fmt_data["count"],
-                size_bytes=fmt_data["size_bytes"],
-                size_human=self._human_size(fmt_data["size_bytes"]),
-            )
-
         return LocalStorageStats(
-            total_tracks=total_tracks,
-            total_albums=len(album_dirs),
-            total_artists=len(artist_dirs),
-            total_size_bytes=total_size,
-            total_size_human=self._human_size(total_size),
+            total_tracks=stats.total_tracks,
+            total_albums=stats.total_albums,
+            total_artists=stats.total_artists,
+            total_size_bytes=stats.total_size_bytes,
+            total_size_human=self._human_size(stats.total_size_bytes),
             disk_free_bytes=disk.free,
             disk_free_human=self._human_size(disk.free),
-            format_breakdown=typed_breakdown,
+            format_breakdown={
+                fmt: FormatInfo(count=count)
+                for fmt, count in stats.format_breakdown.items()
+            },
         )
 
     @staticmethod

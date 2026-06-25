@@ -7,7 +7,6 @@ export interface AdvancedSettingsForm {
 	cache_ttl_artist_discovery_non_library: number;
 	cache_ttl_search: number;
 	cache_ttl_local_files_recently_added: number;
-	cache_ttl_local_files_storage_stats: number;
 	cache_ttl_jellyfin_recently_played: number;
 	cache_ttl_jellyfin_favorites: number;
 	cache_ttl_jellyfin_genres: number;

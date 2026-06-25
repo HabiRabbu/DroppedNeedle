@@ -41,7 +41,6 @@ class AdvancedSettings(AppStruct):
     cache_ttl_artist_discovery_non_library: int = 3600
     cache_ttl_search: int = 3600
     cache_ttl_local_files_recently_added: int = 120
-    cache_ttl_local_files_storage_stats: int = 300
     cache_ttl_jellyfin_recently_played: int = 300
     cache_ttl_jellyfin_favorites: int = 300
     cache_ttl_jellyfin_genres: int = 3600
@@ -130,7 +129,6 @@ class AdvancedSettings(AppStruct):
             "cache_ttl_artist_discovery_non_library": (3600, 604800),
             "cache_ttl_search": (60, 86400),
             "cache_ttl_local_files_recently_added": (60, 3600),
-            "cache_ttl_local_files_storage_stats": (60, 3600),
             "cache_ttl_jellyfin_recently_played": (60, 3600),
             "cache_ttl_jellyfin_favorites": (60, 3600),
             "cache_ttl_jellyfin_genres": (60, 86400),
@@ -229,7 +227,6 @@ class AdvancedSettingsFrontend(AppStruct):
     cache_ttl_artist_discovery_non_library: int = 1
     cache_ttl_search: int = 60
     cache_ttl_local_files_recently_added: int = 2
-    cache_ttl_local_files_storage_stats: int = 5
     cache_ttl_jellyfin_recently_played: int = 5
     cache_ttl_jellyfin_favorites: int = 5
     cache_ttl_jellyfin_genres: int = 60
@@ -316,7 +313,6 @@ class AdvancedSettingsFrontend(AppStruct):
             "cache_ttl_artist_discovery_non_library",
             "cache_ttl_search",
             "cache_ttl_local_files_recently_added",
-            "cache_ttl_local_files_storage_stats",
             "cache_ttl_jellyfin_recently_played",
             "cache_ttl_jellyfin_favorites",
             "cache_ttl_jellyfin_genres",
@@ -355,7 +351,6 @@ class AdvancedSettingsFrontend(AppStruct):
             "cache_ttl_artist_discovery_non_library": (1, 168),
             "cache_ttl_search": (1, 1440),
             "cache_ttl_local_files_recently_added": (1, 60),
-            "cache_ttl_local_files_storage_stats": (1, 60),
             "cache_ttl_jellyfin_recently_played": (1, 60),
             "cache_ttl_jellyfin_favorites": (1, 60),
             "cache_ttl_jellyfin_genres": (1, 1440),
@@ -440,7 +435,6 @@ class AdvancedSettingsFrontend(AppStruct):
             cache_ttl_artist_discovery_non_library=settings.cache_ttl_artist_discovery_non_library // 3600,
             cache_ttl_search=settings.cache_ttl_search // 60,
             cache_ttl_local_files_recently_added=settings.cache_ttl_local_files_recently_added // 60,
-            cache_ttl_local_files_storage_stats=settings.cache_ttl_local_files_storage_stats // 60,
             cache_ttl_jellyfin_recently_played=settings.cache_ttl_jellyfin_recently_played // 60,
             cache_ttl_jellyfin_favorites=settings.cache_ttl_jellyfin_favorites // 60,
             cache_ttl_jellyfin_genres=settings.cache_ttl_jellyfin_genres // 60,
@@ -528,7 +522,6 @@ class AdvancedSettingsFrontend(AppStruct):
             cache_ttl_artist_discovery_non_library=self.cache_ttl_artist_discovery_non_library * 3600,
             cache_ttl_search=self.cache_ttl_search * 60,
             cache_ttl_local_files_recently_added=self.cache_ttl_local_files_recently_added * 60,
-            cache_ttl_local_files_storage_stats=self.cache_ttl_local_files_storage_stats * 60,
             cache_ttl_jellyfin_recently_played=self.cache_ttl_jellyfin_recently_played * 60,
             cache_ttl_jellyfin_favorites=self.cache_ttl_jellyfin_favorites * 60,
             cache_ttl_jellyfin_genres=self.cache_ttl_jellyfin_genres * 60,
