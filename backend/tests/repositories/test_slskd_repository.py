@@ -4,6 +4,7 @@ and (username, filenames) status/cancel correlation."""
 
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -18,6 +19,7 @@ from repositories.slskd.slskd_models import (
     SlskdEnqueueResponse,
     SlskdFile,
     SlskdSearchResponse,
+    SlskdTransfer,
     SlskdUserSearchResponse,
 )
 from repositories.slskd.slskd_repository import SlskdRepository
@@ -310,6 +312,108 @@ async def test_get_file_path_missing_returns_none(tmp_path):
 async def test_get_file_path_rejects_traversal(tmp_path):
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
     assert await repo.get_file_path("alice", "../../etc/passwd") is None
+
+
+@pytest.mark.asyncio
+async def test_get_file_path_username_nested_album_layout(tmp_path):
+    # some slskd setups file downloads under {downloads}/{username}/{album}/{file};
+    # the leaf-folder and one-level-scan strategies miss it (it's two deep), but the
+    # username-scoped walk finds it.
+    folder = tmp_path / "dshaw8772" / "2024 Some Album"
+    folder.mkdir(parents=True)
+    f = folder / "Artist - Album - 01 - Track.flac"
+    f.write_bytes(b"x")
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
+    path = await repo.get_file_path(
+        "dshaw8772", "@@peer\\Music\\2024 Some Album\\Artist - Album - 01 - Track.flac"
+    )
+    assert path == f.resolve()
+
+
+@pytest.mark.asyncio
+async def test_get_file_path_username_walk_handles_glob_chars(tmp_path):
+    # a filename with glob metacharacters ([], *, ?) must match literally in the walk
+    # (an rglob-based search would misinterpret them).
+    folder = tmp_path / "peer1" / "Disc [2019]"
+    folder.mkdir(parents=True)
+    f = folder / "01 - Song [Remix].flac"
+    f.write_bytes(b"x")
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
+    path = await repo.get_file_path("peer1", "@@p\\X\\Disc [2019]\\01 - Song [Remix].flac")
+    assert path == f.resolve()
+
+
+@pytest.mark.asyncio
+async def test_get_file_path_size_fallback_for_sanitised_filename(tmp_path):
+    # slskd stripped an illegal char from the on-disk name, so the basename no longer
+    # matches anywhere; an exact byte-size match under the peer's folder recovers it.
+    folder = tmp_path / "peer1"
+    folder.mkdir()
+    f = folder / "Track _ Sanitised.flac"  # on-disk: '?' replaced with '_'
+    f.write_bytes(b"abcdefghij")  # size 10
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
+    path = await repo.get_file_path("peer1", "@@p\\Album\\Track ? Sanitised.flac", size=10)
+    assert path == f.resolve()
+
+
+@pytest.mark.asyncio
+async def test_get_file_path_size_fallback_is_scoped_to_peer(tmp_path):
+    # a same-size file under a DIFFERENT peer must not be returned by the size fallback
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "decoy.flac").write_bytes(b"abcdefghij")  # size 10, wrong peer
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
+    assert await repo.get_file_path("peer1", "@@p\\A\\missing.flac", size=10) is None
+
+
+def _completed(filename, username="peer"):
+    return SlskdTransfer(id=filename, username=username, filename=filename, state="Completed, Succeeded")
+
+
+@pytest.mark.asyncio
+async def test_diagnose_mount_flags_completed_downloads_but_empty_mount(tmp_path):
+    # slskd finished downloads but our (empty) mount shows nothing -> silent misconfig
+    client = AsyncMock()
+    client.get_all_downloads = AsyncMock(return_value=[_completed("a/01.flac"), _completed("a/02.flac")])
+    repo = SlskdRepository(client=client, url="", api_key="", downloads_mount=tmp_path)
+    diag = await repo.diagnose_downloads_mount()
+    assert diag.supported is True
+    assert diag.completed_downloads == 2
+    assert diag.mount_has_files is False
+
+
+@pytest.mark.asyncio
+async def test_diagnose_mount_ok_when_mount_has_files(tmp_path):
+    (tmp_path / "peer").mkdir()
+    (tmp_path / "peer" / "01.flac").write_bytes(b"x")
+    client = AsyncMock()
+    client.get_all_downloads = AsyncMock(return_value=[_completed("peer/01.flac")])
+    repo = SlskdRepository(client=client, url="", api_key="", downloads_mount=tmp_path)
+    diag = await repo.diagnose_downloads_mount()
+    assert diag.completed_downloads == 1
+    assert diag.mount_has_files is True
+
+
+@pytest.mark.asyncio
+async def test_diagnose_mount_no_completed_downloads_skips_walk(tmp_path):
+    # in-progress only -> nothing to flag, and the mount walk is skipped
+    client = AsyncMock()
+    client.get_all_downloads = AsyncMock(return_value=[
+        SlskdTransfer(id="1", username="peer", filename="a/01.flac", state="InProgress")
+    ])
+    repo = SlskdRepository(client=client, url="", api_key="", downloads_mount=tmp_path)
+    diag = await repo.diagnose_downloads_mount()
+    assert diag.completed_downloads == 0
+    assert diag.mount_has_files is True
+
+
+@pytest.mark.asyncio
+async def test_diagnose_mount_never_raises_on_client_error(tmp_path):
+    client = AsyncMock()
+    client.get_all_downloads = AsyncMock(side_effect=RuntimeError("slskd down"))
+    repo = SlskdRepository(client=client, url="", api_key="", downloads_mount=tmp_path)
+    diag = await repo.diagnose_downloads_mount()
+    assert diag.supported is True
+    assert diag.completed_downloads == 0  # degraded, no false alarm
 
 
 def test_parse_search_responses_windows_linux_and_disc():

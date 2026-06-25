@@ -17,6 +17,9 @@ class DownloadClientStatusResponse(AppStruct):
     configured: bool
     client: ServiceStatus
     mount: DownloadsMountStatus
+    # Set when the mount looks healthy but slskd's finished downloads aren't visible on
+    # it (the silent misconfig); None when there's nothing to flag.
+    mount_advisory: str | None = None
 
 
 class SearchAlbumRequest(AppStruct):

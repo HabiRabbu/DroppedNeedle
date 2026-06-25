@@ -101,4 +101,17 @@ async def get_status(
         if configured
         else ServiceStatus(status="error", message="not configured")
     )
-    return DownloadClientStatusResponse(configured=configured, client=client_status, mount=mount)
+    # Catch the silent misconfig: a mount that passes the basic checks but where
+    # slskd's finished downloads aren't actually visible (wrong path / unreadable).
+    advisory: str | None = None
+    if configured and mount.ok:
+        diag = await client.diagnose_downloads_mount()
+        if diag.supported and diag.completed_downloads > 0 and not diag.mount_has_files:
+            advisory = (
+                f"slskd has {diag.completed_downloads} finished download(s), but the downloads "
+                f"folder at {mount.path} looks empty. Make sure it points to slskd's downloads "
+                f"directory and that the container can read it (check the PUID/GID)."
+            )
+    return DownloadClientStatusResponse(
+        configured=configured, client=client_status, mount=mount, mount_advisory=advisory
+    )

@@ -90,7 +90,7 @@ class _StubClient:
         self._root = downloads_root
         self.cancel = MagicMock()  # asserted NEVER called by FileProcessor (DEC-1)
 
-    async def get_file_path(self, username: str, remote_filename: str):
+    async def get_file_path(self, username: str, remote_filename: str, size: int | None = None):
         return self._root / remote_filename.replace("\\", "/").lstrip("/")
 
 

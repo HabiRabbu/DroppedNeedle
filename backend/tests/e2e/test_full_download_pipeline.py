@@ -25,7 +25,7 @@ from infrastructure.sse_publisher import SSEPublisher
 from models.common import ServiceStatus
 from models.download import DownloadSearchResult
 from models.download_manifest import ManifestCodec
-from repositories.protocols.download_client import DownloadTaskStatus, TaskRef
+from repositories.protocols.download_client import DownloadTaskStatus, MountDiagnosis, TaskRef
 from services.native.album_preflight_scorer import AlbumPreflightScorer
 from services.native.download_orchestrator import DownloadOrchestrator
 from services.native.file_processor import FileProcessor
@@ -89,8 +89,11 @@ class _StubClient:
         self.cancelled.append(task_ref)
         return True
 
-    async def get_file_path(self, username: str, remote_filename: str):
+    async def get_file_path(self, username: str, remote_filename: str, size: int | None = None):
         return self._root / remote_filename.replace("\\", "/").lstrip("/")
+
+    async def diagnose_downloads_mount(self) -> MountDiagnosis:
+        return MountDiagnosis(supported=False)
 
 
 def _place_fixture(downloads_root: Path, rel: str, *, duration: float | None = None) -> DownloadSearchResult:

@@ -19,6 +19,7 @@ from repositories.protocols.download_client import (
     DownloadFileRef,
     DownloadSearchResult,
     DownloadTaskStatus,
+    MountDiagnosis,
     TaskRef,
 )
 
@@ -142,15 +143,21 @@ class SlskdRepository:
                 ok = await self._client.cancel_transfer(task_ref.username, transfer.id) and ok
         return ok
 
-    async def get_file_path(self, username: str, remote_filename: str) -> Path | None:
+    async def get_file_path(
+        self, username: str, remote_filename: str, size: int | None = None
+    ) -> Path | None:
         """Resolve a finished transfer to its on-disk path inside the mounted
         slskd downloads dir, or ``None`` if it can't be located there.
 
-        slskd writes completed files as ``{downloads}/{last remote folder}/
-        {filename}`` - it preserves only the LEAF remote directory, NOT the full
-        remote path (verified on 0.25.1). Resolution is existence-aware with
-        fallbacks; the remote filename is untrusted, so every candidate is confined
-        to the mount."""
+        slskd's on-disk layout varies by version and by how the peer organised
+        their share: ``{downloads}/{leaf remote folder}/{file}`` (common),
+        ``{downloads}/{username}/{file}`` or ``.../{username}/{album}/{file}``
+        (peers that file by user), or a flat dump. We try the cheap direct paths
+        first, then a username-scoped walk at any depth (scoped so a same-named
+        track from another peer can't be grabbed), and finally an exact byte-size
+        match for when slskd sanitised the on-disk filename and the basename no
+        longer matches. The remote filename is untrusted, so every candidate is
+        confined to the mount."""
         parts = [p for p in re.split(r"[\\/]", remote_filename) if p and p not in (".", "..")]
         if not parts:
             return None
@@ -164,7 +171,7 @@ class SlskdRepository:
                 return None
             return resolved
 
-        # 1. slskd's actual layout: {mount}/{leaf remote folder}/{filename}.
+        # 1. slskd's common layout: {mount}/{leaf remote folder}/{filename}.
         if len(parts) >= 2:
             leaf = _within_mount(mount / parts[-2] / basename)
             if leaf is not None and leaf.exists():
@@ -173,7 +180,15 @@ class SlskdRepository:
         flat = _within_mount(mount / basename)
         if flat is not None and flat.exists():
             return flat
-        # 3. slskd may have sanitised the folder name - scan one level down for it.
+        # 3. Peers that file by username: walk {mount}/{username}/ at any depth
+        # (covers {username}/{file} and {username}/{album}/{file}). Scoped to the
+        # peer so a same-named track from a different user can't be picked up.
+        user_root = _within_mount(mount / username) if username else None
+        if user_root is not None and user_root.is_dir():
+            hit = self._walk_find(user_root, mount, lambda e: e.name == basename)
+            if hit is not None:
+                return hit
+        # 4. slskd may have sanitised the folder name - scan one level down for it.
         try:
             for child in sorted(mount.iterdir()):
                 if child.is_dir():
@@ -182,7 +197,84 @@ class SlskdRepository:
                         return cand
         except OSError as exc:
             logger.warning("Could not scan downloads mount %s: %s", mount, exc)
+        # 5. Last resort: slskd sanitised the FILENAME (illegal chars stripped), so
+        # the basename no longer matches. An exact byte-size match under the peer's
+        # folder recovers it - size is a strong key and the scope keeps it precise.
+        if size and user_root is not None and user_root.is_dir():
+            def _matches_size(entry: Path) -> bool:
+                try:
+                    return entry.stat().st_size == size
+                except OSError:
+                    return False
+
+            hit = self._walk_find(user_root, mount, _matches_size)
+            if hit is not None:
+                return hit
         return None
+
+    @staticmethod
+    def _walk_find(root: Path, mount: Path, predicate) -> Path | None:
+        """First file under ``root`` (bounded DFS, exact-name compare so glob
+        metacharacters in filenames are harmless) for which ``predicate`` is true,
+        confined to ``mount``. The entry cap is a backstop against a pathological
+        tree or a symlink loop."""
+        max_entries = 10000
+        try:
+            stack = [root]
+            seen = 0
+            while stack:
+                for entry in stack.pop().iterdir():
+                    seen += 1
+                    if seen > max_entries:
+                        return None
+                    if entry.is_dir():
+                        stack.append(entry)
+                        continue
+                    if not entry.is_file() or not predicate(entry):
+                        continue
+                    resolved = entry.resolve()
+                    if resolved.is_relative_to(mount):
+                        return resolved
+        except OSError:
+            return None
+        return None
+
+    async def diagnose_downloads_mount(self) -> MountDiagnosis:
+        """Cross-check slskd's completed (not-yet-imported) downloads against the
+        configured mount. slskd having finished downloads while the mount shows no
+        files at all means the path is wrong or unreadable - the silent misconfig the
+        per-download error only reveals one file at a time. Best-effort: never raises."""
+        try:
+            transfers = await self._client.get_all_downloads()
+        except Exception:  # noqa: BLE001 - a diagnostic must never raise
+            return MountDiagnosis(supported=True)
+        completed = sum(1 for t in transfers if "succeeded" in self._state_flags(t.state))
+        if completed == 0:
+            return MountDiagnosis(supported=True, completed_downloads=0, mount_has_files=True)
+        has_files = await asyncio.to_thread(self._mount_has_any_file)
+        return MountDiagnosis(
+            supported=True, completed_downloads=completed, mount_has_files=has_files
+        )
+
+    def _mount_has_any_file(self) -> bool:
+        """Whether the downloads mount holds any file (bounded DFS, stops at the first
+        hit). An unreadable or wrong-path mount returns False - that is the signal.
+        Sync filesystem I/O; the caller offloads it off the event loop."""
+        try:
+            stack = [self._downloads_mount]
+            seen = 0
+            while stack:
+                for entry in stack.pop().iterdir():
+                    seen += 1
+                    if seen > 5000:
+                        return True  # clearly not empty
+                    if entry.is_file():
+                        return True
+                    if entry.is_dir():
+                        stack.append(entry)
+        except OSError:
+            return False
+        return False
 
     async def _run_search(self, query: str, timeout: float) -> list[DownloadSearchResult]:
         async with self._search_semaphore:
@@ -375,4 +467,5 @@ class SlskdRepository:
             progress_percent=progress,
             succeeded_filenames=succeeded_filenames,
             has_active_transfer=has_active_transfer,
+            matched_transfers=len(transfers),
         )

@@ -27,9 +27,15 @@ from infrastructure.sse_publisher import SSEPublisher
 from models.common import ServiceStatus
 from models.download import ScoredCandidate
 from models.download_manifest import DownloadManifest, ExpectedFile, ManifestCodec
-from repositories.protocols.download_client import DownloadSearchResult, DownloadTaskStatus, TaskRef
+from repositories.protocols.download_client import (
+    DownloadSearchResult,
+    DownloadTaskStatus,
+    MountDiagnosis,
+    TaskRef,
+)
 from services.native.download_orchestrator import (
     _OUT_COMPLETED,
+    _OUT_NO_TRANSFER,
     _OUT_QUEUED,
     _OUT_STALLED,
     DownloadOrchestrator,
@@ -40,11 +46,12 @@ from services.native.file_processor import WRONG_TRACK, FileFailure, ProcessResu
 _TEMPLATE = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"
 
 
-def _status(state, *, succeeded=(), active=False, bytes_=0, files_total=1, files_completed=0):
+def _status(state, *, succeeded=(), active=False, bytes_=0, files_total=1, files_completed=0, matched=0):
     return DownloadTaskStatus(
         task_id="", status=state, files_total=files_total, files_completed=files_completed,
         bytes_total=0, bytes_downloaded=bytes_, progress_percent=0.0,
         succeeded_filenames=list(succeeded), has_active_transfer=active,
+        matched_transfers=matched,
     )
 
 
@@ -128,8 +135,11 @@ class _StubClient:
     async def search_track(self, *a, **k):
         return []
 
-    async def get_file_path(self, username, remote_filename):
+    async def get_file_path(self, username, remote_filename, size=None):
         return Path("/fake") / remote_filename
+
+    async def diagnose_downloads_mount(self):
+        return MountDiagnosis(supported=False)
 
 
 class _FakeRequestHistory:
@@ -399,8 +409,38 @@ async def test_poll_returns_stalled_when_active_transfer_freezes(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_poll_fast_fails_when_no_transfer_materialises(tmp_path: Path, monkeypatch):
+    # A fresh enqueue whose slskd transfer never appears (peer offline / silently
+    # rejected) bails with _OUT_NO_TRANSFER instead of waiting out the queued window.
+    import services.native.download_orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "_TRANSFER_MATERIALIZE_SECONDS", 0.0)
+    client = _StubClient(_status("queued", matched=0))  # 0 matched transfers = no-show
+    store, orch, *_ = _build(tmp_path, client=client, queued_minutes=999.0)
+    task = await _new_task(store, status="downloading", source_username="peer")
+    _write_manifest(orch, task.id, ["peer/01.flac"])
+
+    outcome, _ = await orch._poll_until_done(task, expect_materialization=True)
+    assert outcome == _OUT_NO_TRANSFER
+
+
+@pytest.mark.asyncio
+async def test_poll_does_not_fast_fail_a_real_queued_transfer(tmp_path: Path, monkeypatch):
+    # A transfer that exists but sits queued in the peer's upload queue (matched>0) must
+    # NOT trip the no-transfer fast-fail; it follows the normal queued watchdog.
+    import services.native.download_orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "_TRANSFER_MATERIALIZE_SECONDS", 0.0)
+    client = _StubClient(_status("queued", active=False, bytes_=0, matched=1))
+    store, orch, *_ = _build(tmp_path, client=client, queued_minutes=0.0)
+    task = await _new_task(store, status="downloading", source_username="peer")
+    _write_manifest(orch, task.id, ["peer/01.flac"])
+
+    outcome, _ = await orch._poll_until_done(task, expect_materialization=True)
+    assert outcome == _OUT_QUEUED
+
+
+@pytest.mark.asyncio
 async def test_poll_returns_queued_timeout_when_stuck_in_remote_queue(tmp_path: Path):
-    client = _StubClient(_status("queued", active=False, bytes_=0))
+    client = _StubClient(_status("queued", active=False, bytes_=0, matched=1))
     store, orch, *_ = _build(tmp_path, client=client, queued_minutes=0.0)
     task = await _new_task(store, status="downloading", source_username="peer")
     _write_manifest(orch, task.id, ["peer/01.flac"])
@@ -480,8 +520,11 @@ class _FailoverClient:
     async def cancel(self, task_ref):
         return True
 
-    async def get_file_path(self, username, remote_filename):
+    async def get_file_path(self, username, remote_filename, size=None):
         return Path("/fake") / remote_filename
+
+    async def diagnose_downloads_mount(self):
+        return MountDiagnosis(supported=False)
 
 
 @pytest.mark.asyncio

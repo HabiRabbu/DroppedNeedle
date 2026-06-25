@@ -7,10 +7,13 @@ method logs once per instance on first call so the dead path is discoverable.
 """
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from models.common import ServiceStatus
 from models.library import LibraryAlbum, LibraryGroupedArtist
+
+if TYPE_CHECKING:
+    from services.native.library_manager import LibraryStats
 
 logger = logging.getLogger(__name__)
 
@@ -147,3 +150,11 @@ class LibraryStub:
     async def delete_artist(self, artist_id: int, delete_files: bool = False) -> bool:
         self._log_once("delete_artist")
         return False
+
+    async def get_stats(self) -> "LibraryStats":
+        # LibraryStats lives in library_manager, which imports this module - lazy
+        # import to avoid the cycle. Safe zero-stats default for the brownout.
+        self._log_once("get_stats")
+        from services.native.library_manager import LibraryStats
+
+        return LibraryStats()

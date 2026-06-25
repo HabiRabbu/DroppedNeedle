@@ -65,6 +65,9 @@
 	const status = $derived(statusQuery.data);
 	const connected = $derived(status?.configured === true && status?.client.status === 'ok');
 	const mount = $derived(status?.mount);
+	// Set when the mount looks reachable but slskd's finished downloads aren't visible
+	// on it (wrong path / unreadable) - the silent misconfig.
+	const mountAdvisory = $derived(status?.mount_advisory);
 
 	const MOUNT_REASONS: Record<string, string> = {
 		not_set: 'No slskd downloads folder is mounted into DroppedNeedle.',
@@ -248,7 +251,15 @@
 					<div class="flex items-center gap-2 text-sm font-semibold">
 						<FolderTree class="size-4 text-base-content/70" aria-hidden="true" /> Downloads mount
 					</div>
-					{#if mount?.ok}
+					{#if mount?.ok && mountAdvisory}
+						<div class="alert alert-warning items-start text-sm">
+							<TriangleAlert class="size-5 shrink-0" aria-hidden="true" />
+							<div class="space-y-1">
+								<p>{mountAdvisory}</p>
+								{#if mount.path}<code class="text-base-content/60">{mount.path}</code>{/if}
+							</div>
+						</div>
+					{:else if mount?.ok}
 						<div class="flex items-center gap-2 text-sm text-success">
 							<CircleCheck class="size-4" aria-hidden="true" />
 							Reachable on the same disk as your library

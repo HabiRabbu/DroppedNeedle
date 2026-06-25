@@ -45,12 +45,19 @@ logger = logging.getLogger(__name__)
 # before this).
 _POLL_DEADLINE_SECONDS = 3600 * 6
 
+# A fresh enqueue normally produces a slskd transfer record within a poll or two; if
+# none has materialized in this long the peer was offline / silently rejected it, so
+# fail over fast instead of sitting in the queued watchdog's full window. Generous vs
+# the seconds it actually takes, so a briefly-slow slskd never trips it.
+_TRANSFER_MATERIALIZE_SECONDS = 90.0
+
 # _poll_until_done outcomes.
 _OUT_COMPLETED = "completed"   # every transfer terminal and succeeded
 _OUT_TERMINAL = "terminal"     # every transfer terminal, at least one failed
 _OUT_STALLED = "stalled"       # an active transfer stopped making progress
 _OUT_QUEUED = "queued_timeout"  # stuck in the peer's remote upload queue too long
 _OUT_DEADLINE = "deadline"     # hit the 6-hour absolute ceiling
+_OUT_NO_TRANSFER = "no_transfer"  # a fresh enqueue produced no transfer record
 
 # Terminal "couldn't finish" messages. The mount one is used when slskd delivered the
 # files but we then couldn't find them on the downloads mount - a local/config fault,
@@ -392,20 +399,23 @@ class DownloadOrchestrator:
             },
         )
 
-    async def _poll_until_done(self, task):  # noqa: ANN001, ANN201 - DownloadTask
+    async def _poll_until_done(self, task, *, expect_materialization: bool = False):  # noqa: ANN001, ANN201
         """Poll slskd until the transfer terminates, stalls, or hits the ceiling.
 
         Returns ``(outcome, last_status)``. The watchdog watches real byte
         progress: an actively-transferring peer that stops moving bytes for
         ``stall_timeout`` is stalled; one still sitting in the peer's remote upload
-        queue for ``queued_timeout`` is given up on. ``_run_with_failover`` decides
-        what to do with the outcome - this method never discards progress."""
+        queue for ``queued_timeout`` is given up on. ``expect_materialization`` (set
+        only for a fresh enqueue) additionally bails fast if no transfer record ever
+        appears. ``_run_with_failover`` decides what to do with the outcome - this
+        method never discards progress."""
         manifest = self._read_manifest(task.id)
         task_ref = TaskRef(
             username=task.source_username or "",
             filenames=[f.filename for f in manifest.target_files],
         )
         loop = asyncio.get_running_loop()
+        enqueue_time = loop.time()
         deadline = loop.time() + _POLL_DEADLINE_SECONDS
         last_logged_percent = -1
         last_progress_bytes = -1
@@ -465,8 +475,18 @@ class DownloadOrchestrator:
                     return _OUT_COMPLETED, status
                 if status.status in ("partial", "failed"):
                     return _OUT_TERMINAL, status
-                # Non-terminal: run the stall/queued watchdog off real byte progress.
+                # A fresh enqueue that never produced a transfer record (peer offline /
+                # silently rejected) is a no-show: fail over fast rather than wait out
+                # the full queued window. A genuinely queued transfer HAS a record, so
+                # this can't misfire on a slow-but-real peer.
                 now = loop.time()
+                if (
+                    expect_materialization
+                    and status.matched_transfers == 0
+                    and now - enqueue_time >= _TRANSFER_MATERIALIZE_SECONDS
+                ):
+                    return _OUT_NO_TRANSFER, status
+                # Non-terminal: run the stall/queued watchdog off real byte progress.
                 if status.bytes_downloaded > last_progress_bytes:
                     last_progress_bytes = status.bytes_downloaded
                     last_progress_time = now
@@ -503,8 +523,12 @@ class DownloadOrchestrator:
         wrong_track = False
         source_missing = False
         while True:
+            # resume's first iteration polls the transfers a restart left behind (no
+            # enqueue), so the no-transfer fast-fail must not apply there - those
+            # records may legitimately be gone (completed + cleaned).
+            did_enqueue = not (first and resume)
             enqueued = True
-            if not (first and resume):
+            if did_enqueue:
                 try:
                     await self._enqueue(task)
                 except OrchestrationError:
@@ -516,7 +540,9 @@ class DownloadOrchestrator:
             first = False
 
             if enqueued:
-                outcome, status = await self._poll_until_done(task)
+                outcome, status = await self._poll_until_done(
+                    task, expect_materialization=did_enqueue
+                )
                 # Re-check for an out-of-band cancel in the window between the poll
                 # loop's last check and here, so we don't overwrite 'cancelled' and
                 # import anyway (the failover loop runs this sequence up to N times).
@@ -605,7 +631,8 @@ class DownloadOrchestrator:
         except OrchestrationError:
             await self._settle_incomplete(task, False)
             return
-        outcome, status = await self._poll_until_done(task)
+        # fresh enqueue -> fail fast if the peer never materialises a transfer
+        outcome, status = await self._poll_until_done(task, expect_materialization=True)
         await self._store.update_status(task.id, "processing")
         only = None if outcome in (_OUT_COMPLETED, _OUT_TERMINAL) else set(
             status.succeeded_filenames

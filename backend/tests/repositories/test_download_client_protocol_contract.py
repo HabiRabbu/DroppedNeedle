@@ -28,6 +28,7 @@ _PROTO_METHODS = (
     "get_status",
     "cancel",
     "get_file_path",
+    "diagnose_downloads_mount",
 )
 
 

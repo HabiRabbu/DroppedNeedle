@@ -247,7 +247,7 @@ class FileProcessor:
         """Verify -> tag -> move -> insert one file. Raises ``VerificationFailed``
         (per-file) or ``AlreadyImported`` (crash-idempotency)."""
         source = await self._client.get_file_path(
-            manifest.source_username, expected.filename
+            manifest.source_username, expected.filename, expected.size
         )
 
         # distinguish a bad downloads mount (environment fault) from a single missing
@@ -280,7 +280,10 @@ class FileProcessor:
             existing = await self._library.get_imported_file(
                 download_task_id=manifest.task_id, filename=expected.filename
             )
-            if existing is not None:
+            # only reconcile as already-imported if that library file is still on disk;
+            # a row whose file was deleted out-of-band isn't a real success, so fall
+            # through to (c) rather than falsely counting it imported
+            if existing is not None and Path(existing["file_path"]).exists():
                 logger.info(
                     "File %s already imported on a prior run (task %s); reconciling "
                     "from the library instead of failing",

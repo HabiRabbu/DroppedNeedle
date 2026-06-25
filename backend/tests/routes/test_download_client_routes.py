@@ -185,3 +185,43 @@ def test_status_mount_path_comes_from_settings():
     app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user")
     body = build_test_client(app).get("/download-client/status").json()
     assert body["mount"]["path"] == str(Settings().slskd_downloads_path)
+
+
+def test_status_surfaces_mount_advisory_when_downloads_invisible(tmp_path, monkeypatch):
+    # The mount passes the basic checks (exists/writable/same-fs) but slskd's completed
+    # downloads aren't visible on it -> the advisory flags the silent misconfig.
+    from api.v1.routes import download_client as dc_mod
+    from repositories.protocols.download_client import MountDiagnosis
+
+    dl = tmp_path / "dl"
+    dl.mkdir()
+    monkeypatch.setattr(dc_mod, "get_settings", lambda: MagicMock(slskd_downloads_path=dl))
+    client = _client(configured=True)
+    client.diagnose_downloads_mount = AsyncMock(
+        return_value=MountDiagnosis(supported=True, completed_downloads=5, mount_has_files=False)
+    )
+    app = _app(prefs=_prefs(library_paths=(str(tmp_path),)), client=client)
+    app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user")
+
+    body = build_test_client(app).get("/download-client/status").json()
+    assert body["mount"]["ok"] is True
+    assert body["mount_advisory"] and "finished download" in body["mount_advisory"]
+
+
+def test_status_no_advisory_when_downloads_visible(tmp_path, monkeypatch):
+    # files ARE visible on the mount -> no false alarm.
+    from api.v1.routes import download_client as dc_mod
+    from repositories.protocols.download_client import MountDiagnosis
+
+    dl = tmp_path / "dl"
+    dl.mkdir()
+    monkeypatch.setattr(dc_mod, "get_settings", lambda: MagicMock(slskd_downloads_path=dl))
+    client = _client(configured=True)
+    client.diagnose_downloads_mount = AsyncMock(
+        return_value=MountDiagnosis(supported=True, completed_downloads=5, mount_has_files=True)
+    )
+    app = _app(prefs=_prefs(library_paths=(str(tmp_path),)), client=client)
+    app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user")
+
+    body = build_test_client(app).get("/download-client/status").json()
+    assert body["mount_advisory"] is None

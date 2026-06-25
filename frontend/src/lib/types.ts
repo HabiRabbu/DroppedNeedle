@@ -1565,6 +1565,7 @@ export interface DownloadClientStatus {
 	configured: boolean;
 	client: DownloadClientHealth;
 	mount: DownloadsMountStatus;
+	mount_advisory?: string | null;
 }
 
 export interface TestConnectionResult {

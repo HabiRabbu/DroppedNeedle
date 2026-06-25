@@ -135,6 +135,33 @@ class SlskdClient:
         retriable_exceptions=_RETRIABLE,
         non_breaking_exceptions=_NON_BREAKING,
     )
+    async def get_all_downloads(self) -> list[SlskdTransfer]:
+        # GET /api/v0/transfers/downloads (every peer), username preserved per transfer
+        # (the flatten loses it, so it's carried down from the per-user block). For the
+        # downloads-mount diagnostic, not the per-task poll.
+        try:
+            response = await self._http.get(
+                self._url("/transfers/downloads"), headers=self._headers
+            )
+        except httpx.HTTPError as exc:
+            raise SlskdApiError(f"slskd get_all_downloads failed: {exc}") from exc
+        if response.status_code == 404:
+            return []
+        self._check(response)
+        out: list[SlskdTransfer] = []
+        for block in response.json() or []:
+            username = block.get("username", "") if isinstance(block, dict) else ""
+            for t in _flatten_transfers(block):
+                if not t.get("username"):
+                    t = {**t, "username": username}
+                out.append(msgspec.convert(t, type=SlskdTransfer, strict=False))
+        return out
+
+    @with_retry(
+        circuit_breaker=_slskd_circuit_breaker,
+        retriable_exceptions=_RETRIABLE,
+        non_breaking_exceptions=_NON_BREAKING,
+    )
     async def cancel_transfer(self, username: str, transfer_id: str) -> bool:
         """DELETE /api/v0/transfers/downloads/{username}/{id}?remove=true.
         Serves both cancellation of an in-flight transfer and post-import

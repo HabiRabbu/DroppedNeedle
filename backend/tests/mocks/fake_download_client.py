@@ -17,6 +17,7 @@ from repositories.protocols.download_client import (
     DownloadFileRef,
     DownloadSearchResult,
     DownloadTaskStatus,
+    MountDiagnosis,
     TaskRef,
 )
 
@@ -93,5 +94,8 @@ class FakeDownloadClient:
         self._enqueued.pop(task_ref.username, None)
         return True
 
-    async def get_file_path(self, username: str, remote_filename: str) -> Path | None:
+    async def get_file_path(self, username: str, remote_filename: str, size: int | None = None) -> Path | None:
         return Path("/fake/downloads") / remote_filename.replace("\\", "/").lstrip("/")
+
+    async def diagnose_downloads_mount(self) -> MountDiagnosis:
+        return MountDiagnosis(supported=False)

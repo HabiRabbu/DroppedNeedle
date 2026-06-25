@@ -63,6 +63,23 @@ class DownloadTaskStatus(AppStruct):
     # moving bytes (vs. sitting in the peer's remote upload queue). The stall
     # watchdog uses this to pick the active-stall timeout vs the queued timeout.
     has_active_transfer: bool = False
+    # Number of slskd transfer records matched to this task. 0 means the enqueue
+    # produced nothing (peer offline / silently rejected) - distinct from a real
+    # transfer sitting queued in the peer's upload queue, which has a record. Lets
+    # the orchestrator fail a no-show enqueue over fast instead of waiting out the
+    # full queued timeout for a transfer that never existed.
+    matched_transfers: int = 0
+
+
+class MountDiagnosis(AppStruct):
+    """Cross-check of the client's completed (not-yet-imported) downloads against
+    the configured import mount, to catch a silently-misconfigured path - reachable
+    but pointing elsewhere, or unreadable (PUID/GID) - before it fails downloads one
+    by one. ``supported=False`` when the client can't introspect its downloads."""
+
+    supported: bool = False
+    completed_downloads: int = 0
+    mount_has_files: bool = True
 
 
 @runtime_checkable
@@ -114,10 +131,19 @@ class DownloadClientProtocol(Protocol):
         self,
         username: str,
         remote_filename: str,
+        size: int | None = None,
     ) -> Path | None:
         """Local on-disk path of a completed download (the import source).
 
-        A client whose layout is unpredictable may return ``None``; the
-        orchestrator then falls back to ``get_status``.
+        ``size`` (the expected byte size) lets an implementation recover a file
+        whose on-disk name the client sanitised. A client whose layout is
+        unpredictable may return ``None``; the orchestrator then falls back to
+        ``get_status``.
         """
+        ...
+
+    async def diagnose_downloads_mount(self) -> MountDiagnosis:
+        """Cross-check completed downloads against the configured import mount so a
+        silently-misconfigured mount (reachable but wrong, or unreadable) is caught
+        proactively. Clients that can't introspect return ``supported=False``."""
         ...
