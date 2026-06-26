@@ -453,7 +453,7 @@ class FileProcessor:
                 if exc.errno != errno.EXDEV:
                     raise
                 shutil.copy2(source, tmp)  # cross-mount: the one unavoidable copy
-            self._tagger.write_mb_tags(tmp, target_tag)
+            self._tagger.write_album_identity(tmp, target_tag)
             os.replace(tmp, target_path)  # atomic publish within the library dir
         except BaseException:
             # same-mount path renamed source into tmp; if tagging/publish then fails,

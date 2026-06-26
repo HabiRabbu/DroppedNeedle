@@ -248,12 +248,12 @@ async def test_process_downloaded_import_error_is_per_file(tmp_path: Path):
             downloads / rel, msgspec.structs.replace(existing, title=title, track_number=track)
         )
 
-    real_write = AudioTagger().write_mb_tags
+    real_write = AudioTagger().write_album_identity
     def flaky_write(path, tag):
         if tag.title == "Bad Track":
             raise OSError("disk full")
         return real_write(path, tag)
-    fp._tagger.write_mb_tags = flaky_write
+    fp._tagger.write_album_identity = flaky_write
 
     manifest = _manifest(
         ExpectedFile(filename="A/good.flac", size=1),
