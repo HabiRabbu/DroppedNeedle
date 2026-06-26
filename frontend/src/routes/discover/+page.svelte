@@ -420,7 +420,6 @@
 										<GenreGrid
 											title={discoverData.genre_list.title}
 											genres={discoverData.genre_list.items}
-											genreArtists={discoverData.genre_artists}
 											genreArtistImages={discoverData.genre_artist_images}
 										/>
 									</div>

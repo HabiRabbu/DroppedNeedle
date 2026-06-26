@@ -1,16 +1,14 @@
 <script lang="ts">
-	import { getApiUrl } from '$lib/api/api-utils';
 	import { imageSettingsStore } from '$lib/stores/imageSettings';
 	import { appendAudioDBSizeSuffix } from '$lib/utils/imageSuffix';
 
 	interface Props {
 		title: string;
 		genres: { name: string; listen_count?: number | null; artist_count?: number | null }[];
-		genreArtists?: Record<string, string | null> | undefined;
 		genreArtistImages?: Record<string, string | null> | undefined;
 	}
 
-	let { title, genres, genreArtists = undefined, genreArtistImages = undefined }: Props = $props();
+	let { title, genres, genreArtistImages = undefined }: Props = $props();
 
 	const genreColors = [
 		'from-rose-500/90 to-pink-700',
@@ -40,16 +38,10 @@
 	}
 
 	let cdnFailedSet = $state(new Set<string>());
-	let loadedSet = $state(new Set<string>());
 
 	function onCdnError(genreName: string) {
 		cdnFailedSet.add(genreName);
 		cdnFailedSet = cdnFailedSet;
-	}
-
-	function onImgLoad(genreName: string) {
-		loadedSet.add(genreName);
-		loadedSet = loadedSet;
 	}
 </script>
 
@@ -59,12 +51,9 @@
 	</div>
 	<div class="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 md:grid-cols-4 lg:grid-cols-5">
 		{#each genres.slice(0, 20) as genre (genre.name)}
-			{@const artistMbid = genreArtists?.[genre.name]}
 			{@const cdnUrl = genreArtistImages?.[genre.name] ?? null}
 			{@const useCdn =
 				cdnUrl && $imageSettingsStore.directRemoteImagesEnabled && !cdnFailedSet.has(genre.name)}
-			{@const hasImage = useCdn || artistMbid}
-			{@const isLoaded = loadedSet.has(genre.name)}
 			<a
 				href="/genre?name={encodeURIComponent(genre.name)}"
 				class="group relative isolate overflow-hidden rounded-xl text-white shadow-md transition-all duration-300 hover:shadow-xl hover:ring-2 hover:ring-white/20 active:scale-[0.97]"
@@ -76,38 +65,20 @@
 					style="z-index: 1;"
 				></div>
 
-				{#if hasImage && !isLoaded}
-					<div class="absolute inset-0 animate-pulse bg-white/5" style="z-index: 4;"></div>
-				{/if}
-
 				{#if useCdn}
 					<img
-						src={appendAudioDBSizeSuffix(cdnUrl, 'md')}
+						src={appendAudioDBSizeSuffix(cdnUrl, 'lg')}
 						alt=""
-						class="pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-500 {isLoaded
-							? 'opacity-40'
-							: 'opacity-0'}"
+						class="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-50"
 						style="z-index: 5;"
 						loading="lazy"
 						referrerpolicy="no-referrer"
 						onerror={() => onCdnError(genre.name)}
-						onload={() => onImgLoad(genre.name)}
-					/>
-				{:else if artistMbid}
-					<img
-						src={getApiUrl(`/api/v1/covers/artist/${artistMbid}?size=250`)}
-						alt=""
-						class="pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-500 {isLoaded
-							? 'opacity-40'
-							: 'opacity-0'}"
-						style="z-index: 5;"
-						loading="lazy"
-						onload={() => onImgLoad(genre.name)}
 					/>
 				{/if}
 
 				<div
-					class="absolute inset-0 bg-linear-to-t from-black/60 via-black/20 to-transparent"
+					class="absolute inset-0 bg-linear-to-t from-black/70 via-black/20 to-transparent"
 					style="z-index: 6;"
 				></div>
 

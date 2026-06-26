@@ -1608,18 +1608,38 @@ class DiscoverHomepageService:
                 rg_map[rid] = rg_id
         return rg_map
 
+    async def _artist_image_url(self, mbid: str) -> str | None:
+        """Best AudioDB image URL for an artist, or None. Cached per-MBID on disk."""
+        if not self._audiodb_image_service:
+            return None
+        try:
+            images = await self._audiodb_image_service.fetch_and_cache_artist_images(mbid)
+            if images and not images.is_negative:
+                return images.wide_thumb_url or images.banner_url or images.fanart_url
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to fetch artist image for %s: %s", mbid, exc)
+        return None
+
     async def _get_genre_artist(self, genre_name: str, exclude_mbids: set[str] | None = None) -> str | None:
+        chosen: str | None = None
         try:
             artists = await self._mb_repo.search_artists_by_tag(genre_name, limit=10)
+            first_valid: str | None = None
             for artist in artists:
-                if not artist.musicbrainz_id or artist.musicbrainz_id == VARIOUS_ARTISTS_MBID:
+                mbid = artist.musicbrainz_id
+                if not mbid or mbid == VARIOUS_ARTISTS_MBID:
                     continue
-                if exclude_mbids and artist.musicbrainz_id in exclude_mbids:
+                if exclude_mbids and mbid in exclude_mbids:
                     continue
-                return artist.musicbrainz_id
+                if first_valid is None:
+                    first_valid = mbid
+                # Prefer an artist AudioDB has a picture for so the tile shows art.
+                if await self._artist_image_url(mbid):
+                    return mbid
+            chosen = first_valid
         except Exception:  # noqa: BLE001
             logger.debug("Failed to resolve genre artist from library")
-        return None
+        return chosen
 
     async def _resolve_genre_artist_images(
         self, genre_artists: dict[str, str | None]
@@ -1631,15 +1651,7 @@ class DiscoverHomepageService:
 
         async def _resolve_one(genre: str, mbid: str) -> tuple[str, str | None]:
             async with sem:
-                try:
-                    images = await self._audiodb_image_service.fetch_and_cache_artist_images(mbid)
-                    if images and not images.is_negative:
-                        url = images.wide_thumb_url or images.banner_url or images.fanart_url
-                        if url:
-                            return (genre, url)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("Failed to resolve discover genre image for %s: %s", genre, exc)
-                return (genre, None)
+                return (genre, await self._artist_image_url(mbid))
 
         tasks = [
             _resolve_one(genre, mbid)

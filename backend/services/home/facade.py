@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -191,21 +190,6 @@ class HomeService:
             cache_key = self._get_home_cache_key(user_id, resolved_source, lb_enabled, lfm_enabled)
             cached = await self._memory_cache.get(cache_key)
             if cached is not None:
-                if not cached.genre_artists:
-                    genre_section = await self._genre.get_cached_genre_section(resolved_source)
-                    if genre_section:
-                        from infrastructure.serialization import clone_with_updates
-                        cached = clone_with_updates(cached, {
-                            "genre_artists": genre_section[0],
-                            "genre_artist_images": genre_section[1],
-                        })
-                        if cached.genre_list and cached.genre_list.items:
-                            cur_names = [g.name for g in cached.genre_list.items[:20] if isinstance(g, HomeGenre)]
-                            missing = [n for n in cur_names if n not in genre_section[0]]
-                            if missing:
-                                asyncio.create_task(
-                                    self._genre.build_and_cache_genre_section(resolved_source, cur_names)
-                                )
                 if not home_settings.show_whats_hot:
                     from infrastructure.serialization import clone_with_updates
                     cached = clone_with_updates(cached, {
@@ -319,17 +303,14 @@ class HomeService:
                 g.name for g in response.genre_list.items[:20]
                 if isinstance(g, HomeGenre)
             ]
-            cached_section = await self._genre.get_cached_genre_section(resolved_source)
-            if cached_section:
-                response.genre_artists, response.genre_artist_images = cached_section
-                missing = [n for n in genre_names if n not in cached_section[0]]
-                if missing:
-                    asyncio.create_task(
-                        self._genre.build_and_cache_genre_section(resolved_source, genre_names)
-                    )
-            elif genre_names:
-                asyncio.create_task(
-                    self._genre.build_and_cache_genre_section(resolved_source, genre_names)
+            if genre_names:
+                # Resolve art for the exact genre names being shown (not a separately
+                # warmed default set) so the frontend's by-name lookup always hits. The
+                # per-name artist cache and per-MBID AudioDB cache keep this fast once warm.
+                genre_artists = await self._genre.get_genre_artists_batch(genre_names)
+                response.genre_artists = genre_artists
+                response.genre_artist_images = await self._genre.resolve_genre_artist_images(
+                    genre_artists
                 )
 
         response.service_prompts = self._builders.build_service_prompts(
