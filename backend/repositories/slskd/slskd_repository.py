@@ -210,6 +210,37 @@ class SlskdRepository:
             hit = self._walk_find(user_root, mount, _matches_size)
             if hit is not None:
                 return hit
+        # 6. Whole-mount fallback for a file nested deeper than the cheap steps look,
+        # under a folder that isn't the peer's username (e.g. {downloads}/{artist}/
+        # {album}/{file}). Exact basename match across the mount, validated by byte size
+        # when known: a name+size match is effectively the same file, so this can't grab
+        # a different same-named track - an unscoped size-ONLY walk would cross peers
+        # (step 5 stays peer-scoped on purpose). Reached only after every step missed.
+        def _name_size_match(entry: Path) -> bool:
+            if entry.name != basename:
+                return False
+            if not size:
+                return True
+            try:
+                return entry.stat().st_size == size
+            except OSError:
+                return False
+
+        hit = self._walk_find(mount, mount, _name_size_match)
+        if hit is not None:
+            return hit
+        try:
+            top_level = sum(1 for _ in mount.iterdir())
+        except OSError:
+            top_level = -1
+        logger.warning(
+            "slskd file not locatable on the downloads mount: %s (%s bytes); "
+            "%d top-level entries under the mount - the on-disk layout may nest deeper "
+            "or sanitise names beyond what get_file_path handles",
+            basename,
+            size if size else "unknown",
+            top_level,
+        )
         return None
 
     @staticmethod

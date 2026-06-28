@@ -365,6 +365,38 @@ async def test_get_file_path_size_fallback_is_scoped_to_peer(tmp_path):
     assert await repo.get_file_path("peer1", "@@p\\A\\missing.flac", size=10) is None
 
 
+@pytest.mark.asyncio
+async def test_get_file_path_deep_nested_non_username_folder(tmp_path):
+    # some setups nest {downloads}/{artist}/{album}/{file} under a folder that is NOT
+    # the peer's username, two levels deep: the leaf-folder (1), one-level-scan (4) and
+    # username walk (3/5) all miss it. The whole-mount name+size fallback recovers it.
+    folder = tmp_path / "The Beatles" / "Abbey Road (1969)"
+    folder.mkdir(parents=True)
+    f = folder / "01 - Come Together.flac"
+    f.write_bytes(b"abcdefghij")  # size 10
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
+    path = await repo.get_file_path(
+        "peer1", "@@p\\Music\\Abbey Road (1969)\\01 - Come Together.flac", size=10
+    )
+    assert path == f.resolve()
+
+
+@pytest.mark.asyncio
+async def test_get_file_path_whole_mount_fallback_disambiguates_by_size(tmp_path):
+    # two files share the basename in different non-username folders; only the one whose
+    # byte size matches is the real download, so size must break the tie (never grab the
+    # wrong same-named track).
+    wrong = tmp_path / "ArtistA" / "AlbumA" / "01 - Track.flac"
+    wrong.parent.mkdir(parents=True)
+    wrong.write_bytes(b"x")  # size 1, wrong file
+    right = tmp_path / "ArtistB" / "AlbumB" / "01 - Track.flac"
+    right.parent.mkdir(parents=True)
+    right.write_bytes(b"abcdefghij")  # size 10, the real download
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
+    path = await repo.get_file_path("peer1", "@@p\\X\\AlbumB\\01 - Track.flac", size=10)
+    assert path == right.resolve()
+
+
 def _completed(filename, username="peer"):
     return SlskdTransfer(id=filename, username=username, filename=filename, state="Completed, Succeeded")
 
