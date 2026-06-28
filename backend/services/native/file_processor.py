@@ -454,7 +454,9 @@ class FileProcessor:
                     raise
                 try:
                     shutil.copy2(source, tmp)  # cross-mount: the one unavoidable copy
-                except BaseException:
+                except PermissionError as exc:
+                    logger.error(exc)
+                    logger.debug("Fallback to copyfile for copying file to library.")
                     shutil.copyfile(source, tmp)  # Full fallback, just copy data
             self._tagger.write_album_identity(tmp, target_tag)
             os.replace(tmp, target_path)  # atomic publish within the library dir
