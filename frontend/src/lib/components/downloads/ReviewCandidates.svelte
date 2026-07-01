@@ -16,32 +16,73 @@
 
 	let showAll = $state(false);
 	let pickingIndex = $state<number | null>(null);
+	// Once a pick succeeds the task is committed but this card lingers until the next poll
+	// moves it out of Review - keep every pick locked in that window so a second click can't
+	// fire a duplicate download.
+	let picked = $state(false);
 
 	const candidates = $derived(jobQuery.data?.candidates ?? []);
-	// visible is a prefix of candidates, so each item's index matches the full-array candidate_index the backend expects
-	const visible = $derived(showAll ? candidates : candidates.slice(0, 3));
+	// Keep each candidate's ORIGINAL index - the backend's candidate_index is into the
+	// full pooled list, so grouping/truncating must not renumber.
+	const indexed = $derived(candidates.map((candidate, index) => ({ candidate, index })));
+	// Source-grouped (D16): Soulseek and Usenet scores aren't commensurable, so they show
+	// in separate labelled groups, ranked within each - never interleaved.
+	const groups = $derived(
+		[
+			{
+				key: 'soulseek',
+				label: 'Soulseek',
+				items: indexed.filter((c) => (c.candidate.source ?? 'soulseek') === 'soulseek')
+			},
+			{
+				key: 'usenet',
+				label: 'Usenet',
+				items: indexed.filter((c) => c.candidate.source === 'usenet')
+			}
+		].filter((g) => g.items.length > 0)
+	);
+	const isTrack = $derived(task.download_type === 'track');
 
 	function handlePick(index: number) {
-		if (!task.search_job_id) return;
+		if (!task.search_job_id || picked || pickingIndex !== null) return;
 		pickingIndex = index;
 		pick.mutate(
 			{ jobId: task.search_job_id, candidate_index: index },
-			{ onSettled: () => (pickingIndex = null) }
+			{
+				onSuccess: () => (picked = true),
+				// only re-open on failure; a success stays locked until the card unmounts
+				onError: () => (pickingIndex = null)
+			}
 		);
 	}
 </script>
 
-<div class="mt-3 space-y-3 border-t border-base-content/10 pt-3">
+<div class="mt-3 space-y-4 border-t border-base-content/10 pt-3">
 	{#if jobQuery.isLoading}
 		<div class="skeleton h-20 w-full rounded-box"></div>
 	{:else if candidates.length === 0}
 		<p class="text-sm text-base-content/60">No candidates available to review.</p>
 	{:else}
-		{#each visible as candidate, i (candidate.username + candidate.parent_directory)}
-			<SearchResultCard {candidate} picking={pickingIndex === i} onPick={() => handlePick(i)} />
+		{#each groups as group (group.key)}
+			{@const visible = showAll ? group.items : group.items.slice(0, 3)}
+			<div class="space-y-2">
+				<p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+					{group.label}
+				</p>
+				{#each visible as { candidate, index } (index)}
+					<SearchResultCard
+						{candidate}
+						albumTitle={task.album_title}
+						viaAlbumNzb={group.key === 'usenet' && isTrack}
+						picking={pickingIndex === index}
+						disabled={picked || pickingIndex !== null}
+						onPick={() => handlePick(index)}
+					/>
+				{/each}
+			</div>
 		{/each}
 		<div class="flex items-center justify-between gap-2">
-			{#if candidates.length > 3}
+			{#if groups.some((g) => g.items.length > 3)}
 				<button class="btn btn-ghost btn-xs" onclick={() => (showAll = !showAll)}>
 					{showAll ? 'Show fewer' : `Show all ${candidates.length} candidates`}
 				</button>

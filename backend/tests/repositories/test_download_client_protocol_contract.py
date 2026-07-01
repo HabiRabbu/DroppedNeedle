@@ -1,11 +1,18 @@
-"""Protocol conformance contract test (contract-test 3a).
+"""Protocol conformance contract tests (contract-test 3a).
 
 ``@runtime_checkable`` ``isinstance`` only verifies method NAMES exist; it does
-not check parameter signatures or async-ness. This parametrized test runs the
-``DownloadClientProtocol`` against TWO implementations - the real
-``SlskdRepository`` and the in-memory ``FakeDownloadClient`` - and asserts each
-protocol method's signature and async-ness match. Both must pass, proving a
-second client requires zero ``services/native`` changes.
+not check parameter signatures or async-ness. After the search/download split
+(D2) there are TWO protocols, each exercised against the real impl + an in-memory
+fake:
+
+- ``DownloadClientProtocol`` (acquire/track/locate): ``SlskdRepository`` +
+  ``FakeDownloadClient``. ``search_*`` are gone (moved to ``IndexerProtocol``);
+  ``list_completed_files`` is new.
+- ``IndexerProtocol`` (search): ``SlskdIndexer`` (the adapter) + ``FakeIndexer``.
+
+Each asserts every protocol method's signature (incl. return annotation) and
+async-ness match, proving a second client/indexer requires zero
+``services/native`` changes.
 """
 
 import inspect
@@ -15,20 +22,28 @@ import httpx
 import pytest
 
 from repositories.protocols.download_client import DownloadClientProtocol
+from repositories.protocols.indexer import IndexerProtocol
 from repositories.slskd.slskd_client import SlskdClient
+from repositories.slskd.slskd_indexer import SlskdIndexer
 from repositories.slskd.slskd_repository import SlskdRepository
-from tests.mocks.fake_download_client import FakeDownloadClient
+from tests.mocks.fake_download_client import FakeDownloadClient, FakeIndexer
 
 _PROTO_METHODS = (
     "is_configured",
     "health_check",
-    "search_album",
-    "search_track",
     "enqueue",
     "get_status",
     "cancel",
+    "list_completed_files",
     "get_file_path",
     "diagnose_downloads_mount",
+)
+
+_INDEXER_METHODS = (
+    "is_configured",
+    "health_check",
+    "search_album",
+    "search_track",
 )
 
 
@@ -44,7 +59,32 @@ def _make_fake_client() -> FakeDownloadClient:
     return FakeDownloadClient()
 
 
-@pytest.mark.parametrize("factory", [_make_slskd_repo, _make_fake_client])
+def _make_sabnzbd_client():
+    from repositories.sabnzbd.sabnzbd_client import SabnzbdClient
+    from repositories.sabnzbd.sabnzbd_download_client import SabnzbdDownloadClient
+
+    http = httpx.AsyncClient()
+    client = SabnzbdClient(http, "http://sab:8080", "key")
+    return SabnzbdDownloadClient(client, "http://sab:8080", "key", Path("/sabnzbd-downloads"))
+
+
+def _make_slskd_indexer() -> SlskdIndexer:
+    return SlskdIndexer(_make_slskd_repo())
+
+
+def _make_fake_indexer() -> FakeIndexer:
+    return FakeIndexer()
+
+
+def _make_newznab_indexer():
+    from repositories.newznab.newznab_indexer import NewznabIndexer
+
+    return NewznabIndexer([])  # no configured indexers needed for signature conformance
+
+
+@pytest.mark.parametrize(
+    "factory", [_make_slskd_repo, _make_fake_client, _make_sabnzbd_client]
+)
 def test_impl_conforms_to_protocol(factory):
     impl = factory()
 
@@ -56,6 +96,25 @@ def test_impl_conforms_to_protocol(factory):
     # SIGNATURE + async level (the gap isinstance does NOT cover).
     for name in _PROTO_METHODS:
         proto_fn = getattr(DownloadClientProtocol, name)
+        impl_fn = getattr(type(impl), name)
+        assert inspect.signature(impl_fn) == inspect.signature(proto_fn), name
+        assert inspect.iscoroutinefunction(impl_fn) == inspect.iscoroutinefunction(
+            proto_fn
+        ), name
+
+
+@pytest.mark.parametrize(
+    "factory", [_make_slskd_indexer, _make_fake_indexer, _make_newznab_indexer]
+)
+def test_impl_conforms_to_indexer_protocol(factory):
+    impl = factory()
+
+    assert isinstance(impl, IndexerProtocol)
+    assert isinstance(impl.indexer_name, str)
+    assert impl.indexer_name
+
+    for name in _INDEXER_METHODS:
+        proto_fn = getattr(IndexerProtocol, name)
         impl_fn = getattr(type(impl), name)
         assert inspect.signature(impl_fn) == inspect.signature(proto_fn), name
         assert inspect.iscoroutinefunction(impl_fn) == inspect.iscoroutinefunction(

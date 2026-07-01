@@ -111,7 +111,18 @@ vi.mock('$lib/queries/downloads/DownloadQueries.svelte', () => ({
 vi.mock('$lib/queries/downloads/DownloadMutations.svelte', () => ({
 	cancelDownload: () => ({ mutate: vi.fn(), isPending: false }),
 	retryDownload: () => ({ mutate: vi.fn(), isPending: false }),
-	requestTrack: () => ({ mutate: vi.fn(), isPending: false })
+	stopAutoRetry: () => ({ mutate: vi.fn(), isPending: false }),
+	requestTrack: () => ({ mutate: vi.fn(), isPending: false }),
+	importHeldTrack: () => ({ mutate: vi.fn(), isPending: false }),
+	discardHeldTrack: () => ({ mutate: vi.fn(), isPending: false })
+}));
+
+vi.mock('$lib/queries/downloads/HeldQueries.svelte', () => ({
+	getHeldImportsQuery: () => ({
+		get data() {
+			return { items: [] };
+		}
+	})
 }));
 
 vi.mock('$lib/queries/downloads/DownloadSSE.svelte', () => ({
@@ -125,7 +136,8 @@ vi.mock('$lib/queries/downloads/DownloadSSE.svelte', () => ({
 // Stub only the rescan mutation factory so AlbumHeader renders without a QueryClientProvider; keep other exports intact.
 vi.mock('$lib/queries/library/LibraryMutations.svelte', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/queries/library/LibraryMutations.svelte')>()),
-	rescanAlbum: () => ({ mutateAsync: vi.fn(), isPending: false })
+	rescanAlbum: () => ({ mutateAsync: vi.fn(), isPending: false }),
+	reidentifyAlbum: () => ({ mutateAsync: vi.fn(), isPending: false })
 }));
 
 vi.mock('$lib/utils/albumRequest', () => ({
@@ -239,8 +251,10 @@ function makeTask(overrides: Partial<DownloadTask> = {}): DownloadTask {
 		retry_count: 0,
 		created_at: 1,
 		updated_at: 2,
+		completed_at: null,
 		next_retry_at: null,
 		retry_max: 6,
+		retry_ladder_minutes: [15, 30, 60, 120, 240, 480],
 		...overrides
 	};
 }

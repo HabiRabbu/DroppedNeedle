@@ -61,6 +61,9 @@ def _make_prefs(
     download_client.enabled = False
     download_client.url = ""
     prefs.get_download_client_settings.return_value = download_client
+    # is_download_client_configured() now delegates to is_download_source_ready() (slskd OR
+    # Usenet); mirror the disabled download client so the onboarding prompt shows.
+    prefs.is_download_source_ready.return_value = False
 
     yt = MagicMock()
     yt.enabled = False
@@ -242,6 +245,7 @@ class TestBuildServicePrompts:
         download_client.enabled = True
         download_client.url = "http://slskd"
         prefs.get_download_client_settings.return_value = download_client
+        prefs.is_download_source_ready.return_value = True
         service = DiscoverService(
             listenbrainz_repo=AsyncMock(),
             jellyfin_repo=AsyncMock(),

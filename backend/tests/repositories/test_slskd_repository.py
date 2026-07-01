@@ -13,7 +13,8 @@ import pytest
 from repositories.protocols.download_client import (
     DownloadClientProtocol,
     DownloadFileRef,
-    TaskRef,
+    EnqueueRequest,
+    TaskHandle,
 )
 from repositories.slskd.slskd_client import SlskdClient
 from repositories.slskd.slskd_models import (
@@ -27,6 +28,16 @@ from repositories.slskd.slskd_models import (
 )
 from repositories.slskd.slskd_repository import SlskdRepository
 from tests.mocks import slskd_mock
+
+
+def _h(username: str, filenames: list[str] | None = None) -> TaskHandle:
+    """Build a soulseek TaskHandle for the download-side calls (get_status/cancel/
+    get_file_path) after the protocol split (D2)."""
+    return TaskHandle(source="soulseek", username=username, filenames=filenames or [])
+
+
+def _req(files: list[DownloadFileRef]) -> EnqueueRequest:
+    return EnqueueRequest(task_id="t", source="soulseek", files=files)
 
 
 class _ConcFake:
@@ -108,12 +119,12 @@ async def test_enqueue_semaphore_serializes_and_returns_taskref():
     )
     refs = await asyncio.gather(
         *(
-            repo.enqueue([DownloadFileRef(username="alice", filename=f"f{i}.flac", size=10)])
+            repo.enqueue(_req([DownloadFileRef(username="alice", filename=f"f{i}.flac", size=10)]))
             for i in range(5)
         )
     )
     assert fake.enqueue_max == 1
-    assert all(isinstance(r, TaskRef) for r in refs)
+    assert all(isinstance(r, TaskHandle) for r in refs)
     assert refs[0].username == "alice"
     assert refs[0].filenames == ["f0.flac"]
 
@@ -251,7 +262,7 @@ async def test_search_album_translates_results(mock_repo):
 @pytest.mark.asyncio
 async def test_get_status_correlates_by_filename(mock_repo):
     ref = await mock_repo.enqueue(
-        [DownloadFileRef(username="alice", filename="dir/a.flac", size=100)]
+        _req([DownloadFileRef(username="alice", filename="dir/a.flac", size=100)])
     )
     status = await mock_repo.get_status(ref)
     assert status.files_total == 1
@@ -262,7 +273,7 @@ async def test_get_status_correlates_by_filename(mock_repo):
 @pytest.mark.asyncio
 async def test_cancel_removes_matching_transfers(mock_repo):
     ref = await mock_repo.enqueue(
-        [DownloadFileRef(username="alice", filename="dir/a.flac", size=100)]
+        _req([DownloadFileRef(username="alice", filename="dir/a.flac", size=100)])
     )
     assert await mock_repo.cancel(ref) is True
     status = await mock_repo.get_status(ref)
@@ -278,8 +289,7 @@ async def test_get_file_path_resolves_slskd_leaf_folder_layout(tmp_path):
     f = leaf / "The Marías - Nobody New.mp3"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(
-        "alice", "@@peer\\Music\\The Marías\\The Marías - Nobody New.mp3"
+    path = await repo.get_file_path(_h("alice"), "@@peer\\Music\\The Marías\\The Marías - Nobody New.mp3"
     )
     assert path == f.resolve()
 
@@ -289,7 +299,7 @@ async def test_get_file_path_flat_layout_fallback(tmp_path):
     f = tmp_path / "01 song.flac"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path("alice", "Artist/Album/01 song.flac")
+    path = await repo.get_file_path(_h("alice"), "Artist/Album/01 song.flac")
     assert path == f.resolve()
 
 
@@ -301,20 +311,20 @@ async def test_get_file_path_scans_for_sanitised_folder(tmp_path):
     f = folder / "02 song.flac"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path("alice", "Some/Other/Remote/02 song.flac")
+    path = await repo.get_file_path(_h("alice"), "Some/Other/Remote/02 song.flac")
     assert path == f.resolve()
 
 
 @pytest.mark.asyncio
 async def test_get_file_path_missing_returns_none(tmp_path):
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    assert await repo.get_file_path("alice", "Artist/Album/missing.flac") is None
+    assert await repo.get_file_path(_h("alice"), "Artist/Album/missing.flac") is None
 
 
 @pytest.mark.asyncio
 async def test_get_file_path_rejects_traversal(tmp_path):
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    assert await repo.get_file_path("alice", "../../etc/passwd") is None
+    assert await repo.get_file_path(_h("alice"), "../../etc/passwd") is None
 
 
 @pytest.mark.asyncio
@@ -327,8 +337,7 @@ async def test_get_file_path_username_nested_album_layout(tmp_path):
     f = folder / "Artist - Album - 01 - Track.flac"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(
-        "dshaw8772", "@@peer\\Music\\2024 Some Album\\Artist - Album - 01 - Track.flac"
+    path = await repo.get_file_path(_h("dshaw8772"), "@@peer\\Music\\2024 Some Album\\Artist - Album - 01 - Track.flac"
     )
     assert path == f.resolve()
 
@@ -342,7 +351,7 @@ async def test_get_file_path_username_walk_handles_glob_chars(tmp_path):
     f = folder / "01 - Song [Remix].flac"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path("peer1", "@@p\\X\\Disc [2019]\\01 - Song [Remix].flac")
+    path = await repo.get_file_path(_h("peer1"), "@@p\\X\\Disc [2019]\\01 - Song [Remix].flac")
     assert path == f.resolve()
 
 
@@ -355,7 +364,7 @@ async def test_get_file_path_size_fallback_for_sanitised_filename(tmp_path):
     f = folder / "Track _ Sanitised.flac"  # on-disk: '?' replaced with '_'
     f.write_bytes(b"abcdefghij")  # size 10
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path("peer1", "@@p\\Album\\Track ? Sanitised.flac", size=10)
+    path = await repo.get_file_path(_h("peer1"), "@@p\\Album\\Track ? Sanitised.flac", size=10)
     assert path == f.resolve()
 
 
@@ -365,7 +374,7 @@ async def test_get_file_path_size_fallback_is_scoped_to_peer(tmp_path):
     (tmp_path / "other").mkdir()
     (tmp_path / "other" / "decoy.flac").write_bytes(b"abcdefghij")  # size 10, wrong peer
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    assert await repo.get_file_path("peer1", "@@p\\A\\missing.flac", size=10) is None
+    assert await repo.get_file_path(_h("peer1"), "@@p\\A\\missing.flac", size=10) is None
 
 
 @pytest.mark.asyncio
@@ -378,8 +387,7 @@ async def test_get_file_path_deep_nested_non_username_folder(tmp_path):
     f = folder / "01 - Come Together.flac"
     f.write_bytes(b"abcdefghij")  # size 10
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(
-        "peer1", "@@p\\Music\\Abbey Road (1969)\\01 - Come Together.flac", size=10
+    path = await repo.get_file_path(_h("peer1"), "@@p\\Music\\Abbey Road (1969)\\01 - Come Together.flac", size=10
     )
     assert path == f.resolve()
 
@@ -396,7 +404,7 @@ async def test_get_file_path_whole_mount_fallback_disambiguates_by_size(tmp_path
     right.parent.mkdir(parents=True)
     right.write_bytes(b"abcdefghij")  # size 10, the real download
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path("peer1", "@@p\\X\\AlbumB\\01 - Track.flac", size=10)
+    path = await repo.get_file_path(_h("peer1"), "@@p\\X\\AlbumB\\01 - Track.flac", size=10)
     assert path == right.resolve()
 
 
@@ -468,7 +476,7 @@ async def test_get_file_path_runs_off_the_event_loop(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(repo, "_locate_file", slow_locate)
-    locate = asyncio.create_task(repo.get_file_path("peer", "album/01.flac"))
+    locate = asyncio.create_task(repo.get_file_path(_h("peer"), "album/01.flac"))
 
     ticks = 0
     for _ in range(5):

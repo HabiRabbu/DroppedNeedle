@@ -1,4 +1,4 @@
-"""Tests for AlbumIdentifier — per-folder track-list matching."""
+"""Tests for AlbumIdentifier - per-folder track-list matching."""
 
 import itertools
 import random
@@ -121,13 +121,15 @@ def test_score_release_ranks_standalone_album_above_compilation():
     m_debut = score_release(
         locals_, debut,
         _ReleaseMeta(release_group_mbid="rg-debut", release_mbid="rel-debut",
-                     album_title="Santana", artist="Santana", is_various=False, year=1969),
+                     album_title="Santana", artist="Santana", is_various=False, year=1969,
+                     primary_type="album"),
     )
     m_comp = score_release(
         locals_, comp,
         _ReleaseMeta(release_group_mbid="rg-comp", release_mbid="rel-comp",
                      album_title="The Woodstock Experience", artist="Santana",
-                     is_various=False, year=2009),
+                     is_various=False, year=2009, primary_type="album",
+                     secondary_types=frozenset({"compilation"})),
     )
     assert m_debut.distance < m_comp.distance
     assert m_debut.accepted is True
@@ -167,9 +169,11 @@ def test_score_release_rejects_when_few_files_map():
     assert match.accepted is False
 
 
-def _rg_detail(title, artist, releases):
+def _rg_detail(title, artist, releases, *, primary_type="Album", secondary_types=()):
     return {
         "title": title,
+        "primary-type": primary_type,
+        "secondary-types": list(secondary_types),
         "artist-credit": [{"name": artist, "artist": {"id": "a1", "name": artist}}],
         "releases": releases,
     }
@@ -219,7 +223,8 @@ def _santana_repo():
         if mbid == "rg-debut":
             return _rg_detail("Santana", "Santana", [_release("rel-debut", [9])])
         return _rg_detail("The Woodstock Experience", "Santana",
-                          [_release("rel-comp", [9, 8], date="2009")])
+                          [_release("rel-comp", [9, 8], date="2009")],
+                          secondary_types=("Compilation",))
 
     async def release(rel_id, includes=None):
         if rel_id == "rel-debut":
@@ -307,3 +312,137 @@ async def test_identify_falls_back_when_release_track_counts_missing():
     match = await identifier.identify(_locals(_SANTANA, album="Santana"))
     assert match is not None and match.release_group_mbid == "rg-debut"
     assert len(match.assignments) == 9
+
+
+# -- fingerprint-seeded identification (prevents one folder scattering across RGs) --
+
+
+def _comp_release(n_tracks):
+    """A compilation release whose recordings are DISTINCT from the debut's."""
+    return {
+        "date": "2009",
+        "media": [{"position": 1, "tracks": [
+            {"title": f"Hit {i}", "position": i + 1, "length": 200000,
+             "recording": {"id": f"comp-rec-{i}", "title": f"Hit {i}"}}
+            for i in range(n_tracks)
+        ]}],
+    }
+
+
+def _seed_repo():
+    """Text/recording search surface ONLY a compilation; the real debut is reachable
+    solely via a fingerprint seed - the Led Zeppelin scatter scenario, distilled."""
+    repo = AsyncMock()
+    repo.search_albums = AsyncMock(return_value=[
+        SearchResult(type="album", title="Greatest Hits",
+                     musicbrainz_id="rg-comp", artist="Santana"),
+    ])
+    repo.search_recordings = AsyncMock(return_value=[])
+
+    async def rg_detail(mbid, includes=None):
+        if mbid == "rg-debut":
+            return _rg_detail("Santana", "Santana", [_release("rel-debut", [9])])
+        return _rg_detail("Greatest Hits", "Santana", [_release("rel-comp", [30], date="2009")],
+                          secondary_types=("Compilation",))
+
+    async def release(rel_id, includes=None):
+        return _release_tracks([_SANTANA]) if rel_id == "rel-debut" else _comp_release(30)
+
+    repo.get_release_group_by_id = AsyncMock(side_effect=rg_detail)
+    repo.get_release_by_id = AsyncMock(side_effect=release)
+    return repo
+
+
+def _fingerprinted_locals():
+    """Files with junk tags (wrong album, compilation track numbers) but audio-derived
+    recording MBIDs that match the debut's tracklist."""
+    return [
+        LocalTrack(
+            path=f"/m/{i:02d}.flac", title=t, artist="Santana", album="Greatest Hits",
+            track_number=i + 12, duration_seconds=240.0, recording_mbid=f"rec-{i + 1}",
+        )
+        for i, t in enumerate(_SANTANA)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_candidate_release_groups_puts_fingerprint_seeds_first():
+    identifier = AlbumIdentifier(_seed_repo())
+    cands = await identifier._candidate_release_groups(_locals(_SANTANA), ["rg-debut"])
+    assert cands[0] == "rg-debut"  # audio seed ranked ahead of the text-search comp
+    assert "rg-comp" in cands  # text candidate still considered
+    # a seed the text search also returns is not duplicated
+    only_comp = await identifier._candidate_release_groups(_locals(_SANTANA), ["rg-comp"])
+    assert only_comp.count("rg-comp") == 1
+
+
+@pytest.mark.asyncio
+async def test_identify_uses_fingerprint_seed_when_tags_find_only_compilation():
+    identifier = AlbumIdentifier(_seed_repo())
+    locals_ = _fingerprinted_locals()
+    # Tags alone surface only the compilation, whose recordings don't match -> no accept.
+    assert await identifier.identify(locals_) is None
+    # Seeding the fingerprint-derived debut RG lets the recording_id weight (10.0) win.
+    seeded = await identifier.identify(locals_, seed_release_groups=["rg-debut"])
+    assert seeded is not None and seeded.accepted
+    assert seeded.release_group_mbid == "rg-debut"
+    assert len(seeded.assignments) == 9
+
+
+@pytest.mark.asyncio
+async def test_seed_release_groups_none_preserves_tag_only_behaviour():
+    # With no seed the matcher behaves exactly as before (the Santana recording-search path).
+    identifier = AlbumIdentifier(_santana_repo())
+    match = await identifier.identify(_locals(_SANTANA, album="The Woodstock Experience"))
+    assert match is not None and match.release_group_mbid == "rg-debut"
+
+
+# -- Phase 3: release-type preference (studio Album > compilation/live/EP) --
+
+
+def _album_vs_ep_repo():
+    """The same songs sit on a 9-track studio Album and a 5-track EP; a partial folder of
+    5 must resolve to the Album, not the exact-count EP (guards R4 - count-fit trap)."""
+    repo = AsyncMock()
+    repo.search_albums = AsyncMock(return_value=[
+        SearchResult(type="album", title="Santana", musicbrainz_id="rg-album", artist="Santana"),
+        SearchResult(type="album", title="Santana EP", musicbrainz_id="rg-ep", artist="Santana"),
+    ])
+    repo.search_recordings = AsyncMock(return_value=[])
+
+    async def rg_detail(mbid, includes=None):
+        if mbid == "rg-album":
+            return _rg_detail("Santana", "Santana", [_release("rel-album", [9])],
+                              primary_type="Album")
+        return _rg_detail("Santana EP", "Santana", [_release("rel-ep", [5])], primary_type="EP")
+
+    async def release(rel_id, includes=None):
+        return _release_tracks([_SANTANA]) if rel_id == "rel-album" else _release_tracks(
+            [_SANTANA[:5]]
+        )
+
+    repo.get_release_group_by_id = AsyncMock(side_effect=rg_detail)
+    repo.get_release_by_id = AsyncMock(side_effect=release)
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_identify_prefers_full_album_over_exact_count_ep():
+    identifier = AlbumIdentifier(_album_vs_ep_repo())
+    locals_ = _locals(_SANTANA[:5], album="Santana")  # only 5 of the album's 9 tracks
+    match = await identifier.identify(locals_)
+    assert match is not None
+    # the studio album wins on release-type even though the EP is an exact track-count fit
+    assert match.release_group_mbid == "rg-album"
+
+
+@pytest.mark.asyncio
+async def test_identify_still_matches_a_genuine_compilation():
+    # release-type ranks but never gates: a folder that really IS a compilation still
+    # matches its compilation (guards the R4-tension - don't lock comps out).
+    identifier = AlbumIdentifier(_seed_repo())  # sole candidate is the 30-track comp
+    locals_ = _locals(
+        [f"Hit {i}" for i in range(30)], album="Greatest Hits", duration=200.0
+    )
+    match = await identifier.identify(locals_)
+    assert match is not None and match.release_group_mbid == "rg-comp"

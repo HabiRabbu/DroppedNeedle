@@ -6,6 +6,8 @@ from services.native.quality_tiers import (
     file_tier,
     in_range,
     is_flac_or_mp3,
+    should_acquire,
+    tier_for,
     tier_rank,
 )
 
@@ -64,3 +66,34 @@ def test_is_flac_or_mp3():
 
 def test_tier_rank_order():
     assert tier_rank("lossless") > tier_rank("mp3_320") > tier_rank("mp3_192") > tier_rank("low")
+
+
+def test_tier_for_matches_file_tier():
+    # tier_for(format, bitrate) is the shared classifier behind file_tier + the library lookup.
+    assert tier_for("flac", None) == "lossless"
+    assert tier_for(".FLAC", None) == "lossless"   # case/dot tolerant (library file_format)
+    assert tier_for("mp3", 320) == "mp3_320"
+    assert tier_for("mp3", 256) == "mp3_256"
+    assert tier_for("mp3", 200) == "mp3_192"
+    assert tier_for("mp3", 96) == "low"
+    assert tier_for("", None) == "low"
+    assert tier_for("alac", 0) == "lossless"
+
+
+def test_should_acquire_not_in_library():
+    assert should_acquire(None, "lossless", upgrade_allowed=False) is True
+    assert should_acquire(None, "mp3_320", upgrade_allowed=True) is True
+
+
+def test_should_acquire_upgrades_off_skips_any_held_copy():
+    # Default behaviour (binary has_album): hold it at all -> skip.
+    assert should_acquire("low", "lossless", upgrade_allowed=False) is False
+    assert should_acquire("lossless", "lossless", upgrade_allowed=False) is False
+
+
+def test_should_acquire_upgrades_on_only_below_cutoff():
+    # Below the cutoff -> re-acquire (upgrade); at/above -> satisfied.
+    assert should_acquire("mp3_320", "lossless", upgrade_allowed=True) is True
+    assert should_acquire("low", "mp3_320", upgrade_allowed=True) is True
+    assert should_acquire("lossless", "lossless", upgrade_allowed=True) is False
+    assert should_acquire("mp3_320", "mp3_320", upgrade_allowed=True) is False

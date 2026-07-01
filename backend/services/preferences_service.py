@@ -30,6 +30,11 @@ from api.v1.schemas.settings import (
     ConnectAppsSettings,
     ACOUSTID_KEY_MASK,
     DOWNLOAD_CLIENT_API_KEY_MASK,
+    INDEXER_API_KEY_MASK,
+    SABNZBD_API_KEY_MASK,
+    DownloadPolicySettings,
+    NewznabIndexerSettings,
+    SabnzbdConnectionSettings,
     DEFAULT_NAMING_TEMPLATE,
 )
 from api.v1.schemas.advanced_settings import AdvancedSettings
@@ -219,6 +224,223 @@ class PreferencesService:
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to save download client settings: %s", e)
             raise ConfigurationError(f"Failed to save download client settings: {e}")
+
+    # --- Shared download policy (M5) - source-agnostic, migrated from slskd struct ---
+
+    def get_download_policy(self) -> DownloadPolicySettings:
+        """The source-agnostic acquisition policy. Reads ``download_policy`` if present;
+        otherwise derives it (migration-on-read, COPY-not-delete) from the legacy
+        ``download_client`` (slskd) policy fields so existing installs are unchanged and
+        a Usenet-only install still gets working thresholds."""
+        config = self._load_config()
+        if "download_policy" in config:
+            return self._get_section("download_policy", DownloadPolicySettings)
+        dc = config.get("download_client", {})
+        if dc:
+            return DownloadPolicySettings(
+                quality_min=dc.get("quality_min", "mp3_320"),
+                quality_max=dc.get("quality_max", "lossless"),
+                flac_mp3_only=dc.get("flac_mp3_only", True),
+                verify_downloads=dc.get("verify_downloads", True),
+                preflight_score_auto_accept=dc.get("preflight_score_auto_accept", 0.70),
+                preflight_score_manual_min=dc.get("preflight_score_manual_min", 0.50),
+                download_stall_timeout_minutes=dc.get("download_stall_timeout_minutes", 30),
+                download_queued_timeout_minutes=dc.get("download_queued_timeout_minutes", 120),
+                max_failover_attempts=dc.get("max_failover_attempts", 3),
+                max_concurrent_downloads=dc.get("max_concurrent_downloads", 3),
+                auto_retry_enabled=dc.get("auto_retry_enabled", True),
+                auto_retry_max_attempts=dc.get("auto_retry_max_attempts", 6),
+                auto_retry_base_interval_minutes=dc.get("auto_retry_base_interval_minutes", 15),
+            )
+        return DownloadPolicySettings()
+
+    def save_download_policy(self, policy: DownloadPolicySettings) -> None:
+        try:
+            self._save_section("download_policy", policy)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to save download policy: %s", e)
+            raise ConfigurationError(f"Failed to save download policy: {e}")
+
+    # --- Source priority (D3/D19) - the order sources are tried in -------------------
+
+    def get_source_priority(self) -> list[str]:
+        """The order acquisition sources are tried (D3). Defaults to Soulseek-first;
+        unknown/missing sources are appended so the list always covers both."""
+        raw = self._load_config().get("source_priority")
+        order = [s for s in raw if s in ("soulseek", "usenet")] if isinstance(raw, list) else []
+        for source in ("soulseek", "usenet"):
+            if source not in order:
+                order.append(source)
+        return order
+
+    def save_source_priority(self, order: list[str]) -> None:
+        clean = [s for s in order if s in ("soulseek", "usenet")]
+        for source in ("soulseek", "usenet"):
+            if source not in clean:
+                clean.append(source)
+        config = self._load_config().copy()
+        config["source_priority"] = clean
+        self._save_config(config)
+
+    # --- SABnzbd download client (D5) - in the download_clients map -----------------
+
+    def get_sabnzbd_connection(self) -> SabnzbdConnectionSettings:
+        """SABnzbd connection with the ``api_key`` MASKED (safe for API responses)."""
+        data = self._load_config().get("download_clients", {}).get("sabnzbd", {})
+        settings = (
+            msgspec.convert(data, type=SabnzbdConnectionSettings)
+            if data
+            else SabnzbdConnectionSettings()
+        )
+        if settings.api_key:
+            settings.api_key = SABNZBD_API_KEY_MASK
+        return settings
+
+    def get_sabnzbd_connection_raw(self) -> SabnzbdConnectionSettings:
+        """SABnzbd connection with the ``api_key`` DECRYPTED (for the client)."""
+        data = self._load_config().get("download_clients", {}).get("sabnzbd", {})
+        settings = (
+            msgspec.convert(data, type=SabnzbdConnectionSettings)
+            if data
+            else SabnzbdConnectionSettings()
+        )
+        stored = data.get("api_key", "")
+        # Strip stray paste whitespace so a key saved before this fix still authenticates.
+        settings.api_key = decrypt(stored)[0].strip() if stored else ""
+        return settings
+
+    def save_sabnzbd_connection(self, settings: SabnzbdConnectionSettings) -> None:
+        try:
+            config = self._load_config().copy()
+            clients = dict(config.get("download_clients", {}))
+            current = clients.get("sabnzbd", {})
+            api_key = settings.api_key.strip()
+            if api_key == SABNZBD_API_KEY_MASK:
+                api_key = current.get("api_key", "")  # preserve on masked sentinel
+            elif api_key:
+                api_key = encrypt(api_key)
+            clients["sabnzbd"] = {
+                "enabled": settings.enabled,
+                "client_type": "sabnzbd",
+                "url": settings.url,
+                "api_key": api_key,
+                "category": settings.category,
+                "priority": settings.priority,
+                "post_processing": settings.post_processing,
+                "downloads_mount": settings.downloads_mount,
+            }
+            config["download_clients"] = clients
+            self._save_config(config)
+            logger.info("Saved SABnzbd connection settings")
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to save SABnzbd settings: %s", e)
+            raise ConfigurationError(f"Failed to save SABnzbd settings: {e}")
+
+    # --- Newznab indexers (D6) - a list, each with its own encrypted api_key ------
+
+    def get_indexers(self) -> list["NewznabIndexerSettings"]:
+        """All configured indexers, each ``api_key`` MASKED (safe for API responses),
+        ordered by priority."""
+        out = []
+        for item in self._load_config().get("indexers", []):
+            settings = msgspec.convert(item, type=NewznabIndexerSettings)
+            if settings.api_key:
+                settings.api_key = INDEXER_API_KEY_MASK
+            out.append(settings)
+        return sorted(out, key=lambda s: s.priority)
+
+    def get_indexers_raw(self) -> list["NewznabIndexerSettings"]:
+        """All configured indexers with ``api_key`` DECRYPTED (for building clients),
+        ordered by priority."""
+        out = []
+        for item in self._load_config().get("indexers", []):
+            settings = msgspec.convert(item, type=NewznabIndexerSettings)
+            stored = item.get("api_key", "")
+            # Strip on read too, so a key saved with stray whitespace before this fix
+            # still authenticates without the user having to re-enter it.
+            settings.api_key = decrypt(stored)[0].strip() if stored else ""
+            out.append(settings)
+        return sorted(out, key=lambda s: s.priority)
+
+    def save_indexer(self, settings: "NewznabIndexerSettings") -> str:
+        """Upsert one indexer by ``id`` (a new id is minted when blank). The
+        ``api_key`` is encrypted, or preserved when the masked sentinel comes back.
+        Returns the indexer id."""
+        import uuid
+
+        try:
+            config = self._load_config().copy()
+            indexers = list(config.get("indexers", []))
+            existing = next((i for i in indexers if i.get("id") == settings.id), None)
+
+            # Trim pasted whitespace - a leading space/tab on the key reaches the indexer
+            # verbatim and earns an HTTP 403 (the apikey no longer matches).
+            api_key = settings.api_key.strip()
+            if api_key == INDEXER_API_KEY_MASK:
+                api_key = existing.get("api_key", "") if existing else ""
+            elif api_key:
+                api_key = encrypt(api_key)
+
+            indexer_id = settings.id or uuid.uuid4().hex
+            row = {
+                "id": indexer_id,
+                "type": settings.type,
+                "name": settings.name,
+                "url": settings.url,
+                "api_key": api_key,
+                "categories": settings.categories,
+                "enabled": settings.enabled,
+                "priority": settings.priority,
+            }
+            if existing is not None:
+                indexers = [row if i.get("id") == indexer_id else i for i in indexers]
+            else:
+                indexers.append(row)
+            config["indexers"] = indexers
+            self._save_config(config)
+            logger.info("Saved indexer %s", indexer_id)
+            return indexer_id
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to save indexer: %s", e)
+            raise ConfigurationError(f"Failed to save indexer: {e}")
+
+    def delete_indexer(self, indexer_id: str) -> None:
+        config = self._load_config().copy()
+        config["indexers"] = [
+            i for i in config.get("indexers", []) if i.get("id") != indexer_id
+        ]
+        self._save_config(config)
+
+    def reorder_indexers(self, ordered_ids: list[str]) -> None:
+        """Persist a new priority order (1-based) from the dragged card order; ids
+        not present keep their relative order after the listed ones."""
+        config = self._load_config().copy()
+        indexers = list(config.get("indexers", []))
+        rank = {iid: pos for pos, iid in enumerate(ordered_ids)}
+        for item in indexers:
+            if item.get("id") in rank:
+                item["priority"] = rank[item["id"]] + 1
+        config["indexers"] = indexers
+        self._save_config(config)
+
+    # --- download-source readiness (single source of truth) ----------------------
+    # "Can the user acquire music?" is answered here, NOT per-feature, so the slskd and
+    # Usenet checks can't drift apart (Home, Discover, and the orchestrator all read these).
+
+    def is_soulseek_ready(self) -> bool:
+        """slskd (Soulseek) is enabled and has a URL."""
+        dc = self.get_download_client_settings()
+        return dc.enabled and bool(dc.url)
+
+    def is_usenet_ready(self) -> bool:
+        """SABnzbd (Usenet) is enabled with a URL AND at least one enabled indexer to
+        search - SABnzbd with no indexer can't find anything to download."""
+        sab = self.get_sabnzbd_connection()
+        return sab.enabled and bool(sab.url) and any(i.enabled for i in self.get_indexers())
+
+    def is_download_source_ready(self) -> bool:
+        """At least one acquisition source (Soulseek OR Usenet) is set up."""
+        return self.is_soulseek_ready() or self.is_usenet_ready()
 
     def get_jellyfin_connection(self) -> JellyfinConnectionSettings:
         config = self._load_config()

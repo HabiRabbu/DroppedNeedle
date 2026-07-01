@@ -17,6 +17,7 @@ from rapidfuzz import fuzz
 
 from models.download import TargetAlbum
 from repositories.protocols.download_client import DownloadSearchResult
+from services.native.acquisition.decision import SpecPolicy
 from services.native.album_preflight_scorer import (
     AlbumPreflightScorer,
     _artist_from_path,
@@ -80,6 +81,21 @@ async def test_partial_album_is_manual():
 
 
 @pytest.mark.asyncio
+async def test_numbered_sequel_folder_rejected_for_self_titled_debut():
+    # The Led Zeppelin case on Soulseek: a "Led Zeppelin II" folder must not be picked for
+    # a "Led Zeppelin" (debut) request - it's dropped before scoring, not ranked.
+    target = TargetAlbum(
+        artist_name="Led Zeppelin", album_title="Led Zeppelin", year=1969, track_count=9
+    )
+    sequel = [_mk("Led Zeppelin - Led Zeppelin II (1969)", f"{n:02d} Track.flac") for n in range(1, 10)]
+    scorer = AlbumPreflightScorer(_store())
+    assert await scorer.rank(target, sequel) == []
+    # the actual debut folder still scores normally
+    debut = [_mk("Led Zeppelin - Led Zeppelin (1969)", f"{n:02d} Track.flac") for n in range(1, 10)]
+    assert len(await scorer.rank(target, debut)) == 1
+
+
+@pytest.mark.asyncio
 async def test_junk_folder_is_rejected():
     files = [_mk("Various Artists - Unknown Album", "track.mp3", ext="mp3", bitrate=320, username="charlie")]
     scorer = AlbumPreflightScorer(_store())
@@ -91,8 +107,10 @@ async def test_junk_folder_is_rejected():
 
 @pytest.mark.asyncio
 async def test_quarantined_candidate_excluded():
+    from models.download_identity import soulseek_identity
+
     files = [_mk(_PARENT, f"OK Computer {n:02d}.flac") for n in range(1, 13)]
-    quarantined = {(f.username, f.filename) for f in files}
+    quarantined = {("soulseek", soulseek_identity(f.username, f.filename)) for f in files}
     scorer = AlbumPreflightScorer(_store(quarantine=quarantined))
     candidates = await scorer.rank(_TARGET, files)
     assert all(c.username != "alice" for c in candidates)
@@ -214,6 +232,25 @@ async def test_absolute_tier_preference_ranks_flac_first():
     assert candidates[0].username == "bob"  # FLAC tier wins over the better-matched MP3
 
 
+@pytest.mark.asyncio
+async def test_hires_folder_outranks_redbook_within_lossless():
+    # H1: a 24/96 FLAC folder must rank ABOVE a 16/44 FLAC folder of the same album (same
+    # tier), where before the captured bit_depth/sample_rate were never read by the sort.
+    redbook = [_mk(_PARENT, f"OK Computer {n:02d}.flac") for n in range(1, 13)]  # 16/44100
+    hires = [
+        DownloadSearchResult(
+            username="bob", filename=f"{_PARENT} (24-96)/{n:02d}.flac",
+            parent_directory=f"{_PARENT} (24-96)", size=80_000_000, extension="flac",
+            bit_depth=24, sample_rate=96000, duration=240.0,
+        )
+        for n in range(1, 13)
+    ]
+    scorer = AlbumPreflightScorer(_store())
+    candidates = await scorer.rank(_TARGET, redbook + hires)
+    assert candidates[0].username == "bob"  # the 24/96 folder ranks first within lossless
+    assert candidates[0].files[0].bit_depth == 24
+
+
 def test_cjk_not_mangled():
     text = "林宥嘉 神秘嘉宾"
     assert _normalize_for_match(text) == text.lower()
@@ -232,6 +269,38 @@ def test_artist_from_path_variants():
     assert _artist_from_path("Radiohead - OK Computer") == "Radiohead"
     assert _artist_from_path("Artist/Album") == "Artist"
     assert _artist_from_path("", "Fallback") == ""
+
+
+@pytest.mark.asyncio
+async def test_obfuscated_live_folder_rejected_via_shared_edition_spec():
+    # ArrRebuild M3: the Soulseek path now runs the shared wrong_edition spec. A folder the
+    # wrong-album guard DEFERS on (no readable artist, Q4) is still dropped when it carries
+    # an edition marker the studio request never asked for - previously it survived as a
+    # rejected-tier candidate.
+    target = TargetAlbum(artist_name="Radiohead", album_title="OK Computer", track_count=12)
+    live = [_mk("Live at Glastonbury 2003 xq-scrambled", f"{n:02d}.flac") for n in range(1, 13)]
+    scorer = AlbumPreflightScorer(_store())
+    assert await scorer.rank(target, live) == []
+
+
+@pytest.mark.asyncio
+async def test_ignored_term_policy_drops_folder():
+    # A user ignored-term drops a folder that the always-on guards would have kept.
+    files = [_mk(f"{_PARENT} WEB", f"OK Computer {n:02d}.flac") for n in range(1, 13)]
+    scorer = AlbumPreflightScorer(
+        _store(), policy=SpecPolicy(quality_min="mp3_320", quality_max="lossless", ignored_terms=("web",))
+    )
+    assert await scorer.rank(_TARGET, files) == []
+    # without the policy it scores normally
+    assert len(await AlbumPreflightScorer(_store()).rank(_TARGET, files)) == 1
+
+
+@pytest.mark.asyncio
+async def test_max_size_policy_drops_oversize_folder():
+    # 12 * 30MB = 360MB; a 100MB cap rejects the whole folder (a mislabeled boxset).
+    files = [_mk(_PARENT, f"OK Computer {n:02d}.flac") for n in range(1, 13)]
+    scorer = AlbumPreflightScorer(_store(), policy=SpecPolicy(max_size_mb=100))
+    assert await scorer.rank(_TARGET, files) == []
 
 
 def test_version_mismatch_penalised():

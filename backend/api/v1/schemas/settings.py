@@ -136,6 +136,117 @@ class DownloadClientConnectionSettings(AppStruct):
         )
 
 
+class DownloadPolicySettings(AppStruct):
+    """Source-agnostic acquisition policy (review M5). Lives in its own config section
+    so a Usenet-only install (slskd disabled) still has quality/threshold/timeout/retry
+    settings to read - they must NOT live on the slskd client struct. The orchestrator +
+    both scorers read these."""
+
+    quality_min: str = "mp3_320"
+    quality_max: str = "lossless"
+    flac_mp3_only: bool = True
+    verify_downloads: bool = True
+    preflight_score_auto_accept: float = 0.70
+    preflight_score_manual_min: float = 0.50
+    download_stall_timeout_minutes: int = 30
+    download_queued_timeout_minutes: int = 120
+    max_failover_attempts: int = 3
+    max_concurrent_downloads: int = 3
+    auto_retry_enabled: bool = True
+    auto_retry_max_attempts: int = 6
+    auto_retry_base_interval_minutes: int = 15
+    # Don't permanently blocklist a Usenet release younger than this; let it retry once it
+    # has propagated across Usenet servers (review M4 / owner Q2).
+    usenet_min_release_age_minutes: int = 30
+    # --- Acquisition-pipeline substrate (ArrRebuild). Source-agnostic; consumed by the
+    # decision specs. All default to "off" so behaviour is unchanged until opted in. ---
+    # Hard upper bound on a single album's total size (0 = unbounded). Rejects a mislabeled
+    # boxset/discography before the bytes are spent.
+    max_size_mb: int = 0
+    # Reject a Usenet release older than this many days (0 = no limit) - beyond a provider's
+    # retention the articles can't be fetched, so it would only download partially and fail.
+    usenet_retention_days: int = 0
+    # Drop any release whose title/folder matches one of these (plain substring, or /regex/i).
+    # The always-on wrong-album/wrong-edition guards stay; this is user-tunable extra control.
+    ignored_terms: list[str] = msgspec.field(default_factory=list)
+    # When non-empty, a release must match at least one of these to be considered.
+    required_terms: list[str] = msgspec.field(default_factory=list)
+    # --- Upgrade/cutoff substrate (full feature lives in CollectionManagement). ---
+    # Stop upgrading once a release-group's worst track reaches this tier.
+    quality_cutoff: str = "lossless"
+    # Master opt-in for replacing held lower-quality files with better ones.
+    upgrade_allowed: bool = False
+
+    def __post_init__(self) -> None:
+        _validate_range(self.download_stall_timeout_minutes, "download_stall_timeout_minutes", 2, 240)
+        _validate_range(self.download_queued_timeout_minutes, "download_queued_timeout_minutes", 5, 1440)
+        _validate_range(self.max_failover_attempts, "max_failover_attempts", 1, 10)
+        _validate_range(self.max_concurrent_downloads, "max_concurrent_downloads", 1, 10)
+        _validate_range(self.auto_retry_max_attempts, "auto_retry_max_attempts", 0, 20)
+        _validate_range(self.auto_retry_base_interval_minutes, "auto_retry_base_interval_minutes", 1, 1440)
+        _validate_range(self.usenet_min_release_age_minutes, "usenet_min_release_age_minutes", 0, 1440)
+        _validate_range(self.max_size_mb, "max_size_mb", 0, 1_000_000)
+        _validate_range(self.usenet_retention_days, "usenet_retention_days", 0, 100_000)
+        _rank = {k: r for r, k in enumerate(("low", "mp3_192", "mp3_256", "mp3_320", "lossless"))}
+        if self.quality_min not in _rank:
+            self.quality_min = "mp3_320"
+        if self.quality_max not in _rank:
+            self.quality_max = "lossless"
+        if _rank[self.quality_min] > _rank[self.quality_max]:
+            self.quality_min = self.quality_max
+        # Cutoff sits within [min, max]: don't upgrade past what the user accepts, nor stop
+        # below the floor. Clamp rather than reject so a stale config can't brick the policy.
+        if self.quality_cutoff not in _rank:
+            self.quality_cutoff = self.quality_max
+        if _rank[self.quality_cutoff] < _rank[self.quality_min]:
+            self.quality_cutoff = self.quality_min
+        if _rank[self.quality_cutoff] > _rank[self.quality_max]:
+            self.quality_cutoff = self.quality_max
+
+
+class SabnzbdConnectionSettings(AppStruct):
+    """SABnzbd download-client connection (D5). ``api_key`` is the FULL key (the add-only
+    nzbkey can't do queue/history/delete); encrypted at rest, masked on read. ``category``
+    defaults to ``*`` (a fresh SABnzbd has no ``droppedneedle`` category). ``downloads_mount``
+    is where DroppedNeedle sees SABnzbd's completed dir (the remap target)."""
+
+    enabled: bool = False
+    client_type: str = "sabnzbd"
+    url: str = ""
+    api_key: str = ""
+    category: str = "*"
+    priority: int = 0
+    post_processing: int = 3
+    downloads_mount: str = "/sabnzbd-downloads"
+
+    def __post_init__(self) -> None:
+        self.url = self.url.strip()
+        if self.url and not self.url.startswith(("http://", "https://")):
+            self.url = f"https://{self.url}"
+        self.url = self.url.rstrip("/")
+
+
+class NewznabIndexerSettings(AppStruct):
+    """One configured Newznab indexer (D6). ``api_key`` is a Fernet-encrypted
+    secret, masked on read and preserved on a masked save - **per array element**.
+    DroppedNeedle ships no indexers; the user adds their own (guardrail 1)."""
+
+    id: str = ""
+    type: str = "newznab"
+    name: str = ""
+    url: str = ""
+    api_key: str = ""
+    categories: list[int] = msgspec.field(default_factory=lambda: [3000, 3010, 3040])
+    enabled: bool = True
+    priority: int = 1
+
+    def __post_init__(self) -> None:
+        self.url = self.url.strip()
+        if self.url and not self.url.startswith(("http://", "https://")):
+            self.url = f"https://{self.url}"
+        self.url = self.url.rstrip("/")
+
+
 class JellyfinConnectionSettings(AppStruct):
     jellyfin_url: str = "http://jellyfin:8096"
     api_key: str = ""
@@ -161,6 +272,8 @@ NAVIDROME_PASSWORD_MASK = "********"
 PLEX_TOKEN_MASK = "plex****"
 ACOUSTID_KEY_MASK = "acoustid****"
 DOWNLOAD_CLIENT_API_KEY_MASK = "slskd****"
+INDEXER_API_KEY_MASK = "indexer****"
+SABNZBD_API_KEY_MASK = "sabnzbd****"
 
 # keep in sync with NamingTemplateEngine.DEFAULT (services/native/naming.py)
 DEFAULT_NAMING_TEMPLATE = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"

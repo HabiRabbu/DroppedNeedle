@@ -272,7 +272,7 @@ class HomeSectionBuilders:
             prompts.append(ServicePrompt(
                 service="download-client",
                 title="Connect a download client",
-                description="DroppedNeedle needs a download client (e.g. slskd) to fetch the albums and tracks you request. Add one in Settings to start downloading into your library.",
+                description="DroppedNeedle needs a download source (slskd for Soulseek, or SABnzbd + an indexer for Usenet) to fetch the albums and tracks you request. Add one in Settings to start downloading into your library.",
                 icon="🎶",
                 color="accent",
                 features=["Album & track requests", "Automatic downloads", "Direct-to-library imports", "Queue management"],

@@ -30,11 +30,12 @@
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
 	import LibraryFormatBadge from '$lib/components/library/LibraryFormatBadge.svelte';
 	import LibraryTrackRow from '$lib/components/library/LibraryTrackRow.svelte';
-	import { ChevronDown } from 'lucide-svelte';
+	import { ChevronDown, TriangleAlert } from 'lucide-svelte';
 	import { SvelteSet } from 'svelte/reactivity';
-	import type { LibraryFileMeta, DownloadTask } from '$lib/types';
+	import type { LibraryFileMeta, DownloadTask, HeldImport } from '$lib/types';
 	import TrackRequestButton from '$lib/components/downloads/TrackRequestButton.svelte';
 	import TrackDownloadStatus from '$lib/components/downloads/TrackDownloadStatus.svelte';
+	import HeldTrackReview from '$lib/components/downloads/HeldTrackReview.svelte';
 	import { integrationStore } from '$lib/stores/integration';
 
 	interface Props {
@@ -63,6 +64,8 @@
 		plexEnabled: boolean;
 		libraryTracksByRecording?: Map<string, LibraryFileMeta>;
 		libraryTracksByPosition?: Map<string, LibraryFileMeta>;
+		heldByRecording?: Map<string, HeldImport>;
+		heldByPosition?: Map<string, HeldImport>;
 		trackDownloadTasks?: Map<string, DownloadTask>;
 		releaseGroupMbid?: string;
 		onPlaySourceTrack: (
@@ -108,6 +111,8 @@
 		plexEnabled,
 		libraryTracksByRecording = new Map(),
 		libraryTracksByPosition = new Map(),
+		heldByRecording = new Map(),
+		heldByPosition = new Map(),
 		trackDownloadTasks = new Map(),
 		releaseGroupMbid = '',
 		onPlaySourceTrack,
@@ -120,6 +125,13 @@
 	function toggleRow(idx: number) {
 		if (expandedRows.has(idx)) expandedRows.delete(idx);
 		else expandedRows.add(idx);
+	}
+
+	// rows whose "held · couldn't verify" review panel is open
+	const heldOpen = new SvelteSet<number>();
+	function toggleHeld(idx: number) {
+		if (heldOpen.has(idx)) heldOpen.delete(idx);
+		else heldOpen.add(idx);
 	}
 </script>
 
@@ -189,11 +201,21 @@
 					libraryTracksByPosition.get(
 						getDiscTrackKey({ disc_number: trackDiscNumber, track_number: track.position })
 					)}
+				{@const heldMeta = libMeta
+					? undefined
+					: ((track.recording_id ? heldByRecording.get(track.recording_id) : undefined) ??
+						heldByPosition.get(
+							getDiscTrackKey({ disc_number: trackDiscNumber, track_number: track.position })
+						))}
 				{@const trackTask =
 					track.recording_id ? (trackDownloadTasks.get(track.recording_id) ?? null) : null}
 				{@const showTrackDownload = !libMeta && !!trackTask}
 				{@const showRequest =
-					!libMeta && !trackTask && !!track.recording_id && $integrationStore.download_client}
+					!libMeta &&
+					!trackTask &&
+					!heldMeta &&
+					!!track.recording_id &&
+					$integrationStore.download_client}
 				<li
 					class="list-row group hover:bg-base-300/50 transition-colors p-3 sm:p-4"
 					style={isCurrentlyPlaying ? `background-color: ${colors.accent}20;` : ''}
@@ -234,10 +256,20 @@
 							{formatDuration(track.length)}
 						</div>
 
-						{#if youtubeEnabled || showPreview || showJellyfinBtn || showLocalBtn || showNavidromeBtn || showPlexBtn || showRequest || showTrackDownload}
+						{#if youtubeEnabled || showPreview || showJellyfinBtn || showLocalBtn || showNavidromeBtn || showPlexBtn || showRequest || showTrackDownload || heldMeta}
 							<div class="flex items-center gap-1.5 shrink-0 ml-auto">
 								{#if showTrackDownload && trackTask}
 									<TrackDownloadStatus task={trackTask} />
+								{/if}
+								{#if heldMeta}
+									<button
+										class="btn btn-ghost btn-xs gap-1 text-warning"
+										onclick={() => toggleHeld(row.globalIndex)}
+										aria-expanded={heldOpen.has(row.globalIndex)}
+										title="Downloaded but couldn't verify - review it"
+									>
+										<TriangleAlert class="h-3.5 w-3.5" /> held
+									</button>
 								{/if}
 								{#if showRequest && track.recording_id}
 									<TrackRequestButton
@@ -373,6 +405,13 @@
 				{#if libMeta && expandedRows.has(row.globalIndex)}
 					<li class="list-row p-0">
 						<LibraryTrackRow meta={libMeta} {releaseGroupMbid} />
+					</li>
+				{/if}
+				{#if heldMeta && heldOpen.has(row.globalIndex)}
+					<li class="list-row p-0">
+						<div class="w-full px-3 pb-3 sm:px-4">
+							<HeldTrackReview held={heldMeta} />
+						</div>
 					</li>
 				{/if}
 			{/each}

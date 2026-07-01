@@ -1,9 +1,18 @@
 <script lang="ts">
-	import { RotateCcw, X } from 'lucide-svelte';
+	import { RotateCcw, TimerOff, X } from 'lucide-svelte';
 
-	import { cancelDownload, retryDownload } from '$lib/queries/downloads/DownloadMutations.svelte';
+	import {
+		cancelDownload,
+		retryDownload,
+		stopAutoRetry
+	} from '$lib/queries/downloads/DownloadMutations.svelte';
 	import { createDownloadStream } from '$lib/queries/downloads/DownloadSSE.svelte';
-	import { canCancel, canRetry, derivedDownloadStatus } from '$lib/queries/downloads/downloadStatus';
+	import {
+		canCancel,
+		canRetry,
+		derivedDownloadStatus,
+		retryDisplay
+	} from '$lib/queries/downloads/downloadStatus';
 	import { downloadStatusConfig } from '$lib/queries/downloads/downloadStatusConfig';
 	import type { DownloadTask } from '$lib/types';
 
@@ -17,7 +26,12 @@
 
 	const cancel = cancelDownload();
 	const retry = retryDownload();
+	const stopRetry = stopAutoRetry();
 	const stream = createDownloadStream();
+
+	// failed/partial waiting on its next auto-retry - the album page's off-switch for the
+	// "retry N/M in ~Xm" loop, so it can be stopped without removing the album.
+	const isScheduledRetry = $derived(retryDisplay(task)?.kind === 'scheduled');
 
 	const derivedStatus = $derived(derivedDownloadStatus(task));
 	const cfg = $derived(downloadStatusConfig[derivedStatus]);
@@ -104,6 +118,17 @@
 				aria-label="Retry download"
 			>
 				<RotateCcw class="h-3.5 w-3.5" /> Retry
+			</button>
+		{/if}
+		{#if isScheduledRetry}
+			<button
+				class="btn btn-ghost btn-xs text-base-content/60 hover:text-error"
+				onclick={() => stopRetry.mutate(task.id)}
+				disabled={stopRetry.isPending}
+				title="Stop auto-retrying"
+				aria-label="Stop auto-retrying this download"
+			>
+				<TimerOff class="h-3.5 w-3.5" /> Stop retrying
 			</button>
 		{/if}
 	</div>

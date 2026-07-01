@@ -22,7 +22,8 @@ import type {
 	TrackCacheCheckItem,
 	LibraryAlbumStatus,
 	LibraryFileMeta,
-	DownloadTask
+	DownloadTask,
+	HeldImport
 } from '$lib/types';
 import { libraryStore } from '$lib/stores/library';
 import { integrationStore } from '$lib/stores/integration';
@@ -70,6 +71,7 @@ import {
 } from './albumPlaybackHandlers';
 import { getLibraryAlbumStatusQuery } from '$lib/queries/library/LibraryQueries.svelte';
 import { getAlbumDownloadsQuery } from '$lib/queries/downloads/DownloadQueries.svelte';
+import { getHeldImportsQuery } from '$lib/queries/downloads/HeldQueries.svelte';
 import { isActiveDownloadStatus } from '$lib/queries/downloads/downloadStatus';
 
 export interface SourceCallbacks {
@@ -220,6 +222,38 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		}
 		return m;
 	});
+	// tracks this album downloaded but couldn't auto-verify (held for "import anyway"),
+	// keyed both ways so a track row can find its held candidate the same way owned files match
+	const heldImportsQuery = getHeldImportsQuery(albumIdGetter, () => downloadClientConfigured);
+	const heldByRecording = $derived.by(() => {
+		const m = new SvelteMap<string, HeldImport>();
+		for (const h of heldImportsQuery.data?.items ?? []) {
+			if (h.recording_mbid) m.set(h.recording_mbid, h);
+		}
+		return m;
+	});
+	const heldByPosition = $derived.by(() => {
+		const m = new SvelteMap<string, HeldImport>();
+		for (const h of heldImportsQuery.data?.items ?? []) {
+			m.set(getDiscTrackKey({ disc_number: h.disc_number, track_number: h.track_number }), h);
+		}
+		return m;
+	});
+	// A held track resolving ("import anyway" / discard) shrinks the held set. Refetch
+	// library status + source matches so a newly-owned track's play button appears in place,
+	// without a manual refresh (mirrors the settled-download effect above).
+	let lastHeldItemCount = -1;
+	$effect(() => {
+		const count = heldImportsQuery.data?.items?.length ?? 0;
+		untrack(() => {
+			if (lastHeldItemCount !== -1 && count < lastHeldItemCount) {
+				void libraryStatusQuery.refetch();
+				refreshSourcesAfterDownload();
+			}
+			lastHeldItemCount = count;
+		});
+	});
+
 	const libraryInLibrary = $derived(libraryStatus?.in_library ?? false);
 	const libraryTrackCount = $derived(libraryStatus?.track_count ?? 0);
 
@@ -269,6 +303,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		clearExternalRecheck();
 		seenActiveTaskIds.clear();
 		settledTaskIds.clear();
+		lastHeldItemCount = -1;
 		album = null;
 		tracksInfo = null;
 		renderedTrackSections = [];
@@ -635,6 +670,25 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		}
 	}
 
+	// Removal succeeded server-side (files + library rows gone; removeAlbum already cleared
+	// libraryStore + invalidated the TanStack trees). Reload the page so the In-Library
+	// badge, the Remove control and the owned play buttons all reflect it without a manual
+	// refresh, and surface the artist-removed modal when this was the artist's last album.
+	async function handleDeleted(result: {
+		artist_removed: boolean;
+		artist_name?: string | null;
+	}): Promise<void> {
+		showDeleteModal = false;
+		toastMessage = 'Removed from Library';
+		toastType = 'success';
+		showToast = true;
+		if (result.artist_removed && result.artist_name) {
+			removedArtistName = result.artist_name;
+			showArtistRemovedModal = true;
+		}
+		await refreshAll();
+	}
+
 	$effect(() => {
 		const albumId = albumIdGetter();
 		if (!browser || !albumId) return;
@@ -919,6 +973,12 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		get libraryTracksByPosition() {
 			return libraryTracksByPosition;
 		},
+		get heldByRecording() {
+			return heldByRecording;
+		},
+		get heldByPosition() {
+			return heldByPosition;
+		},
 		get libraryInLibrary() {
 			return libraryInLibrary;
 		},
@@ -948,6 +1008,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		...eventHandlers,
 		retryTracks,
 		refreshAll,
+		handleDeleted,
 		playSourceTrack,
 		getTrackContextMenuItems
 	};

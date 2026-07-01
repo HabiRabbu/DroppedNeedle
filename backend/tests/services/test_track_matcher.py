@@ -49,8 +49,10 @@ async def test_match_no_results_returns_none():
 
 @pytest.mark.asyncio
 async def test_match_excludes_quarantined():
+    from models.download_identity import soulseek_identity
+
     results = [_file("Radiohead - OK Computer/Airbag.flac", "Radiohead - OK Computer")]
-    quarantined = {(results[0].username, results[0].filename)}
+    quarantined = {("soulseek", soulseek_identity(results[0].username, results[0].filename))}
     matcher = TrackMatcher(_store(quarantine=quarantined))
     assert await matcher.match(_TARGET, results) is None
 

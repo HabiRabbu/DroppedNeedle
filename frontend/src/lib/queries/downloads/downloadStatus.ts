@@ -101,21 +101,117 @@ export function formatRetryEta(minutes: number): string {
 	return `~${Math.round(minutes)}m`;
 }
 
+// A live, precise countdown: "11:58" under an hour, "7h 32m" over it.
+export function formatCountdown(seconds: number): string {
+	const s = Math.max(0, Math.round(seconds));
+	if (s >= 3600) {
+		// round to whole minutes first, then split - rounding h and m independently could
+		// yield an impossible "1h 60m" at the 59.5-minute boundary
+		const totalMin = Math.round(s / 60);
+		return `${Math.floor(totalMin / 60)}h ${totalMin % 60}m`;
+	}
+	const m = Math.floor(s / 60);
+	const sec = s % 60;
+	return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+// The Downloads dashboard groups the queue into meaningful stacked sections (vs the old
+// single-tab view), so "what's my turntable doing?" is answerable at a glance:
+//   now_spinning - actively downloading/processing (incl. an in-flight retry)
+//   wanted       - failed/partial, waiting on the next scheduled auto-retry (the new section)
+//   needs_you    - parked for a manual review pick (awaiting_review)
+//   cueing       - lined up but not yet pressing (searching / queued)
+//   history      - terminal: completed, exhausted-failed, partial-done, cancelled
+export type DownloadSection = 'now_spinning' | 'wanted' | 'needs_you' | 'cueing' | 'history';
+
+// A "wanted" album is one the system will re-attempt on a backoff (scheduled, not yet due).
+export function isWanted(task: DownloadTask, nowSeconds: number = Date.now() / 1000): boolean {
+	return retryDisplay(task, nowSeconds)?.kind === 'scheduled';
+}
+
+export function sectionForTask(
+	task: DownloadTask,
+	nowSeconds: number = Date.now() / 1000
+): DownloadSection {
+	const derived = derivedDownloadStatus(task);
+	if (derived === 'downloading' || derived === 'processing') return 'now_spinning';
+	if (derived === 'awaiting_review') return 'needs_you';
+	if (isWanted(task, nowSeconds)) return 'wanted';
+	if (derived === 'searching' || derived === 'queued') return 'cueing';
+	return 'history';
+}
+
+export type DownloadSections = Record<DownloadSection, DownloadTask[]>;
+
+export function bucketSections(
+	tasks: DownloadTask[],
+	nowSeconds: number = Date.now() / 1000
+): DownloadSections {
+	const sections: DownloadSections = {
+		now_spinning: [],
+		wanted: [],
+		needs_you: [],
+		cueing: [],
+		history: []
+	};
+	for (const task of tasks) sections[sectionForTask(task, nowSeconds)].push(task);
+	for (const key of Object.keys(sections) as DownloadSection[]) {
+		// wanted sorts by soonest next attempt; everything else newest-first
+		if (key === 'wanted') {
+			sections[key].sort((a, b) => (a.next_retry_at ?? 0) - (b.next_retry_at ?? 0));
+		} else {
+			sections[key].sort((a, b) => b.created_at - a.created_at);
+		}
+	}
+	return sections;
+}
+
+// Live state of a wanted album's backoff ladder, for the cue-countdown card.
+export interface RetryLadderState {
+	rungs: number[]; // minutes per retry attempt, e.g. [15, 30, 60, 120, 240, 480]
+	index: number; // the rung we're currently waiting on (0-based)
+	attempt: number; // human "retry N" (index + 1)
+	total: number; // total retries on the ladder
+	secondsUntilNext: number; // live: seconds to the next attempt
+	fractionElapsed: number; // 0..1 progress through this wait (drives the cue ring)
+}
+
+export function retryLadderState(
+	task: DownloadTask,
+	nowSeconds: number = Date.now() / 1000
+): RetryLadderState | null {
+	const rungs = task.retry_ladder_minutes ?? [];
+	if (task.next_retry_at == null || rungs.length === 0) return null;
+	const index = Math.min(Math.max(task.retry_count, 0), rungs.length - 1);
+	const rungSeconds = Math.max(1, rungs[index] * 60);
+	const secondsUntilNext = Math.max(0, task.next_retry_at - nowSeconds);
+	const fractionElapsed = Math.min(1, Math.max(0, 1 - secondsUntilNext / rungSeconds));
+	return {
+		rungs,
+		index,
+		attempt: index + 1,
+		total: rungs.length,
+		secondsUntilNext,
+		fractionElapsed
+	};
+}
+
 // Collapse auto-retry chains so the queue shows one row per download, not the audit trail
-// of superseded attempts. A retry re-runs the same target with retry_count+1, so hide a
-// task only when a STRICTLY higher attempt exists for its (type, identity, owner). Tasks at
-// the same attempt number are independent downloads (e.g. a re-requested album), not a
-// chain, so both are kept. Tasks with no identity (free-text) never collapse.
+// of superseded attempts. Keep the NEWEST task per (type, identity, owner) by created_at.
+// created_at (not retry_count) is the right key: within a chain each retry is created later,
+// AND a fresh re-request starts a NEW chain back at retry_count 0 - so a stale failed
+// attempt (e.g. retry 7 from yesterday) must NOT outrank, and hide, today's active retry-0
+// download of the same album. Tasks with no identity (free-text) never collapse.
 export function collapseRetryChains(tasks: DownloadTask[]): DownloadTask[] {
-	const maxAttempt = new Map<string, number>();
+	const newest = new Map<string, number>();
 	for (const task of tasks) {
 		const key = _retryChainKey(task);
 		if (key === null) continue;
-		maxAttempt.set(key, Math.max(maxAttempt.get(key) ?? 0, task.retry_count));
+		newest.set(key, Math.max(newest.get(key) ?? -Infinity, task.created_at));
 	}
 	return tasks.filter((task) => {
 		const key = _retryChainKey(task);
-		return key === null || task.retry_count >= (maxAttempt.get(key) ?? 0);
+		return key === null || task.created_at >= (newest.get(key) ?? -Infinity);
 	});
 }
 

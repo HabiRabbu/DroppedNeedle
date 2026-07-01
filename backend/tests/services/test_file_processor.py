@@ -10,7 +10,7 @@ import pytest
 
 from infrastructure.audio.tagger import AudioTagger
 from infrastructure.persistence.library_db import LibraryDB
-from models.audio import FingerprintResult
+from models.audio import AudioInfo, AudioTag, FingerprintResult
 from models.download_manifest import DownloadManifest, ExpectedFile
 from services.native.file_processor import (
     DOWNLOADS_MOUNT_UNAVAILABLE,
@@ -18,6 +18,8 @@ from services.native.file_processor import (
     WRONG_TRACK,
     FileProcessor,
     VerifyStatus,
+    _FolderCandidate,
+    _folder_names_wrong_album,
 )
 from services.native.library_manager import LibraryManager
 from services.native.naming import NamingTemplateEngine
@@ -90,7 +92,7 @@ class _StubClient:
         self._root = downloads_root
         self.cancel = MagicMock()  # asserted NEVER called by FileProcessor (DEC-1)
 
-    async def get_file_path(self, username: str, remote_filename: str, size: int | None = None):
+    async def get_file_path(self, handle, remote_filename: str, size: int | None = None):
         return self._root / remote_filename.replace("\\", "/").lstrip("/")
 
 
@@ -384,10 +386,12 @@ async def test_process_downloaded_mount_unavailable(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_process_downloaded_fingerprint_mismatch(tmp_path: Path):
+async def test_process_downloaded_fingerprint_mismatch_on_wrong_artist(tmp_path: Path):
+    # Rejected only when AcoustID confidently names a DIFFERENT artist (the manifest artist
+    # is "Radiohead").
     fingerprinter = MagicMock()
     fingerprinter.fingerprint = AsyncMock(
-        return_value=FingerprintResult(status="pass", score=0.95, release_group_ids=["other-rg"])
+        return_value=FingerprintResult(status="pass", score=0.95, artist="Coldplay", title="Yellow")
     )
     fp, _manager, _client, _library, downloads = _make_processor(
         tmp_path, fingerprinter=fingerprinter, verify=True
@@ -399,6 +403,29 @@ async def test_process_downloaded_fingerprint_mismatch(tmp_path: Path):
 
     assert result.succeeded == []
     assert result.failed[0].reason == "fingerprint_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_process_downloaded_fingerprint_accepts_right_artist_other_release_group(tmp_path: Path):
+    # The Thin Lizzy bug: a VALID track whose AcoustID release-group list doesn't include
+    # the requested one (incomplete RG coverage / reissue) must NOT be rejected - only a
+    # wrong artist/song is.
+    fingerprinter = MagicMock()
+    fingerprinter.fingerprint = AsyncMock(
+        return_value=FingerprintResult(
+            status="pass", score=0.95, artist="Radiohead", release_group_ids=["some-other-rg"]
+        )
+    )
+    fp, manager, _client, _library, downloads = _make_processor(
+        tmp_path, fingerprinter=fingerprinter, verify=True
+    )
+    _place(downloads, "A/track.flac")
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1), rg="rg-1")
+
+    result = await fp.process_downloaded(manifest)
+
+    assert len(result.succeeded) == 1   # right artist, different RG -> imported, not rejected
+    assert await manager.has_album("rg-1") is True
 
 
 @pytest.mark.asyncio
@@ -495,3 +522,229 @@ async def test_process_downloaded_crash_idempotency(tmp_path: Path):
     assert Path(result.succeeded[0]) == existing_path
     rows = await manager.get_file_rows_for_album("rg-1")
     assert len(rows) == 1
+
+
+# --- folder-import matcher: title corroboration (Lidarr metadata-first) -----------
+
+def _cand(tmp_path, *, filename, title, dur, mbid=None, track_no=1):
+    from models.audio import AudioInfo, AudioTag
+    from services.native.file_processor import _FolderCandidate
+
+    return _FolderCandidate(
+        path=tmp_path / filename,
+        tag=AudioTag(title=title, artist="Led Zeppelin", album="Led Zeppelin",
+                     track_number=track_no, musicbrainz_recording_id=mbid),
+        info=AudioInfo(duration_seconds=dur, bitrate=900, sample_rate=44100,
+                       channels=2, file_format="flac", file_size_bytes=1),
+    )
+
+
+def test_title_tag_naming_a_different_track_vetoes_a_duration_coincidence(tmp_path):
+    # A live "Kashmir" (~8:30) whose length coincides with the studio "How Many More
+    # Times" (8:28) must NOT pair - the title tag names a different track.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _pair_score
+
+    track = ExpectedTrack(track_number=9, duration_seconds=508.0, title="How Many More Times")
+    live = _cand(tmp_path, filename="04 Kashmir.flac",
+                 title="Kashmir (Live From Knebworth, 1979)", dur=510.0)
+    assert _pair_score(live, track) is None
+
+
+def test_matching_title_tag_pairs(tmp_path):
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _pair_score
+
+    track = ExpectedTrack(track_number=9, duration_seconds=508.0, title="How Many More Times")
+    right = _cand(tmp_path, filename="09 How Many More Times.flac",
+                  title="How Many More Times", dur=510.0)
+    assert _pair_score(right, track) is not None
+
+
+def test_untagged_file_still_pairs_on_duration(tmp_path):
+    # The D18 case: an obfuscated rip with NO title tag must still match on duration.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _pair_score
+
+    track = ExpectedTrack(track_number=9, duration_seconds=508.0, title="How Many More Times")
+    untagged = _cand(tmp_path, filename="aHR0cHM6.part01.flac", title="", dur=510.0)
+    assert _pair_score(untagged, track) is not None
+
+
+def test_recording_mbid_overrides_a_title_conflict(tmp_path):
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _pair_score
+
+    track = ExpectedTrack(track_number=9, duration_seconds=508.0, title="How Many More Times",
+                          recording_mbid="rec-hmmt")
+    # Odd title tag, but the recording MBID confirms identity -> pair.
+    weird = _cand(tmp_path, filename="09.flac", title="Untitled", dur=510.0, mbid="rec-hmmt")
+    assert _pair_score(weird, track) is not None
+
+
+# --- fingerprint recording-identity check (release-group is NOT gated) ------------
+
+def _fp(status="pass", title=None, artist=None, rgs=None):
+    from models.audio import FingerprintResult
+    return FingerprintResult(status=status, score=0.95, title=title, artist=artist,
+                             release_group_ids=rgs or [])
+
+
+def test_fingerprint_disagrees_on_wrong_song():
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=9, title="How Many More Times")
+    assert _fingerprint_disagrees(_fp(title="Kashmir", artist="Led Zeppelin"), track, "Led Zeppelin")
+
+
+def test_fingerprint_allows_right_song_wrong_release_group():
+    # The Thin Lizzy bug: right song+artist, RG list excludes the requested one -> allow.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Soldier of Fortune")
+    fp = _fp(title="Soldier of Fortune", artist="Thin Lizzy", rgs=["a-different-rg"])
+    assert _fingerprint_disagrees(fp, track, "Thin Lizzy") is False
+
+
+def test_fingerprint_allows_reissue_bonus_title_variant():
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=10, title="Killer Without a Cause (BBC Session 01-08-77)")
+    fp = _fp(title="Killer Without a Cause", artist="Thin Lizzy")
+    assert _fingerprint_disagrees(fp, track, "Thin Lizzy") is False
+
+
+def test_fingerprint_fails_open_on_non_pass():
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Anything")
+    assert _fingerprint_disagrees(_fp(status="error"), track, "Artist") is False
+    assert _fingerprint_disagrees(_fp(status="disabled"), track, "Artist") is False
+
+
+def test_fingerprint_skips_artist_check_for_various_artists():
+    # A V/A compilation track's performing artist legitimately differs from the album
+    # artist - don't reject on that.
+    from services.native.file_processor import _fingerprint_disagrees
+    fp = _fp(title="Some Song", artist="Specific Band")
+    assert _fingerprint_disagrees(fp, None, "Various Artists") is False
+
+
+# --- import-time wrong-album guard (#1, tagless-safe) -------------------------------------
+
+def _fc(album: str, *, artist: str = "Led Zeppelin", album_artist: str | None = None) -> _FolderCandidate:
+    tag = AudioTag(
+        title="t", artist=artist, album=album, album_artist=album_artist,
+        track_number=1, disc_number=1,
+    )
+    info = AudioInfo(
+        duration_seconds=200.0, bitrate=900, sample_rate=44100, channels=2,
+        file_format="flac", file_size_bytes=1, bit_depth=16,
+    )
+    return _FolderCandidate(path=Path("x.flac"), tag=tag, info=info)
+
+
+def test_import_guard_rejects_a_different_album_by_tags():
+    # An obfuscated "Led Zeppelin" release that unpacks to Led Zeppelin II-tagged files.
+    cands = [_fc("Led Zeppelin II") for _ in range(5)]
+    assert _folder_names_wrong_album(cands, "Led Zeppelin", "Led Zeppelin") is True
+
+
+def test_import_guard_accepts_the_correct_album():
+    cands = [_fc("Led Zeppelin") for _ in range(5)]
+    assert _folder_names_wrong_album(cands, "Led Zeppelin", "Led Zeppelin") is False
+
+
+def test_import_guard_is_tagless_safe():
+    # No album tag on any file -> can't judge -> never rejects (falls through to duration match).
+    cands = [_fc("") for _ in range(5)]
+    assert _folder_names_wrong_album(cands, "Led Zeppelin", "Led Zeppelin") is False
+
+
+def test_import_guard_is_edition_tolerant():
+    # A deluxe/edition suffix is NOT a different album.
+    cands = [_fc("OK Computer Deluxe Edition", artist="Radiohead") for _ in range(5)]
+    assert _folder_names_wrong_album(cands, "Radiohead", "OK Computer") is False
+
+
+def test_import_guard_keeps_album_when_only_a_minority_mis_tagged():
+    # One oddly-tagged file (a mislabeled bonus track) must not reject the whole album (owner Q1).
+    cands = [_fc("Led Zeppelin"), _fc("Led Zeppelin"), _fc("Led Zeppelin II")]
+    assert _folder_names_wrong_album(cands, "Led Zeppelin", "Led Zeppelin") is False
+
+
+# -- held imports (capture on verify-fail + force-import) --
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_mismatch_holds_file_for_review(tmp_path: Path):
+    import sqlite3 as _sqlite
+
+    from infrastructure.persistence.download_store import DownloadStore
+
+    lock = threading.Lock()
+    db_path = tmp_path / "library.db"
+    conn = _sqlite.connect(db_path)
+    conn.execute("CREATE TABLE IF NOT EXISTS auth_users (id TEXT PRIMARY KEY, username TEXT, role TEXT)")
+    conn.execute("INSERT OR IGNORE INTO auth_users VALUES ('user-a','alice','user')")
+    conn.commit()
+    conn.close()
+    store = DownloadStore(db_path=db_path, write_lock=lock)
+    task = await store.create_task(
+        user_id="user-a", release_group_mbid="rg-1", artist_name="Radiohead",
+        album_title="OK Computer", source="usenet",
+    )
+    held_dir = tmp_path / "held"
+    library = tmp_path / "library"
+    library.mkdir()
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    manager = LibraryManager(LibraryDB(db_path=db_path, write_lock=lock))
+    fingerprinter = MagicMock()
+    fingerprinter.fingerprint = AsyncMock(
+        return_value=FingerprintResult(status="pass", score=0.99, artist="Coldplay", title="Yellow")
+    )
+    fp = FileProcessor(
+        AudioTagger(), naming_engine=NamingTemplateEngine(), library_manager=manager,
+        library_paths=[library], client=_StubClient(downloads), slskd_downloads_path=downloads,
+        fingerprinter=fingerprinter, verify_downloads=True, download_store=store, held_dir=held_dir,
+    )
+    _place(downloads, "A/track.flac")
+    manifest = _manifest(ExpectedFile(filename="A/track.flac", size=1), task_id=task.id, rg="rg-1")
+
+    result = await fp.process_downloaded(manifest)
+
+    assert result.failed and result.failed[0].reason == "fingerprint_mismatch"
+    held = await store.list_held_imports("user-a", "user")
+    assert len(held) == 1
+    assert held[0].release_group_mbid == "rg-1"
+    assert held[0].source_task_id == task.id
+    assert held[0].evidence_artist == "Coldplay"  # what AcoustID thought it was
+    assert held[0].held_path.startswith(str(held_dir))
+    assert Path(held[0].held_path).exists()  # copied into the held area (survives cleanup)
+
+
+@pytest.mark.asyncio
+async def test_place_held_file_imports_bypassing_verify(tmp_path: Path):
+    from models.held_import import HeldImport
+
+    fp, manager, _client, _library, _downloads = _make_processor(tmp_path)
+    held_dir = tmp_path / "held"
+    held_dir.mkdir()
+    held_file = held_dir / "src.flac"
+    shutil.copy(_FLAC, held_file)
+    held = HeldImport(
+        id=1, user_id="user-a", held_path=str(held_file), reason="fingerprint_mismatch",
+        source="usenet", status="held", created_at=0.0, release_group_mbid="rg-9",
+        release_mbid="rel-9", recording_mbid="rec-3", track_number=3, disc_number=1,
+        track_title="You Shook Me", artist_name="Led Zeppelin", album_title="Led Zeppelin I",
+        year=1969, naming_template=_TEMPLATE,
+    )
+
+    target = await fp.place_held_file(held)
+
+    assert Path(target).exists()  # no fingerprinter wired -> verify is skipped, it just imports
+    assert "0103" in Path(target).name  # placed at disc 1 / track 3 per the naming template
+    tag, _ = AudioTagger().read_tags(Path(target))
+    assert tag.musicbrainz_release_group_id == "rg-9"  # album MBID stamped -> rescan-safe
+    assert await manager.has_album("rg-9") is True

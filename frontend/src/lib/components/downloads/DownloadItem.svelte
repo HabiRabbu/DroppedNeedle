@@ -1,13 +1,18 @@
 <script lang="ts">
-	import { ExternalLink, RotateCcw, X } from 'lucide-svelte';
+	import { ExternalLink, RotateCcw, TimerOff, X } from 'lucide-svelte';
 
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
-	import { cancelDownload, retryDownload } from '$lib/queries/downloads/DownloadMutations.svelte';
+	import {
+		cancelDownload,
+		retryDownload,
+		stopAutoRetry
+	} from '$lib/queries/downloads/DownloadMutations.svelte';
 	import { createDownloadStream } from '$lib/queries/downloads/DownloadSSE.svelte';
 	import {
 		canCancel,
 		canRetry,
-		derivedDownloadStatus
+		derivedDownloadStatus,
+		retryDisplay
 	} from '$lib/queries/downloads/downloadStatus';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import type { DownloadTask } from '$lib/types';
@@ -22,7 +27,12 @@
 
 	const cancel = cancelDownload();
 	const retry = retryDownload();
+	const stopRetry = stopAutoRetry();
 	const stream = createDownloadStream();
+
+	// A failed/partial task waiting on its next auto-retry: offer an off-switch so the
+	// "retry N/M in ~Xm" loop can be stopped without removing the album.
+	const isScheduledRetry = $derived(retryDisplay(task)?.kind === 'scheduled');
 
 	const derivedStatus = $derived(derivedDownloadStatus(task));
 	const isSearchingState = $derived(derivedStatus === 'searching');
@@ -90,6 +100,15 @@
 			</p>
 			<div class="mt-1 flex flex-wrap items-center gap-1.5">
 				<DownloadStatusBadge {task} />
+				{#if task.source === 'usenet'}
+					<span class="badge badge-ghost badge-sm">Usenet</span>
+				{/if}
+				{#if task.source === 'usenet' && task.download_type === 'track'}
+					<span
+						class="badge badge-ghost badge-sm"
+						title="A whole album NZB was fetched to extract this one track">via album NZB</span
+					>
+				{/if}
 				{#if isOwnedByOther}
 					<span class="text-[11px] text-base-content/50">(another user's download)</span>
 				{/if}
@@ -148,7 +167,19 @@
 					title="Retry"
 					aria-label="Retry download"
 				>
-					<RotateCcw class="h-3.5 w-3.5" /> {retried ? 'Retrying…' : 'Retry'}
+					<RotateCcw class="h-3.5 w-3.5" />
+					{retried ? 'Retrying…' : 'Retry'}
+				</button>
+			{/if}
+			{#if isScheduledRetry}
+				<button
+					class="btn btn-ghost btn-xs text-base-content/60 hover:text-error"
+					onclick={() => stopRetry.mutate(task.id)}
+					disabled={stopRetry.isPending}
+					title="Stop auto-retrying"
+					aria-label="Stop auto-retrying this download"
+				>
+					<TimerOff class="h-3.5 w-3.5" /> Stop retrying
 				</button>
 			{/if}
 			{#if isCompleted}

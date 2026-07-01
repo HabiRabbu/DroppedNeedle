@@ -27,8 +27,82 @@ from infrastructure.persistence._database import (
 )
 from infrastructure.serialization import to_jsonable
 from models.download import DownloadTask, ScoredCandidate, SearchJob
+from models.held_import import HeldImport
 
 _ACTIVE_STATUSES = ("queued", "downloading", "processing")
+_RETRYABLE_STATUSES = ("failed", "partial")
+
+# A blocklisted release self-heals after this long, so a wrongful blocklist (a transient
+# failure, a false-positive) doesn't exclude a release forever. A genuinely dead release
+# just gets re-tried once past the TTL and re-blocklisted. (A manual re-request clears the
+# album's entries immediately, regardless of TTL.)
+_QUARANTINE_TTL_SECONDS = 7 * 24 * 3600.0
+
+# Quarantine is the cross-source blocklist, keyed (source, identity, release_group_mbid)
+# (D8). ``identity`` is a single opaque string whose encoding is source-specific
+# (see ``models.download_identity``): soulseek = username+filename, usenet = title+size.
+# ``download_failed`` was added to the reason CHECK for SABnzbd hard-failures (D11).
+_QUARANTINE_DDL = """
+CREATE TABLE IF NOT EXISTS download_quarantine (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL DEFAULT 'soulseek',
+    identity TEXT NOT NULL,
+    release_group_mbid TEXT,
+    reason TEXT NOT NULL
+        CHECK(reason IN ('verify_failed','corrupt','fingerprint_mismatch',
+                         'duration_mismatch','download_failed','manual')),
+    quarantined_at REAL NOT NULL,
+    UNIQUE (source, identity, release_group_mbid)
+);
+CREATE INDEX IF NOT EXISTS idx_quarantine_lookup ON download_quarantine(source, identity);
+CREATE INDEX IF NOT EXISTS idx_quarantine_quarantined_at ON download_quarantine(quarantined_at);
+"""
+
+# Held imports (the "import anyway" review queue): a downloaded file that matched a track
+# by duration but failed the AcoustID recording-identity backstop, copied into an app-owned
+# held area so it survives the download client cleaning its completed folder. One 'held' row
+# per (release_group, disc, track) - de-duped so failover across editions doesn't pile up
+# copies. Resolving a row (imported/discarded) is what re-enables the album's auto-retry.
+_HELD_IMPORTS_DDL = """
+CREATE TABLE IF NOT EXISTS held_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    release_group_mbid TEXT,
+    release_mbid TEXT,
+    recording_mbid TEXT,
+    track_number INTEGER,
+    disc_number INTEGER,
+    track_title TEXT,
+    artist_name TEXT,
+    album_title TEXT,
+    year INTEGER,
+    held_path TEXT NOT NULL,
+    original_filename TEXT,
+    file_format TEXT,
+    duration_seconds REAL,
+    reason TEXT NOT NULL,
+    evidence_title TEXT,
+    evidence_artist TEXT,
+    evidence_score REAL,
+    source TEXT NOT NULL DEFAULT 'soulseek',
+    source_task_id TEXT,
+    naming_template TEXT,
+    status TEXT NOT NULL DEFAULT 'held'
+        CHECK(status IN ('held','imported','discarded')),
+    created_at REAL NOT NULL,
+    resolved_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_held_user ON held_imports(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_held_rg ON held_imports(release_group_mbid, status);
+CREATE INDEX IF NOT EXISTS idx_held_task ON held_imports(source_task_id, status);
+CREATE INDEX IF NOT EXISTS idx_held_dedup
+    ON held_imports(release_group_mbid, disc_number, track_number, status);
+"""
+
+# ASCII unit separator joining the two halves of a soulseek identity; mirrors
+# ``models.download_identity.soulseek_identity`` so a legacy (username, filename)
+# quarantine row migrates to the same key the scorer will look up.
+_SOULSEEK_ID_SEP = "\x1f"
 
 # Columns on download_tasks that update_status (and friends) may set directly.
 _TASK_UPDATABLE = frozenset(
@@ -80,6 +154,7 @@ _TASK_COLUMNS = (
     "track_count",
     "track_duration_seconds",
     "download_client",
+    "source",
     "source_username",
     "source_directory",
     "search_query",
@@ -143,11 +218,15 @@ class DownloadStore(PersistenceBase):
                     track_count INTEGER,
                     track_duration_seconds REAL,
                     download_client TEXT NOT NULL DEFAULT 'slskd',
+                    source TEXT NOT NULL DEFAULT 'soulseek',
                     source_username TEXT,
                     source_directory TEXT,
                     search_query TEXT,
                     search_job_id TEXT,
                     candidate_index INTEGER,
+                    -- Mirrors services/native/acquisition/status.DownloadStatus.PERSISTED
+                    -- (test_download_status asserts the two stay in sync). The transient
+                    -- 'retrying'/'awaiting_review' statuses are SSE-only, never persisted.
                     status TEXT NOT NULL DEFAULT 'queued'
                         CHECK(status IN ('queued','downloading','processing',
                                          'completed','partial','failed','cancelled')),
@@ -180,20 +259,6 @@ class DownloadStore(PersistenceBase):
                 CREATE INDEX IF NOT EXISTS idx_download_tasks_username ON download_tasks(source_username);
                 CREATE INDEX IF NOT EXISTS idx_download_tasks_created ON download_tasks(created_at DESC);
 
-                CREATE TABLE IF NOT EXISTS download_quarantine (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    client_id TEXT NOT NULL DEFAULT 'unknown',
-                    username TEXT NOT NULL,
-                    filename TEXT NOT NULL,
-                    release_group_mbid TEXT,
-                    reason TEXT NOT NULL
-                        CHECK(reason IN ('verify_failed','corrupt','fingerprint_mismatch','duration_mismatch','manual')),
-                    quarantined_at REAL NOT NULL,
-                    UNIQUE (client_id, username, filename, release_group_mbid)
-                );
-                CREATE INDEX IF NOT EXISTS idx_quarantine_lookup ON download_quarantine(client_id, username, filename);
-                CREATE INDEX IF NOT EXISTS idx_quarantine_quarantined_at ON download_quarantine(quarantined_at);
-
                 CREATE TABLE IF NOT EXISTS search_jobs (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -218,14 +283,55 @@ class DownloadStore(PersistenceBase):
             )
             # Idempotent column adds for dev DBs created before the column existed
             # (try/except duplicate-column, per the plan's migration convention).
-            for column, ddl in (("track_duration_seconds", "REAL"),):
+            for column, ddl in (
+                ("track_duration_seconds", "REAL"),
+                ("source", "TEXT NOT NULL DEFAULT 'soulseek'"),
+            ):
                 try:
                     conn.execute(f"ALTER TABLE download_tasks ADD COLUMN {column} {ddl}")
                 except sqlite3.OperationalError:
                     pass  # duplicate column - already present
+            self._migrate_quarantine(conn)
+            conn.executescript(_HELD_IMPORTS_DDL)
             conn.commit()
         finally:
             conn.close()
+
+    def _migrate_quarantine(self, conn: sqlite3.Connection) -> None:
+        """Create the quarantine table, rebuilding the old slskd-shaped schema in
+        place (D8). SQLite can't ALTER a UNIQUE/CHECK, so a table that still has the
+        old ``username``/``filename`` columns is rebuilt: rename aside, create the new
+        ``(source, identity, …)`` shape, copy each legacy row encoding its
+        ``(username, filename)`` pair as the soulseek identity (so a previously
+        blocklisted source stays blocklisted), then drop the old table."""
+        cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(download_quarantine)").fetchall()
+        }
+        if "username" in cols:  # legacy slskd-shaped schema -> rebuild
+            conn.execute("ALTER TABLE download_quarantine RENAME TO download_quarantine_legacy")
+            # The legacy indexes follow the renamed table but keep their names; SQLite index
+            # names are schema-global, so the new CREATE INDEX IF NOT EXISTS would no-op
+            # against them and the rebuilt table would end up index-less. Drop them first.
+            conn.execute("DROP INDEX IF EXISTS idx_quarantine_lookup")
+            conn.execute("DROP INDEX IF EXISTS idx_quarantine_quarantined_at")
+            conn.executescript(_QUARANTINE_DDL)
+            # Stamp migrated rows with the upgrade time, NOT the legacy ``quarantined_at``:
+            # the legacy schema had no TTL, so entries were permanent, but ``load_quarantine_set``
+            # now self-heals anything older than ``_QUARANTINE_TTL_SECONDS``. Inheriting the old
+            # timestamp would silently expire a still-valid blocklist on upgrade (defeating this
+            # migration's purpose); a fresh stamp gives each entry one TTL window post-upgrade.
+            conn.execute(
+                """INSERT OR IGNORE INTO download_quarantine
+                   (source, identity, release_group_mbid, reason, quarantined_at)
+                   SELECT 'soulseek', username || ? || filename,
+                          release_group_mbid, reason, ?
+                   FROM download_quarantine_legacy""",
+                (_SOULSEEK_ID_SEP, time.time()),
+            )
+            conn.execute("DROP TABLE download_quarantine_legacy")
+        else:
+            conn.executescript(_QUARANTINE_DDL)
 
     async def create_task(
         self,
@@ -245,6 +351,7 @@ class DownloadStore(PersistenceBase):
         track_count: int | None = None,
         track_duration_seconds: float | None = None,
         download_client: str = "slskd",
+        source: str = "soulseek",
         search_query: str | None = None,
         search_job_id: str | None = None,
         candidate_index: int | None = None,
@@ -272,6 +379,7 @@ class DownloadStore(PersistenceBase):
             track_count=track_count,
             track_duration_seconds=track_duration_seconds,
             download_client=download_client,
+            source=source,
             search_query=search_query,
             search_job_id=search_job_id,
             candidate_index=candidate_index,
@@ -466,16 +574,21 @@ class DownloadStore(PersistenceBase):
         source_username: str,
         source_directory: str,
         preflight_score: float,
+        *,
+        source: str = "soulseek",
+        download_client: str = "slskd",
     ) -> None:
         """(AUD-8) Link task<->candidate AND move the search job to 'matched' in
-        ONE transaction (single commit)."""
+        ONE transaction (single commit). ``source``/``download_client`` route a picked
+        Usenet candidate to SABnzbd instead of the slskd default (D2/D3)."""
         now = time.time()
 
         def operation(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """UPDATE download_tasks
                    SET search_job_id = ?, candidate_index = ?, source_username = ?,
-                       source_directory = ?, preflight_score = ?, updated_at = ?
+                       source_directory = ?, preflight_score = ?, source = ?,
+                       download_client = ?, updated_at = ?
                    WHERE id = ?""",
                 (
                     search_job_id,
@@ -483,6 +596,8 @@ class DownloadStore(PersistenceBase):
                     source_username,
                     source_directory,
                     preflight_score,
+                    source,
+                    download_client,
                     now,
                     task_id,
                 ),
@@ -542,33 +657,49 @@ class DownloadStore(PersistenceBase):
 
     async def record_quarantine(
         self,
-        client_id: str,
-        username: str,
-        filename: str,
+        *,
+        source: str,
+        identity: str,
         reason: str,
         release_group_mbid: str | None = None,
     ) -> None:
+        """Blocklist a release by its source identity (D8). ``identity`` encoding is
+        source-specific (``models.download_identity``): soulseek = username+filename,
+        usenet = title+size."""
+
+        now = time.time()
+
         def operation(conn: sqlite3.Connection) -> None:
+            # Prune expired blocklist entries on write (cheap, indexed) so the table stays
+            # small and the TTL self-heal is reflected on disk, not just filtered on read.
+            conn.execute(
+                "DELETE FROM download_quarantine WHERE quarantined_at < ?",
+                (now - _QUARANTINE_TTL_SECONDS,),
+            )
             conn.execute(
                 """INSERT OR IGNORE INTO download_quarantine
-                   (client_id, username, filename, release_group_mbid, reason, quarantined_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (client_id, username, filename, release_group_mbid, reason, time.time()),
+                   (source, identity, release_group_mbid, reason, quarantined_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (source, identity, release_group_mbid, reason, now),
             )
 
         await self._write(operation)
 
     async def load_quarantine_set(self) -> set[tuple[str, str]]:
-        """Return ``{(username, filename), ...}`` for fast O(1) scorer lookup.
+        """Return ``{(source, identity), ...}`` for fast O(1) scorer lookup.
 
-        Intentionally keyed on global ``(username, filename)`` (M9): a source
-        that failed once is excluded from all future scoring for any album."""
+        Keyed on the global ``(source, identity)`` (M9): a release that failed is excluded
+        from future scoring for any album - but only for ``_QUARANTINE_TTL_SECONDS``, so a
+        wrongful blocklist self-heals. Expired rows are filtered here and pruned on the next
+        ``record_quarantine`` write (keeping this a pure read)."""
+        cutoff = time.time() - _QUARANTINE_TTL_SECONDS
 
         def operation(conn: sqlite3.Connection) -> set[tuple[str, str]]:
             rows = conn.execute(
-                "SELECT username, filename FROM download_quarantine"
+                "SELECT source, identity FROM download_quarantine WHERE quarantined_at >= ?",
+                (cutoff,),
             ).fetchall()
-            return {(row["username"], row["filename"]) for row in rows}
+            return {(row["source"], row["identity"]) for row in rows}
 
         return await self._read(operation)
 
@@ -578,6 +709,20 @@ class DownloadStore(PersistenceBase):
 
         await self._write(operation)
 
+    async def delete_quarantine_for_album(self, release_group_mbid: str) -> int:
+        """Clear every blocklist entry for an album (all its tried releases). Called on a
+        MANUAL re-request so an explicit 'try again' overrides the blocklist. Returns the
+        number of rows removed."""
+
+        def operation(conn: sqlite3.Connection) -> int:
+            cur = conn.execute(
+                "DELETE FROM download_quarantine WHERE release_group_mbid = ?",
+                (release_group_mbid,),
+            )
+            return cur.rowcount
+
+        return await self._write(operation)
+
     async def list_quarantine(self, page: int = 1, page_size: int = 50) -> list[dict[str, Any]]:
         offset = max(0, (page - 1) * page_size)
 
@@ -586,7 +731,138 @@ class DownloadStore(PersistenceBase):
                 "SELECT * FROM download_quarantine ORDER BY quarantined_at DESC LIMIT ? OFFSET ?",
                 (page_size, offset),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [_quarantine_row_to_admin(dict(row)) for row in rows]
+
+        return await self._read(operation)
+
+    # -- held imports ("import anyway" review queue) --
+
+    async def record_held_import(
+        self,
+        *,
+        user_id: str,
+        held_path: str,
+        reason: str,
+        source: str,
+        source_task_id: str | None,
+        release_group_mbid: str | None,
+        release_mbid: str | None,
+        recording_mbid: str | None,
+        track_number: int | None,
+        disc_number: int | None,
+        track_title: str | None,
+        artist_name: str | None,
+        album_title: str | None,
+        year: int | None,
+        original_filename: str | None,
+        file_format: str | None,
+        duration_seconds: float | None,
+        evidence_title: str | None,
+        evidence_artist: str | None,
+        evidence_score: float | None,
+        naming_template: str | None,
+    ) -> int | None:
+        """Hold a verify-rejected file for review. De-duped on (album, disc, track): if that
+        track is already held, returns None so the caller can drop its extra copy instead of
+        piling up one per edition it failed over through. Dedup needs a real track position -
+        without one, two different unknown-track holds aren't the same track, so we keep both."""
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> int | None:
+            if track_number is not None:
+                dupe = conn.execute(
+                    """SELECT id FROM held_imports
+                       WHERE user_id = ? AND release_group_mbid IS ? AND disc_number IS ?
+                         AND track_number = ? AND status = 'held' LIMIT 1""",
+                    (user_id, release_group_mbid, disc_number, track_number),
+                ).fetchone()
+                if dupe is not None:
+                    return None
+            cur = conn.execute(
+                """INSERT INTO held_imports
+                   (user_id, release_group_mbid, release_mbid, recording_mbid, track_number,
+                    disc_number, track_title, artist_name, album_title, year, held_path,
+                    original_filename, file_format, duration_seconds, reason, evidence_title,
+                    evidence_artist, evidence_score, source, source_task_id, naming_template,
+                    status, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'held',?)""",
+                (user_id, release_group_mbid, release_mbid, recording_mbid, track_number,
+                 disc_number, track_title, artist_name, album_title, year, held_path,
+                 original_filename, file_format, duration_seconds, reason, evidence_title,
+                 evidence_artist, evidence_score, source, source_task_id, naming_template, now),
+            )
+            return cur.lastrowid
+
+        return await self._write(operation)
+
+    async def list_held_imports(
+        self, user_id: str, user_role: str, release_group_mbid: str | None = None
+    ) -> list[HeldImport]:
+        def operation(conn: sqlite3.Connection) -> list[HeldImport]:
+            sql = "SELECT * FROM held_imports WHERE status = 'held'"
+            params: list[Any] = []
+            if user_role != "admin":
+                sql += " AND user_id = ?"
+                params.append(user_id)
+            if release_group_mbid:
+                sql += " AND release_group_mbid = ?"
+                params.append(release_group_mbid)
+            sql += " ORDER BY created_at DESC"
+            return [_row_to_held(dict(r)) for r in conn.execute(sql, params).fetchall()]
+
+        return await self._read(operation)
+
+    async def get_held_import(
+        self, held_id: int, user_id: str, user_role: str
+    ) -> HeldImport | None:
+        def operation(conn: sqlite3.Connection) -> HeldImport | None:
+            row = conn.execute("SELECT * FROM held_imports WHERE id = ?", (held_id,)).fetchone()
+            if row is None:
+                return None
+            held = _row_to_held(dict(row))
+            if user_role != "admin" and held.user_id != user_id:
+                return None
+            return held
+
+        return await self._read(operation)
+
+    async def resolve_held_import(self, held_id: int, status: str) -> None:
+        """Mark a held row imported/discarded (keeps the row for audit; the file itself is
+        deleted by the caller on discard, or consumed by the move on import)."""
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE held_imports SET status = ?, resolved_at = ? WHERE id = ?",
+                (status, now, held_id),
+            )
+
+        await self._write(operation)
+
+    async def has_unresolved_held_for_task(self, source_task_id: str) -> bool:
+        def operation(conn: sqlite3.Connection) -> bool:
+            row = conn.execute(
+                "SELECT 1 FROM held_imports WHERE source_task_id = ? AND status = 'held' LIMIT 1",
+                (source_task_id,),
+            ).fetchone()
+            return row is not None
+
+        return await self._read(operation)
+
+    async def task_ids_with_unresolved_held(self, user_id: str, user_role: str) -> set[str]:
+        """The set of task ids that still have a held track under review - used to pause
+        those tasks' auto-retry (they wait for the human, not another download)."""
+
+        def operation(conn: sqlite3.Connection) -> set[str]:
+            sql = (
+                "SELECT DISTINCT source_task_id FROM held_imports "
+                "WHERE status = 'held' AND source_task_id IS NOT NULL"
+            )
+            params: list[Any] = []
+            if user_role != "admin":
+                sql += " AND user_id = ?"
+                params.append(user_id)
+            return {r["source_task_id"] for r in conn.execute(sql, params).fetchall()}
 
         return await self._read(operation)
 
@@ -748,6 +1024,107 @@ class DownloadStore(PersistenceBase):
 
         return await self._read(operation)
 
+    async def list_tasks_by_status(
+        self, user_id: str | None, user_role: str | None, statuses: list[str]
+    ) -> list[DownloadTask]:
+        """Every task in the given statuses (unpaginated), user-scoped exactly like
+        ``list_tasks``: non-admins see only their own (fail closed if no user_id),
+        admins span all users. Backs the bulk stop-retries / retry-all sweeps, which
+        then partition the result by ``next_retry_at``."""
+        if not statuses:
+            return []
+        clauses = [f"status IN ({_in_placeholders(statuses)})"]
+        params: list[Any] = list(statuses)
+        if user_role != "admin":
+            if user_id is None:
+                return []
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        where = " AND ".join(clauses)
+
+        def operation(conn: sqlite3.Connection) -> list[DownloadTask]:
+            rows = conn.execute(
+                f"SELECT * FROM download_tasks WHERE {where} ORDER BY created_at DESC",
+                tuple(params),
+            ).fetchall()
+            return [t for t in (_row_to_task(r) for r in rows) if t is not None]
+
+        return await self._read(operation)
+
+    async def delete_tasks_by_status(
+        self, user_id: str | None, user_role: str | None, statuses: list[str]
+    ) -> int:
+        """Hard-delete the user's tasks in the given (terminal) statuses; user-scoped
+        exactly like ``list_tasks`` (non-admins own-only and fail closed without a
+        user_id, admins span all users). Returns the number of rows removed. Caller is
+        responsible for passing only terminal statuses - this does no status guarding."""
+        if not statuses:
+            return 0
+        clauses = [f"status IN ({_in_placeholders(statuses)})"]
+        params: list[Any] = list(statuses)
+        if user_role != "admin":
+            if user_id is None:
+                return 0
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        where = " AND ".join(clauses)
+
+        def operation(conn: sqlite3.Connection) -> int:
+            cur = conn.execute(f"DELETE FROM download_tasks WHERE {where}", tuple(params))
+            return cur.rowcount
+
+        return await self._write(operation)
+
+    async def cancel_album_auto_retries(self, release_group_mbid: str) -> list[str]:
+        """Cancel every ``failed``/``partial`` task for an album so it stops seeding
+        auto-retries (a removed-from-library album must not keep re-downloading).
+        Returns the cancelled task IDs. Active tasks (queued/downloading/processing)
+        are left alone - those are cancelled per-task through ``cancel_task`` so their
+        live transfers are torn down."""
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> list[str]:
+            rows = conn.execute(
+                "SELECT id FROM download_tasks "
+                "WHERE release_group_mbid = ? AND status IN ('failed', 'partial')",
+                (release_group_mbid,),
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            if ids:
+                conn.execute(
+                    f"UPDATE download_tasks SET status = 'cancelled', cancelled_at = ?, "
+                    f"updated_at = ? WHERE id IN ({_in_placeholders(ids)})",
+                    (now, now, *ids),
+                )
+            return ids
+
+        return await self._write(operation)
+
+    async def purge_album_artifacts(self, release_group_mbid: str) -> list[str]:
+        """On library removal, drop an album's held-import rows and blocklist entries, and
+        return the held files' on-disk paths so the caller can unlink them. Retries are
+        cancelled separately (``cancel_album_auto_retries``); together they ensure a removed
+        album leaves no held 'Couldn't verify' tracks or blocklist behind."""
+
+        def operation(conn: sqlite3.Connection) -> list[str]:
+            held_paths = [
+                row["held_path"]
+                for row in conn.execute(
+                    "SELECT held_path FROM held_imports WHERE release_group_mbid = ?",
+                    (release_group_mbid,),
+                ).fetchall()
+            ]
+            conn.execute(
+                "DELETE FROM held_imports WHERE release_group_mbid = ?", (release_group_mbid,)
+            )
+            conn.execute(
+                "DELETE FROM download_quarantine WHERE release_group_mbid = ?",
+                (release_group_mbid,),
+            )
+            return held_paths
+
+        return await self._write(operation)
+
 
 def _in_placeholders(items: Any) -> str:
     return ", ".join("?" for _ in items)
@@ -757,6 +1134,42 @@ def _row_to_task(row: sqlite3.Row | None) -> DownloadTask | None:
     if row is None:
         return None
     return msgspec.convert(dict(row), type=DownloadTask, strict=False)
+
+
+# source -> the download client_type that owns it (fixed v1 map).
+_SOURCE_CLIENT_TYPE = {"soulseek": "slskd", "usenet": "sabnzbd"}
+
+
+def _quarantine_row_to_admin(row: dict[str, Any]) -> dict[str, Any]:
+    """Project a ``(source, identity, …)`` quarantine row onto the legacy admin API
+    shape (``client_id``/``username``/``filename``) so the existing admin list +
+    frontend keep working after the table rebuild (D8). A soulseek identity splits
+    back into ``(username, filename)``; a usenet identity (title+size) has no
+    username, so it surfaces under ``filename`` with an empty ``username`` until the
+    quarantine UI gets a source-aware pass."""
+    source = row.get("source", "soulseek")
+    identity = row.get("identity", "")
+    username, sep, filename = identity.partition(_SOULSEEK_ID_SEP)
+    if source == "soulseek" and sep:
+        username, filename = username, filename
+    else:
+        username, filename = "", identity
+    return {
+        "id": row.get("id"),
+        "source": source,
+        "client_id": _SOURCE_CLIENT_TYPE.get(source, source),
+        "username": username,
+        "filename": filename,
+        "identity": identity,
+        "reason": row.get("reason"),
+        "quarantined_at": row.get("quarantined_at"),
+        "release_group_mbid": row.get("release_group_mbid"),
+    }
+
+
+def _row_to_held(row: dict[str, Any]) -> HeldImport:
+    # column names mirror HeldImport's fields exactly
+    return HeldImport(**row)
 
 
 def _row_to_search_job(row: sqlite3.Row | None) -> SearchJob | None:

@@ -333,7 +333,7 @@ async def test_album_match_imports_whole_folder(tmp_path):
     scanner, manager, state, db = _build(tmp_path)
     _album_dir(tmp_path, "Santana/Santana (1969)", 2)
 
-    async def identify(locals_):
+    async def identify(locals_, *, seed_release_groups=None):
         return AlbumMatch(
             accepted=True, distance=0.05,
             release_group_mbid="rg-album", release_mbid="rel-album",
@@ -350,7 +350,9 @@ async def test_album_match_imports_whole_folder(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_album_match_unmapped_file_falls_back_to_per_file(tmp_path):
+async def test_album_match_claims_unmapped_files_under_the_album(tmp_path):
+    # Phase 2 (all-or-nothing): a file the matched release didn't map to a track is kept
+    # under the ONE album (blank recording), NOT scattered to a per-file guess.
     from services.native.album_matcher import AlbumMatch
 
     scanner, manager, state, db = _build(
@@ -358,19 +360,21 @@ async def test_album_match_unmapped_file_falls_back_to_per_file(tmp_path):
     )
     _album_dir(tmp_path, "Artist/Album", 2)
 
-    async def identify(locals_):
+    async def identify(locals_, *, seed_release_groups=None):
         return AlbumMatch(
             accepted=True, distance=0.05,
             release_group_mbid="rg-album", release_mbid="rel-album",
-            assignments={locals_[0].path: "rec-0"},
+            assignments={locals_[0].path: "rec-0"},  # only 1 of 2 mapped
         )
 
     scanner._album_identifier.identify = AsyncMock(side_effect=identify)
     await scanner.scan([tmp_path / "music"])
 
-    assert len(await db.get_library_files_for_album("rg-album")) == 1
-    assert len(await db.get_library_files_for_album("rg-bonus")) == 1
-    scanner._mb_matcher.text_match.assert_awaited_once()
+    rows = await db.get_library_files_for_album("rg-album")
+    assert len(rows) == 2  # BOTH files under the one album
+    assert "rec-0" in {r["recording_mbid"] for r in rows}  # the mapped one keeps its track
+    assert await db.get_library_files_for_album("rg-bonus") == []  # never scattered
+    scanner._mb_matcher.text_match.assert_not_awaited()  # no per-file fallback for an album
 
 
 @pytest.mark.asyncio
@@ -826,3 +830,192 @@ async def test_read_track_tags_unknown_id_raises_not_found(tmp_path):
     scanner, _manager, _state, _db = _build(tmp_path)
     with pytest.raises(ResourceNotFoundError):
         await scanner.read_track_tags("does-not-exist")
+
+
+# -- folder-level fingerprint consensus (files never scatter across release groups) --
+
+
+@pytest.mark.asyncio
+async def test_folder_fingerprint_match_prevents_scatter(tmp_path):
+    """Junk tags -> the tag-based album match returns nothing; fingerprinting the folder
+    resolves ONE release group and both files land under it, instead of scattering across
+    two (the Led Zeppelin bug)."""
+    from services.native.album_matcher import AlbumMatch
+
+    scanner, _manager, _state, db = _build(
+        tmp_path,
+        fingerprint=FingerprintResult(status="pass", score=0.9, recording_id="rec-debut"),
+        resolve="rg-debut",
+    )
+    music, paths = _music_dir(
+        tmp_path, "flac_only_release_mbid.flac", "flac_only_release_mbid.flac"
+    )
+    accepted = AlbumMatch(
+        accepted=True, distance=0.05,
+        release_group_mbid="rg-debut", release_mbid="rel-debut",
+        assignments={str(paths[0]): "rec-1", str(paths[1]): "rec-2"},
+        artist_mbid="a1", artist_name="Led Zeppelin",
+    )
+    # First (tag) attempt finds nothing; the fingerprint-seeded second attempt succeeds.
+    scanner._album_identifier.identify = AsyncMock(side_effect=[None, accepted])
+
+    await scanner.scan([music])
+
+    rows = await db.get_library_files_for_album("rg-debut")
+    assert len(rows) == 2  # both files, ONE release group - no scatter
+    # the second attempt was seeded with the fingerprint-resolved release group
+    second_call = scanner._album_identifier.identify.await_args_list[1]
+    assert second_call.kwargs["seed_release_groups"] == ["rg-debut"]
+
+
+@pytest.mark.asyncio
+async def test_no_fingerprint_seed_skips_second_attempt(tmp_path):
+    """AcoustID disabled -> no seed -> the fingerprint attempt is skipped, files fall
+    through to per-file review, and each file is fingerprinted at most once (reused)."""
+    scanner, manager, _state, db = _build(tmp_path)  # fingerprint disabled, identify -> None
+    scanner._album_identifier.identify = AsyncMock(return_value=None)
+    music, _ = _music_dir(
+        tmp_path, "flac_only_release_mbid.flac", "flac_only_release_mbid.flac"
+    )
+
+    await scanner.scan([music])
+
+    assert not await db.has_any_files()
+    assert len(await manager.get_unmatched()) == 2
+    assert scanner._album_identifier.identify.await_count == 1  # no seeds -> no 2nd attempt
+    assert scanner._fingerprinter.fingerprint.await_count == 2  # once per file, reused
+
+
+# -- Phase 1: anchor + stickiness + INV-1 (ScannerAlbumIdentity) --
+
+
+@pytest.mark.asyncio
+async def test_should_keep_prior_blocks_album_to_compilation(tmp_path):
+    # INV-1: never demote a studio album to a compilation/live release group.
+    scanner, *_ = _build(tmp_path)
+    scanner._album_identifier.release_group_type = AsyncMock(
+        side_effect=lambda rg: {
+            "rg-album": ("album", frozenset()),
+            "rg-comp": ("album", frozenset({"compilation"})),
+            "rg-live": ("album", frozenset({"live"})),
+        }.get(rg, (None, frozenset()))
+    )
+    prior = {"release_group_mbid": "rg-album", "confidence": 1.0, "source": "download"}
+    assert await scanner._should_keep_prior(prior, "rg-comp", 0.99) is True
+    assert await scanner._should_keep_prior(prior, "rg-live", 0.99) is True
+
+
+@pytest.mark.asyncio
+async def test_should_keep_prior_stickiness_and_override(tmp_path):
+    scanner, *_ = _build(tmp_path)
+    scanner._album_identifier.release_group_type = AsyncMock(
+        return_value=("album", frozenset())
+    )
+    # a confident download resists a non-improving change to another studio album
+    dl = {"release_group_mbid": "rg-a", "confidence": 1.0, "source": "download"}
+    assert await scanner._should_keep_prior(dl, "rg-b", 0.95) is True
+    # a high-confidence scan prior yields only to a clearly-better match (+margin)
+    scan_prior = {"release_group_mbid": "rg-a", "confidence": 0.85, "source": "scan"}
+    assert await scanner._should_keep_prior(scan_prior, "rg-b", 0.95) is False
+    assert await scanner._should_keep_prior(scan_prior, "rg-b", 0.88) is True
+
+
+@pytest.mark.asyncio
+async def test_should_keep_prior_noop_cases(tmp_path):
+    scanner, *_ = _build(tmp_path)
+    scanner._album_identifier.release_group_type = AsyncMock(
+        return_value=("album", frozenset())
+    )
+    same = {"release_group_mbid": "rg-a", "confidence": 1.0, "source": "download"}
+    assert await scanner._should_keep_prior(same, "rg-a", 0.1) is False  # no change
+    assert await scanner._should_keep_prior({"release_group_mbid": None}, "rg-b", 0.1) is False
+    low = {"release_group_mbid": "rg-a", "confidence": 0.5, "source": "scan"}
+    assert await scanner._should_keep_prior(low, "rg-b", 0.6) is False  # not anchored -> allow
+
+
+def test_incumbent_rg_picks_dominant_confident(tmp_path):
+    scanner, *_ = _build(tmp_path)
+    existing = {
+        "/a": {"release_group_mbid": "rg-x", "source": "download", "confidence": 1.0},
+        "/b": {"release_group_mbid": "rg-x", "source": "scan", "confidence": 0.9},
+        "/c": {"release_group_mbid": "rg-y", "source": "scan", "confidence": 0.4},  # ignored
+    }
+    assert scanner._incumbent_rg(existing) == "rg-x"
+    assert scanner._incumbent_rg({}) is None
+
+
+@pytest.mark.asyncio
+async def test_get_attributions_for_paths_returns_active_rows(tmp_path):
+    scanner, manager, _state, _db = _build(tmp_path)
+    _music, paths = _music_dir(tmp_path, "flac_only_release_mbid.flac")
+    p = paths[0]
+    tag, info = AudioTagger().read_tags(p)
+    await manager.upsert_file(
+        p, tag, info, release_group_mbid="rg-x", source="download", confidence=1.0
+    )
+    got = await manager.get_attributions_for_paths([str(p), "/nope.flac"])
+    assert set(got) == {str(p)}
+    assert got[str(p)]["release_group_mbid"] == "rg-x"
+    assert got[str(p)]["source"] == "download"
+    assert await manager.get_attributions_for_paths([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_rescan_never_demotes_a_downloaded_album_to_compilation(tmp_path):
+    # End-to-end (per-file path): a downloaded studio-album track whose fingerprint now
+    # resolves to a compilation recording must NOT be re-attributed to the compilation.
+    scanner, manager, _state, db = _build(
+        tmp_path,
+        fingerprint=FingerprintResult(status="pass", score=0.95, recording_id="rec-comp"),
+        resolve="rg-comp",
+    )
+    scanner._album_identifier.release_group_type = AsyncMock(
+        side_effect=lambda rg: {
+            "rg-studio": ("album", frozenset()),
+            "rg-comp": ("album", frozenset({"compilation"})),
+        }.get(rg, (None, frozenset()))
+    )
+    music, paths = _music_dir(tmp_path, "flac_only_release_mbid.flac")
+    p = paths[0]
+    tag, info = AudioTagger().read_tags(p)
+    # the download already placed it on the studio album; the stale file_mtime makes the
+    # scan re-process it (rather than incremental-skip), so the guard is exercised
+    await manager.upsert_file(
+        p, tag, info, release_group_mbid="rg-studio", source="download",
+        confidence=1.0, file_mtime=1.0,
+    )
+
+    await scanner.scan([music])
+
+    assert len(await db.get_library_files_for_album("rg-studio")) == 1  # kept
+    assert await db.get_library_files_for_album("rg-comp") == []  # never demoted
+
+
+@pytest.mark.asyncio
+async def test_reidentify_album_forces_correction_past_stickiness(tmp_path):
+    # Phase 4 / R-CORRECT: a forced re-identify overrides even a confident (sticky)
+    # download attribution - the deliberate way to fix an album stuck on the wrong RG.
+    from services.native.album_matcher import AlbumMatch
+
+    scanner, manager, _state, db = _build(tmp_path)
+    paths = _album_dir(tmp_path, "Artist/Album", 2)
+    for p in paths:  # a download stuck them on the WRONG album (confident -> normally sticky)
+        tag, info = AudioTagger().read_tags(p)
+        await manager.upsert_file(
+            p, tag, info, release_group_mbid="rg-wrong", source="download", confidence=1.0
+        )
+
+    async def identify(locals_, *, seed_release_groups=None):
+        return AlbumMatch(
+            accepted=True, distance=0.02,
+            release_group_mbid="rg-right", release_mbid="rel-right",
+            assignments={lt.path: f"rec-{i}" for i, lt in enumerate(locals_)},
+        )
+
+    scanner._album_identifier.identify = AsyncMock(side_effect=identify)
+
+    moved = await scanner.reidentify_album("rg-wrong")
+
+    assert moved == 2
+    assert len(await db.get_library_files_for_album("rg-right")) == 2  # corrected
+    assert await db.get_library_files_for_album("rg-wrong") == []  # left the wrong album

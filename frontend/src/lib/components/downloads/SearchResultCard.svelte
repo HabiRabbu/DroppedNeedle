@@ -1,30 +1,66 @@
 <script lang="ts">
-	import { BadgeCheck, Disc3, Files, Signal } from 'lucide-svelte';
+	import { BadgeCheck, Disc3, Download, Files, Library, Signal } from 'lucide-svelte';
 
 	import type { ScoredCandidate } from '$lib/types';
 
 	interface Props {
 		candidate: ScoredCandidate;
+		albumTitle?: string;
+		viaAlbumNzb?: boolean;
 		onPick?: () => void;
 		picking?: boolean;
+		/** lock every pick button once a pick is in flight / already committed (double-pick guard) */
+		disabled?: boolean;
 	}
-	const { candidate, onPick, picking = false }: Props = $props();
+	const {
+		candidate,
+		albumTitle,
+		viaAlbumNzb = false,
+		onPick,
+		picking = false,
+		disabled = false
+	}: Props = $props();
 
 	const RING_R = 26;
 	const RING_C = 2 * Math.PI * RING_R;
 
+	const isUsenet = $derived(candidate.source === 'usenet' && Boolean(candidate.usenet_release));
 	const percent = $derived(Math.round(candidate.final_score * 100));
+
+	// --- soulseek signals ---
 	const fileCount = $derived(candidate.files.length);
 	const freeSlot = $derived(candidate.files.some((f) => f.has_free_slot));
 	const uploadSpeed = $derived(Math.max(0, ...candidate.files.map((f) => f.upload_speed)));
-
-	const format = $derived.by(() => {
+	const soulseekFormat = $derived.by(() => {
 		const ext = (candidate.files[0]?.extension ?? '').toUpperCase();
 		const bitrate = Math.max(0, ...candidate.files.map((f) => f.bitrate ?? 0));
 		if (!ext) return 'AUDIO';
 		return bitrate && !['FLAC', 'ALAC', 'WAV', 'APE', 'WV'].includes(ext)
 			? `${ext} ${bitrate}`
 			: ext;
+	});
+
+	// --- usenet signals (from the release: category is the reliable quality signal) ---
+	const rel = $derived(candidate.usenet_release);
+	const usenetFormat = $derived.by(() => {
+		const cats = rel?.category_ids ?? [];
+		if (cats.includes(3040)) return 'FLAC';
+		if (cats.includes(3010)) return 'MP3';
+		const t = (rel?.title ?? '').toUpperCase();
+		if (/\bFLAC|24BIT|LOSSLESS\b/.test(t)) return 'FLAC';
+		if (/\b320\b/.test(t)) return 'MP3 320';
+		return 'unknown'; // don't fake a bitrate when the title doesn't parse
+	});
+	const sizeLabel = $derived.by(() => {
+		const b = rel?.size_bytes ?? 0;
+		if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GB`;
+		return `${Math.round(b / 1024 ** 2)} MB`;
+	});
+	const ageLabel = $derived.by(() => {
+		if (!rel?.usenet_date) return '';
+		const days = Math.floor((Date.now() / 1000 - rel.usenet_date) / 86400);
+		if (days <= 0) return 'today';
+		return days >= 30 ? `${Math.floor(days / 30)}mo` : `${days}d`;
 	});
 
 	const tierClass = $derived(
@@ -36,12 +72,19 @@
 	);
 
 	const breakdown = $derived(
-		`Coherence ${Math.round(candidate.coherence * 100)}% · ` +
-			`File confidence ${Math.round(candidate.file_confidence * 100)}% · ` +
-			`${freeSlot ? 'Free slot' : 'Queued'}${uploadSpeed ? ` · ${Math.round(uploadSpeed / 1000)} KB/s` : ''}`
+		isUsenet
+			? `${rel?.indexer_name ?? 'Usenet'} · ${usenetFormat} · ${sizeLabel}` +
+					`${rel?.grabs ? ` · ${rel.grabs} grabs` : ''}${ageLabel ? ` · ${ageLabel}` : ''}`
+			: `Coherence ${Math.round(candidate.coherence * 100)}% · ` +
+					`File confidence ${Math.round(candidate.file_confidence * 100)}% · ` +
+					`${freeSlot ? 'Free slot' : 'Queued'}${uploadSpeed ? ` · ${Math.round(uploadSpeed / 1000)} KB/s` : ''}`
 	);
 
-	// ring fills from empty to this target on mount via the from-only `ring-fill` keyframe
+	const heading = $derived(
+		isUsenet ? albumTitle || rel?.title || 'Unknown' : candidate.parent_directory || 'Unknown folder'
+	);
+	const subtitle = $derived(isUsenet ? (rel?.title ?? '') : candidate.username);
+
 	const dashoffset = $derived(RING_C * (1 - Math.max(0, Math.min(1, candidate.final_score))));
 </script>
 
@@ -50,34 +93,59 @@
 		class="sleeve grid size-14 shrink-0 place-items-center rounded-md bg-base-300"
 		aria-hidden="true"
 	>
-		<Disc3 class="size-7 text-base-content/60" />
+		{#if isUsenet}
+			<Download class="size-7 text-base-content/60" />
+		{:else}
+			<Disc3 class="size-7 text-base-content/60" />
+		{/if}
 	</div>
 
 	<div class="min-w-0 flex-1">
-		<p class="truncate font-semibold" title={candidate.parent_directory}>
-			{candidate.parent_directory || 'Unknown folder'}
-		</p>
-		<p class="truncate text-sm text-base-content/60">{candidate.username}</p>
+		<p class="truncate font-semibold" title={heading}>{heading}</p>
+		<p class="truncate text-sm text-base-content/60" title={subtitle}>{subtitle}</p>
 		<div class="mt-1.5 flex flex-wrap items-center gap-1.5">
-			<span class="badge badge-sm" class:badge-success={candidate.tier !== 'rejected'}
-				>{format}</span
-			>
-			<span class="badge badge-ghost badge-sm gap-1">
-				<Files class="size-3" aria-hidden="true" />{fileCount}
-				{fileCount === 1 ? 'track' : 'tracks'}
-			</span>
-			{#if uploadSpeed > 0}
-				<span class="badge badge-ghost badge-sm gap-1" aria-label="Has upload speed">
-					<Signal class="size-3" aria-hidden="true" />{Math.round(uploadSpeed / 1000)} KB/s
+			{#if isUsenet}
+				<span class="badge badge-ghost badge-sm gap-1">
+					<Library class="size-3" aria-hidden="true" />{rel?.indexer_name}
 				</span>
-			{/if}
-			{#if freeSlot}
 				<span
-					class="badge badge-ghost badge-sm gap-1 text-success"
-					aria-label="Free slot available"
+					class="badge badge-sm"
+					class:badge-success={usenetFormat !== 'unknown' && candidate.tier !== 'rejected'}
+					>{usenetFormat}</span
 				>
-					<BadgeCheck class="size-3" aria-hidden="true" />slot
+				<span class="badge badge-ghost badge-sm">{sizeLabel}</span>
+				{#if rel?.grabs}
+					<span class="badge badge-ghost badge-sm gap-1" aria-label="Grabs">
+						<Signal class="size-3" aria-hidden="true" />{rel.grabs}
+					</span>
+				{/if}
+				{#if ageLabel}<span class="badge badge-ghost badge-sm">{ageLabel}</span>{/if}
+				{#if viaAlbumNzb}
+					<span class="badge badge-ghost badge-sm" title="Grabs the album NZB to extract one track"
+						>via album NZB</span
+					>
+				{/if}
+			{:else}
+				<span class="badge badge-sm" class:badge-success={candidate.tier !== 'rejected'}
+					>{soulseekFormat}</span
+				>
+				<span class="badge badge-ghost badge-sm gap-1">
+					<Files class="size-3" aria-hidden="true" />{fileCount}
+					{fileCount === 1 ? 'track' : 'tracks'}
 				</span>
+				{#if uploadSpeed > 0}
+					<span class="badge badge-ghost badge-sm gap-1" aria-label="Has upload speed">
+						<Signal class="size-3" aria-hidden="true" />{Math.round(uploadSpeed / 1000)} KB/s
+					</span>
+				{/if}
+				{#if freeSlot}
+					<span
+						class="badge badge-ghost badge-sm gap-1 text-success"
+						aria-label="Free slot available"
+					>
+						<BadgeCheck class="size-3" aria-hidden="true" />slot
+					</span>
+				{/if}
 			{/if}
 		</div>
 	</div>
@@ -115,8 +183,10 @@
 		type="button"
 		class="btn btn-primary btn-sm shrink-0"
 		onclick={onPick}
-		disabled={picking}
-		aria-label={`Pick candidate from ${candidate.username}`}
+		disabled={picking || disabled}
+		aria-label={isUsenet
+			? `Pick release from ${rel?.indexer_name}`
+			: `Pick candidate from ${candidate.username}`}
 	>
 		{#if picking}<span class="loading loading-spinner loading-xs"></span>{/if}
 		Pick

@@ -40,8 +40,9 @@ class HomeIntegrationHelpers:
         return jf_settings.enabled and bool(jf_settings.jellyfin_url) and bool(jf_settings.api_key)
 
     def is_download_client_configured(self) -> bool:
-        dc = self._preferences.get_download_client_settings()
-        return dc.enabled and bool(dc.url)
+        # Any acquisition source counts - slskd (Soulseek) OR SABnzbd (Usenet). A
+        # Usenet-only setup must not show the "connect a download client" prompt.
+        return self._preferences.is_download_source_ready()
 
     def is_library_configured(self) -> bool:
         # The native library scanner is always present.

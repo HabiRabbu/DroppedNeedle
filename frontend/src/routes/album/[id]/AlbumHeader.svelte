@@ -6,8 +6,8 @@
 	import HeroBackdrop from '$lib/components/HeroBackdrop.svelte';
 	import AlbumDownloadStatus from '$lib/components/downloads/AlbumDownloadStatus.svelte';
 	import { formatTotalDuration } from '$lib/utils/formatting';
-	import { Check, Trash2, Clock, Plus, RefreshCw, Disc3 } from 'lucide-svelte';
-	import { rescanAlbum } from '$lib/queries/library/LibraryMutations.svelte';
+	import { Check, Trash2, Clock, Plus, RefreshCw, ScanSearch, Disc3 } from 'lucide-svelte';
+	import { rescanAlbum, reidentifyAlbum } from '$lib/queries/library/LibraryMutations.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { toastStore } from '$lib/stores/toast';
 
@@ -64,6 +64,21 @@
 		} catch (e) {
 			toastStore.show({
 				message: e instanceof Error ? e.message : 'Rescan failed',
+				type: 'error'
+			});
+		}
+	}
+
+	const reidentify = reidentifyAlbum();
+	// Re-decide which album these files are (correction path), vs Rescan which only
+	// refreshes their tags. Non-destructive - it re-attributes, never deletes.
+	async function handleReidentify() {
+		try {
+			await reidentify.mutateAsync(releaseGroupMbid);
+			toastStore.show({ message: 'Re-identify started.', type: 'success' });
+		} catch (e) {
+			toastStore.show({
+				message: e instanceof Error ? e.message : 'Re-identify failed',
 				type: 'error'
 			});
 		}
@@ -164,6 +179,15 @@
 						>
 							<RefreshCw class="h-3.5 w-3.5 {rescan.isPending ? 'animate-spin' : ''}" />
 							Rescan
+						</button>
+						<button
+							class="btn btn-ghost btn-xs gap-1"
+							onclick={handleReidentify}
+							disabled={reidentify.isPending}
+							title="Re-match this album's files from scratch (fixes a wrong release)"
+						>
+							<ScanSearch class="h-3.5 w-3.5 {reidentify.isPending ? 'animate-spin' : ''}" />
+							Re-identify
 						</button>
 					{/if}
 				</div>

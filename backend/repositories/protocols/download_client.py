@@ -1,8 +1,11 @@
-"""Pluggable download-client contract.
+"""Pluggable download-client contract (the *acquire → track → locate* half of
+the split, D2).
 
 Stable boundary between ``services/native`` and any concrete download client.
 The orchestrator, matcher, and file processor import only this module's
-protocol types, never ``repositories/slskd``.
+protocol types, never ``repositories/slskd``. Search now lives on
+``IndexerProtocol`` (``indexer.py``); this module no longer carries
+``search_*``.
 
 Does NOT use ``from __future__ import annotations``: the conformance contract
 test compares ``inspect.signature`` of the protocol methods against each
@@ -37,12 +40,35 @@ class DownloadFileRef(AppStruct):
     size: int
 
 
-class TaskRef(AppStruct):
-    """slskd has no batch id, so a task is correlated to its transfers by the
-    peer username plus the exact set of filenames it enqueued (C2)."""
+class EnqueueRequest(AppStruct):
+    """Client-agnostic hand-off (D8). slskd reads ``source``/``files``; SABnzbd
+    reads ``nzb_url``/``job_name``/``category``/``priority``/``post_processing``.
+    ``job_name`` (``droppedneedle-{task_id}``) is the PRE-enqueue correlation key
+    that survives a crash before ``nzo_id`` exists."""
 
-    username: str
-    filenames: list[str]
+    task_id: str
+    source: str
+    files: list[DownloadFileRef] = []
+    nzb_url: str | None = None
+    job_name: str | None = None
+    category: str | None = None
+    priority: int | None = None
+    post_processing: int | None = None
+
+
+class TaskHandle(AppStruct):
+    """Client-agnostic task correlation (D8), replacing ``TaskRef``.
+
+    slskd populates ``username`` + ``filenames`` (no batch id, C2). SABnzbd
+    populates ``job_name`` BEFORE enqueue (recoverable on crash) and fills
+    ``nzo_id`` after the add returns. The manifest persists the whole handle.
+    """
+
+    source: str
+    username: str = ""
+    filenames: list[str] = []
+    job_name: str = ""
+    nzo_id: str = ""
 
 
 class DownloadTaskStatus(AppStruct):
@@ -95,10 +121,11 @@ class MountDiagnosis(AppStruct):
 
 @runtime_checkable
 class DownloadClientProtocol(Protocol):
-    """Pluggable download client contract. One active client at a time.
+    """Pluggable download client contract (acquire/track/locate).
 
-    No ``delete_transfer`` method (DEC-1): post-import removal of completed
-    transfer records is done via ``cancel(task_ref)``.
+    Clients enable independently (D2/D3): the old "one active client at a time"
+    assumption is gone. No ``delete_transfer`` method (DEC-1): post-import
+    removal of completed transfer records is done via ``cancel(handle)``.
     """
 
     @property
@@ -108,39 +135,28 @@ class DownloadClientProtocol(Protocol):
 
     async def health_check(self) -> ServiceStatus: ...
 
-    async def search_album(
-        self,
-        artist_name: str,
-        album_title: str,
-        year: int | None = None,
-        track_count: int | None = None,
-        *,
-        timeout: float = 30.0,
-    ) -> list[DownloadSearchResult]: ...
+    async def enqueue(self, request: EnqueueRequest) -> TaskHandle: ...
 
-    async def search_track(
-        self,
-        artist_name: str,
-        track_title: str,
-        album_title: str | None = None,
-        duration_seconds: int | None = None,
-        *,
-        timeout: float = 30.0,
-    ) -> list[DownloadSearchResult]: ...
+    async def get_status(self, handle: TaskHandle) -> DownloadTaskStatus: ...
 
-    async def enqueue(self, files: list[DownloadFileRef]) -> TaskRef: ...
-
-    async def get_status(self, task_ref: TaskRef) -> DownloadTaskStatus: ...
-
-    async def cancel(self, task_ref: TaskRef) -> bool:
+    async def cancel(self, handle: TaskHandle) -> bool:
         """Cancel an in-flight task AND/OR remove its completed transfer
-        records (DELETE ``?remove=true``). Serves both user cancellation and
-        post-import cleanup (DEC-1)."""
+        records. Serves both user cancellation and post-import cleanup (DEC-1)."""
+        ...
+
+    async def list_completed_files(self, handle: TaskHandle) -> list[Path]:
+        """Audio files of a finished job, on disk (the import source for the
+        folder-based Usenet import, D18).
+
+        slskd already knows its filenames from the search, so its implementation
+        can resolve them via ``get_file_path``; SABnzbd's unpacked filenames are
+        unknown until after unpack, so it enumerates the job's ``storage`` folder.
+        """
         ...
 
     async def get_file_path(
         self,
-        username: str,
+        handle: TaskHandle,
         remote_filename: str,
         size: int | None = None,
     ) -> Path | None:

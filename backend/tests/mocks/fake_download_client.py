@@ -1,25 +1,26 @@
-"""``FakeDownloadClient`` - an in-memory second ``DownloadClientProtocol`` impl.
+"""``FakeDownloadClient`` - an in-memory second ``DownloadClientProtocol`` impl,
+and ``FakeIndexer`` - an in-memory second ``IndexerProtocol`` impl.
 
-Its purpose is the conformance contract test (``test_download_client_protocol_contract``):
-a second concrete implementation proves the "a hypothetical second client needs
-zero changes to ``services/native``" claim, and that the boundary is not
-slskd-shaped. It uses no httpx and no FastAPI.
+Their purpose is the conformance contract tests: a second concrete implementation
+of each protocol proves "a hypothetical second client/indexer needs zero changes
+to ``services/native``", and that the boundaries are not slskd-shaped. They use no
+httpx and no FastAPI.
 
-Method signatures MUST stay byte-identical to ``DownloadClientProtocol`` (the
-contract test compares ``inspect.signature``), so this module deliberately does
-NOT use ``from __future__ import annotations``.
+Method signatures MUST stay byte-identical to the protocols (the contract tests
+compare ``inspect.signature``), so this module deliberately does NOT use
+``from __future__ import annotations``.
 """
 
 from pathlib import Path
 
 from models.common import ServiceStatus
 from repositories.protocols.download_client import (
-    DownloadFileRef,
-    DownloadSearchResult,
     DownloadTaskStatus,
+    EnqueueRequest,
     MountDiagnosis,
-    TaskRef,
+    TaskHandle,
 )
+from repositories.protocols.indexer import IndexerResult, UsenetRelease
 
 
 class FakeDownloadClient:
@@ -36,6 +37,50 @@ class FakeDownloadClient:
     async def health_check(self) -> ServiceStatus:
         return ServiceStatus(status="ok", version="fake-1.0", message="fake")
 
+    async def enqueue(self, request: EnqueueRequest) -> TaskHandle:
+        username = request.files[0].username if request.files else "fake-peer"
+        filenames = [f.filename for f in request.files]
+        self._enqueued[username] = filenames
+        return TaskHandle(source=request.source, username=username, filenames=filenames)
+
+    async def get_status(self, handle: TaskHandle) -> DownloadTaskStatus:
+        total = len(handle.filenames)
+        return DownloadTaskStatus(
+            task_id="",
+            status="completed",
+            files_total=total,
+            files_completed=total,
+            progress_percent=100.0,
+        )
+
+    async def cancel(self, handle: TaskHandle) -> bool:
+        self._enqueued.pop(handle.username, None)
+        return True
+
+    async def list_completed_files(self, handle: TaskHandle) -> list[Path]:
+        return [
+            Path("/fake/downloads") / f.replace("\\", "/").lstrip("/")
+            for f in handle.filenames
+        ]
+
+    async def get_file_path(self, handle: TaskHandle, remote_filename: str, size: int | None = None) -> Path | None:
+        return Path("/fake/downloads") / remote_filename.replace("\\", "/").lstrip("/")
+
+    async def diagnose_downloads_mount(self) -> MountDiagnosis:
+        return MountDiagnosis(supported=False)
+
+
+class FakeIndexer:
+    @property
+    def indexer_name(self) -> str:
+        return "fake-indexer"
+
+    def is_configured(self) -> bool:
+        return True
+
+    async def health_check(self) -> ServiceStatus:
+        return ServiceStatus(status="ok", version="fake-1.0", message="fake")
+
     async def search_album(
         self,
         artist_name: str,
@@ -44,14 +89,19 @@ class FakeDownloadClient:
         track_count: int | None = None,
         *,
         timeout: float = 30.0,
-    ) -> list[DownloadSearchResult]:
+    ) -> list[IndexerResult]:
         return [
-            DownloadSearchResult(
-                username="fake-peer",
-                filename=f"{artist_name}/{album_title}/01 track.flac",
-                parent_directory=f"{artist_name} - {album_title}",
-                size=10_000_000,
-                extension="flac",
+            IndexerResult(
+                source="usenet",
+                usenet=UsenetRelease(
+                    indexer_id="fake",
+                    indexer_name="fake-indexer",
+                    guid="g1",
+                    title=f"{artist_name} - {album_title}",
+                    nzb_url="https://idx.example/nzb/g1",
+                    size_bytes=100_000_000,
+                    category_ids=[3040],
+                ),
             )
         ]
 
@@ -63,39 +113,18 @@ class FakeDownloadClient:
         duration_seconds: int | None = None,
         *,
         timeout: float = 30.0,
-    ) -> list[DownloadSearchResult]:
+    ) -> list[IndexerResult]:
         return [
-            DownloadSearchResult(
-                username="fake-peer",
-                filename=f"{artist_name}/{track_title}.flac",
-                parent_directory=f"{artist_name} - {album_title or ''}",
-                size=10_000_000,
-                extension="flac",
+            IndexerResult(
+                source="usenet",
+                usenet=UsenetRelease(
+                    indexer_id="fake",
+                    indexer_name="fake-indexer",
+                    guid="g2",
+                    title=f"{artist_name} - {track_title}",
+                    nzb_url="https://idx.example/nzb/g2",
+                    size_bytes=10_000_000,
+                    category_ids=[3010],
+                ),
             )
         ]
-
-    async def enqueue(self, files: list[DownloadFileRef]) -> TaskRef:
-        username = files[0].username if files else "fake-peer"
-        filenames = [f.filename for f in files]
-        self._enqueued[username] = filenames
-        return TaskRef(username=username, filenames=filenames)
-
-    async def get_status(self, task_ref: TaskRef) -> DownloadTaskStatus:
-        total = len(task_ref.filenames)
-        return DownloadTaskStatus(
-            task_id="",
-            status="completed",
-            files_total=total,
-            files_completed=total,
-            progress_percent=100.0,
-        )
-
-    async def cancel(self, task_ref: TaskRef) -> bool:
-        self._enqueued.pop(task_ref.username, None)
-        return True
-
-    async def get_file_path(self, username: str, remote_filename: str, size: int | None = None) -> Path | None:
-        return Path("/fake/downloads") / remote_filename.replace("\\", "/").lstrip("/")
-
-    async def diagnose_downloads_mount(self) -> MountDiagnosis:
-        return MountDiagnosis(supported=False)

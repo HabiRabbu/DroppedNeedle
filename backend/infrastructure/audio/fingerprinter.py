@@ -108,8 +108,11 @@ class AudioFingerprinter:
 
     async def _run_fpcalc(self, path: Path) -> tuple[str, int]:
         async with self._fpcalc_semaphore:
+            # NOT ``-raw``: AcoustID's /v2/lookup expects the COMPRESSED (base64) Chromaprint
+            # fingerprint that plain fpcalc emits. ``-raw`` emits comma-separated integers,
+            # which the API rejects with HTTP 400 (every lookup was silently failing).
             proc = await asyncio.create_subprocess_exec(
-                "fpcalc", "-raw", "-length", _FPCALC_LENGTH, str(path),
+                "fpcalc", "-length", _FPCALC_LENGTH, str(path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

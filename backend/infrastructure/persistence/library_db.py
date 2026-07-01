@@ -1144,6 +1144,33 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
+    async def get_attributions_for_paths(
+        self, paths: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Active rows for the given file paths, keyed by ``file_path`` - the scanner's
+        anchor read (prior release-group/confidence/source, so a re-scan can protect
+        known-good identity instead of blindly re-deciding it)."""
+        if not paths:
+            return {}
+
+        def operation(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            out: dict[str, dict[str, Any]] = {}
+            # chunk to stay under SQLite's bound-parameter limit
+            for start in range(0, len(paths), 500):
+                chunk = paths[start : start + 500]
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT * FROM library_files WHERE file_path IN ({placeholders}) "
+                    "AND deleted_at IS NULL",
+                    tuple(chunk),
+                ).fetchall()
+                for r in rows:
+                    row = dict(r)
+                    out[row["file_path"]] = row
+            return out
+
+        return await self._read(operation)
+
     async def get_active_file_at_position(
         self, release_group_mbid: str, disc_number: int, track_number: int
     ) -> dict[str, Any] | None:

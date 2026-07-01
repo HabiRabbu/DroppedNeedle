@@ -3,7 +3,12 @@
 Owns the search and enqueue semaphores (both 1; slskd permits only one
 concurrent search and one concurrent enqueue, C3) and translates slskd JSON
 shapes to/from the protocol types. slskd has NO batch id: a task is correlated
-to its transfers by ``TaskRef(username, filenames)`` (C2).
+to its transfers by ``TaskHandle(source="soulseek", username, filenames)`` (C2).
+
+Implements the download side of the split protocol (D2). The search side is
+re-homed onto ``SlskdIndexer`` (an ``IndexerProtocol`` adapter wrapping this
+repo's ``search_album``/``search_track``), so those two methods stay here but are
+no longer part of ``DownloadClientProtocol``.
 
 Does NOT use ``from __future__ import annotations`` so its method signatures
 stay structurally identical to the protocol for the conformance contract test.
@@ -16,11 +21,11 @@ from pathlib import Path
 
 from models.common import ServiceStatus
 from repositories.protocols.download_client import (
-    DownloadFileRef,
     DownloadSearchResult,
     DownloadTaskStatus,
+    EnqueueRequest,
     MountDiagnosis,
-    TaskRef,
+    TaskHandle,
 )
 
 from .slskd_client import SlskdClient
@@ -114,10 +119,11 @@ class SlskdRepository:
                 return results
         return []
 
-    async def enqueue(self, files: list[DownloadFileRef]) -> TaskRef:
+    async def enqueue(self, request: EnqueueRequest) -> TaskHandle:
         """Enqueue files for one peer. Correlation key is (username, filenames)
         since slskd returns no batch GUID. Serialized via Semaphore(1); the client
         retries the 429 'only one concurrent operation' with backoff."""
+        files = request.files
         if not files:
             raise ValueError("enqueue requires at least one file")
         username = files[0].username
@@ -129,25 +135,40 @@ class SlskdRepository:
             logger.warning("slskd rejected %d/%d files for %s", len(result.failed), len(files), username)
         # correlation key must reflect what slskd accepted, not the input set, or
         # get_status/cancel poll forever on transfers never created for rejected files
-        return TaskRef(username=username, filenames=self._accepted_filenames(result, requested))
+        return TaskHandle(
+            source="soulseek",
+            username=username,
+            filenames=self._accepted_filenames(result, requested),
+        )
 
-    async def get_status(self, task_ref: TaskRef) -> DownloadTaskStatus:
-        transfers = await self._client.get_downloads(task_ref.username)
-        wanted = set(task_ref.filenames)
+    async def get_status(self, handle: TaskHandle) -> DownloadTaskStatus:
+        transfers = await self._client.get_downloads(handle.username)
+        wanted = set(handle.filenames)
         matched = [t for t in transfers if t.filename in wanted]
-        return self._aggregate_status(task_ref, matched)
+        return self._aggregate_status(handle, matched)
 
-    async def cancel(self, task_ref: TaskRef) -> bool:
-        transfers = await self._client.get_downloads(task_ref.username)
-        wanted = set(task_ref.filenames)
+    async def cancel(self, handle: TaskHandle) -> bool:
+        transfers = await self._client.get_downloads(handle.username)
+        wanted = set(handle.filenames)
         ok = True
         for transfer in transfers:
             if transfer.filename in wanted:
-                ok = await self._client.cancel_transfer(task_ref.username, transfer.id) and ok
+                ok = await self._client.cancel_transfer(handle.username, transfer.id) and ok
         return ok
 
+    async def list_completed_files(self, handle: TaskHandle) -> list[Path]:
+        """slskd already knows its filenames (from the search/handle), so resolve
+        each to its on-disk path via the same locator the import uses; unresolved
+        files are skipped. (SABnzbd, by contrast, enumerates an unpacked folder.)"""
+        paths: list[Path] = []
+        for filename in handle.filenames:
+            located = await self.get_file_path(handle, filename)
+            if located is not None:
+                paths.append(located)
+        return paths
+
     async def get_file_path(
-        self, username: str, remote_filename: str, size: int | None = None
+        self, handle: TaskHandle, remote_filename: str, size: int | None = None
     ) -> Path | None:
         """Resolve a finished transfer to its on-disk path, OFF the event loop.
 
@@ -156,7 +177,7 @@ class SlskdRepository:
         the user is trying to click) whenever the mount was big or misconfigured, which
         reads as "it won't cancel and the whole app hangs"."""
         return await asyncio.to_thread(
-            self._locate_file, username, remote_filename, size
+            self._locate_file, handle.username, remote_filename, size
         )
 
     def _locate_file(
@@ -314,7 +335,9 @@ class SlskdRepository:
         for transfer in sample:
             try:
                 located = await self.get_file_path(
-                    transfer.username, transfer.filename, transfer.size or None
+                    TaskHandle(source="soulseek", username=transfer.username),
+                    transfer.filename,
+                    transfer.size or None,
                 )
             except Exception:  # noqa: BLE001 - a diagnostic must never raise
                 located = None
@@ -500,9 +523,9 @@ class SlskdRepository:
         return [f for f in requested if f not in failed] if failed else requested
 
     def _aggregate_status(
-        self, task_ref: TaskRef, transfers: list[SlskdTransfer]
+        self, handle: TaskHandle, transfers: list[SlskdTransfer]
     ) -> DownloadTaskStatus:
-        files_total = len(task_ref.filenames)
+        files_total = len(handle.filenames)
         bytes_total = sum(t.size for t in transfers)
         bytes_downloaded = sum(t.bytes_transferred for t in transfers)
         completed = 0
@@ -514,7 +537,10 @@ class SlskdRepository:
             if "succeeded" in flags:
                 completed += 1
                 succeeded_filenames.append(transfer.filename)
-            elif flags & {"errored", "cancelled", "failed", "rejected", "timedout"}:
+            elif flags & {"errored", "cancelled", "failed", "rejected", "timedout", "aborted"}:
+                # 'aborted' (a "Completed, Aborted" transfer) is terminal-failed, not active:
+                # without it the file never reaches a terminal count and the task waits out
+                # the full queued_timeout (~2h) instead of failing over on the next poll.
                 failed += 1
             elif flags & {"inprogress", "initializing"}:
                 has_active_transfer = True

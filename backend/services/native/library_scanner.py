@@ -20,6 +20,7 @@ import asyncio
 import logging
 import os
 import time
+from collections import Counter
 from pathlib import Path
 from typing import NamedTuple, TYPE_CHECKING
 
@@ -37,8 +38,8 @@ if TYPE_CHECKING:
     from infrastructure.audio.tagger import AudioTagger
     from infrastructure.persistence.scan_state_store import ScanStateStore
     from infrastructure.sse_publisher import SSEPublisher
-    from models.audio import AudioInfo, AudioTag
-    from services.native.album_matcher import AlbumIdentifier
+    from models.audio import AudioInfo, AudioTag, FingerprintResult
+    from services.native.album_matcher import AlbumIdentifier, AlbumMatch
     from services.native.library_manager import LibraryManager, LibraryTrack
     from services.native.musicbrainz_matcher import MusicBrainzMatcher
 
@@ -53,6 +54,15 @@ _PROGRESS_INTERVAL_SECONDS = 2.0
 _MAX_ALBUM_FILES = 60
 _ARTIST_RECONCILE_PASSES = 8
 _ARTIST_BREAKER_WAIT_S = 65.0
+# Re-attribution guards (ScannerAlbumIdentity plan, Phase 1). A prior attribution from a
+# download, or scored at least this high, is an "anchor" the scan won't lightly overwrite.
+_STICKY_CONFIDENCE = 0.85
+_STICKY_MARGIN = 0.05
+_COMP_OR_LIVE = frozenset({"compilation", "live"})
+# Phase 2: a folder file the matched release didn't map to a track is kept as an album
+# member (by folder cohesion) with a blank recording, at this modest confidence - enough
+# to own it, low enough not to become a sticky anchor itself.
+_UNMAPPED_ALBUM_CONFIDENCE = 0.5
 
 
 class _FileEntry(NamedTuple):
@@ -310,6 +320,49 @@ class LibraryScanner:
             "Rescanned album %s: %d file(s) refreshed", release_group_mbid, refreshed
         )
         return refreshed
+
+    async def reidentify_album(self, release_group_mbid: str) -> int:
+        """Force a fresh whole-folder re-identification of an album's files, ignoring the
+        stability guards (anchor + stickiness + INV-1). The manual correction path
+        (ScannerAlbumIdentity Phase 4 / R-CORRECT): the deliberate way to fix an album the
+        scan settled on the wrong release group, since stability otherwise makes a confident
+        attribution sticky. Returns the number of files re-identified."""
+        # A prior cancelled scan leaves the shared _cancel event set; clear it so a manual
+        # re-identify isn't a silent no-op (mirrors _run_scan).
+        self._cancel.clear()
+        rows = await self._library.get_file_rows_for_album(release_group_mbid)
+        by_folder: dict[str, list[Path]] = {}
+        for row in rows:
+            path = Path(row["file_path"])
+            if path.exists():
+                by_folder.setdefault(str(path.parent), []).append(path)
+        stats = ScanStats()
+        for paths in by_folder.values():
+            if self._cancel.is_set():
+                break
+            entries: list[_FileEntry] = []
+            for path in paths:
+                try:
+                    tag, info = await asyncio.to_thread(self._tagger.read_tags, path)
+                    mtime = path.stat().st_mtime
+                except Exception as exc:  # noqa: BLE001 - a bad file must not abort the re-id
+                    logger.warning("Re-identify: cannot read %s: %s", path, exc)
+                    continue
+                entries.append(
+                    _FileEntry(path=path, tag=self._enrich_tag_from_path(path, tag),
+                               info=info, mtime=mtime)
+                )
+            if entries:
+                await self._identify_entries(entries, stats, force=True)
+        # If re-identification moved every file off the old RG, drop its stale materialised
+        # album row so it stops reporting "In Library" as a zero-file ghost.
+        if not await self._library.has_album(release_group_mbid):
+            await self._library.delete_album_row(release_group_mbid)
+        logger.info(
+            "reidentify.album",
+            extra={"release_group_mbid": release_group_mbid, "matched": stats.matched},
+        )
+        return stats.matched
 
     async def startup_check(self, library_paths: list[Path]) -> None:
         """Resume an interrupted scan on boot (AUD-4): if state is ``scanning``,
@@ -575,88 +628,317 @@ class LibraryScanner:
     ) -> None:
         entry = await self._prepare_file(path, file_index, stats)
         if entry is not None:
-            await self._identify_and_persist(entry, stats)
+            existing = await self._library.get_attributions_for_paths([str(path)])
+            await self._identify_and_persist(entry, stats, existing=existing)
 
     async def _identify_entries(
-        self, entries: list[_FileEntry], stats: ScanStats
+        self, entries: list[_FileEntry], stats: ScanStats, *, force: bool = False
     ) -> list[str]:
-        """Identify a folder's files via a whole-folder match, falling back to per-file; returns the paths persisted, in order."""
+        """Identify a folder's files as ONE album where possible, falling back to per-file;
+        returns the paths persisted, in order.
+
+        Two whole-folder attempts precede the per-file fallback so a folder's files never
+        scatter across release groups: (1) a fast tag-based match, then (2) - only when the
+        tags gave the matcher nothing - an AUDIO match that fingerprints the folder and
+        feeds the matcher the resolved recordings + release groups, so junk tags (wrong
+        album, compilation track numbers) can't win."""
         if not entries:
             return []
         persisted: list[str] = []
         claimed: set[str] = set()
+        # Anchor (Phase 1): the folder's existing confident attributions seed the match
+        # toward the album it already belongs to, and guard the persist so a re-scan can't
+        # downgrade known-good identity. A forced re-identify (Phase 4 correction path)
+        # skips both - an empty map means no seed bias and no persist guard.
+        existing = (
+            {}
+            if force
+            else await self._library.get_attributions_for_paths(
+                [str(e.path) for e in entries]
+            )
+        )
+        incumbent = self._incumbent_rg(existing)
+        seeds = [incumbent] if incumbent else None
         # Skip the album lookup when every file is fully MBID-tagged or it's a single file.
         attempt = len(entries) >= 2 and any(
             not self._has_full_mbids(e.tag) for e in entries
         )
         if attempt:
-            match = None
             try:
                 match = await self._album_identifier.identify(
-                    [self._to_local_track(e) for e in entries]
+                    [self._to_local_track(e) for e in entries],
+                    seed_release_groups=seeds,
                 )
             except Exception as exc:  # noqa: BLE001 - album match falls back to per-file
                 logger.warning(
                     "Album identification failed for %s: %s", entries[0].path.parent, exc
                 )
+                match = None
             if match is not None and match.accepted:
-                confidence = round(1.0 - match.distance, 4)
-                for entry in entries:
-                    if str(entry.path) not in match.assignments:
-                        continue
-                    if self._cancel.is_set():
-                        break
-                    await self._library.upsert_file(
-                        entry.path,
-                        entry.tag,
-                        entry.info,
-                        release_group_mbid=match.release_group_mbid,
-                        release_mbid=match.release_mbid,
-                        recording_mbid=match.assignments[str(entry.path)] or None,
-                        confidence=confidence,
-                        source="scan",
-                        file_mtime=entry.mtime,
-                    )
-                    stats.matched += 1
-                    claimed.add(str(entry.path))
-                    persisted.append(str(entry.path))
-                # Stamp the canonical artist now so this album needs no end-of-scan lookup.
-                if claimed and match.artist_mbid and match.artist_name:
-                    try:
-                        await self._library.set_album_artist(
-                            match.release_group_mbid, match.artist_mbid, match.artist_name
-                        )
-                    except Exception as exc:  # noqa: BLE001 - the reconcile retries later
-                        logger.warning("Inline artist set failed for %s: %s", match.release_group_mbid, exc)
+                await self._claim_album_match(
+                    entries, match, claimed, persisted, stats, existing
+                )
 
+        # Fingerprint-backed second attempt (the fix for scattered folders): only when the
+        # tag match claimed nothing, so the extra AcoustID lookups stay bounded to the
+        # folders that actually need them.
+        fp_by_path: dict[str, "FingerprintResult"] = {}
+        if attempt and not claimed and not self._cancel.is_set():
+            try:
+                enriched, seed_rgs, fp_by_path = await self._fingerprint_folder(entries)
+                if incumbent and incumbent not in seed_rgs:
+                    seed_rgs = [incumbent, *seed_rgs]
+                match = (
+                    await self._album_identifier.identify(
+                        enriched, seed_release_groups=seed_rgs
+                    )
+                    if seed_rgs
+                    else None
+                )
+                if match is not None and match.accepted:
+                    await self._claim_album_match(
+                        entries, match, claimed, persisted, stats, existing
+                    )
+                    logger.info(
+                        "scan.album_fingerprint_matched",
+                        extra={
+                            "release_group_mbid": match.release_group_mbid,
+                            "files": len(claimed),
+                            "folder": str(entries[0].path.parent),
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001 - the hard path must never kill a scan
+                logger.warning(
+                    "Fingerprint album match failed for %s: %s", entries[0].path.parent, exc
+                )
+
+        # Per-file fallback for anything not claimed as part of an album. Reuse any
+        # fingerprint already taken above so Tier 3 doesn't fingerprint the file twice.
         for entry in entries:
             if str(entry.path) in claimed:
                 continue
             if self._cancel.is_set():
                 break
-            await self._identify_and_persist(entry, stats)
+            await self._identify_and_persist(
+                entry,
+                stats,
+                precomputed_fp=fp_by_path.get(str(entry.path)),
+                existing=existing,
+            )
             persisted.append(str(entry.path))
         return persisted
+
+    def _incumbent_rg(self, existing: dict[str, dict]) -> str | None:
+        """The folder's dominant *confident* prior release group (a download, or a
+        high-confidence match) - the album it's presumed to already belong to. Seeds the
+        matcher and biases the persist guard. ``None`` if the folder has no such anchor."""
+        counts: Counter[str] = Counter()
+        for row in existing.values():
+            rg = row.get("release_group_mbid")
+            if rg and (
+                row.get("source") == "download"
+                or float(row.get("confidence") or 0.0) >= _STICKY_CONFIDENCE
+            ):
+                counts[rg] += 1
+        return counts.most_common(1)[0][0] if counts else None
+
+    async def _is_studio_album_rg(self, release_group_mbid: str | None) -> bool | None:
+        """True if the release group is a primary-type Album with no compilation/live
+        secondary type; False if it's a compilation/live (or non-Album); ``None`` if the
+        type can't be determined (MB miss - callers fail open)."""
+        if not release_group_mbid:
+            return None
+        primary, secondary = await self._album_identifier.release_group_type(
+            release_group_mbid
+        )
+        if primary is None and not secondary:
+            return None
+        return primary == "album" and not (secondary & _COMP_OR_LIVE)
+
+    async def _should_keep_prior(
+        self, prior: dict, new_rg: str | None, new_confidence: float
+    ) -> bool:
+        """Guard a scan re-attribution against downgrading known-good identity
+        (ScannerAlbumIdentity Phase 1). Returns True to KEEP the prior attribution.
+
+        - INV-1: never demote a studio album to a compilation/live release group. This
+          invariant alone stops the observed Album->Compilation degradation.
+        - Stickiness: a confident prior (a download, or a high-confidence match) is only
+          overwritten by a clearly-better (higher-confidence) match."""
+        prior_rg = prior.get("release_group_mbid")
+        if not prior_rg or prior_rg == new_rg:
+            return False  # no prior identity, or no change
+        if await self._is_studio_album_rg(prior_rg) and (
+            await self._is_studio_album_rg(new_rg) is False
+        ):
+            logger.info(
+                "scan.attribution_kept_inv1",
+                extra={"prior_rg": prior_rg, "new_rg": new_rg},
+            )
+            return True
+        prior_conf = float(prior.get("confidence") or 0.0)
+        anchored = prior.get("source") == "download" or prior_conf >= _STICKY_CONFIDENCE
+        if anchored and new_confidence < prior_conf + _STICKY_MARGIN:
+            logger.info(
+                "scan.attribution_kept_sticky",
+                extra={
+                    "prior_rg": prior_rg,
+                    "new_rg": new_rg,
+                    "prior_confidence": prior_conf,
+                    "new_confidence": new_confidence,
+                },
+            )
+            return True
+        return False
+
+    async def _guarded_persist(
+        self,
+        entry: _FileEntry,
+        existing: dict[str, dict],
+        stats: ScanStats,
+        *,
+        release_group_mbid: str | None,
+        release_mbid: str | None,
+        recording_mbid: str | None,
+        confidence: float,
+        source: str,
+    ) -> None:
+        """Persist a scan attribution for one file, unless a prior confident attribution
+        should stand (Phase 1 guard). When the prior stands the row is left untouched -
+        never downgraded - and still counted as matched."""
+        prior = existing.get(str(entry.path))
+        if prior is not None and await self._should_keep_prior(
+            prior, release_group_mbid, confidence
+        ):
+            stats.matched += 1
+            return
+        await self._library.upsert_file(
+            entry.path,
+            entry.tag,
+            entry.info,
+            release_group_mbid=release_group_mbid,
+            release_mbid=release_mbid,
+            recording_mbid=recording_mbid,
+            confidence=confidence,
+            source=source,
+            file_mtime=entry.mtime,
+        )
+        stats.matched += 1
+
+    async def _claim_album_match(
+        self,
+        entries: list[_FileEntry],
+        match: "AlbumMatch",
+        claimed: set[str],
+        persisted: list[str],
+        stats: ScanStats,
+        existing: dict[str, dict],
+    ) -> None:
+        """Persist EVERY file of an accepted whole-folder match under its ONE release group
+        (Phase 2 - all-or-nothing): mapped files carry their track's recording at full
+        confidence; the rest are kept as album members with a blank recording rather than
+        scattered to a per-file guess. Already-claimed files, and files a prior confident
+        attribution protects (Phase 1 guard), are left as-is."""
+        mapped_confidence = round(1.0 - match.distance, 4)
+        claimed_here = False
+        for entry in entries:
+            key = str(entry.path)
+            if key in claimed:
+                continue
+            if self._cancel.is_set():
+                break
+            mapped = key in match.assignments
+            await self._guarded_persist(
+                entry,
+                existing,
+                stats,
+                release_group_mbid=match.release_group_mbid,
+                release_mbid=match.release_mbid,
+                recording_mbid=(match.assignments.get(key) or None) if mapped else None,
+                confidence=mapped_confidence if mapped else _UNMAPPED_ALBUM_CONFIDENCE,
+                source="scan",
+            )
+            claimed.add(key)
+            persisted.append(key)
+            claimed_here = True
+        # Stamp the canonical artist now so this album needs no end-of-scan lookup.
+        if claimed_here and match.artist_mbid and match.artist_name:
+            try:
+                await self._library.set_album_artist(
+                    match.release_group_mbid, match.artist_mbid, match.artist_name
+                )
+            except Exception as exc:  # noqa: BLE001 - the reconcile retries later
+                logger.warning(
+                    "Inline artist set failed for %s: %s", match.release_group_mbid, exc
+                )
+
+    async def _fingerprint_folder(
+        self, entries: list[_FileEntry]
+    ) -> tuple[list[LocalTrack], list[str], dict[str, "FingerprintResult"]]:
+        """Fingerprint every file in a folder for the audio-based album match. Returns
+        recording-enriched LocalTracks (an audio-confirmed recording MBID overrides the
+        file's tag), the distinct release groups those recordings resolve to (the matcher's
+        candidate seeds), and the raw fingerprints by path so the per-file fallback needn't
+        fingerprint again. Fingerprinting fails open - a file we can't identify simply
+        contributes its tag-only projection, so scatter degrades to today's behaviour, never
+        worse."""
+        enriched: list[LocalTrack] = []
+        seed_rgs: list[str] = []
+        seen: set[str] = set()
+        fp_by_path: dict[str, "FingerprintResult"] = {}
+        for entry in entries:
+            local = self._to_local_track(entry)
+            if self._cancel.is_set():
+                enriched.append(local)
+                continue
+            # Fail open per file (honour the docstring): one file that can't fingerprint or
+            # resolve must not abandon the whole folder's audio match - it just contributes
+            # its tag-only projection, and the folder attempt (and fp reuse) survives.
+            try:
+                fp = await self._fingerprinter.fingerprint(entry.path)
+                fp_by_path[str(entry.path)] = fp
+                if (
+                    fp.status == "pass"
+                    and (fp.score or 0.0) >= _FINGERPRINT_SCORE_THRESHOLD
+                    and fp.recording_id
+                ):
+                    local = msgspec.structs.replace(local, recording_mbid=fp.recording_id)
+                    rg = await self._mb_matcher.resolve_recording_to_release_group(
+                        fp.recording_id
+                    )
+                    if rg and rg not in seen:
+                        seen.add(rg)
+                        seed_rgs.append(rg)
+            except Exception as exc:  # noqa: BLE001 - one bad file degrades to tag-only
+                logger.warning("Fingerprint/resolve failed for %s: %s", entry.path, exc)
+            enriched.append(local)
+        return enriched, seed_rgs, fp_by_path
 
     # Maps the tiered identifier's verdict to a named log event. Per-file events
     # are DEBUG (a 10k scan emits one per file); lifecycle events stay INFO.
     _TIER_MATCH_EVENTS = {1: "scan.tier1_match", 2: "scan.tier2_match", 3: "scan.tier3_match"}
 
-    async def _identify_and_persist(self, entry: _FileEntry, stats: ScanStats) -> None:
-        result = await self._identify_tiered(entry.path, entry.tag, entry.info)
+    async def _identify_and_persist(
+        self,
+        entry: _FileEntry,
+        stats: ScanStats,
+        precomputed_fp: "FingerprintResult | None" = None,
+        existing: dict[str, dict] | None = None,
+    ) -> None:
+        result = await self._identify_tiered(
+            entry.path, entry.tag, entry.info, precomputed_fp=precomputed_fp
+        )
         if result.matched:
-            await self._library.upsert_file(
-                entry.path,
-                entry.tag,
-                entry.info,
+            await self._guarded_persist(
+                entry,
+                existing or {},
+                stats,
                 release_group_mbid=result.release_group_mbid,
                 release_mbid=result.release_mbid,
                 recording_mbid=result.recording_mbid,
                 confidence=result.confidence,
                 source="scan",
-                file_mtime=entry.mtime,
             )
-            stats.matched += 1
             logger.debug(
                 self._TIER_MATCH_EVENTS.get(result.tier, "scan.matched"),
                 extra={
@@ -720,7 +1002,11 @@ class LibraryScanner:
         )
 
     async def _identify_tiered(
-        self, path: Path, tag: "AudioTag", info: "AudioInfo"
+        self,
+        path: Path,
+        tag: "AudioTag",
+        info: "AudioInfo",
+        precomputed_fp: "FingerprintResult | None" = None,
     ) -> TieredMatchResult:
         # Tier 1: MBIDs already in the file's tags.
         if tag.musicbrainz_release_group_id and tag.musicbrainz_recording_id:
@@ -763,7 +1049,11 @@ class LibraryScanner:
         fp_recording: str | None = None
         fp_score: float | None = None
         try:
-            fp = await self._fingerprinter.fingerprint(path)
+            fp = (
+                precomputed_fp
+                if precomputed_fp is not None
+                else await self._fingerprinter.fingerprint(path)
+            )
         except Exception as exc:  # noqa: BLE001 - fingerprinting fails open
             logger.warning("Fingerprint failed for %s: %s", path, exc)
             fp = None

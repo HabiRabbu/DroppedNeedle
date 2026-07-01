@@ -15,6 +15,7 @@ AUD-9's house-codec rule for blob columns does not apply).
 import msgspec
 
 from infrastructure.msgspec_fastapi import AppStruct
+from repositories.protocols.download_client import TaskHandle
 
 
 class ExpectedFile(AppStruct):
@@ -26,16 +27,42 @@ class ExpectedFile(AppStruct):
     duration: float | None = None
 
 
+class ExpectedTrack(AppStruct):
+    """One track of the MusicBrainz tracklist the Usenet import matches enumerated
+    files against (D18). The unpacked filenames are unknown until after unpack, so
+    Usenet keys the import on ``(disc_number, track_number)`` position validated by
+    ``duration_seconds``, rather than on a pre-known filename. ``recording_mbid`` /
+    ``title`` are tie-breakers when present."""
+
+    track_number: int
+    disc_number: int = 1
+    duration_seconds: float | None = None
+    recording_mbid: str | None = None
+    title: str | None = None
+
+
 class DownloadManifest(AppStruct):
-    """Durable per-task import + correlation record written at enqueue time."""
+    """Durable per-task import + correlation record written at enqueue time.
+
+    Carries BOTH ``source_username`` (legacy slskd correlation) and ``handle`` (the
+    generalised ``TaskHandle``); both are optional. ``AppStruct`` has no
+    ``forbid_unknown_fields``, so msgspec DROPS unknown fields on decode rather than
+    raising - a legacy on-disk manifest (``source_username`` only, no ``handle``)
+    decodes cleanly, and ``__post_init__`` back-fills a soulseek ``TaskHandle`` so a
+    download that was mid-flight at upgrade survives the deploy (in-flight migration).
+    """
 
     task_id: str
-    source_username: str
     release_group_mbid: str
     artist_name: str
     album_title: str
     naming_template: str
     target_files: list[ExpectedFile]
+    source_username: str | None = None
+    handle: TaskHandle | None = None
+    # Expected MusicBrainz tracklist for the folder-based Usenet import (D18); empty
+    # for the slskd path (which keys the import on ``target_files`` filenames instead).
+    expected_tracks: list[ExpectedTrack] = []
     release_mbid: str | None = None
     artist_mbid: str | None = None
     year: int | None = None
@@ -43,6 +70,17 @@ class DownloadManifest(AppStruct):
     # track length (from MusicBrainz). A duration mismatch then means "wrong track for
     # this request" (fail over to another source), not a corrupt file to quarantine.
     is_track: bool = False
+
+    def __post_init__(self) -> None:
+        # In-flight back-fill: a legacy manifest decodes with handle=None and
+        # source_username set; synthesise the soulseek handle so poll/cancel/import
+        # can re-correlate the mid-flight transfers exactly as before.
+        if self.handle is None and self.source_username is not None:
+            self.handle = TaskHandle(
+                source="soulseek",
+                username=self.source_username,
+                filenames=[f.filename for f in self.target_files],
+            )
 
 
 class ManifestCodec:

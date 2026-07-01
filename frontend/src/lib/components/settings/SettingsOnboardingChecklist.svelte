@@ -5,24 +5,54 @@
 		getDownloadClientConfigQuery,
 		getDownloadClientStatusQuery
 	} from '$lib/queries/downloads/DownloadClientQueries.svelte';
+	import { getSabnzbdConfigQuery } from '$lib/queries/downloads/DownloadClientsQueries.svelte';
+	import { getIndexersQuery } from '$lib/queries/downloads/IndexerQueries.svelte';
 	import { getLibrarySettingsQuery } from '$lib/queries/library/LibraryQueries.svelte';
 
 	const libQuery = getLibrarySettingsQuery();
 	const dcQuery = getDownloadClientConfigQuery();
 	const statusQuery = getDownloadClientStatusQuery();
+	const sabQuery = getSabnzbdConfigQuery();
+	const indexersQuery = getIndexersQuery();
 
 	const hasLibraryPath = $derived((libQuery.data?.library_paths?.length ?? 0) > 0);
-	const dcConfigured = $derived(Boolean(dcQuery.data?.url && dcQuery.data?.api_key));
+	const slskdConfigured = $derived(Boolean(dcQuery.data?.url && dcQuery.data?.api_key));
+	const sabnzbdEnabled = $derived(sabQuery.data?.enabled === true && Boolean(sabQuery.data?.url));
+	const hasIndexer = $derived((indexersQuery.data?.length ?? 0) > 0);
 	const mountOk = $derived(statusQuery.data?.mount?.ok === true);
 	const hasAcoustid = $derived(Boolean(libQuery.data?.acoustid_api_key));
 
-	const items = $derived([
-		{ label: 'Add a library path', done: hasLibraryPath, required: true, optional: false },
-		{ label: 'Configure the download client', done: dcConfigured, required: true, optional: false },
-		{ label: "Mount slskd's downloads folder", done: mountOk, required: true, optional: false },
-		{ label: 'Run a library scan', done: false, required: false, optional: true },
-		{ label: 'Set an AcoustID key', done: hasAcoustid, required: false, optional: true }
-	]);
+	// Source-agnostic: "configured" if EITHER acquisition path can act, so a Usenet-only
+	// (or Soulseek-only) install isn't nagged about the other. The slskd mount item only
+	// appears once Soulseek is set up.
+	const aSourceConfigured = $derived(slskdConfigured || hasIndexer);
+	const aClientConfigured = $derived(slskdConfigured || sabnzbdEnabled);
+
+	const items = $derived(
+		[
+			{ label: 'Add a library path', done: hasLibraryPath, required: true, optional: false },
+			{
+				label: 'Add an indexer or configure Soulseek',
+				done: aSourceConfigured,
+				required: true,
+				optional: false
+			},
+			{
+				label: 'Configure a download client (slskd and/or SABnzbd)',
+				done: aClientConfigured,
+				required: true,
+				optional: false
+			},
+			...(slskdConfigured
+				? [{ label: "Mount slskd's downloads folder", done: mountOk, required: true, optional: false }]
+				: []),
+			...(sabnzbdEnabled
+				? [{ label: "Mount SABnzbd's downloads folder", done: true, required: false, optional: true }]
+				: []),
+			{ label: 'Run a library scan', done: false, required: false, optional: true },
+			{ label: 'Set an AcoustID key', done: hasAcoustid, required: false, optional: true }
+		]
+	);
 
 	const doneCount = $derived(items.filter((i) => i.done).length);
 	const requiredDone = $derived(items.filter((i) => i.required).every((i) => i.done));

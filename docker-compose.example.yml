@@ -31,6 +31,12 @@ services:
       # "failed" here, because the engine searches the whole tree and can't find them.
       # Keep it on the SAME filesystem as /music so imports are an atomic rename.
       - /path/to/slskd/complete:/slskd-downloads:rw   # == slskd's directories.downloads
+      # OPTIONAL (Usenet): SABnzbd's COMPLETED-downloads directory, read-write. Mount the
+      # same host path SABnzbd writes finished downloads to (its complete_dir). DroppedNeedle
+      # imports Usenet downloads from here; the mount path must match the "Downloads mount"
+      # set in Settings -> Download Client -> SABnzbd (default /sabnzbd-downloads). Keep it on
+      # the SAME filesystem as /music for atomic-rename imports. Omit if you don't use Usenet.
+      - /path/to/sabnzbd/complete:/sabnzbd-downloads:rw   # == SABnzbd's complete_dir
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]

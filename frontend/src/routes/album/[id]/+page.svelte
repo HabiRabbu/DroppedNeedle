@@ -161,6 +161,8 @@
 						plexEnabled={$integrationStore.plex}
 						libraryTracksByRecording={state.libraryTracksByRecording}
 						libraryTracksByPosition={state.libraryTracksByPosition}
+						heldByRecording={state.heldByRecording}
+						heldByPosition={state.heldByPosition}
 						trackDownloadTasks={state.trackDownloadTasks}
 						releaseGroupMbid={album.musicbrainz_id}
 						onPlaySourceTrack={state.playSourceTrack}

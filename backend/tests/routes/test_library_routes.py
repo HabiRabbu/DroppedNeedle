@@ -270,3 +270,41 @@ def test_get_track_tags_forbidden_for_non_admin(app):
     override_user_auth(app, role="user")
     client = build_test_client(app)
     assert client.get("/library/tracks/file-1/tags").status_code == 403
+
+
+def _override_remove_album(app, *, removal=None, retries_side_effect=None):
+    from api.v1.schemas.library import AlbumRemoveResponse
+    from core.dependencies import get_download_service, get_library_service
+
+    library_service = AsyncMock()
+    library_service.remove_album.return_value = removal or AlbumRemoveResponse(
+        success=True, artist_removed=False
+    )
+    download_service = AsyncMock()
+    if retries_side_effect is not None:
+        download_service.purge_album_downloads.side_effect = retries_side_effect
+    app.dependency_overrides[get_library_service] = lambda: library_service
+    app.dependency_overrides[get_download_service] = lambda: download_service
+    override_user_auth(app, role="admin")
+    override_admin_auth(app)
+    return build_test_client(app), download_service
+
+
+def test_remove_album_stops_pending_retries(app):
+    client, download_service = _override_remove_album(app)
+    resp = client.delete("/library/album/rg-ok?delete_files=true")
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    download_service.purge_album_downloads.assert_awaited_once_with("rg-ok")
+
+
+def test_remove_album_succeeds_even_if_stopping_retries_fails(app):
+    # Stopping retries is best-effort: a failure there must not fail the removal the
+    # user already confirmed.
+    client, download_service = _override_remove_album(
+        app, retries_side_effect=RuntimeError("boom")
+    )
+    resp = client.delete("/library/album/rg-ok")
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    download_service.purge_album_downloads.assert_awaited_once_with("rg-ok")

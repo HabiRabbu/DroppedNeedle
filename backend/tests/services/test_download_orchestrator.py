@@ -27,12 +27,14 @@ from infrastructure.persistence.download_store import DownloadStore
 from infrastructure.sse_publisher import SSEPublisher
 from models.common import ServiceStatus
 from models.download import DownloadTask, ScoredCandidate
+from models.download_identity import soulseek_identity
 from models.download_manifest import DownloadManifest, ExpectedFile, ManifestCodec
 from repositories.protocols.download_client import (
     DownloadSearchResult,
     DownloadTaskStatus,
+    EnqueueRequest,
     MountDiagnosis,
-    TaskRef,
+    TaskHandle,
 )
 from services.native.download_orchestrator import (
     _OUT_COMPLETED,
@@ -112,9 +114,33 @@ class _FakeLibrary:
         return recording_mbid in self.present_tracks or bool(self.rows)
 
 
+class _StubIndexer:
+    """Search half of the split (D2). The orchestrator unwraps ``.soulseek`` then
+    hands the (mocked) scorer the results, so returning ``[]`` is fine - the scorer
+    is a MagicMock returning the test's ``scorer_result`` regardless."""
+
+    @property
+    def indexer_name(self) -> str:
+        return "soulseek"
+
+    def is_configured(self) -> bool:
+        return True
+
+    async def health_check(self) -> ServiceStatus:
+        return ServiceStatus(status="ok")
+
+    async def search_album(self, *a, **k):
+        return []
+
+    async def search_track(self, *a, **k):
+        return []
+
+
 class _StubClient:
     def __init__(self, status=None) -> None:
-        self.enqueue = AsyncMock(return_value=TaskRef(username="peer", filenames=["peer/01.flac"]))
+        self.enqueue = AsyncMock(
+            return_value=TaskHandle(source="soulseek", username="peer", filenames=["peer/01.flac"])
+        )
         self.cancel = AsyncMock(return_value=True)
         self.get_status = AsyncMock(
             return_value=status or _status("completed", files_completed=1, succeeded=["peer/01.flac"])
@@ -130,13 +156,10 @@ class _StubClient:
     async def health_check(self) -> ServiceStatus:
         return ServiceStatus(status="ok")
 
-    async def search_album(self, *a, **k):
-        return []
+    async def list_completed_files(self, handle):
+        return [Path("/fake") / f for f in handle.filenames]
 
-    async def search_track(self, *a, **k):
-        return []
-
-    async def get_file_path(self, username, remote_filename, size=None):
+    async def get_file_path(self, handle, remote_filename, size=None):
         return Path("/fake") / remote_filename
 
     async def diagnose_downloads_mount(self):
@@ -174,10 +197,11 @@ def _request_record(mbid="rg-1", *, download_task_id=None, status="downloading")
 
 
 def _build(
-    tmp_path: Path, *, client=None, scorer_result=None, track_result=None, fp_result=None,
+    tmp_path: Path, *, client=None, indexer=None, scorer_result=None, track_result=None, fp_result=None,
     imported_rows=None, library=None, stall_minutes=30.0, queued_minutes=120.0, max_failover=3,
     max_concurrent=3, request_history=None, on_import=None,
     auto_retry_enabled=True, auto_retry_max_attempts=6, auto_retry_base_interval_minutes=15.0,
+    soulseek_enabled=True,
 ):
     db_path = tmp_path / "library.db"
     store = DownloadStore(db_path=db_path, write_lock=threading.Lock())
@@ -201,6 +225,7 @@ def _build(
 
     orch = DownloadOrchestrator(
         client=client or _StubClient(),
+        indexer=indexer or _StubIndexer(),
         download_store=store,
         file_processor=file_processor,
         library_manager=library,
@@ -222,6 +247,7 @@ def _build(
         auto_retry_base_interval_minutes=auto_retry_base_interval_minutes,
         request_history=request_history,
         on_import_callback=on_import,
+        soulseek_enabled=soulseek_enabled,
     )
     return store, orch, file_processor, library
 
@@ -308,7 +334,7 @@ async def test_process_task_no_match_fails(tmp_path: Path):
 
     final = await store.get_task(task.id)
     assert final.status == "failed"
-    assert "No matching candidate" in (final.error_message or "")
+    assert "No matching release" in (final.error_message or "")
 
 
 @pytest.mark.asyncio
@@ -323,6 +349,25 @@ async def test_process_task_unconfigured_client_fails_clearly(tmp_path: Path):
     final = await store.get_task(task.id)
     assert final.status == "failed"
     assert "not configured" in (final.error_message or "")
+    client.enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disabled_slskd_is_not_routed_even_when_configured(tmp_path: Path):
+    # The user's bug: slskd disabled (but still has a URL/key, so is_configured() is True)
+    # and no Usenet source. An auto-accept candidate must NOT be downloaded via slskd -
+    # the disabled toggle has to win over "still configured".
+    client = _StubClient()  # is_configured() == True
+    store, orch, *_ = _build(
+        tmp_path, client=client, scorer_result=[_candidate(0.9)], soulseek_enabled=False,
+    )
+    task = await _new_task(store)
+
+    await orch.process_task(task.id)
+
+    final = await store.get_task(task.id)
+    assert final.status == "failed"
+    assert "No download source is enabled" in (final.error_message or "")
     client.enqueue.assert_not_awaited()
 
 
@@ -343,7 +388,7 @@ async def test_partial_quarantines_failed_file_and_keeps_what_landed(tmp_path: P
 
     final = await store.get_task(task.id)
     assert final.status == "partial"
-    assert ("peer", "peer/02.flac") in await store.load_quarantine_set()
+    assert ("soulseek", soulseek_identity("peer", "peer/02.flac")) in await store.load_quarantine_set()
 
 
 @pytest.mark.asyncio
@@ -360,7 +405,7 @@ async def test_all_failed_marks_failed_and_quarantines(tmp_path: Path):
 
     final = await store.get_task(task.id)
     assert final.status == "failed"
-    assert ("peer", "peer/01.flac") in await store.load_quarantine_set()
+    assert ("soulseek", soulseek_identity("peer", "peer/01.flac")) in await store.load_quarantine_set()
 
 
 @pytest.mark.asyncio
@@ -414,6 +459,42 @@ async def test_import_failure_fails_with_library_message_not_soulseek(tmp_path: 
     assert "library" in final.error_message              # truthful, library-pointing message
     assert "No working source" not in final.error_message
     assert await store.load_quarantine_set() == set()  # peer not blacklisted for a local fault
+
+
+def test_no_source_message_names_only_enabled_sources(tmp_path: Path):
+    """The 'nothing usable' message must name the sources actually searched - a Usenet
+    download must never read "No working source found on Soulseek"."""
+    _store, orch, *_ = _build(tmp_path)  # default: soulseek on, usenet off
+    assert orch._no_source_message() == "No working source found on Soulseek"
+
+    orch._soulseek_enabled = False
+    orch._usenet_enabled = True
+    assert orch._no_source_message() == "No working source found on Usenet"
+
+    orch._soulseek_enabled = True
+    assert orch._no_source_message() == "No working source found on Soulseek or Usenet"
+
+    orch._soulseek_enabled = False
+    orch._usenet_enabled = False
+    assert orch._no_source_message() == "No working source found"
+
+
+def test_no_match_message_names_only_enabled_sources(tmp_path: Path):
+    """'No matching release found' must name the sources actually searched - a Usenet-only
+    setup reads "...on Usenet" (surfacing that Soulseek is off), never "...on any source"."""
+    _store, orch, *_ = _build(tmp_path)  # default: soulseek on, usenet off
+    assert orch._no_match_message() == "No matching release found on Soulseek"
+
+    orch._soulseek_enabled = False
+    orch._usenet_enabled = True
+    assert orch._no_match_message() == "No matching release found on Usenet"
+
+    orch._soulseek_enabled = True
+    assert orch._no_match_message() == "No matching release found on Soulseek or Usenet"
+
+    orch._soulseek_enabled = False
+    orch._usenet_enabled = False
+    assert orch._no_match_message() == "No matching release found on any source"
 
 
 @pytest.mark.asyncio
@@ -534,30 +615,31 @@ class _FailoverClient:
     async def health_check(self):
         return ServiceStatus(status="ok")
 
-    async def search_album(self, *a, **k):
-        return []
+    async def enqueue(self, request):
+        self._current = request.files[0].username
+        return TaskHandle(
+            source="soulseek",
+            username=self._current,
+            filenames=[f.filename for f in request.files],
+        )
 
-    async def search_track(self, *a, **k):
-        return []
-
-    async def enqueue(self, files):
-        self._current = files[0].username
-        return TaskRef(username=self._current, filenames=[f.filename for f in files])
-
-    async def get_status(self, task_ref):
-        mode = self.behavior.get(task_ref.username, "stall")
+    async def get_status(self, handle):
+        mode = self.behavior.get(handle.username, "stall")
         if mode == "complete":
             return _status(
-                "completed", succeeded=list(task_ref.filenames),
-                files_total=len(task_ref.filenames), files_completed=len(task_ref.filenames),
+                "completed", succeeded=list(handle.filenames),
+                files_total=len(handle.filenames), files_completed=len(handle.filenames),
                 bytes_=100,
             )
         return _status("downloading", active=True, bytes_=10)   # frozen
 
-    async def cancel(self, task_ref):
+    async def cancel(self, handle):
         return True
 
-    async def get_file_path(self, username, remote_filename, size=None):
+    async def list_completed_files(self, handle):
+        return [Path("/fake") / f for f in handle.filenames]
+
+    async def get_file_path(self, handle, remote_filename, size=None):
         return Path("/fake") / remote_filename
 
     async def diagnose_downloads_mount(self):
@@ -646,7 +728,7 @@ async def test_track_wrong_duration_fails_over_to_right_source(tmp_path: Path):
     quarantined (it's a good file, just a different song)."""
     client = _FailoverClient({"wrongpeer": "complete", "rightpeer": "complete"})
     store, orch, fp, lib = _build(tmp_path, client=client, max_failover=3)
-    orch._track_matcher.rank = AsyncMock(return_value=[
+    orch._strategies["soulseek"]._track_matcher.rank = AsyncMock(return_value=[
         _candidate(0.9, username="wrongpeer"), _candidate(0.85, username="rightpeer"),
     ])
     _duration_gate_fp(fp, lib)
@@ -670,7 +752,7 @@ async def test_track_duration_fallback_accepts_best_when_all_sources_rejected(tm
     left empty-handed."""
     client = _FailoverClient({"wrongpeer1": "complete", "wrongpeer2": "complete"})
     store, orch, fp, lib = _build(tmp_path, client=client, max_failover=3)
-    orch._track_matcher.rank = AsyncMock(return_value=[
+    orch._strategies["soulseek"]._track_matcher.rank = AsyncMock(return_value=[
         _candidate(0.9, username="wrongpeer1"), _candidate(0.85, username="wrongpeer2"),
     ])
     _duration_gate_fp(fp, lib)
@@ -797,6 +879,56 @@ async def test_retry_task_ownership(tmp_path: Path):
         await orch.retry_task("missing", "user-a", "user")
     with pytest.raises(PermissionDeniedError):
         await orch.retry_task(task.id, "user-b", "user")
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_syncs_linked_request_to_cancelled(tmp_path: Path):
+    """Cancelling (or stopping the retry of) a download flips its linked request to
+    'cancelled', so the album UI's "retry scheduled" line clears."""
+    rh = _FakeRequestHistory(_request_record(mbid="rg-1", status="downloading"))
+    store, orch, *_ = _build(tmp_path, request_history=rh)
+    task = await _new_task(store, status="failed")
+    rh.record.download_task_id = task.id
+
+    await orch.cancel_task(task.id, "user-a", "user")
+
+    assert (await store.get_task(task.id)).status == "cancelled"
+    assert any(s == "cancelled" for (_m, s, _c) in rh.updates)
+    assert rh.record.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_retry_task_clears_album_blocklist(tmp_path: Path):
+    """A manual retry is an explicit "try again": it clears the album's blocklist so a
+    release quarantined by the failed attempt is reconsidered."""
+    store, orch, *_ = _build(tmp_path)
+    orch.dispatch = MagicMock()
+    await store.record_quarantine(
+        source="soulseek", identity=soulseek_identity("peer", "bad.flac"),
+        reason="verify_failed", release_group_mbid="rg-1",
+    )
+    task = await _new_task(store, status="failed")
+
+    await orch.retry_task(task.id, "user-a", "user")
+
+    assert await store.load_quarantine_set() == set()
+
+
+@pytest.mark.asyncio
+async def test_create_retry_task_does_not_clear_blocklist(tmp_path: Path):
+    """The shared auto-retry path (retry_failed_tasks -> _create_retry_task) must NOT
+    clear the blocklist - only an explicit manual retry/re-request does."""
+    store, orch, *_ = _build(tmp_path)
+    orch.dispatch = MagicMock()
+    ident = soulseek_identity("peer", "bad.flac")
+    await store.record_quarantine(
+        source="soulseek", identity=ident, reason="verify_failed", release_group_mbid="rg-1",
+    )
+    task = await _new_task(store, status="failed")
+
+    await orch._create_retry_task(task)
+
+    assert ("soulseek", ident) in await store.load_quarantine_set()
 
 
 @pytest.mark.asyncio
@@ -1104,6 +1236,17 @@ def test_next_retry_at_none_and_max_zero_when_auto_retry_disabled(tmp_path: Path
     assert orch.auto_retry_max == 0  # advertises "no auto-retry" to the UI
 
 
+def test_retry_ladder_minutes_matches_backoff(tmp_path: Path):
+    """base 15m, max 6 -> the doubling ladder, capped at 24h, in minutes."""
+    _, orch, *_ = _build(tmp_path, auto_retry_max_attempts=6, auto_retry_base_interval_minutes=15.0)
+    assert orch.retry_ladder_minutes() == [15, 30, 60, 120, 240, 480]
+
+
+def test_retry_ladder_minutes_empty_when_auto_retry_disabled(tmp_path: Path):
+    _, orch, *_ = _build(tmp_path, auto_retry_enabled=False)
+    assert orch.retry_ladder_minutes() == []
+
+
 @pytest.mark.asyncio
 async def test_retry_failed_tasks_respects_backoff(tmp_path: Path):
     """A task that failed too recently (backoff not elapsed) is not retried."""
@@ -1319,3 +1462,45 @@ async def test_create_retry_task_skips_relink_when_request_owned_by_other_task(t
 
     assert rh.relinks == []
     assert record.download_task_id == "newer-task"
+
+
+# -- settle_after_manual_import: an "import anyway" that completes an album must stop the retry --
+
+
+@pytest.mark.asyncio
+async def test_settle_after_manual_import_completes_a_finished_album(tmp_path):
+    # library now has all 9 tracks (7 from the download + 2 just imported by hand)
+    store, orch, _fp, _lib = _build(
+        tmp_path, imported_rows=[{"disc_number": 1, "track_number": n} for n in range(1, 10)]
+    )
+    task = await store.create_task(
+        user_id="user-a", release_group_mbid="rg-1", artist_name="Led Zeppelin",
+        album_title="Led Zeppelin", track_count=9, status="partial",
+    )
+    await store.update_status(task.id, "partial", files_completed=7)
+
+    await orch.settle_after_manual_import(task.id)
+
+    settled = await store.get_task(task.id)
+    assert settled.status == "completed"  # album complete -> no phantom retry
+    assert settled.completed_at is not None
+    assert settled.files_completed == 9
+
+
+@pytest.mark.asyncio
+async def test_settle_after_manual_import_stays_partial_while_incomplete(tmp_path):
+    # only 8 of 9 present (one held track imported, another still pending review)
+    store, orch, _fp, _lib = _build(
+        tmp_path, imported_rows=[{"disc_number": 1, "track_number": n} for n in range(1, 9)]
+    )
+    task = await store.create_task(
+        user_id="user-a", release_group_mbid="rg-1", artist_name="Led Zeppelin",
+        album_title="Led Zeppelin", track_count=9, status="partial",
+    )
+    await store.update_status(task.id, "partial", files_completed=7)
+
+    await orch.settle_after_manual_import(task.id)
+
+    settled = await store.get_task(task.id)
+    assert settled.status == "partial"  # still missing one -> stays partial
+    assert settled.files_completed == 8  # but the count advanced to reflect the import

@@ -8,23 +8,34 @@ service/persistence-layer domain types.
 
 from infrastructure.msgspec_fastapi import AppStruct
 from repositories.protocols.download_client import DownloadSearchResult
+from repositories.protocols.indexer import UsenetRelease
 
 
 class ScoredCandidate(AppStruct):
-    """A scored group of files for one (username, parent_directory).
+    """A scored acquisition candidate - the convergence point for both sources
+    (D7). ``source`` discriminates: a soulseek candidate is a group of ``files``
+    for one ``(username, parent_directory)``; a usenet candidate carries one
+    ``usenet_release``.
 
     ``tier`` is one of ``auto`` (final >= auto threshold), ``manual``
     (manual threshold <= final < auto), or ``rejected`` (below manual; kept in
     the ranked list for "Show all results anyway" but never auto-picked).
+
+    Fields are defaulted (``AppStruct`` is ``kw_only``) so old persisted candidate
+    blobs decode with ``source="soulseek"``/``usenet_release=None``, and existing
+    readers of ``.username``/``.files`` stay correct for Soulseek and safe-but-empty
+    for Usenet.
     """
 
-    username: str
-    parent_directory: str
-    files: list[DownloadSearchResult]
-    coherence: float
-    file_confidence: float
-    final_score: float
-    tier: str
+    source: str = "soulseek"
+    username: str = ""
+    parent_directory: str = ""
+    files: list[DownloadSearchResult] = []
+    usenet_release: UsenetRelease | None = None
+    coherence: float = 0.0
+    file_confidence: float = 0.0
+    final_score: float = 0.0
+    tier: str = "rejected"
 
 
 class DownloadsMountStatus(AppStruct):
@@ -100,6 +111,10 @@ class DownloadTask(AppStruct):
     track_count: int | None = None
     track_duration_seconds: float | None = None
     download_client: str = "slskd"
+    # Acquisition source ("soulseek" | "usenet"); the fixed v1 map is
+    # soulseek→slskd, usenet→sabnzbd. Drives the "via album NZB" UI label and
+    # source-scoped failover. Defaulted so old rows decode as soulseek.
+    source: str = "soulseek"
     source_username: str | None = None
     source_directory: str | None = None
     search_query: str | None = None

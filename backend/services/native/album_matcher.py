@@ -1,4 +1,4 @@
-"""AlbumIdentifier — per-folder track-list identification (Lidarr/beets-style)."""
+"""AlbumIdentifier - per-folder track-list identification (Lidarr/beets-style)."""
 
 import logging
 import re
@@ -31,7 +31,15 @@ _WEIGHTS = {
     "track_length": 2.0,
     "track_index": 1.0,
     "recording_id": 10.0,
+    "release_type": 3.0,
 }
+
+# Phase 3 (ScannerAlbumIdentity): prefer a studio Album over a compilation/live/other when
+# the same recordings appear on several release groups, so a folder isn't attributed to a
+# compilation. A ranking-only signal - excluded from the acceptance gate so a genuine
+# compilation folder still matches its compilation.
+_STUDIO_ALBUM = "album"
+_COMP_OR_LIVE_TYPES = frozenset({"compilation", "live"})
 
 _DURATION_GRACE_S = 10.0
 _DURATION_WINDOW_S = 30.0
@@ -79,6 +87,8 @@ class _ReleaseMeta(AppStruct):
     is_various: bool
     artist_mbid: str | None = None
     year: int | None = None
+    primary_type: str | None = None
+    secondary_types: frozenset[str] = frozenset()
 
 
 class AlbumMatch(AppStruct):
@@ -245,6 +255,18 @@ def _most_common_year(values: list[int | None]) -> int | None:
     return Counter(years).most_common(1)[0][0] if years else None
 
 
+def _release_type_penalty(meta: "_ReleaseMeta") -> float:
+    """Prefer a studio Album over a compilation/live/other for the same recordings."""
+    if meta.secondary_types & _COMP_OR_LIVE_TYPES:
+        return 1.0  # compilation / live - strongly deprioritised
+    primary = (meta.primary_type or "").lower()
+    if primary == _STUDIO_ALBUM:
+        return 0.0  # studio album - preferred
+    if primary == "ep":
+        return 0.3
+    return 0.5  # single / broadcast / other / unknown
+
+
 def album_distance(
     locals_: list[LocalTrack],
     mb_tracks: list[MBTrack],
@@ -269,6 +291,7 @@ def album_distance(
         d.add("missing_tracks", 1.0)
     for _ in range(min(len(local_extra), cap)):
         d.add("unmatched_tracks", 1.0)
+    d.add("release_type", _release_type_penalty(meta))
     return d
 
 
@@ -280,8 +303,12 @@ def score_release(
     dist = album_distance(
         locals_, mb_tracks, meta, mapping, local_extra, mb_extra, track_dists
     )
-    full = dist.normalized()
-    gate = dist.normalized(exclude=("missing_tracks",))
+    # Missing tracks (a release we only partly hold) count neither for ranking nor
+    # acceptance, so an incomplete studio album isn't out-ranked by a smaller release.
+    # release_type ranks (studio Album > compilation/live) but must NOT gate acceptance,
+    # or a genuine compilation folder would fail to match its own compilation.
+    full = dist.normalized(exclude=("missing_tracks",))
+    gate = dist.normalized(exclude=("missing_tracks", "release_type"))
     mapped_fraction = len(mapping) / len(locals_) if locals_ else 0.0
     accepted = (
         gate <= ALBUM_ACCEPT_THRESHOLD
@@ -314,12 +341,20 @@ class AlbumIdentifier:
     def __init__(self, mb_repo: "MusicBrainzRepository") -> None:
         self._mb_repo = mb_repo
 
-    async def identify(self, locals_: list[LocalTrack]) -> AlbumMatch | None:
-        """Identify a folder's release, or None if nothing clears the gate."""
+    async def identify(
+        self, locals_: list[LocalTrack], *, seed_release_groups: list[str] | None = None
+    ) -> AlbumMatch | None:
+        """Identify a folder's release, or None if nothing clears the gate.
+
+        ``seed_release_groups`` are scored first and unconditionally: the scanner passes
+        the release groups its AUDIO FINGERPRINTS resolved to, so a folder whose tags are
+        junk (wrong album, compilation track numbers) still gets its real album evaluated.
+        A tag-derived text search alone would never surface it - which is exactly how one
+        folder's files used to scatter across release groups."""
         if len(locals_) < 2:
             return None
         target_count = len(locals_)
-        rg_ids = await self._candidate_release_groups(locals_)
+        rg_ids = await self._candidate_release_groups(locals_, seed_release_groups)
         best: AlbumMatch | None = None
         for rg_id in rg_ids:
             release = await self._best_release(rg_id, target_count)
@@ -329,13 +364,36 @@ class AlbumIdentifier:
             if not mb_tracks:
                 continue
             match = score_release(locals_, mb_tracks, meta)
+            # Choose among ACCEPTED candidates only, by ranking distance (which now favours
+            # a studio Album over a compilation/live for the same recordings). This stops a
+            # type-preferred-but-poorly-matching album from shadowing a well-matching one.
+            if not match.accepted:
+                continue
             if best is None or match.distance < best.distance:
                 best = match
             if best.distance == 0.0:
                 break
-        if best is not None and best.accepted:
-            return best
-        return None
+        return best
+
+    async def release_group_type(
+        self, release_group_mbid: str
+    ) -> tuple[str | None, frozenset[str]]:
+        """``(primary_type, {secondary_types})`` for a release group, both lower-cased;
+        e.g. ``("album", frozenset())`` is a studio album, ``("album", {"compilation"})``
+        a compilation. Reads the release-group detail the matcher already fetches (cached
+        1h at the repo). Fails open to ``(None, frozenset())`` - type is advisory."""
+        if not release_group_mbid:
+            return None, frozenset()
+        try:
+            detail = await self._mb_repo.get_release_group_by_id(release_group_mbid)
+        except Exception as exc:  # noqa: BLE001 - type is advisory; fail open
+            logger.warning("RG type fetch failed for %s: %s", release_group_mbid, exc)
+            return None, frozenset()
+        if not detail:
+            return None, frozenset()
+        primary = (detail.get("primary-type") or "").lower() or None
+        secondary = frozenset(s.lower() for s in (detail.get("secondary-types") or []))
+        return primary, secondary
 
     async def resolve_release_group_artist(
         self, release_group_mbid: str
@@ -360,15 +418,20 @@ class AlbumIdentifier:
         name = artist.get("name")
         return (mbid or None), (name or None)
 
-    async def _candidate_release_groups(self, locals_: list[LocalTrack]) -> list[str]:
-        """Release groups from album-title and per-track recording searches, ranked by recurrence."""
+    async def _candidate_release_groups(
+        self, locals_: list[LocalTrack], seed_release_groups: list[str] | None = None
+    ) -> list[str]:
+        """Release groups to score: fingerprint-derived seeds first (audio truth), then
+        album-title and per-track recording searches ranked by recurrence."""
+        seeds = list(dict.fromkeys(m for m in (seed_release_groups or []) if m))
+        seed_set = set(seeds)
         artist = _most_common([t.artist for t in locals_])
         album = _most_common([t.album for t in locals_])
         order: list[str] = []
         freq: Counter[str] = Counter()
 
         def bump(mbid: str | None) -> None:
-            if not mbid:
+            if not mbid or mbid in seed_set:
                 return
             if mbid not in freq:
                 order.append(mbid)
@@ -399,7 +462,8 @@ class AlbumIdentifier:
                 for group in rec.release_groups:
                     bump(group.release_group_mbid)
 
-        return sorted(set(order), key=lambda mbid: -freq[mbid])[:_MAX_CANDIDATE_RGS]
+        text_ranked = sorted(set(order), key=lambda mbid: -freq[mbid])
+        return (seeds + text_ranked)[:_MAX_CANDIDATE_RGS]
 
     async def _best_release(
         self, rg_id: str, target_count: int
@@ -417,6 +481,10 @@ class AlbumIdentifier:
         rg_title = detail.get("title", "") or ""
         rg_artist = extract_artist_name(detail) or ""
         is_various = self._is_various(detail)
+        primary_type = (detail.get("primary-type") or "").lower() or None
+        secondary_types = frozenset(
+            s.lower() for s in (detail.get("secondary-types") or [])
+        )
         credit = detail.get("artist-credit") or []
         rg_artist_mbid = (credit[0].get("artist") or {}).get("id") if credit else None
 
@@ -457,6 +525,8 @@ class AlbumIdentifier:
             is_various=is_various,
             artist_mbid=rg_artist_mbid or None,
             year=_parse_year(release.get("date")),
+            primary_type=primary_type,
+            secondary_types=secondary_types,
         )
         return meta, _build_mb_tracks(release)
 

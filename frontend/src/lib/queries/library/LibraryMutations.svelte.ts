@@ -94,6 +94,22 @@ export function rescanAlbum() {
 	}));
 }
 
+// Force a fresh whole-folder re-identification (the correction path for an album the scan
+// landed on the wrong release group). Like rescan, it's a background job, so re-invalidate
+// on the same delay ladder to pick up the result.
+export function reidentifyAlbum() {
+	return createMutation(() => ({
+		mutationFn: (mbid: string) =>
+			api.global.post<LibraryActionResponse>(API.library.reidentifyAlbum(mbid), {}),
+		onSuccess: (_data, mbid) => {
+			const invalidate = () =>
+				invalidateQueriesWithPersister({ queryKey: LibraryQueryKeyFactory.album(mbid) });
+			void invalidate();
+			for (const delay of RESCAN_REFRESH_DELAYS_MS) setTimeout(() => void invalidate(), delay);
+		}
+	}));
+}
+
 export function saveLibrarySettings() {
 	return createMutation(() => ({
 		mutationFn: (settings: LibrarySettings) =>

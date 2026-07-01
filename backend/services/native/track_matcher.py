@@ -10,6 +10,7 @@ preference).
 
 from infrastructure.persistence.download_store import DownloadStore
 from models.download import ScoredCandidate, TargetTrack
+from models.download_identity import soulseek_identity
 from repositories.protocols.download_client import DownloadSearchResult
 from services.native.album_preflight_scorer import _file_confidence
 from services.native.quality_tiers import (
@@ -65,7 +66,10 @@ class TrackMatcher:
         orchestrator can fail over to a different source. Each is wrapped as a
         one-file ``ScoredCandidate`` (consumed identically to an album candidate)."""
         quarantined = await self._store.load_quarantine_set()
-        filtered = [r for r in results if (r.username, r.filename) not in quarantined]
+        filtered = [
+            r for r in results
+            if ("soulseek", soulseek_identity(r.username, r.filename)) not in quarantined
+        ]
         # drop the art/cue/log sidecars a folder search returns alongside the tracks
         filtered = [r for r in filtered if is_audio(r)]
         if self._flac_mp3_only:

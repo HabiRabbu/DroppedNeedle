@@ -2,8 +2,9 @@
 
 Owns search -> score -> auto-pick -> enqueue -> poll -> process -> notify (C1), plus
 ``cancel_task``, ``retry_task`` and ``startup_resume``. It speaks only the
-``DownloadClientProtocol`` (never ``repositories/slskd`` directly) and never imports
-``DownloadService`` (the dependency is one-way; no import cycle - A2).
+``IndexerProtocol`` (search) and ``DownloadClientProtocol`` (acquire/track/locate)
+- never ``repositories/slskd`` directly - and never imports ``DownloadService``
+(the dependency is one-way; no import cycle - A2).
 
 Durable cross-task state lives in ``download_tasks`` + ``staging/{task_id}/
 manifest.json``; the audio itself is written by slskd into its own download dir
@@ -26,19 +27,30 @@ from core.exceptions import (
 from core.task_registry import TaskRegistry
 from infrastructure.persistence.download_store import DownloadStore
 from infrastructure.sse_publisher import SSEPublisher
-from models.download import TargetTrack
-from models.download_manifest import DownloadManifest, ExpectedFile, ManifestCodec
+from models.download_manifest import (
+    DownloadManifest,
+    ManifestCodec,
+)
 from repositories.protocols.download_client import (
     DownloadClientProtocol,
-    DownloadFileRef,
-    TaskRef,
+)
+from repositories.protocols.indexer import IndexerProtocol
+from services.native.acquisition.errors import OrchestrationError
+from services.native.acquisition.status import DownloadStatus
+from services.native.acquisition.strategy import (
+    SoulseekStrategy,
+    SourceStrategy,
+    UsenetStrategy,
 )
 from services.native.album_preflight_scorer import AlbumPreflightScorer
-from services.native.file_processor import QUARANTINE_REASONS, FileProcessor
+from services.native.file_processor import FileProcessor
 from services.native.library_manager import LibraryManager
 from services.native.track_matcher import TrackMatcher
 
 logger = logging.getLogger(__name__)
+
+# Fixed v1 source -> client_type map (the DownloadTask.download_client value).
+_CLIENT_FOR_SOURCE = {"soulseek": "slskd", "usenet": "sabnzbd"}
 
 # 6-hour ceiling on a single download's poll loop (absolute backstop; the
 # minutes-scale stall/queued watchdogs normally resolve a stuck transfer long
@@ -51,6 +63,20 @@ _POLL_DEADLINE_SECONDS = 3600 * 6
 # the seconds it actually takes, so a briefly-slow slskd never trips it.
 _TRANSFER_MATERIALIZE_SECONDS = 90.0
 
+# SABnzbd fail_message substrings that mean a LOCAL/environment fault (our disk or mount),
+# NOT a bad release - never blocklist these; the backoff'd auto-retry re-grabs once the
+# environment recovers (Lidarr treats disk/path errors as warnings, not release failures).
+_LOCAL_FAULT_MARKERS = (
+    "disk is full", "disk full", "no space", "not enough disk", "write error",
+    "failed moving", "moving failed", "permission denied", "cannot write",
+    "could not create", "read-only file system",
+)
+
+
+def _is_local_fault(message: str | None) -> bool:
+    low = (message or "").lower()
+    return any(m in low for m in _LOCAL_FAULT_MARKERS)
+
 # _poll_until_done outcomes.
 _OUT_COMPLETED = "completed"   # every transfer terminal and succeeded
 _OUT_TERMINAL = "terminal"     # every transfer terminal, at least one failed
@@ -62,7 +88,9 @@ _OUT_NO_TRANSFER = "no_transfer"  # a fresh enqueue produced no transfer record
 # Terminal "couldn't finish" messages. The mount one is used when slskd delivered the
 # files but we then couldn't find them on the downloads mount - a local/config fault,
 # not an absence of sources, so it must not read as "Soulseek had nothing".
-_NO_SOURCE_MSG = "No working source found on Soulseek"
+# The "no source" wording is built per-task from the enabled sources (see
+# _no_source_message) so a Usenet download never wrongly blames Soulseek.
+_NO_SOURCE_MSG = "No working source found"
 _FILES_NOT_FOUND_MSG = (
     "Files downloaded, but couldn't be found in the slskd downloads folder - check "
     "the slskd downloads path points to where slskd saves completed files"
@@ -74,12 +102,6 @@ _IMPORT_FAILED_MSG = (
     "Files downloaded, but couldn't be saved into your library - check the library "
     "folder is writable and has free space"
 )
-
-
-class OrchestrationError(Exception):
-    """Module-internal control-flow signal (enqueue/poll/timeout failures). Always
-    caught inside the class; its message is a curated, sanitized string safe to
-    persist/SSE (AUD-11)."""
 
 
 class _Cancelled(Exception):
@@ -96,12 +118,6 @@ def _user_error_message(exc: Exception) -> str:
     return "download failed"
 
 
-def _basename(filename: str) -> str:
-    """Last path segment (slskd filenames use backslashes); log basenames not full
-    peer paths to keep log lines free of identifying directory structure."""
-    return filename.replace("\\", "/").rsplit("/", 1)[-1]
-
-
 def _log_task_exception(task: "asyncio.Task") -> None:
     if task.cancelled():
         return
@@ -114,6 +130,7 @@ class DownloadOrchestrator:
     def __init__(
         self,
         client: DownloadClientProtocol,
+        indexer: IndexerProtocol,
         download_store: DownloadStore,
         file_processor: FileProcessor,
         library_manager: LibraryManager,
@@ -135,17 +152,30 @@ class DownloadOrchestrator:
         auto_retry_base_interval_minutes: float = 15.0,
         request_history=None,  # RequestHistoryStore | None
         on_import_callback=None,  # Callable[[RequestHistoryRecord], Awaitable[None]] | None
+        usenet_indexer=None,  # IndexerProtocol | None (NewznabIndexer)
+        usenet_client=None,  # DownloadClientProtocol | None (SabnzbdDownloadClient)
+        usenet_scorer=None,  # NewznabReleaseScorer | None
+        usenet_enabled: bool = False,  # an indexer AND SABnzbd are both enabled
+        soulseek_enabled: bool = True,  # the slskd enable toggle (separate from is_configured)
+        source_priority=None,  # list[str] | None - default ["soulseek", "usenet"]
+        album_service=None,  # AlbumService | None - for the Usenet MB tracklist
+        usenet_category: str | None = None,
+        usenet_priority: int | None = None,
+        usenet_post_processing: int | None = None,
+        usenet_min_release_age_minutes: float = 30.0,
+        usenet_import_settle_seconds: float = 2.0,
     ) -> None:
         self._client = client
+        # Search/enqueue/import + the per-source policy all live on the strategies now; the
+        # orchestrator keeps only the shared state below + the live enable toggles.
+        self._usenet_enabled = usenet_enabled and usenet_indexer is not None and usenet_client is not None
+        self._soulseek_enabled = soulseek_enabled
+        self._source_priority = source_priority or ["soulseek", "usenet"]
         self._store = download_store
-        self._file_processor = file_processor
         self._library = library_manager
-        self._scorer = scorer
-        self._track_matcher = track_matcher
         self._manifest_codec = manifest_codec
         self._bus = event_bus
         self._staging = Path(staging_path)
-        self._naming_template = naming_template
         self._poll_interval = poll_interval
         self._auto = auto_accept_threshold
         self._manual = manual_threshold
@@ -169,6 +199,34 @@ class DownloadOrchestrator:
         self._on_import = on_import_callback
         self._active_tasks: dict[str, asyncio.Task] = {}
 
+        # Source strategies (step 4): all per-source behaviour (search, enqueue, import,
+        # client, identity, blocklist-on-failure, poll/cancel/fault policy) lives here so the
+        # orchestrator never branches on source. Enablement stays on the orchestrator
+        # (``_source_enabled`` reads the live toggles); the Usenet strategy is created only
+        # when a SABnzbd client is present.
+        self._strategies: dict[str, SourceStrategy] = {
+            "soulseek": SoulseekStrategy(
+                indexer=indexer, scorer=scorer, track_matcher=track_matcher,
+                client=client, store=download_store, file_processor=file_processor,
+                staging=self._staging, manifest_codec=manifest_codec,
+                naming_template=naming_template,
+            ),
+        }
+        # Created whenever a SABnzbd client exists (not gated on the indexer), so a Usenet
+        # task can still IMPORT/enqueue even if search is disabled; search itself is gated by
+        # ``_source_enabled`` (the live ``_usenet_enabled`` toggle, which requires the indexer).
+        if usenet_client is not None:
+            self._strategies["usenet"] = UsenetStrategy(
+                indexer=usenet_indexer, scorer=usenet_scorer, client=usenet_client,
+                store=download_store, file_processor=file_processor,
+                import_settle_seconds=usenet_import_settle_seconds,
+                staging=self._staging, manifest_codec=manifest_codec,
+                naming_template=naming_template, album_service=album_service,
+                category=usenet_category, priority=usenet_priority,
+                post_processing=usenet_post_processing,
+                min_release_age_seconds=usenet_min_release_age_minutes * 60.0,
+            )
+
     def dispatch(self, task_id: str) -> "asyncio.Task":
         """Run ``process_task`` for ``task_id`` in the background (AUD-3): wrapped in
         the safe runner, registered in ``TaskRegistry`` so shutdown cancels it, and
@@ -190,14 +248,14 @@ class DownloadOrchestrator:
             logger.exception("Unhandled exception in orchestrator task %s", task_id)
             try:
                 user_msg = _user_error_message(exc)
-                await self._store.update_status(task_id, "failed", error_message=user_msg)
+                await self._store.update_status(task_id, DownloadStatus.FAILED, error_message=user_msg)
                 logger.info(
                     "download.failed",
                     extra={"task_id": task_id, "error_message": user_msg},
                 )
                 await self._bus.publish(
                     f"download:{task_id}", "complete",
-                    {"status": "failed", "error": user_msg},
+                    {"status": DownloadStatus.FAILED, "error": user_msg},
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to mark task %s failed after error", task_id)
@@ -222,7 +280,12 @@ class DownloadOrchestrator:
         )
 
         try:
-            if not self._client.is_configured():
+            if not self._source_enabled("soulseek") and not self._source_enabled("usenet"):
+                # Disabled-but-configured slskd shouldn't read as "not configured".
+                if self._client.is_configured():
+                    raise OrchestrationError(
+                        "No download source is enabled - turn on slskd or Usenet in Settings"
+                    )
                 raise OrchestrationError(
                     "Download client is not configured - check the slskd URL in Settings"
                 )
@@ -238,66 +301,66 @@ class DownloadOrchestrator:
             return  # cancel_task already set status='cancelled'; don't overwrite
         except OrchestrationError as exc:
             user_msg = _user_error_message(exc)
-            await self._store.update_status(task_id, "failed", error_message=user_msg)
+            await self._store.update_status(task_id, DownloadStatus.FAILED, error_message=user_msg)
             logger.info(
                 "download.failed", extra={"task_id": task_id, "error_message": user_msg}
             )
             await self._bus.publish(
                 f"download:{task_id}", "complete",
-                {"status": "failed", "error": user_msg},
+                {"status": DownloadStatus.FAILED, "error": user_msg},
             )
-            await self._sync_request_on_terminal(task, "failed")
+            await self._sync_request_on_terminal(task, DownloadStatus.FAILED)
 
-    async def _search_score_autopick(self, task) -> bool:  # noqa: ANN001 - DownloadTask
-        """Search, score, and auto-pick the top candidate.
+    def _source_enabled(self, source: str) -> bool:
+        if source == "soulseek":
+            # Both the enable toggle AND a usable URL/key are required - a disabled-but-
+            # configured slskd must not be routed to just because it's still configured.
+            return self._soulseek_enabled and self._client.is_configured()
+        if source == "usenet":
+            return self._usenet_enabled
+        return False
 
-        Returns True iff a candidate was auto-picked and linked (proceed to
-        enqueue). Returns False when parked for manual review or failed (status
-        already set; caller must return)."""
+    def _enabled_source_names(self) -> list[str]:
+        """Display names of the sources actually searched - so failure messages name what
+        was tried, never a source that's switched off."""
+        return [
+            name
+            for source, name in (("soulseek", "Soulseek"), ("usenet", "Usenet"))
+            if self._source_enabled(source)
+        ]
+
+    def _no_source_message(self) -> str:
+        """The 'nothing usable came back' message, naming the sources that were actually
+        searched - so a Usenet-only setup reads "...on Usenet", never "...on Soulseek".
+        Search hits every enabled source, so both are named when both are on."""
+        names = self._enabled_source_names()
+        return f"{_NO_SOURCE_MSG} on {' or '.join(names)}" if names else _NO_SOURCE_MSG
+
+    def _no_match_message(self) -> str:
+        """The 'the indexers returned nothing for this album' message, naming the sources
+        actually searched. A Usenet-only setup reads "...on Usenet" - surfacing that the
+        album may well be on Soulseek, which is currently disabled - instead of the
+        misleading "...on any source"."""
+        names = self._enabled_source_names()
+        joined = " or ".join(names) if names else "any source"
+        return f"No matching release found on {joined}"
+
+    async def _search_and_score(self, task, source: str):  # noqa: ANN001, ANN201
+        """Search ONE source and return its scored candidates (tagged with ``source``),
+        via the source strategy (step 4). Called only for sources that ``_source_enabled``
+        passed, so the strategy is always present."""
         timeout = 30.0 + 15.0 * min(task.retry_count, 4)
-
-        if task.download_type == "track":
-            target = TargetTrack(
-                artist_name=task.artist_name,
-                track_title=task.track_title or "",
-                album_title=task.album_title,
-                duration_seconds=task.track_duration_seconds,
-            )
-            results = await self._client.search_track(
-                task.artist_name, task.track_title or "", task.album_title, timeout=timeout
-            )
-            # Rank all viable sources (one per peer) so a per-track download can fail
-            # over to a different peer, mirroring the album path.
-            candidates = await self._track_matcher.rank(
-                target, results, auto_accept_threshold=self._auto, manual_threshold=self._manual
-            )
-        else:
-            from models.download import TargetAlbum
-
-            target = TargetAlbum(
-                artist_name=task.artist_name,
-                album_title=task.album_title,
-                year=task.year,
-                track_count=task.track_count,
-            )
-            results = await self._client.search_album(
-                task.artist_name, task.album_title, task.year, task.track_count, timeout=timeout
-            )
-            candidates = await self._scorer.rank(
-                target, results, auto_accept_threshold=self._auto, manual_threshold=self._manual
-            )
-
-        logger.info(
-            "download.search.completed",
-            extra={
-                "task_id": task.id,
-                "download_type": task.download_type,
-                "results_count": len(results),
-                "candidates_count": len(candidates),
-                "top_score": candidates[0].final_score if candidates else 0.0,
-            },
+        return await self._strategies[source].search_and_score(
+            task, timeout=timeout, auto=self._auto, manual=self._manual
         )
 
+    async def _search_score_autopick(self, task) -> bool:  # noqa: ANN001 - DownloadTask
+        """Route the automatic path across ``source_priority`` (D3: Soulseek-first,
+        Usenet-fallback). A source's auto-accept candidate is picked immediately and
+        later sources are NOT searched. If no source auto-accepts, all candidates are
+        pooled into ONE source-grouped review job (D16) and parked, or failed.
+
+        Returns True iff a candidate was auto-picked + linked; False when parked/failed."""
         job = await self._store.create_search_job(
             user_id=task.user_id,
             artist_name=task.artist_name,
@@ -307,34 +370,66 @@ class DownloadOrchestrator:
             release_group_mbid=task.release_group_mbid,
             search_query=f"{task.artist_name} - {task.album_title}",
         )
-        await self._store.set_search_job_candidates(job.id, candidates)
-        top = candidates[0] if candidates else None
 
-        if top and top.final_score >= self._auto:
-            await self._store.link_picked_candidate(
-                task.id, job.id, 0, top.username, top.parent_directory, top.final_score
+        remembered: list[list] = []
+        for source in self._source_priority:
+            if not self._source_enabled(source):
+                continue
+            candidates = await self._search_and_score(task, source)
+            remembered.append(candidates)
+            logger.info(
+                "download.search.completed",
+                extra={
+                    "task_id": task.id,
+                    "source": source,
+                    "candidates_count": len(candidates),
+                    "top_score": candidates[0].final_score if candidates else 0.0,
+                },
             )
-            return True
+            top = candidates[0] if candidates else None
+            if top and top.tier == "auto":
+                pooled = [c for group in remembered for c in group]
+                index = sum(len(group) for group in remembered[:-1])  # top is index 0 of last
+                await self._store.set_search_job_candidates(job.id, pooled)
+                await self._store.link_picked_candidate(
+                    task_id=task.id, search_job_id=job.id, candidate_index=index,
+                    source_username=top.username, source_directory=top.parent_directory,
+                    preflight_score=top.final_score, source=top.source,
+                    download_client=_CLIENT_FOR_SOURCE.get(top.source, "slskd"),
+                )
+                return True
 
-        if top and top.final_score >= self._manual:
-            # Park for review: search job 'completed', candidate_index NULL. The UI
-            # derives 'awaiting_review'. Resumed when the user calls pick_candidate.
+        # No source auto-accepted: pool all candidates (source-grouped, D16) for review.
+        pooled = [c for group in remembered for c in group]
+        await self._store.set_search_job_candidates(job.id, pooled)
+        if any(c.tier in ("auto", "manual") for c in pooled):
             await self._store.set_search_job_id_and_candidate(task.id, job.id, None)
             await self._store.update_search_job_status(job.id, "completed")
             await self._bus.publish(
                 f"download:{task.id}", "status",
-                {"status": "awaiting_review", "search_job_id": job.id},
+                {"status": DownloadStatus.AWAITING_REVIEW, "search_job_id": job.id},
             )
             return False
 
         await self._store.update_search_job_status(job.id, "completed")
         await self._store.update_status(
-            task.id, "failed", error_message="No matching candidate found on Soulseek"
+            task.id, DownloadStatus.FAILED, error_message=self._no_match_message()
         )
         await self._bus.publish(
-            f"download:{task.id}", "complete", {"status": "failed", "error": "no match"}
+            f"download:{task.id}", "complete", {"status": DownloadStatus.FAILED, "error": "no match"}
         )
         return False
+
+    def _strategy(self, source: str) -> SourceStrategy:
+        """The strategy for a source, falling back to Soulseek for an unknown/disabled
+        source. This preserves the old ``_download_client_for`` fallback (a Usenet task with
+        no SABnzbd client resolved to the slskd client): the Usenet strategy exists iff a
+        SABnzbd client exists, so a missing one falls through to Soulseek's client here."""
+        return self._strategies.get(source) or self._strategies["soulseek"]
+
+    def _download_client_for(self, task) -> "DownloadClientProtocol":  # noqa: ANN001
+        """The download client that owns this task's source (D2/D3)."""
+        return self._strategy(task.source).client
 
     async def _enqueue(  # noqa: ANN001 - DownloadTask
         self, task, *, strict_track_duration: bool = True
@@ -343,73 +438,8 @@ class DownloadOrchestrator:
         if task.candidate_index is None or task.candidate_index >= len(candidates):
             raise OrchestrationError("candidate no longer available")
         candidate = candidates[task.candidate_index]
-        # For a per-track download, verify the imported file against the CANONICAL
-        # track length so a wrong-length recording fails over instead of being
-        # imported and mislabelled. strict_track_duration is turned off for the
-        # last-resort fallback so the user is never stranded by a bad MB duration.
-        use_canonical = (
-            task.download_type == "track"
-            and strict_track_duration
-            and bool(task.track_duration_seconds)
-        )
-
-        files = [
-            DownloadFileRef(username=candidate.username, filename=f.filename, size=f.size)
-            for f in candidate.files
-        ]
-        total_size = sum(f.size for f in candidate.files)
-        await self._store.update_status(
-            task.id, "downloading", files_total=len(files), total_size_bytes=total_size,
-            started_at=time.time(),
-        )
-        # No 'downloading' SSE status here: the UI reads the polled task.status for the
-        # in-flight view, and not re-publishing it lets a 'retrying' status (set when
-        # we fail over) persist through the next attempt instead of being clobbered.
-
-        # Persist the manifest BEFORE enqueueing: it carries the correlation key
-        # (source_username + the enqueued filenames) so a restart can re-correlate.
-        manifest = DownloadManifest(
-            task_id=task.id,
-            source_username=candidate.username,
-            release_group_mbid=task.release_group_mbid,
-            release_mbid=task.release_mbid,
-            artist_mbid=task.artist_mbid,
-            artist_name=task.artist_name,
-            album_title=task.album_title,
-            year=task.year,
-            naming_template=self._naming_template,
-            is_track=use_canonical,
-            target_files=[
-                ExpectedFile(
-                    filename=f.filename,
-                    size=f.size,
-                    duration=task.track_duration_seconds if use_canonical else f.duration,
-                )
-                for f in candidate.files
-            ],
-        )
-        self._staging.joinpath(task.id).mkdir(parents=True, exist_ok=True)
-        (self._staging / task.id / "manifest.json").write_bytes(
-            self._manifest_codec.encode(manifest)
-        )
-
-        try:
-            await self._client.enqueue(files)
-        except Exception as exc:  # noqa: BLE001 - any client error -> task failed
-            # Per review-triage: do NOT quarantine on enqueue failure (nothing was
-            # downloaded). The safe runner / process_task persists the sanitized msg.
-            logger.exception("Enqueue failed for task %s", task.id)
-            raise OrchestrationError("enqueue failed") from exc
-
-        logger.info(
-            "download.enqueued",
-            extra={
-                "task_id": task.id,
-                "user_id": task.user_id,
-                "release_group_mbid": task.release_group_mbid,
-                "files_total": len(files),
-                "total_size_bytes": total_size,
-            },
+        await self._strategies[task.source].enqueue(
+            task, candidate, strict_track_duration=strict_track_duration
         )
 
     async def _poll_until_done(self, task, *, expect_materialization: bool = False):  # noqa: ANN001, ANN201
@@ -423,10 +453,8 @@ class DownloadOrchestrator:
         appears. ``_run_with_failover`` decides what to do with the outcome - this
         method never discards progress."""
         manifest = self._read_manifest(task.id)
-        task_ref = TaskRef(
-            username=task.source_username or "",
-            filenames=[f.filename for f in manifest.target_files],
-        )
+        handle = manifest.handle
+        client = self._download_client_for(task)
         loop = asyncio.get_running_loop()
         enqueue_time = loop.time()
         deadline = loop.time() + _POLL_DEADLINE_SECONDS
@@ -441,9 +469,9 @@ class DownloadOrchestrator:
                 # since this loop started - stop before processing so the import can't
                 # proceed against an explicit cancel.
                 current = await self._store.get_task(task.id)
-                if current is not None and current.status == "cancelled":
+                if current is not None and current.status == DownloadStatus.CANCELLED:
                     raise _Cancelled()
-                status = await self._client.get_status(task_ref)
+                status = await client.get_status(handle)
                 last_status = status
                 # Concurrency cap: take a slot the moment this transfer is actively
                 # moving bytes, and hold it until the loop exits. A purely queued
@@ -507,11 +535,18 @@ class DownloadOrchestrator:
                     idle = now - last_progress_time
                     if status.has_active_transfer and idle >= self._stall_timeout:
                         return _OUT_STALLED, status
-                    if not status.has_active_transfer and idle >= self._queued_timeout:
+                    # SABnzbd Queued/Paused/post-processing move 0 bytes and aren't
+                    # 'Downloading', so they'd accrue the queued clock - the Usenet strategy
+                    # sets applies_queued_timeout False (the 6h deadline is its only backstop).
+                    if (
+                        self._strategy(task.source).applies_queued_timeout
+                        and not status.has_active_transfer
+                        and idle >= self._queued_timeout
+                    ):
                         return _OUT_QUEUED, status
                 await asyncio.sleep(self._poll_interval)
             if last_status is None:
-                last_status = await self._client.get_status(task_ref)
+                last_status = await client.get_status(handle)
             return _OUT_DEADLINE, last_status
         finally:
             if slot_held:
@@ -562,11 +597,11 @@ class DownloadOrchestrator:
                 # loop's last check and here, so we don't overwrite 'cancelled' and
                 # import anyway (the failover loop runs this sequence up to N times).
                 current = await self._store.get_task(task.id)
-                if current is not None and current.status == "cancelled":
+                if current is not None and current.status == DownloadStatus.CANCELLED:
                     raise _Cancelled()
-                await self._store.update_status(task.id, "processing")
+                await self._store.update_status(task.id, DownloadStatus.PROCESSING)
                 await self._bus.publish(
-                    f"download:{task.id}", "status", {"status": "processing"}
+                    f"download:{task.id}", "status", {"status": DownloadStatus.PROCESSING}
                 )
                 # On an interrupted (stalled/queued/deadline) outcome, import ONLY
                 # the transfers that actually succeeded - files that never arrived
@@ -578,33 +613,78 @@ class DownloadOrchestrator:
                     only = None
                 else:
                     only = set(status.succeeded_filenames)
-                result = await self._import_files(task, only_filenames=only)
+                result, enumerated = await self._import_files(
+                    task, only_filenames=only, completed=outcome == _OUT_COMPLETED
+                )
                 if result.succeeded:
                     imported_any = True
+                # Per-attempt fault flags (NOT the accumulated ones below) decide whether
+                # THIS candidate's shortfall is the release's fault or a local one.
+                attempt_mount = not result.succeeded and any(
+                    f.reason == DOWNLOADS_MOUNT_UNAVAILABLE for f in result.failed
+                )
+                attempt_import_fault = any(
+                    f.reason in (IMPORT_FAILED, SOURCE_FILE_MISSING) for f in result.failed
+                )
                 if any(f.reason == WRONG_TRACK for f in result.failed):
                     wrong_track = True
                 if any(f.reason == SOURCE_FILE_MISSING for f in result.failed):
                     source_missing = True
                 if any(f.reason == IMPORT_FAILED for f in result.failed):
                     import_failed = True
-                await self._cancel_transfers(task)
-
-                # A missing/unwritable downloads mount is an environment fault, not
-                # a bad source - failing over to another peer can't help, so stop.
-                if not result.succeeded and any(
-                    f.reason == DOWNLOADS_MOUNT_UNAVAILABLE for f in result.failed
+                # An unreachable downloads mount, or a SABnzbd-reported disk/write/permission
+                # error, is an ENVIRONMENT fault, not the release's fault: Lidarr treats an
+                # unreachable download path / disk error as a warning, never a release
+                # failure. Stop without failing over (another peer can't fix a local problem)
+                # and let the backoff'd auto-retry try once the environment recovers.
+                strategy = self._strategy(task.source)
+                sab_local_fault = (
+                    strategy.has_local_disk_faults
+                    and outcome == _OUT_TERMINAL
+                    and _is_local_fault(status.error if status else "")
+                )
+                local_fault = attempt_mount or sab_local_fault
+                is_complete = await self._download_is_complete(task, imported_any, result)
+                # A release that genuinely finished (e.g. SABnzbd Completed/Failed) but did NOT
+                # deliver what was requested is blocklisted by source identity BEFORE failover so
+                # a re-search/retry finds a COMPLETE release instead of re-grabbing this one
+                # (Lidarr's "Redownload Failed" + blocklist). Skipped for an interrupted poll, a
+                # local/environment fault, or a local IMPORT fault (the files arrived but we
+                # failed to write them - not the release's fault, review H3). The strategy owns
+                # the source-specific blocklist (Usenet: age-guarded title+size; Soulseek: a
+                # no-op - its per-file quarantine already ran at import).
+                if (
+                    not is_complete
+                    and outcome in (_OUT_COMPLETED, _OUT_TERMINAL)
+                    and not local_fault
+                    and not attempt_import_fault
                 ):
+                    await strategy.maybe_blocklist_on_failure(
+                        task, status,
+                        completed=outcome == _OUT_COMPLETED, enumerated_any=enumerated > 0,
+                    )
+
+                # A local/environment fault stops the task WITHOUT cleanup: cancel(del_files)
+                # would tell the client to delete data we simply couldn't read (the mount may
+                # recover), so bail BEFORE _cancel_transfers (review H1). Failing over can't
+                # fix a local problem either.
+                if local_fault:
                     await self._finalize(
-                        task, "failed", error_message=DOWNLOADS_MOUNT_UNAVAILABLE
+                        task, DownloadStatus.FAILED,
+                        error_message=strategy.local_fault_message(attempt_mount),
                     )
                     return
 
-                if await self._download_is_complete(task, imported_any, result):
-                    await self._finalize(task, "completed")
+                await self._cancel_transfers(task)
+
+                if is_complete:
+                    await self._finalize(task, DownloadStatus.COMPLETED)
                     return
 
-            # Incomplete (or this candidate's enqueue failed): fail over.
-            tried_usernames.add(task.source_username or "")
+            # Incomplete (or this candidate's enqueue failed): fail over. Track the
+            # tried release by its SOURCE identity (slskd peer username; Usenet title+
+            # size) so failover dedups correctly within the source (review M2).
+            await self._mark_candidate_tried(task, tried_usernames)
             attempts += 1
             nxt = (
                 await self._advance_candidate(task, tried_usernames)
@@ -626,7 +706,7 @@ class DownloadOrchestrator:
             task = nxt
             await self._bus.publish(
                 f"download:{task.id}", "status",
-                {"status": "retrying", "attempt": attempts},
+                {"status": DownloadStatus.RETRYING, "attempt": attempts},
             )
 
     async def _fallback_track_repull(self, task) -> None:  # noqa: ANN001 - DownloadTask
@@ -641,6 +721,7 @@ class DownloadOrchestrator:
         await self._store.link_picked_candidate(
             task.id, task.search_job_id, 0,
             cand.username, cand.parent_directory, cand.final_score,
+            source=cand.source, download_client=_CLIENT_FOR_SOURCE.get(cand.source, "slskd"),
         )
         task = await self._store.get_task(task.id)
         logger.info("download.track_duration_fallback", extra={"task_id": task.id})
@@ -651,63 +732,44 @@ class DownloadOrchestrator:
             return
         # fresh enqueue -> fail fast if the peer never materialises a transfer
         outcome, status = await self._poll_until_done(task, expect_materialization=True)
-        await self._store.update_status(task.id, "processing")
+        await self._store.update_status(task.id, DownloadStatus.PROCESSING)
         only = None if outcome in (_OUT_COMPLETED, _OUT_TERMINAL) else set(
             status.succeeded_filenames
         )
-        result = await self._import_files(task, only_filenames=only)
+        result, _enumerated = await self._import_files(
+            task, only_filenames=only, completed=outcome == _OUT_COMPLETED
+        )
         await self._cancel_transfers(task)
-        await self._finalize(task, "completed" if result.succeeded else "failed")
+        await self._finalize(task, DownloadStatus.COMPLETED if result.succeeded else DownloadStatus.FAILED)
 
-    async def _import_files(self, task, *, only_filenames=None):  # noqa: ANN001, ANN201
-        """Import a subset of the manifest into the library, quarantining only files
-        that arrived but failed verification. Does not set the task's terminal
-        status (the failover loop owns that). Returns the ProcessResult."""
+    async def _import_files(self, task, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201
+        """Import a subset of the manifest into the library via the source strategy (per-file
+        for slskd, unpacked-folder for Usenet), quarantining only files that arrived but
+        failed verification. Does not set the task's terminal status (the failover loop owns
+        that). Returns ``(ProcessResult, audio_files_enumerated)``; the count lets
+        _run_with_failover tell an under-delivering release (files present but short) from an
+        ambiguous empty folder.
+
+        ``completed`` = SABnzbd reported the job finished (vs an interrupted/failed poll);
+        only then can a still-empty folder mean a mount fault rather than a slow unpack."""
         manifest = self._read_manifest(task.id)
-        logger.info(
-            "download.processing",
-            extra={"task_id": task.id, "files_total": len(manifest.target_files)},
+        return await self._strategies[task.source].import_files(
+            task, manifest, only_filenames=only_filenames, completed=completed
         )
-        result = await self._file_processor.process_downloaded(
-            manifest, only_filenames=only_filenames
-        )
-        for failure in result.failed:
-            if failure.reason in QUARANTINE_REASONS:
-                await self._store.record_quarantine(
-                    client_id="slskd",
-                    username=task.source_username or "",
-                    filename=failure.filename,
-                    reason=failure.reason,
-                    release_group_mbid=task.release_group_mbid,
-                )
-                logger.info(
-                    "download.quarantined",
-                    extra={
-                        "task_id": task.id,
-                        "file": _basename(failure.filename),
-                        "reason": failure.reason,
-                    },
-                )
-        if result.succeeded:
-            await self._store.set_final_path(task.id, str(Path(result.succeeded[0]).parent))
-        return result
 
     async def _cancel_transfers(self, task) -> None:  # noqa: ANN001 - DownloadTask
-        """Clear this task's slskd transfer records (succeeded ones, post-import,
-        per DEC-1) and stop any still running (stalled). Best-effort; imported
-        audio has already been MOVED out, so ``?remove=true`` can't touch it."""
-        if not task.source_username:
+        """Clear this task's download records (post-import, per DEC-1) and stop any still
+        running. For Usenet this also deletes the unpacked data (del_files) - the post-
+        import cleanup that discards the album's other tracks on a per-track grab (D4).
+        Best-effort; imported audio has already been MOVED out."""
+        manifest = self._read_manifest(task.id)
+        strategy = self._strategy(task.source)
+        if not strategy.is_cancelable(task, manifest):
             return
         try:
-            manifest = self._read_manifest(task.id)
-            await self._client.cancel(
-                TaskRef(
-                    username=task.source_username,
-                    filenames=[f.filename for f in manifest.target_files],
-                )
-            )
+            await strategy.client.cancel(manifest.handle)
         except Exception:  # noqa: BLE001 - cleanup must not fail the task
-            logger.warning("Failed to remove/stop slskd transfers for task %s", task.id)
+            logger.warning("Failed to remove/stop transfers for task %s", task.id)
 
     async def _advance_candidate(self, task, tried_usernames):  # noqa: ANN001, ANN201
         """Move the task to the next ranked candidate whose peer we haven't tried,
@@ -720,14 +782,30 @@ class DownloadOrchestrator:
         start = (task.candidate_index or 0) + 1
         for idx in range(start, len(candidates)):
             cand = candidates[idx]
-            if cand.username in tried_usernames:
+            # Stay within the task's source (never cross Soulseek<->Usenet in the pooled
+            # job) and skip an identity we've already tried (review M2).
+            if cand.source != task.source:
+                continue
+            if self._candidate_source_identity(cand) in tried_usernames:
                 continue
             await self._store.link_picked_candidate(
                 task.id, task.search_job_id, idx,
                 cand.username, cand.parent_directory, cand.final_score,
+                source=cand.source, download_client=_CLIENT_FOR_SOURCE.get(cand.source, "slskd"),
             )
             return await self._store.get_task(task.id)
         return None
+
+    def _candidate_source_identity(self, cand) -> str:  # noqa: ANN001 - ScoredCandidate
+        return self._strategy(cand.source).candidate_identity(cand)
+
+    async def _mark_candidate_tried(self, task, tried: set) -> None:  # noqa: ANN001
+        if task.search_job_id is None or task.candidate_index is None:
+            tried.add(task.source_username or "")
+            return
+        candidates = await self._store.get_search_job_candidates(task.search_job_id)
+        if 0 <= task.candidate_index < len(candidates):
+            tried.add(self._candidate_source_identity(candidates[task.candidate_index]))
 
     async def _imported_track_count(self, task) -> int:  # noqa: ANN001 - DownloadTask
         """Distinct imported tracks for the release group. Counts distinct
@@ -790,18 +868,37 @@ class DownloadOrchestrator:
         elif import_failed:
             fail_msg = _IMPORT_FAILED_MSG
         else:
-            fail_msg = _NO_SOURCE_MSG
+            fail_msg = self._no_source_message()
         if task.download_type == "track":
-            await self._finalize(task, "failed", error_message=fail_msg)
+            await self._finalize(task, DownloadStatus.FAILED, error_message=fail_msg)
             return
         if await self._imported_track_count(task) > 0:
-            await self._finalize(task, "partial")
+            await self._finalize(task, DownloadStatus.PARTIAL)
         else:
-            await self._finalize(task, "failed", error_message=fail_msg)
+            await self._finalize(task, DownloadStatus.FAILED, error_message=fail_msg)
+
+    async def settle_after_manual_import(self, task_id: str | None) -> None:
+        """A held track was manually imported into the library ('import anyway'). Re-measure
+        the album against the library and reflect it on the source task, so a now-complete
+        album stops showing a phantom 'retry scheduled': finalize it completed once every
+        expected track is present; otherwise just advance its imported-file count (it stays
+        partial - still paused on any other held track, or retryable for a genuinely missing
+        one). Best-effort and idempotent."""
+        if not task_id:
+            return
+        task = await self._store.get_task(task_id)
+        if task is None or task.status in (DownloadStatus.COMPLETED, DownloadStatus.CANCELLED):
+            return
+        expected = self._expected_track_count(task)
+        present = 1 if task.download_type == "track" else await self._imported_track_count(task)
+        if expected and present >= expected:
+            await self._finalize(task, DownloadStatus.COMPLETED)
+        else:
+            await self._store.update_status(task.id, task.status, files_completed=present)
 
     async def _finalize(self, task, status, *, error_message=None) -> None:  # noqa: ANN001
         if task.download_type == "track":
-            present = 1 if status == "completed" else 0
+            present = 1 if status == DownloadStatus.COMPLETED else 0
             raw_expected = 1
         else:
             present = await self._imported_track_count(task)
@@ -824,7 +921,7 @@ class DownloadOrchestrator:
         shutil.rmtree(self._staging / task.id, ignore_errors=True)
         # keep the established log-event contract: completed/partial -> download.completed,
         # failed -> download.failed (consumed by log monitoring + tests)
-        event = "download.failed" if status == "failed" else "download.completed"
+        event = "download.failed" if status == DownloadStatus.FAILED else "download.completed"
         logger.info(
             event,
             extra={
@@ -850,10 +947,10 @@ class DownloadOrchestrator:
         if self._request_history is None:
             return
         mapping = {
-            "completed": "imported",
-            "partial": "incomplete",
-            "failed": "failed",
-            "cancelled": "cancelled",
+            DownloadStatus.COMPLETED: "imported",
+            DownloadStatus.PARTIAL: "incomplete",
+            DownloadStatus.FAILED: "failed",
+            DownloadStatus.CANCELLED: "cancelled",
         }
         new_status = mapping.get(status)
         if new_status is None:
@@ -900,7 +997,7 @@ class DownloadOrchestrator:
         on a pre-rebuild instance (the global ``TaskRegistry``) - is skipped. Only a
         genuinely unowned, unpolled task (stale ``last_polled_at``) is aged out."""
         try:
-            active = await self._store.list_active_tasks(["downloading", "processing"])
+            active = await self._store.list_active_tasks([DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING])
         except Exception:  # noqa: BLE001
             return
         if not active:
@@ -925,15 +1022,15 @@ class DownloadOrchestrator:
             if now - last < threshold:
                 continue
             await self._store.update_status(
-                task.id, "failed",
+                task.id, DownloadStatus.FAILED,
                 error_message="Download interrupted - no progress after a restart",
                 completed_at=now,
             )
             await self._bus.publish(
                 f"download:{task.id}", "complete",
-                {"status": "failed", "error": "download interrupted"},
+                {"status": DownloadStatus.FAILED, "error": "download interrupted"},
             )
-            await self._sync_request_on_terminal(task, "failed")
+            await self._sync_request_on_terminal(task, DownloadStatus.FAILED)
             logger.warning(
                 "Reaped stale download task %s (no poller for %.0fs)", task.id, now - last
             )
@@ -942,12 +1039,12 @@ class DownloadOrchestrator:
         """Resume in-progress tasks after a restart (AUD-3): never block startup."""
         registry = TaskRegistry.get_instance()
 
-        for orphan in await self._store.list_active_tasks(["queued"]):
+        for orphan in await self._store.list_active_tasks([DownloadStatus.QUEUED]):
             # queued = created but never enqueued -> re-dispatch (failing would be
             # spurious; they never started).
             self.dispatch(orphan.id)
 
-        for task in await self._store.list_active_tasks(["downloading", "processing"]):
+        for task in await self._store.list_active_tasks([DownloadStatus.DOWNLOADING, DownloadStatus.PROCESSING]):
             handle = asyncio.create_task(self._resume_single_task(task.id))
             # Track the live handle so cancel_task can stop the resumed poll loop
             # (mirrors dispatch); without this a resumed download is uncancellable.
@@ -975,15 +1072,15 @@ class DownloadOrchestrator:
         except OrchestrationError as exc:
             logger.warning("Resume failed for task %s: %s", task_id, exc)
             await self._store.update_status(
-                task_id, "failed", error_message=_user_error_message(exc)
+                task_id, DownloadStatus.FAILED, error_message=_user_error_message(exc)
             )
-            await self._sync_request_on_terminal(task, "failed")
+            await self._sync_request_on_terminal(task, DownloadStatus.FAILED)
         except Exception as exc:  # noqa: BLE001 - resume failure -> mark failed
             logger.exception("Failed to resume task %s", task_id)
             await self._store.update_status(
-                task_id, "failed", error_message=_user_error_message(exc)
+                task_id, DownloadStatus.FAILED, error_message=_user_error_message(exc)
             )
-            await self._sync_request_on_terminal(task, "failed")
+            await self._sync_request_on_terminal(task, DownloadStatus.FAILED)
 
     async def cancel_task(self, task_id: str, user_id: str, user_role: str) -> None:
         task = await self._store.get_task(task_id)
@@ -993,29 +1090,29 @@ class DownloadOrchestrator:
             raise PermissionDeniedError("Cannot cancel another user's download")
 
         manifest_path = self._staging / task_id / "manifest.json"
-        if task.source_username and manifest_path.exists():
+        if manifest_path.exists():
             try:
                 manifest = self._manifest_codec.decode(manifest_path.read_bytes())
-                await self._client.cancel(
-                    TaskRef(
-                        username=task.source_username,
-                        filenames=[f.filename for f in manifest.target_files],
-                    )
-                )
+                strategy = self._strategy(task.source)
+                if strategy.is_cancelable(task, manifest):
+                    await strategy.client.cancel(manifest.handle)
             except Exception as exc:  # noqa: BLE001 - best-effort
-                logger.warning("Failed to cancel slskd transfers for %s: %s", task_id, exc)
+                logger.warning("Failed to cancel transfers for %s: %s", task_id, exc)
 
         # Stop the live poll loop promptly if one is running in this process.
         handle = self._active_tasks.pop(task_id, None)
         if handle is not None and not handle.done():
             handle.cancel()
 
-        await self._store.update_status(task_id, "cancelled", cancelled_at=time.time())
+        await self._store.update_status(task_id, DownloadStatus.CANCELLED, cancelled_at=time.time())
         logger.info(
             "download.cancelled", extra={"task_id": task_id, "user_id": task.user_id}
         )
+        # Flip the linked request to 'cancelled' too, so a cancelled (or stopped-retrying)
+        # download clears the album UI's "retry scheduled" line instead of sitting failed.
+        await self._sync_request_on_terminal(task, DownloadStatus.CANCELLED)
         await self._bus.publish(
-            f"download:{task_id}", "complete", {"status": "cancelled"}
+            f"download:{task_id}", "complete", {"status": DownloadStatus.CANCELLED}
         )
 
     async def retry_task(self, task_id: str, user_id: str, user_role: str) -> str:
@@ -1024,8 +1121,20 @@ class DownloadOrchestrator:
             raise ResourceNotFoundError("Download task not found")
         if user_role != "admin" and task.user_id != user_id:
             raise PermissionDeniedError("Cannot retry another user's download")
-        if task.status not in ("failed", "cancelled", "partial"):
+        if task.status not in (DownloadStatus.FAILED, DownloadStatus.CANCELLED, DownloadStatus.PARTIAL):
             raise ValidationError("Only failed, cancelled or partial downloads can be retried")
+
+        # Manual retry is an explicit "try again": clear the album's blocklist so a release
+        # quarantined by the failed attempt is reconsidered. Album downloads only - a
+        # per-track retry must not wipe the whole album's blocklist. Auto-retry
+        # (retry_failed_tasks -> _create_retry_task) deliberately does NOT clear.
+        if task.download_type == "album" and task.release_group_mbid:
+            cleared = await self._store.delete_quarantine_for_album(task.release_group_mbid)
+            if cleared:
+                logger.info(
+                    "download.blocklist_cleared_on_retry",
+                    extra={"release_group_mbid": task.release_group_mbid, "cleared": cleared},
+                )
 
         return await self._create_retry_task(task)
 
@@ -1088,13 +1197,20 @@ class DownloadOrchestrator:
         # retried 5 times waits far longer than one that failed on its first attempt.
         return min(self._auto_retry_base_interval * 60.0 * (2**retry_count), 86400.0)
 
+    def retry_ladder_minutes(self) -> list[int]:
+        """The FULL auto-retry backoff schedule (minutes) for the configured attempt
+        cap - e.g. base 15m, max 6 -> [15, 30, 60, 120, 240, 480]. Empty when auto-retry
+        is off / max is 0. Same formula the retry sweep uses, so the UI's ladder matches
+        when each attempt actually fires."""
+        return [round(self._retry_backoff_seconds(n) / 60) for n in range(self.auto_retry_max)]
+
     def next_retry_at(self, task) -> float | None:  # noqa: ANN001 - DownloadTask
         """Unix time the task's next auto-retry is due, or None if it won't auto-retry
         (disabled, not failed/partial, or attempts exhausted). Same anchor+formula the
         retry sweep uses, so the UI's "retry scheduled" lines up with when it fires."""
         if (
             not self._auto_retry_enabled
-            or task.status not in ("failed", "partial")
+            or task.status not in (DownloadStatus.FAILED, DownloadStatus.PARTIAL)
             or task.retry_count >= self._auto_retry_max_attempts
         ):
             return None
@@ -1120,6 +1236,12 @@ class DownloadOrchestrator:
             backoff = self._retry_backoff_seconds(task.retry_count)
             completed_at = task.completed_at or task.created_at or 0.0
             if now - completed_at < backoff:
+                continue
+
+            # Paused for review: this task left a track held ("couldn't verify"). Re-downloading
+            # the same recording just fails the same way, so we wait for the human (import anyway
+            # / discard); discarding the held track clears this and lets auto-retry resume.
+            if await self._store.has_unresolved_held_for_task(task.id):
                 continue
 
             # Skip if there's already a newer active task for the same target +

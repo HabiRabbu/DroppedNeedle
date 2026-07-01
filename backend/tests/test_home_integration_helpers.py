@@ -25,6 +25,11 @@ def _make_prefs(**overrides):
     dc.enabled = overrides.get("dc_enabled", False)
     dc.url = overrides.get("dc_url", "")
     prefs.get_download_client_settings.return_value = dc
+    # is_download_client_configured now delegates to the unified readiness check (slskd OR
+    # Usenet); the OR-logic itself is covered in the preferences-service tests.
+    prefs.is_download_source_ready.return_value = bool(
+        overrides.get("download_source_ready", overrides.get("dc_enabled", False) and overrides.get("dc_url", ""))
+    )
 
     yt = MagicMock()
     yt.enabled = overrides.get("yt_enabled", False)

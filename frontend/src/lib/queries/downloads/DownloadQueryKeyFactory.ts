@@ -6,5 +6,11 @@ export const DownloadQueryKeyFactory = {
 	tasks: () => [...DownloadQueryKeyFactory.all, 'tasks'] as const,
 	// nested under tasks() so the existing invalidateTasks() prefix-invalidates this too
 	albumTasks: (mbid: string) => [...DownloadQueryKeyFactory.all, 'tasks', 'album', mbid] as const,
-	quarantine: () => [...DownloadQueryKeyFactory.all, 'quarantine'] as const
+	quarantine: () => [...DownloadQueryKeyFactory.all, 'quarantine'] as const,
+	// nested under tasks() so invalidateTasks() prefix-invalidates held lists (all + per-album)
+	held: (mbid?: string) =>
+		[...DownloadQueryKeyFactory.all, 'tasks', 'held', mbid ?? 'all'] as const,
+	indexers: () => [...DownloadQueryKeyFactory.all, 'indexers'] as const,
+	sabnzbd: () => [...DownloadQueryKeyFactory.all, 'sabnzbd'] as const,
+	policy: () => [...DownloadQueryKeyFactory.all, 'policy'] as const
 };

@@ -21,6 +21,10 @@
 	import SettingsUsers from '$lib/components/settings/SettingsUsers.svelte';
 	import SettingsSecurity from '$lib/components/settings/SettingsSecurity.svelte';
 	import SettingsDownloadClient from '$lib/components/settings/SettingsDownloadClient.svelte';
+	import SettingsSabnzbd from '$lib/components/settings/SettingsSabnzbd.svelte';
+	import SettingsSourcePriority from '$lib/components/settings/SettingsSourcePriority.svelte';
+	import SettingsDownloadPolicy from '$lib/components/settings/SettingsDownloadPolicy.svelte';
+	import SettingsIndexers from '$lib/components/settings/SettingsIndexers.svelte';
 	import SettingsConnectApps from '$lib/components/settings/SettingsConnectApps.svelte';
 	import SettingsOnboardingChecklist from '$lib/components/settings/SettingsOnboardingChecklist.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
@@ -81,7 +85,8 @@
 						label: 'Download Client',
 						tier: 'setup',
 						icon: HardDriveDownload
-					}
+					},
+					{ id: 'indexers', label: 'Indexers', tier: 'setup', icon: Search }
 				]
 			: []),
 		{ id: 'connect-apps', label: 'Connect Apps', tier: 'setup', icon: Waypoints },
@@ -245,9 +250,21 @@
 					<SettingsConnectApps />
 				{:else if activeTab === 'download-client' && authStore.isAdmin}
 					<div class="space-y-6">
-						<SettingsOnboardingChecklist />
+						<div>
+							<h2 class="text-xl font-bold">Download clients</h2>
+							<p class="text-sm text-base-content/60">
+								Soulseek and Usenet are two ways to acquire music. Configure either or both, set
+								which is tried first, and tune the shared policy.
+							</p>
+						</div>
+						<SettingsDownloadPolicy />
+						<SettingsSourcePriority />
 						<SettingsDownloadClient />
+						<SettingsSabnzbd />
+						<SettingsOnboardingChecklist />
 					</div>
+				{:else if activeTab === 'indexers' && authStore.isAdmin}
+					<SettingsIndexers />
 				{:else if activeTab === 'jellyfin'}
 					<SettingsJellyfin />
 				{:else if activeTab === 'navidrome'}

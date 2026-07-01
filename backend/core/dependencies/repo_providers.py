@@ -390,6 +390,54 @@ def get_slskd_repository() -> "SlskdRepository":
     )
 
 
+@singleton
+def get_slskd_indexer() -> "SlskdIndexer":
+    """The search side of slskd (D2): a thin ``IndexerProtocol`` adapter over the
+    slskd download repo. Phase 0 wires this as the orchestrator/service indexer so
+    Soulseek search behaviour is unchanged; Phase 1+ composes it with Newznab."""
+    from repositories.slskd.slskd_indexer import SlskdIndexer
+
+    return SlskdIndexer(get_slskd_repository())
+
+
+@singleton
+def get_newznab_indexer() -> "NewznabIndexer":
+    """The aggregate Newznab indexer (D6): one ``IndexerProtocol`` fanning out across
+    every enabled configured indexer. Empty until the user adds their own (guardrail 1)."""
+    from repositories.newznab.newznab_client import NewznabClient
+    from repositories.newznab.newznab_indexer import NewznabIndexer, NewznabIndexerEntry
+
+    prefs = get_preferences_service()
+    raw = prefs.get_indexers_raw()
+    http = HttpClientFactory.get_client(name="newznab", timeout=30.0, connect_timeout=5.0)
+    entries = [
+        NewznabIndexerEntry(
+            NewznabClient(http, s.url, s.api_key, indexer_id=s.id, indexer_name=s.name or s.url),
+            indexer_id=s.id,
+            name=s.name or s.url,
+            categories=s.categories,
+            enabled=s.enabled,
+            priority=s.priority,
+        )
+        for s in raw
+    ]
+    # Keep the search cache TTL BELOW the auto-retry interval (02-… §Rate-limiting) so a
+    # delayed re-search actually re-hits the indexer instead of serving a stale result -
+    # honoured even when the admin sets a sub-5-minute retry interval.
+    retry_interval_s = prefs.get_download_policy().auto_retry_base_interval_minutes * 60.0
+    search_cache_ttl = max(30.0, min(300.0, retry_interval_s * 0.5))
+    return NewznabIndexer(entries, search_cache_ttl=search_cache_ttl)
+
+
+def build_newznab_client(url: str, api_key: str) -> "NewznabClient":
+    """Transient (not cached) client from caller-supplied credentials, for the
+    indexer Test-connection route - validates what the admin typed before saving."""
+    from repositories.newznab.newznab_client import NewznabClient
+
+    http = HttpClientFactory.get_client(name="newznab-verify", timeout=30.0, connect_timeout=5.0)
+    return NewznabClient(http, url, api_key, indexer_name=url)
+
+
 def build_slskd_repository(url: str, api_key: str) -> "SlskdRepository":
     """Transient (not cached) repo from caller-supplied credentials.
 
@@ -415,6 +463,38 @@ def build_slskd_repository(url: str, api_key: str) -> "SlskdRepository":
 
 
 @singleton
+def get_sabnzbd_client() -> "SabnzbdClient":
+    from repositories.sabnzbd.sabnzbd_client import SabnzbdClient
+
+    sab = get_preferences_service().get_sabnzbd_connection_raw()
+    http = HttpClientFactory.get_client(name="sabnzbd", timeout=60.0, connect_timeout=5.0)
+    return SabnzbdClient(http, sab.url, sab.api_key)
+
+
+@singleton
+def get_sabnzbd_download_client() -> "SabnzbdDownloadClient":
+    from pathlib import Path
+
+    from repositories.sabnzbd.sabnzbd_download_client import SabnzbdDownloadClient
+
+    sab = get_preferences_service().get_sabnzbd_connection_raw()
+    return SabnzbdDownloadClient(
+        get_sabnzbd_client(), sab.url, sab.api_key, Path(sab.downloads_mount)
+    )
+
+
+def build_sabnzbd_download_client(url: str, api_key: str) -> "SabnzbdDownloadClient":
+    """Transient client from caller-supplied credentials, for the Test-connection route."""
+    from pathlib import Path
+
+    from repositories.sabnzbd.sabnzbd_client import SabnzbdClient
+    from repositories.sabnzbd.sabnzbd_download_client import SabnzbdDownloadClient
+
+    http = HttpClientFactory.get_client(name="sabnzbd-verify", timeout=60.0, connect_timeout=5.0)
+    return SabnzbdDownloadClient(SabnzbdClient(http, url, api_key), url, api_key, Path("/tmp"))
+
+
+@singleton
 def get_download_client_repository() -> "DownloadClientProtocol":
     from core.exceptions import ConfigurationError
 
@@ -424,3 +504,26 @@ def get_download_client_repository() -> "DownloadClientProtocol":
             return get_slskd_repository()
         case other:
             raise ConfigurationError(f"Unknown download client type: {other!r}")
+
+
+def get_download_client(client_type: str) -> "DownloadClientProtocol":
+    """Resolve a download client by type (the fixed v1 map: ``slskd``/``sabnzbd``).
+    NZBGet adds one case later (D5)."""
+    from core.exceptions import ConfigurationError
+
+    match client_type:
+        case "slskd":
+            return get_slskd_repository()
+        case "sabnzbd":
+            return get_sabnzbd_download_client()
+        case other:
+            raise ConfigurationError(f"Unknown download client type: {other!r}")
+
+
+# Fixed v1 source → client_type map (assembled in get_sources, dispatched here).
+_SOURCE_CLIENT_TYPE = {"soulseek": "slskd", "usenet": "sabnzbd"}
+
+
+def get_download_client_for_source(source: str) -> "DownloadClientProtocol":
+    """Resolve the download client that owns a given acquisition source."""
+    return get_download_client(_SOURCE_CLIENT_TYPE.get(source, source))

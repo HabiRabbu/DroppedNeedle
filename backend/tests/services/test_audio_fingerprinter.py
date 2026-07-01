@@ -287,3 +287,24 @@ async def test_pass_joins_multiple_artist_credit(monkeypatch):
     res = await fp.fingerprint(Path("/x.flac"))
     assert res.artist == "Artist A; Artist B"
     assert split_artist_credit(res.artist) == ["Artist A", "Artist B"]
+
+
+@pytest.mark.asyncio
+async def test_submits_compressed_fingerprint_not_raw(monkeypatch):
+    # Regression: fpcalc must NOT run with -raw. The raw (comma-separated integer)
+    # fingerprint makes AcoustID's /v2/lookup return HTTP 400 - every lookup was silently
+    # failing. The COMPRESSED fingerprint plain fpcalc emits must be the one POSTed.
+    captured = []
+
+    async def fake_exec(*args, **kwargs):
+        captured.append(args)
+        return _FakeProc(stdout=_FP_OK, returncode=0)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    http = _http_client(_pass_payload())
+    res = await _make(http).fingerprint(Path("/x.flac"))
+
+    assert res.status == FingerprintStatus.PASS
+    assert captured[0][0] == "fpcalc"
+    assert "-raw" not in captured[0]                       # the bug: no -raw flag
+    assert http.post.call_args.kwargs["data"]["fingerprint"] == "AQADtMmSaEkSRYkG"

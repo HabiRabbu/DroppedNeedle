@@ -53,18 +53,24 @@ def effective_extension(file: DownloadSearchResult) -> str:
     return file.extension.lower() if file.extension else _ext_from_filename(file.filename)
 
 
-def file_tier(file: DownloadSearchResult) -> str:
-    ext = effective_extension(file)
-    if ext in _LOSSLESS_EXT:
+def tier_for(ext: str, bitrate: int | None) -> str:
+    """Quality tier from a codec extension + bitrate. Shared by the per-file search-result
+    classifier (``file_tier``) and the library held-quality lookup (a ``library_files`` row's
+    ``file_format`` + ``bit_rate``), so both judge tier identically."""
+    if (ext or "").lower().lstrip(".") in _LOSSLESS_EXT:
         return "lossless"
-    bitrate = file.bitrate or 0
-    if bitrate >= 320:
+    b = bitrate or 0
+    if b >= 320:
         return "mp3_320"
-    if bitrate >= 256:
+    if b >= 256:
         return "mp3_256"
-    if bitrate >= 192:
+    if b >= 192:
         return "mp3_192"
     return "low"
+
+
+def file_tier(file: DownloadSearchResult) -> str:
+    return tier_for(effective_extension(file), file.bitrate)
 
 
 def candidate_tier(files: list[DownloadSearchResult]) -> str:
@@ -86,3 +92,26 @@ def is_audio(file: DownloadSearchResult) -> bool:
 
 def in_range(tier_key: str, quality_min: str, quality_max: str) -> bool:
     return tier_rank(quality_min) <= tier_rank(tier_key) <= tier_rank(quality_max)
+
+
+def should_acquire(held_tier: str | None, quality_cutoff: str, upgrade_allowed: bool) -> bool:
+    """Whether to (re)acquire an album given the quality the library already holds (the WORST
+    held tier, or ``None`` if absent) - the tier-aware replacement for the binary "has_album"
+    gate (step 8). ``None`` held → acquire. With upgrades OFF (the default) any held copy
+    satisfies → skip (the prior behaviour exactly). With upgrades ON, acquire only while the
+    held quality is BELOW the cutoff, stopping once the cutoff is met."""
+    if held_tier is None:
+        return True
+    if not upgrade_allowed:
+        return False
+    return tier_rank(held_tier) < tier_rank(quality_cutoff)
+
+
+def folder_hires_key(files: list[DownloadSearchResult]) -> tuple[int, int]:
+    """``(bit_depth, sample_rate)`` for ranking hi-res ABOVE 16/44 within an equal tier
+    (parsing finding H1: these are captured per file but no sort/score path ever read them,
+    so a 24/96 rip lost to a 16/44 one). A folder is rated by its WORST file (the whole
+    folder is downloaded), so take the minimum; absent values fall back to CD (16/44100)."""
+    depths = [f.bit_depth for f in files if f.bit_depth]
+    rates = [f.sample_rate for f in files if f.sample_rate]
+    return (min(depths) if depths else 16, min(rates) if rates else 44100)

@@ -7,7 +7,7 @@
 	import DownloadStatusBadge from './DownloadStatusBadge.svelte';
 	import VinylProgress from './VinylProgress.svelte';
 
-	let { task }: { task: DownloadTask } = $props();
+	let { task, showEyebrow = true }: { task: DownloadTask; showEyebrow?: boolean } = $props();
 
 	const stream = createDownloadStream();
 	$effect(() => {
@@ -30,9 +30,11 @@
 	aria-label="Now pressing"
 >
 	<div class="now-pressing-glow" aria-hidden="true"></div>
-	<p class="relative mb-4 text-[11px] font-bold uppercase tracking-[0.18em] text-base-content/45">
-		Now pressing
-	</p>
+	{#if showEyebrow}
+		<p class="relative mb-4 text-[11px] font-bold uppercase tracking-[0.18em] text-base-content/45">
+			Now pressing
+		</p>
+	{/if}
 	<div class="relative flex items-center gap-5">
 		<VinylProgress percent={livePct} spinning indeterminate={isSearchingState} size={120} />
 		<div class="min-w-0 flex-1">

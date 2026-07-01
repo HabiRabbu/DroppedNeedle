@@ -138,6 +138,29 @@ class SlskdApiError(ExternalServiceError):
         self.code = code
 
 
+class NewznabApiError(ExternalServiceError):
+    """Transport/HTTP/feed error talking to a Newznab indexer.
+
+    Mapped to HTTP 503 by the registered ``ExternalServiceError`` handler.
+    ``code`` is the Newznab ``<error code>`` when the indexer returned one (HTTP
+    may still be 200), else the HTTP status. Mirrors ``SlskdApiError``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        details: Any = None,
+        code: int | None = None,
+    ):
+        super().__init__(message, details)
+        self.code = code
+
+
+class NewznabAuthError(NewznabApiError):
+    """Newznab auth failure (error code 100-199, or a missing/invalid API key)."""
+    pass
+
+
 class ClientDisconnectedError(DroppedNeedleException):
     pass
 

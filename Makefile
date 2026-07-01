@@ -310,6 +310,12 @@ backend-test-slskd: $(BACKEND_VENV_STAMP) ## Phase 6a: SlskdClient + SlskdReposi
 backend-test-preflight-scorer: $(BACKEND_VENV_STAMP) ## Phase 6a: AlbumPreflightScorer + TrackMatcher tests
 	$(PYTEST) tests/services/test_album_preflight_scorer.py tests/services/test_track_matcher.py -v
 
+backend-test-acquisition-specs: $(BACKEND_VENV_STAMP) ## ArrRebuild: pure decision spec core (decision/context/pipeline + specs)
+	$(PYTEST) tests/services/test_acquisition_specs.py -v
+
+backend-test-download-status: $(BACKEND_VENV_STAMP) ## ArrRebuild: DownloadStatus state machine + store-CHECK mirror
+	$(PYTEST) tests/services/test_download_status.py -v
+
 backend-test-download-store: $(BACKEND_VENV_STAMP) ## Phase 6a: DownloadStore tables + CRUD + cascade tests
 	$(PYTEST) tests/infrastructure/test_download_store.py -v
 
@@ -325,11 +331,23 @@ backend-test-new-releases: $(BACKEND_VENV_STAMP) ## Follow: NewReleaseService po
 backend-test-download-service: $(BACKEND_VENV_STAMP) ## Phase 6b: DownloadService search/pick/cancel + mount check
 	$(PYTEST) tests/services/test_download_service.py -v
 
-backend-test-download-routes: $(BACKEND_VENV_STAMP) ## Phase 6b: download-client + search + quarantine route tests
-	$(PYTEST) tests/routes/test_download_client_routes.py tests/routes/test_download_search_routes.py tests/routes/test_quarantine_routes.py -v
+backend-test-download-routes: $(BACKEND_VENV_STAMP) ## Phase 6b/7: download-client + search + quarantine + queue/task route tests
+	$(PYTEST) tests/routes/test_download_client_routes.py tests/routes/test_download_search_routes.py tests/routes/test_quarantine_routes.py tests/routes/test_downloads_routes.py -v
 
 backend-test-orchestrator: $(BACKEND_VENV_STAMP) ## Phase 7: DownloadOrchestrator + FileProcessor.process_downloaded
 	$(PYTEST) tests/services/test_download_orchestrator.py tests/services/test_file_processor.py -v
+
+backend-test-usenet: $(BACKEND_VENV_STAMP) ## Usenet/SABnzbd: protocol split, Newznab, SABnzbd, folder-import, routing, migration gates
+	$(PYTEST) tests/repositories/test_download_client_protocol_contract.py \
+		tests/infrastructure/test_download_migration.py \
+		tests/repositories/test_newznab.py \
+		tests/repositories/test_sabnzbd.py \
+		tests/routes/test_indexer_routes.py \
+		tests/routes/test_download_clients_routes.py \
+		tests/services/test_preferences_indexers.py \
+		tests/services/test_preferences_download_clients.py \
+		tests/services/test_newznab_release_scorer.py \
+		tests/infrastructure/test_e2e_usenet.py -v
 
 backend-test-e2e-download: $(BACKEND_VENV_STAMP) ## Phase 7: blocking E2E gate (search -> import -> library_files)
 	$(PYTEST) tests/infrastructure/test_e2e_download.py -v

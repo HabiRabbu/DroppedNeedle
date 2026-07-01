@@ -83,3 +83,45 @@ def test_put_with_new_value_updates_key(tmp_path):
     assert prefs.get_download_client_settings_raw().api_key == "brand-new-key"
     # the freshly-set key is still masked when read back over the wire
     assert client.get("/download-client/config").json()["api_key"] == DOWNLOAD_CLIENT_API_KEY_MASK
+
+
+# --- Newznab indexer keys (D6/D12) - the per-array-element masking case ----------
+
+def _indexer_app(prefs: PreferencesService) -> FastAPI:
+    from api.v1.routes import indexers
+
+    app = FastAPI()
+    app.include_router(indexers.router)
+    app.dependency_overrides[get_preferences_service] = lambda: prefs
+    app.dependency_overrides[_get_current_admin] = mock_admin_user
+    return app
+
+
+def test_indexer_list_masks_key_and_never_leaks_plaintext(tmp_path):
+    from api.v1.schemas.settings import INDEXER_API_KEY_MASK, NewznabIndexerSettings
+
+    prefs = _prefs(tmp_path)
+    prefs.save_indexer(
+        NewznabIndexerSettings(name="DS", url="https://idx.test/api", api_key=_REAL_KEY)
+    )
+    response = build_test_client(_indexer_app(prefs)).get("/indexers")
+    assert response.status_code == 200
+    assert response.json()[0]["api_key"] == INDEXER_API_KEY_MASK
+    assert _REAL_KEY not in response.text
+
+
+def test_indexer_create_over_wire_encrypts_and_masks(tmp_path):
+    from api.v1.schemas.settings import INDEXER_API_KEY_MASK
+
+    prefs = _prefs(tmp_path)
+    client = build_test_client(_indexer_app(prefs))
+    created = client.post(
+        "/indexers", json={"name": "DS", "url": "https://idx.test/api", "api_key": _REAL_KEY}
+    )
+    assert created.status_code == 200
+    # stored encrypted (the raw decrypt yields the real key, but the wire shows the mask)
+    raw = prefs.get_indexers_raw()[0]
+    assert raw.api_key == _REAL_KEY
+    listed = client.get("/indexers")
+    assert listed.json()[0]["api_key"] == INDEXER_API_KEY_MASK
+    assert _REAL_KEY not in listed.text

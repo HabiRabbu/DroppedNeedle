@@ -13,6 +13,42 @@ class TestConnectionResponse(AppStruct):
     message: str = ""
 
 
+class IndexerTestResponse(AppStruct):
+    """Result of testing a Newznab indexer's caps. ``supports_audio_search`` tells the
+    user whether structured music search will be used or the ``t=search`` fallback."""
+
+    valid: bool
+    version: str | None = None
+    message: str = ""
+    supports_audio_search: bool = False
+    category_count: int = 0
+
+
+class IndexerSavedResponse(AppStruct):
+    id: str
+
+
+class SabnzbdTestResponse(AppStruct):
+    """Result of testing SABnzbd: version + the category list (for the picker) + the
+    SABnzbd-side completed dir (the mount hint)."""
+
+    valid: bool
+    version: str | None = None
+    message: str = ""
+    categories: list[str] = msgspec.field(default_factory=list)
+    complete_dir: str | None = None
+
+
+class IndexerReorderRequest(AppStruct):
+    ordered_ids: list[str]
+
+
+class SourcePriority(AppStruct):
+    """The order acquisition sources are tried (D3) - e.g. ``["soulseek", "usenet"]``."""
+
+    order: list[str]
+
+
 class DownloadClientStatusResponse(AppStruct):
     configured: bool
     client: ServiceStatus
@@ -81,6 +117,9 @@ class DownloadTaskResponse(AppStruct):
     id: str
     user_id: str
     download_type: str
+    # "soulseek" | "usenet" - drives the source badge + the "via album NZB" label
+    # (derived as source=="usenet" && download_type=="track").
+    source: str
     release_group_mbid: str
     recording_mbid: str | None
     artist_name: str
@@ -103,10 +142,51 @@ class DownloadTaskResponse(AppStruct):
     retry_count: int
     created_at: float
     updated_at: float
+    # The task's last-attempt timestamp (None until it first reaches a terminal state).
+    completed_at: float | None = None
     # Auto-retry hints for the queue UI: when the next attempt is due (None if it won't
     # auto-retry), and the configured attempt cap (0 when auto-retry is off).
     next_retry_at: float | None = None
     retry_max: int = 0
+    # The FULL auto-retry backoff schedule, in minutes, for the configured attempt cap
+    # (e.g. [15, 30, 60, 120, 240, 480]). Empty when auto-retry is off / retry_max == 0.
+    retry_ladder_minutes: list[int] = []
+
+
+class HeldImportResponse(AppStruct):
+    """A downloaded track held for an "import anyway" review: the audio matched the track by
+    duration, but the AcoustID recording-identity check disagreed - usually because the
+    recording's MusicBrainz metadata is wrong. ``evidence_*`` is what AcoustID thought it
+    was, shown so the human can decide with the facts in front of them."""
+
+    id: int
+    release_group_mbid: str | None
+    recording_mbid: str | None
+    track_number: int | None
+    disc_number: int | None
+    track_title: str | None
+    artist_name: str | None
+    album_title: str | None
+    year: int | None
+    original_filename: str | None
+    file_format: str | None
+    duration_seconds: float | None
+    reason: str
+    source: str
+    source_task_id: str | None
+    created_at: float
+    evidence_title: str | None = None
+    evidence_artist: str | None = None
+    evidence_score: float | None = None
+
+
+class HeldListResponse(AppStruct):
+    items: list[HeldImportResponse]
+
+
+class HeldActionResponse(AppStruct):
+    status: str
+    final_path: str | None = None
 
 
 class DownloadListResponse(AppStruct):
@@ -141,6 +221,27 @@ class CancelDownloadResponse(AppStruct):
 class RetryDownloadResponse(AppStruct):
     success: bool
     task_id: str
+
+
+class ClearDownloadsResponse(AppStruct):
+    """Result of the queue's "Clear" bulk action: how many terminal (completed +
+    cancelled) tasks were hard-deleted."""
+
+    cleared: int
+
+
+class StopRetriesResponse(AppStruct):
+    """Result of "Stop all retries": how many still-scheduled auto-retries were
+    stopped (cancelled)."""
+
+    stopped: int
+
+
+class RetryAllResponse(AppStruct):
+    """Result of "Retry all failed": how many exhausted/non-auto-retrying failures were
+    re-dispatched."""
+
+    retried: int
 
 
 class TrackRequestBody(AppStruct):

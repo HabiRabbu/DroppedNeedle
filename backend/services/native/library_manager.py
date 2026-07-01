@@ -152,6 +152,16 @@ class LibraryManager(LibraryStub):
     async def has_album(self, mbid: str) -> bool:
         return await self._db.has_album_files(mbid)
 
+    async def album_quality_tier(self, release_group_mbid: str) -> str | None:
+        """The WORST quality tier across the album's held files (an album is only as good as
+        its weakest track - mirrors ``candidate_tier``), or ``None`` when the album isn't in
+        the library. Drives the cutoff/upgrade gate (step 8)."""
+        from services.native.quality_tiers import tier_for, tier_rank
+
+        rows = await self._db.get_library_files_for_album(release_group_mbid)
+        tiers = [tier_for(row.get("file_format") or "", row.get("bit_rate")) for row in rows]
+        return min(tiers, key=tier_rank) if tiers else None
+
     async def has_track(self, recording_mbid: str) -> bool:
         return await self._db.has_recording(recording_mbid)
 
@@ -402,6 +412,17 @@ class LibraryManager(LibraryStub):
     async def get_file_rows_for_album(self, release_group_mbid: str) -> list[dict]:
         """Raw active rows for one album (rescan needs source/confidence/MBIDs)."""
         return await self._db.get_library_files_for_album(release_group_mbid)
+
+    async def get_attributions_for_paths(self, paths: list[str]) -> dict[str, dict]:
+        """Existing attributions (release-group/confidence/source) for these paths,
+        keyed by path - the scanner's anchor read for protecting known-good identity."""
+        return await self._db.get_attributions_for_paths(paths)
+
+    async def delete_album_row(self, release_group_mbid: str) -> None:
+        """Drop a release group's materialised ``library_albums`` row (the /basic
+        in_library source). Used after a re-identify empties an album's old RG, so it
+        stops reporting 'In Library' as a zero-file ghost."""
+        await self._db.delete_album_by_mbid(release_group_mbid)
 
     async def get_file_at_position(
         self, release_group_mbid: str, disc_number: int, track_number: int

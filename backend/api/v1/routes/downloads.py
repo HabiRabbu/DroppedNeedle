@@ -13,16 +13,27 @@ import asyncio
 import logging
 
 import msgspec
+import mimetypes
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+
+from core.exceptions import ResourceNotFoundError
 
 from api.v1.schemas.download import (
     CancelDownloadResponse,
+    ClearDownloadsResponse,
     DownloadFileItem,
     DownloadFilesResponse,
     DownloadListResponse,
     DownloadTaskResponse,
+    HeldActionResponse,
+    HeldImportResponse,
+    HeldListResponse,
+    RetryAllResponse,
     RetryDownloadResponse,
+    StopRetriesResponse,
 )
 from core.dependencies import get_download_service, get_sse_publisher
 from infrastructure.msgspec_fastapi import MsgSpecRoute
@@ -40,12 +51,17 @@ _SSE_HEADERS = {
 
 
 def _to_response(  # noqa: ANN001 - DownloadTask
-    task, *, next_retry_at: float | None = None, retry_max: int = 0
+    task,
+    *,
+    next_retry_at: float | None = None,
+    retry_max: int = 0,
+    retry_ladder_minutes: list[int] | None = None,
 ) -> DownloadTaskResponse:
     return DownloadTaskResponse(
         id=task.id,
         user_id=task.user_id,
         download_type=task.download_type,
+        source=task.source,
         release_group_mbid=task.release_group_mbid,
         recording_mbid=task.recording_mbid,
         artist_name=task.artist_name,
@@ -68,8 +84,10 @@ def _to_response(  # noqa: ANN001 - DownloadTask
         retry_count=task.retry_count,
         created_at=task.created_at,
         updated_at=task.updated_at,
+        completed_at=task.completed_at,
         next_retry_at=next_retry_at,
         retry_max=retry_max,
+        retry_ladder_minutes=retry_ladder_minutes or [],
     )
 
 
@@ -91,9 +109,18 @@ async def list_downloads(
         page_size=page_size,
     )
     retry_max = service.auto_retry_max
+    retry_ladder = service.retry_ladder_minutes()
+    # Tasks waiting on a held-track review are paused, not scheduled - don't show a
+    # countdown that will never fire.
+    held_ids = await service.held_task_ids(current_user.id, current_user.role)
     return DownloadListResponse(
         items=[
-            _to_response(t, next_retry_at=service.next_retry_at(t), retry_max=retry_max)
+            _to_response(
+                t,
+                next_retry_at=None if t.id in held_ids else service.next_retry_at(t),
+                retry_max=retry_max,
+                retry_ladder_minutes=retry_ladder,
+            )
             for t in tasks
         ],
         page=page,
@@ -159,11 +186,124 @@ async def retry_download(
     return RetryDownloadResponse(success=True, task_id=new_task_id)
 
 
+@router.post("/clear", response_model=ClearDownloadsResponse)
+async def clear_downloads(
+    current_user: CurrentUserDep, service=Depends(get_download_service)
+):
+    """Permanently remove the user's terminal (completed + cancelled) tasks."""
+    cleared = await service.clear_finished(current_user.id, current_user.role)
+    return ClearDownloadsResponse(cleared=cleared)
+
+
+@router.post("/stop-all-retries", response_model=StopRetriesResponse)
+async def stop_all_retries(
+    current_user: CurrentUserDep, service=Depends(get_download_service)
+):
+    """Stop the user's still-scheduled auto-retries (the "wanted/retrying" set)."""
+    stopped = await service.stop_all_retries(current_user.id, current_user.role)
+    return StopRetriesResponse(stopped=stopped)
+
+
+@router.post("/retry-all-failed", response_model=RetryAllResponse)
+async def retry_all_failed(
+    current_user: CurrentUserDep, service=Depends(get_download_service)
+):
+    """Re-dispatch the user's exhausted/non-auto-retrying failures."""
+    retried = await service.retry_all_failed(current_user.id, current_user.role)
+    return RetryAllResponse(retried=retried)
+
+
+def _held_to_response(held) -> HeldImportResponse:  # noqa: ANN001 - HeldImport
+    return HeldImportResponse(
+        id=held.id,
+        release_group_mbid=held.release_group_mbid,
+        recording_mbid=held.recording_mbid,
+        track_number=held.track_number,
+        disc_number=held.disc_number,
+        track_title=held.track_title,
+        artist_name=held.artist_name,
+        album_title=held.album_title,
+        year=held.year,
+        original_filename=held.original_filename,
+        file_format=held.file_format,
+        duration_seconds=held.duration_seconds,
+        reason=held.reason,
+        source=held.source,
+        source_task_id=held.source_task_id,
+        created_at=held.created_at,
+        evidence_title=held.evidence_title,
+        evidence_artist=held.evidence_artist,
+        evidence_score=held.evidence_score,
+    )
+
+
+# NOTE: declared before "/{task_id}" so the static path wins over the param route.
+@router.get("/held", response_model=HeldListResponse)
+async def list_held(
+    current_user: CurrentUserDep,
+    release_group_mbid: str | None = Query(default=None),
+    service=Depends(get_download_service),
+):
+    """Tracks held for an 'import anyway' review - all of them, or scoped to one album."""
+    held = await service.list_held(current_user.id, current_user.role, release_group_mbid)
+    return HeldListResponse(items=[_held_to_response(h) for h in held])
+
+
+@router.post("/held/{held_id}/import", response_model=HeldActionResponse)
+async def import_held(
+    held_id: int, current_user: CurrentUserDep, service=Depends(get_download_service)
+):
+    """Import a held track as-is, overriding the AcoustID identity check (admin/owner)."""
+    final_path = await service.import_held(held_id, current_user.id, current_user.role)
+    return HeldActionResponse(status="imported", final_path=final_path)
+
+
+@router.post("/held/{held_id}/discard", response_model=HeldActionResponse)
+async def discard_held(
+    held_id: int, current_user: CurrentUserDep, service=Depends(get_download_service)
+):
+    """Delete a held track's file and let the album's auto-retry resume."""
+    await service.discard_held(held_id, current_user.id, current_user.role)
+    return HeldActionResponse(status="discarded")
+
+
+_AUDIO_MEDIA_TYPES = {
+    ".flac": "audio/flac", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg", ".opus": "audio/opus", ".wav": "audio/wav",
+}
+
+
+def _audio_media_type(path: Path) -> str:
+    return (
+        _AUDIO_MEDIA_TYPES.get(path.suffix.lower())
+        or mimetypes.guess_type(str(path))[0]
+        or "application/octet-stream"
+    )
+
+
+@router.get("/held/{held_id}/audio")
+async def stream_held_audio(
+    held_id: int, current_user: CurrentUserDep, service=Depends(get_download_service)
+):
+    """Stream a held file's audio for the in-review preview. FileResponse honours Range
+    requests (206 + Content-Range), so the player can scrub. Ownership-checked."""
+    held = await service.get_held(held_id, current_user.id, current_user.role)
+    if held is None:
+        raise ResourceNotFoundError("Held track not found")
+    path = Path(held.held_path)
+    if not path.exists():
+        raise ResourceNotFoundError("The held file is no longer available")
+    return FileResponse(path, media_type=_audio_media_type(path), filename=path.name)
+
+
 @router.get("/{task_id}", response_model=DownloadTaskResponse)
 async def get_download(
     task_id: str, current_user: CurrentUserDep, service=Depends(get_download_service)
 ):
     task = await service.get_task(task_id, current_user.id, current_user.role)
     return _to_response(
-        task, next_retry_at=service.next_retry_at(task), retry_max=service.auto_retry_max
+        task,
+        next_retry_at=service.next_retry_at(task),
+        retry_max=service.auto_retry_max,
+        retry_ladder_minutes=service.retry_ladder_minutes(),
     )

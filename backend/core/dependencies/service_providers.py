@@ -126,10 +126,10 @@ def get_file_processor() -> "FileProcessor":
     from core.config import get_settings
     from services.native.file_processor import FileProcessor
 
-    from .repo_providers import get_download_client_repository
+    from .repo_providers import get_download_client_repository, get_download_store
 
     lib = get_preferences_service().get_library_settings_raw()
-    dc = get_preferences_service().get_download_client_settings_raw()
+    policy = get_preferences_service().get_download_policy()
     return FileProcessor(
         get_audio_tagger(),
         naming_engine=get_naming_template_engine(),
@@ -138,7 +138,9 @@ def get_file_processor() -> "FileProcessor":
         client=get_download_client_repository(),
         slskd_downloads_path=Path(get_settings().slskd_downloads_path),
         fingerprinter=get_audio_fingerprinter(),
-        verify_downloads=dc.verify_downloads,
+        verify_downloads=policy.verify_downloads,
+        download_store=get_download_store(),
+        held_dir=Path(get_settings().cache_dir) / "held",
     )
 
 
@@ -702,18 +704,34 @@ def get_version_service() -> "VersionService":
     return VersionService(github_repo)
 
 
+def _build_spec_policy(policy):
+    """Map the API ``DownloadPolicySettings`` onto the decoupled spec ``SpecPolicy`` (the
+    composition root is the one place coupling the two is fine). The size/term gates
+    activate when the user configures them; grab-time min-age stays off (its post-fail
+    cousin ``usenet_min_release_age_minutes`` is NOT a grab-time gate)."""
+    from services.native.acquisition.decision import SpecPolicy
+
+    return SpecPolicy(
+        quality_min=policy.quality_min,
+        quality_max=policy.quality_max,
+        max_size_mb=policy.max_size_mb,
+        ignored_terms=tuple(policy.ignored_terms),
+        required_terms=tuple(policy.required_terms),
+        usenet_retention_days=policy.usenet_retention_days,
+    )
+
+
 @singleton
 def get_album_preflight_scorer() -> "AlbumPreflightScorer":
     from services.native.album_preflight_scorer import AlbumPreflightScorer
 
     from .repo_providers import get_download_store
 
-    dc = get_preferences_service().get_download_client_settings_raw()
+    policy = get_preferences_service().get_download_policy()
     return AlbumPreflightScorer(
         get_download_store(),
-        quality_min=dc.quality_min,
-        quality_max=dc.quality_max,
-        flac_mp3_only=dc.flac_mp3_only,
+        flac_mp3_only=policy.flac_mp3_only,
+        policy=_build_spec_policy(policy),
     )
 
 
@@ -723,12 +741,26 @@ def get_track_matcher() -> "TrackMatcher":
 
     from .repo_providers import get_download_store
 
-    dc = get_preferences_service().get_download_client_settings_raw()
+    policy = get_preferences_service().get_download_policy()
     return TrackMatcher(
         get_download_store(),
-        quality_min=dc.quality_min,
-        quality_max=dc.quality_max,
-        flac_mp3_only=dc.flac_mp3_only,
+        quality_min=policy.quality_min,
+        quality_max=policy.quality_max,
+        flac_mp3_only=policy.flac_mp3_only,
+    )
+
+
+@singleton
+def get_newznab_release_scorer() -> "NewznabReleaseScorer":
+    from services.native.newznab_release_scorer import NewznabReleaseScorer
+
+    from .repo_providers import get_download_store
+
+    policy = get_preferences_service().get_download_policy()
+    return NewznabReleaseScorer(
+        get_download_store(),
+        flac_mp3_only=policy.flac_mp3_only,
+        policy=_build_spec_policy(policy),
     )
 
 
@@ -746,18 +778,29 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
     from core.config import get_settings
     from services.native.download_orchestrator import DownloadOrchestrator
 
-    from .repo_providers import get_download_client_repository, get_download_store
+    from .repo_providers import (
+        get_download_client_repository,
+        get_download_store,
+        get_newznab_indexer,
+        get_sabnzbd_download_client,
+        get_slskd_indexer,
+    )
 
-    lib = get_preferences_service().get_library_settings_raw()
-    dc = get_preferences_service().get_download_client_settings_raw()
-    # manifest is metadata only (audio lands in slskd's dir), so staging need not be on
-    # the library filesystem; default it under cache_dir
+    prefs = get_preferences_service()
+    lib = prefs.get_library_settings_raw()
+    policy = prefs.get_download_policy()
+    dc = prefs.get_download_client_settings_raw()
+    sab = prefs.get_sabnzbd_connection_raw()
+    usenet_enabled = prefs.is_usenet_ready()
+    # manifest is metadata only (audio lands in the client's dir), so staging need not be
+    # on the library filesystem; default it under cache_dir
     staging_path = (
         Path(lib.staging_path) if lib.staging_path
         else Path(get_settings().cache_dir) / "download-staging"
     )
     return DownloadOrchestrator(
         client=get_download_client_repository(),
+        indexer=get_slskd_indexer(),
         download_store=get_download_store(),
         file_processor=get_file_processor(),
         library_manager=get_library_manager(),
@@ -767,19 +810,30 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
         event_bus=get_sse_publisher(),
         staging_path=staging_path,
         naming_template=lib.naming_template,
-        auto_accept_threshold=dc.preflight_score_auto_accept,
-        manual_threshold=dc.preflight_score_manual_min,
-        stall_timeout_minutes=dc.download_stall_timeout_minutes,
-        queued_timeout_minutes=dc.download_queued_timeout_minutes,
-        max_failover_attempts=dc.max_failover_attempts,
-        max_concurrent_downloads=dc.max_concurrent_downloads,
-        auto_retry_enabled=dc.auto_retry_enabled,
-        auto_retry_max_attempts=dc.auto_retry_max_attempts,
-        auto_retry_base_interval_minutes=dc.auto_retry_base_interval_minutes,
+        auto_accept_threshold=policy.preflight_score_auto_accept,
+        manual_threshold=policy.preflight_score_manual_min,
+        stall_timeout_minutes=policy.download_stall_timeout_minutes,
+        queued_timeout_minutes=policy.download_queued_timeout_minutes,
+        max_failover_attempts=policy.max_failover_attempts,
+        max_concurrent_downloads=policy.max_concurrent_downloads,
+        auto_retry_enabled=policy.auto_retry_enabled,
+        auto_retry_max_attempts=policy.auto_retry_max_attempts,
+        auto_retry_base_interval_minutes=policy.auto_retry_base_interval_minutes,
         request_history=get_request_history_store(),
         on_import_callback=_build_import_invalidation(
             get_cache(), get_disk_cache(), get_library_db()
         ),
+        usenet_indexer=get_newznab_indexer(),
+        usenet_client=get_sabnzbd_download_client(),
+        usenet_scorer=get_newznab_release_scorer(),
+        usenet_enabled=usenet_enabled,
+        soulseek_enabled=dc.enabled,
+        source_priority=prefs.get_source_priority(),
+        album_service=get_album_service(),
+        usenet_category=sab.category,
+        usenet_priority=sab.priority,
+        usenet_post_processing=sab.post_processing,
+        usenet_min_release_age_minutes=policy.usenet_min_release_age_minutes,
     )
 
 
@@ -787,20 +841,38 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
 def get_download_service() -> "DownloadService":
     from services.native.download_service import DownloadService
 
-    from .repo_providers import get_download_client_repository, get_download_store
+    from .repo_providers import (
+        get_download_client_repository,
+        get_download_store,
+        get_newznab_indexer,
+        get_slskd_indexer,
+    )
 
-    dc = get_preferences_service().get_download_client_settings_raw()
+    prefs = get_preferences_service()
+    dc = prefs.get_download_client_settings_raw()
+    policy = prefs.get_download_policy()
+    usenet_enabled = prefs.is_usenet_ready()
+    # The service is "enabled" if ANY source can act (slskd OR usenet), so a Usenet-only
+    # install isn't blocked by the slskd-disabled guard.
     return DownloadService(
         download_client=get_download_client_repository(),
+        indexer=get_slskd_indexer(),
         scorer=get_album_preflight_scorer(),
         library_manager=get_library_repository(),
         download_store=get_download_store(),
         event_bus=get_sse_publisher(),
         orchestrator=get_download_orchestrator(),
+        file_processor=get_file_processor(),
         matcher=get_musicbrainz_matcher(),
         musicbrainz=get_musicbrainz_repository(),
         album_service=get_album_service(),
-        auto_accept_threshold=dc.preflight_score_auto_accept,
-        manual_threshold=dc.preflight_score_manual_min,
-        enabled=dc.enabled,
+        auto_accept_threshold=policy.preflight_score_auto_accept,
+        manual_threshold=policy.preflight_score_manual_min,
+        enabled=dc.enabled or usenet_enabled,
+        usenet_indexer=get_newznab_indexer(),
+        usenet_scorer=get_newznab_release_scorer(),
+        usenet_enabled=usenet_enabled,
+        soulseek_enabled=dc.enabled,
+        upgrade_allowed=policy.upgrade_allowed,
+        quality_cutoff=policy.quality_cutoff,
     )

@@ -43,20 +43,22 @@ vi.mock('$lib/stores/toast', () => ({ toastStore: { show: vi.fn() } }));
 import SettingsDownloadClient from './SettingsDownloadClient.svelte';
 
 describe('SettingsDownloadClient.svelte', () => {
-	it('renders the slskd URL and API key inputs', async () => {
+	it('shows the slskd card header with an enable toggle (collapsed by default)', async () => {
 		render(SettingsDownloadClient);
+		await expect.element(page.getByText('slskd')).toBeInTheDocument();
+		await expect.element(page.getByLabelText('Enable slskd download client')).toBeInTheDocument();
+	});
+
+	it('reveals the URL and API key inputs when expanded', async () => {
+		render(SettingsDownloadClient);
+		await page.getByRole('button', { name: 'Expand' }).click();
 		await expect.element(page.getByPlaceholder('http://slskd:5030')).toBeInTheDocument();
 		await expect.element(page.getByPlaceholder('slskd API key')).toBeInTheDocument();
 	});
 
-	it('shows the enable toggle and quality controls', async () => {
-		render(SettingsDownloadClient);
-		await expect.element(page.getByLabelText('Enable slskd download client')).toBeInTheDocument();
-		await expect.element(page.getByText('Download Quality & Verification')).toBeInTheDocument();
-	});
-
 	it('runs Test connection with the current form values and shows the result', async () => {
 		render(SettingsDownloadClient);
+		await page.getByRole('button', { name: 'Expand' }).click();
 		await page.getByRole('button', { name: 'Test connection' }).click();
 		// Test sends the form config, not an empty body, so the backend validates what's typed.
 		expect(testMutate).toHaveBeenCalledWith(

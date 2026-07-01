@@ -493,7 +493,9 @@ class LibraryService:
         # a missing file counts as success (already gone); other OS errors are logged
         # and skipped so one bad path doesn't abort the rest
         removed = 0
+        parents: set[str] = set()
         for path in paths:
+            parents.add(os.path.dirname(path))
             try:
                 os.remove(path)
                 removed += 1
@@ -501,6 +503,18 @@ class LibraryService:
                 removed += 1
             except OSError as e:
                 logger.warning("Couldn't delete library file from disk: %s (%s)", path, e)
+        # tidy up now-empty album folders, climbing to catch multi-disc roots
+        # (Album/CD1 -> Album). rmdir only removes an EMPTY dir, so the climb self-limits
+        # at the first non-empty ancestor (the artist/library root, or a folder still
+        # holding a mis-attributed straggler), which is left untouched.
+        for parent in sorted(parents, key=len, reverse=True):
+            current = parent
+            while current and current != os.path.dirname(current):
+                try:
+                    os.rmdir(current)
+                except OSError:
+                    break  # not empty, gone, or not ours - stop climbing
+                current = os.path.dirname(current)
         return removed
 
     async def get_album_removal_preview(self, album_mbid: str) -> AlbumRemovePreviewResponse:

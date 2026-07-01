@@ -27,6 +27,7 @@ def _app(service) -> FastAPI:
     # real return values so responses serialise (a bare AsyncMock hands back coroutines).
     service.next_retry_at = lambda task: None
     service.auto_retry_max = 0
+    service.retry_ladder_minutes = lambda: []
     app = FastAPI()
     app.include_router(downloads.router)
     app.dependency_overrides[get_download_service] = lambda: service
@@ -165,6 +166,66 @@ def test_retry_not_found_404():
     assert response.status_code == 404
 
 
+def test_response_exposes_completed_at_and_retry_ladder():
+    """The queue contract: each task carries its last-attempt timestamp + the full
+    backoff ladder (constant across the list, computed once by the route)."""
+    service = AsyncMock()
+    service.list_tasks.return_value = [_task("t1", completed_at=123.5)]
+    app = _app(service)  # _app sets default hint stubs; override the ladder after
+    service.retry_ladder_minutes = lambda: [15, 30, 60, 120, 240, 480]
+    response = build_test_client(app).get("/downloads")
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["completed_at"] == 123.5
+    assert item["retry_ladder_minutes"] == [15, 30, 60, 120, 240, 480]
+
+
+def test_response_completed_at_null_and_ladder_empty_by_default():
+    service = AsyncMock()
+    service.get_task.return_value = _task("t1")  # completed_at defaults to None
+    response = build_test_client(_app(service)).get("/downloads/t1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["completed_at"] is None
+    assert body["retry_ladder_minutes"] == []
+
+
+def test_clear_downloads_returns_count():
+    service = AsyncMock()
+    service.clear_finished.return_value = 3
+    response = build_test_client(_app(service)).post("/downloads/clear")
+    assert response.status_code == 200
+    assert response.json() == {"cleared": 3}
+    service.clear_finished.assert_awaited_once_with("u1", "user")
+
+
+def test_clear_downloads_unauthenticated_401():
+    service = AsyncMock()
+    app = FastAPI()
+    app.include_router(downloads.router)
+    app.dependency_overrides[get_download_service] = lambda: service
+    response = build_test_client(app).post("/downloads/clear")
+    assert response.status_code == 401
+
+
+def test_stop_all_retries_returns_count():
+    service = AsyncMock()
+    service.stop_all_retries.return_value = 2
+    response = build_test_client(_app(service)).post("/downloads/stop-all-retries")
+    assert response.status_code == 200
+    assert response.json() == {"stopped": 2}
+    service.stop_all_retries.assert_awaited_once_with("u1", "user")
+
+
+def test_retry_all_failed_returns_count():
+    service = AsyncMock()
+    service.retry_all_failed.return_value = 4
+    response = build_test_client(_app(service)).post("/downloads/retry-all-failed")
+    assert response.status_code == 200
+    assert response.json() == {"retried": 4}
+    service.retry_all_failed.assert_awaited_once_with("u1", "user")
+
+
 def test_get_files_returns_file_list():
     service = AsyncMock()
     files = [
@@ -181,3 +242,48 @@ def test_get_files_returns_file_list():
     assert body["files_total"] == 1
     assert body["files"][0]["filename"] == "A - B/01.flac"
     assert body["files"][0]["size"] == 123
+
+
+# -- held-track audio preview --
+
+
+def _held(held_path: str):
+    from models.held_import import HeldImport
+
+    return HeldImport(
+        id=1, user_id="u1", held_path=held_path, reason="fingerprint_mismatch",
+        source="usenet", status="held", created_at=0.0, track_title="You Shook Me",
+    )
+
+
+def test_held_audio_streams_file_and_supports_range(tmp_path):
+    f = tmp_path / "held.flac"
+    f.write_bytes(b"FLACDATA-0123456789")
+    service = AsyncMock()
+    service.get_held = AsyncMock(return_value=_held(str(f)))
+    client = build_test_client(_app(service))
+
+    full = client.get("/downloads/held/1/audio")
+    assert full.status_code == 200
+    assert full.content == b"FLACDATA-0123456789"
+    assert full.headers.get("accept-ranges") == "bytes"
+
+    # a Range request (what the scrubber sends) yields 206 partial content
+    part = client.get("/downloads/held/1/audio", headers={"Range": "bytes=0-3"})
+    assert part.status_code == 206
+    assert part.content == b"FLAC"
+    assert "content-range" in {k.lower() for k in part.headers}
+
+
+def test_held_audio_missing_file_is_404(tmp_path):
+    service = AsyncMock()
+    service.get_held = AsyncMock(return_value=_held(str(tmp_path / "gone.flac")))
+    resp = build_test_client(_app(service)).get("/downloads/held/1/audio")
+    assert resp.status_code == 404
+
+
+def test_held_audio_not_owned_is_404():
+    service = AsyncMock()
+    service.get_held = AsyncMock(return_value=None)  # ownership check failed / unknown id
+    resp = build_test_client(_app(service)).get("/downloads/held/1/audio")
+    assert resp.status_code == 404

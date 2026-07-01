@@ -50,8 +50,16 @@ from .repo_providers import (  # noqa: F401
     get_download_store,
     get_slskd_client,
     get_slskd_repository,
+    get_slskd_indexer,
+    get_newznab_indexer,
+    build_newznab_client,
     build_slskd_repository,
     get_download_client_repository,
+    get_sabnzbd_client,
+    get_sabnzbd_download_client,
+    build_sabnzbd_download_client,
+    get_download_client,
+    get_download_client_for_source,
 )
 
 from .service_providers import (  # noqa: F401
@@ -100,6 +108,7 @@ from .service_providers import (  # noqa: F401
     get_version_service,
     get_album_preflight_scorer,
     get_track_matcher,
+    get_newznab_release_scorer,
     get_download_manifest_codec,
     get_download_orchestrator,
     get_download_service,

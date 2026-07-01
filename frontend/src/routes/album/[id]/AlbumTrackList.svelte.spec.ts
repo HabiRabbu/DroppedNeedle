@@ -4,7 +4,9 @@ import { render } from 'vitest-browser-svelte';
 
 // keep the Request button real; stub only its mutation hook so it renders without a QueryClient
 vi.mock('$lib/queries/downloads/DownloadMutations.svelte', () => ({
-	requestTrack: () => ({ mutate: vi.fn(), isPending: false })
+	requestTrack: () => ({ mutate: vi.fn(), isPending: false }),
+	importHeldTrack: () => ({ mutate: vi.fn(), isPending: false }),
+	discardHeldTrack: () => ({ mutate: vi.fn(), isPending: false })
 }));
 
 // download_client gates the Request button
@@ -42,7 +44,31 @@ vi.mock('$lib/components/library/LibraryTrackRow.svelte', emptyComponent);
 
 import AlbumTrackList from './AlbumTrackList.svelte';
 import { buildRenderedTrackSections } from './albumTrackResolvers';
-import type { LibraryFileMeta } from '$lib/types';
+import type { HeldImport, LibraryFileMeta } from '$lib/types';
+
+function heldFor(recording_mbid: string): HeldImport {
+	return {
+		id: 1,
+		release_group_mbid: 'rg-1',
+		recording_mbid,
+		track_number: 3,
+		disc_number: 1,
+		track_title: 'Genuinely Missing',
+		artist_name: 'Artist',
+		album_title: 'Album',
+		year: null,
+		original_filename: 'x.flac',
+		file_format: 'flac',
+		duration_seconds: 100,
+		reason: 'fingerprint_mismatch',
+		source: 'usenet',
+		source_task_id: 't',
+		created_at: 0,
+		evidence_title: 'Other Song',
+		evidence_artist: 'Other Artist',
+		evidence_score: 0.9
+	};
+}
 
 const TRACKS = [
 	{ position: 1, disc_number: 1, title: 'Matched By MBID', length: 100000, recording_id: 'rec-1' },
@@ -84,7 +110,9 @@ const byPosition = new Map<string, LibraryFileMeta>([
 	['1:2', libTrack({ id: 'b', recording_mbid: null, track_number: 2 })]
 ]);
 
-function renderList() {
+function renderList(
+	over: { heldByRecording?: Map<string, HeldImport>; heldByPosition?: Map<string, HeldImport> } = {}
+) {
 	const album = {
 		musicbrainz_id: 'rg-1',
 		artist_name: 'Artist',
@@ -122,6 +150,8 @@ function renderList() {
 		plexEnabled: false,
 		libraryTracksByRecording: byRecording,
 		libraryTracksByPosition: byPosition,
+		heldByRecording: over.heldByRecording ?? new Map(),
+		heldByPosition: over.heldByPosition ?? new Map(),
 		releaseGroupMbid: 'rg-1',
 		onPlaySourceTrack: vi.fn(),
 		onTrackGenerated: vi.fn(),
@@ -142,5 +172,15 @@ describe('AlbumTrackList in-library detection', () => {
 		await expect.element(page.getByText('Genuinely Missing')).toBeVisible();
 		const requestButtons = page.getByRole('button', { name: 'Request this track' }).elements();
 		expect(requestButtons).toHaveLength(1);
+	});
+
+	it('shows a "held" chip (not Request) for an un-owned track with a held candidate', async () => {
+		expect.assertions(2);
+		renderList({ heldByRecording: new Map([['rec-3', heldFor('rec-3')]]) });
+
+		// the genuinely-missing track now has a held candidate -> the held review chip appears...
+		await expect.element(page.getByRole('button', { name: /held/i })).toBeVisible();
+		// ...and it replaces the Request button for that track (nothing left to request)
+		expect(page.getByRole('button', { name: 'Request this track' }).elements()).toHaveLength(0);
 	});
 });

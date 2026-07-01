@@ -1,7 +1,6 @@
 import { get, writable } from 'svelte/store';
 import { API } from '$lib/constants';
 import { api } from '$lib/api/client';
-import type { DownloadClientStatus } from '$lib/types';
 
 interface IntegrationStatus {
 	download_client: boolean;
@@ -57,6 +56,10 @@ function createIntegrationStore() {
 
 			loadPromise = (async () => {
 				try {
+					// download_client here means "any acquisition source is set up" (slskd OR
+					// Usenet) - the backend integration status is the single source of truth, so a
+					// Usenet-only install isn't gated on slskd. Don't re-derive it from the slskd
+					// health check alone (that's what made disabled-slskd hide the Request buttons).
 					const status = await api.global.get<Partial<IntegrationStatus>>(
 						API.homeIntegrationStatus()
 					);
@@ -64,14 +67,6 @@ function createIntegrationStore() {
 				} catch {
 					update((state) => ({ ...state, loaded: true }));
 				}
-
-				// drive download_client off the real slskd health check, not config presence; non-blocking so a slow/unreachable slskd never stalls the load
-				api.global
-					.get<DownloadClientStatus>(API.downloadClient.status())
-					.then((dc) =>
-						update((state) => ({ ...state, download_client: dc.client.status === 'ok' }))
-					)
-					.catch(() => {});
 			})().finally(() => {
 				loadPromise = null;
 			});

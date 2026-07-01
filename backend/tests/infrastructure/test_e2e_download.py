@@ -21,7 +21,12 @@ from infrastructure.sse_publisher import SSEPublisher
 from models.common import ServiceStatus
 from models.download import DownloadSearchResult
 from models.download_manifest import ManifestCodec
-from repositories.protocols.download_client import DownloadTaskStatus, MountDiagnosis, TaskRef
+from repositories.protocols.download_client import (
+    DownloadTaskStatus,
+    MountDiagnosis,
+    TaskHandle,
+)
+from repositories.protocols.indexer import IndexerResult
 from services.native.album_preflight_scorer import AlbumPreflightScorer
 from services.native.download_orchestrator import DownloadOrchestrator
 from services.native.download_service import DownloadService
@@ -50,12 +55,35 @@ def _seed_auth_users(db_path: Path) -> None:
         conn.close()
 
 
-class _StubClient:
-    def __init__(self, downloads_root: Path, album=None, track=None) -> None:
-        self._root = downloads_root
+class _StubIndexer:
+    """Search half of the split (D2): returns the placed fixtures as soulseek
+    ``IndexerResult``s, which the orchestrator/service unwrap before scoring."""
+
+    def __init__(self, album=None, track=None) -> None:
         self._album = album or []
         self._track = track or []
-        self.cancelled: list[TaskRef] = []
+
+    @property
+    def indexer_name(self) -> str:
+        return "soulseek"
+
+    def is_configured(self) -> bool:
+        return True
+
+    async def health_check(self) -> ServiceStatus:
+        return ServiceStatus(status="ok")
+
+    async def search_album(self, artist, album, year=None, track_count=None, *, timeout=30.0):
+        return [IndexerResult(source="soulseek", soulseek=r) for r in self._album]
+
+    async def search_track(self, artist, track, album=None, duration_seconds=None, *, timeout=30.0):
+        return [IndexerResult(source="soulseek", soulseek=r) for r in self._track]
+
+
+class _StubClient:
+    def __init__(self, downloads_root: Path) -> None:
+        self._root = downloads_root
+        self.cancelled: list[TaskHandle] = []
 
     @property
     def client_name(self) -> str:
@@ -67,27 +95,31 @@ class _StubClient:
     async def health_check(self) -> ServiceStatus:
         return ServiceStatus(status="ok")
 
-    async def search_album(self, artist, album, year=None, track_count=None, *, timeout=30.0):
-        return list(self._album)
+    async def enqueue(self, request) -> TaskHandle:
+        files = request.files
+        return TaskHandle(
+            source="soulseek",
+            username=files[0].username,
+            filenames=[f.filename for f in files],
+        )
 
-    async def search_track(self, artist, track, album=None, duration_seconds=None, *, timeout=30.0):
-        return list(self._track)
-
-    async def enqueue(self, files):
-        return TaskRef(username=files[0].username, filenames=[f.filename for f in files])
-
-    async def get_status(self, task_ref: TaskRef) -> DownloadTaskStatus:
-        n = len(task_ref.filenames)
+    async def get_status(self, handle: TaskHandle) -> DownloadTaskStatus:
+        n = len(handle.filenames)
         return DownloadTaskStatus(
             task_id="", status="completed", files_total=n, files_completed=n,
             bytes_total=0, bytes_downloaded=0, progress_percent=100.0,
         )
 
-    async def cancel(self, task_ref: TaskRef) -> bool:
-        self.cancelled.append(task_ref)
+    async def cancel(self, handle: TaskHandle) -> bool:
+        self.cancelled.append(handle)
         return True
 
-    async def get_file_path(self, username: str, remote_filename: str, size: int | None = None):
+    async def list_completed_files(self, handle: TaskHandle) -> list[Path]:
+        return [
+            self._root / f.replace("\\", "/").lstrip("/") for f in handle.filenames
+        ]
+
+    async def get_file_path(self, handle: TaskHandle, remote_filename: str, size: int | None = None):
         return self._root / remote_filename.replace("\\", "/").lstrip("/")
 
     async def diagnose_downloads_mount(self) -> MountDiagnosis:
@@ -124,7 +156,8 @@ def _build(tmp_path: Path, *, album=None, track=None):
     _seed_auth_users(db_path)
     library_db = LibraryDB(db_path=tmp_path / "library_files.db", write_lock=threading.Lock())
     manager = LibraryManager(library_db)
-    client = _StubClient(downloads, album=album, track=track)
+    client = _StubClient(downloads)
+    indexer = _StubIndexer(album=album, track=track)
 
     fp = FileProcessor(
         AudioTagger(),
@@ -138,6 +171,7 @@ def _build(tmp_path: Path, *, album=None, track=None):
     )
     orch = DownloadOrchestrator(
         client=client,
+        indexer=indexer,
         download_store=store,
         file_processor=fp,
         library_manager=manager,
@@ -222,8 +256,8 @@ async def test_request_links_download_task_id(tmp_path: Path):
     no_op_orch = MagicMock()
     no_op_orch.dispatch = MagicMock()
     download_service = DownloadService(
-        client, AlbumPreflightScorer(store, quality_min="low", flac_mp3_only=False), manager, store,
-        SSEPublisher(), no_op_orch,
+        client, _StubIndexer(), AlbumPreflightScorer(store, quality_min="low", flac_mp3_only=False),
+        manager, store, SSEPublisher(), no_op_orch,
     )
     request_service = RequestService(history, download_service)
 

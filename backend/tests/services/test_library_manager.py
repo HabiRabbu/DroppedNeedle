@@ -363,3 +363,24 @@ async def test_targeted_reconcile_soft_deletes_missing_within_scope(manager, tmp
     mbids = await manager.get_library_mbids(include_release_ids=False)
     assert "rg-present" in mbids
     assert "rg-gone" not in mbids  # genuinely missing within scope -> soft-deleted
+
+
+@pytest.mark.asyncio
+async def test_album_quality_tier_none_when_not_held(manager):
+    assert await manager.album_quality_tier("rg-absent") is None
+
+
+@pytest.mark.asyncio
+async def test_album_quality_tier_is_the_worst_held_file(manager, tmp_path):
+    # An album is only as good as its weakest track: a FLAC + a 320 MP3 -> mp3_320.
+    await _upsert(manager, tmp_path / "a.flac", track=1, rec="rec-1",
+                  info=_info(file_format="flac", bitrate=900))
+    await _upsert(manager, tmp_path / "b.mp3", track=2, rec="rec-2",
+                  info=_info(file_format="mp3", bitrate=320, bit_depth=None))
+    assert await manager.album_quality_tier("rg-1") == "mp3_320"
+
+
+@pytest.mark.asyncio
+async def test_album_quality_tier_all_lossless(manager, tmp_path):
+    await _upsert(manager, tmp_path / "a.flac", info=_info(file_format="flac", bitrate=900))
+    assert await manager.album_quality_tier("rg-1") == "lossless"

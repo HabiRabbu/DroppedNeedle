@@ -17,19 +17,30 @@ original) are penalised x0.3.
 import logging
 import re
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from rapidfuzz import fuzz
 from unidecode import unidecode
 
 from infrastructure.persistence.download_store import DownloadStore
 from models.download import ScoredCandidate, TargetAlbum
+from models.download_identity import soulseek_identity
 from repositories.protocols.download_client import DownloadSearchResult
+from services.native.acquisition import pipeline
+from services.native.acquisition.context import build_context
+from services.native.acquisition.decision import (
+    Accept,
+    Candidate,
+    Reject,
+    RejectCode,
+    SpecPolicy,
+)
+from services.native.acquisition.specs.quarantine import quarantine
 from services.native.quality_tiers import (
     DEFAULT_QUALITY_MAX,
     DEFAULT_QUALITY_MIN,
     candidate_tier,
-    in_range,
+    folder_hires_key,
     is_audio,
     is_flac_or_mp3,
     tier_rank,
@@ -162,11 +173,14 @@ class AlbumPreflightScorer:
         quality_min: str = DEFAULT_QUALITY_MIN,
         quality_max: str = DEFAULT_QUALITY_MAX,
         flac_mp3_only: bool = True,
+        policy: SpecPolicy | None = None,
     ):
         self._store = download_store
-        self._quality_min = quality_min
-        self._quality_max = quality_max
         self._flac_mp3_only = flac_mp3_only
+        # The full spec policy: passed by the composition root (built from
+        # DownloadPolicySettings) or derived from the quality kwargs in tests. The size/
+        # term/age gates default off, so a quality-only construction is behaviour-unchanged.
+        self._policy = policy or SpecPolicy(quality_min=quality_min, quality_max=quality_max)
 
     async def rank(
         self,
@@ -176,9 +190,21 @@ class AlbumPreflightScorer:
         auto_accept_threshold: float = 0.70,
         manual_threshold: float = 0.50,
     ) -> list[ScoredCandidate]:
-        quarantined = await self._store.load_quarantine_set()
+        context = await build_context(self._store)
+        policy = self._policy
+        # Soulseek quarantine is file-granular (a peer may have just one bad file): apply
+        # it as a pool pre-filter via the shared spec, so a quarantined file is dropped
+        # before grouping while the folder's other files survive.
         filtered = [
-            r for r in results if (r.username, r.filename) not in quarantined
+            r for r in results
+            if isinstance(
+                quarantine(
+                    Candidate(source="soulseek",
+                              identity=soulseek_identity(r.username, r.filename)),
+                    target, context, policy,
+                ),
+                Accept,
+            )
         ]
 
         groups: dict[tuple[str, str], list[DownloadSearchResult]] = defaultdict(list)
@@ -186,7 +212,8 @@ class AlbumPreflightScorer:
             groups[(result.username, result.parent_directory)].append(result)
 
         scored: list[ScoredCandidate] = []
-        drop_no_audio = drop_codec = drop_quality = 0
+        drop_no_audio = drop_codec = 0
+        pipeline_drops: Counter[RejectCode] = Counter()
         for (username, parent), files in groups.items():
             # A folder search returns the album's sidecars (cover art, cue, log, m3u)
             # alongside the tracks; gate, score and enqueue on the AUDIO files only -
@@ -197,12 +224,27 @@ class AlbumPreflightScorer:
                 drop_no_audio += 1
                 continue
             # a folder is rated by its worst audio file (downloaded whole): drop on a
-            # disallowed codec or a tier outside [quality_min, quality_max]
+            # disallowed codec before the shared pipeline judges identity + quality range.
             if self._flac_mp3_only and not all(is_flac_or_mp3(f) for f in audio):
                 drop_codec += 1
                 continue
-            if not in_range(candidate_tier(audio), self._quality_min, self._quality_max):
-                drop_quality += 1
+            # Shared spec pipeline - the SAME rules as the Usenet path: blocklist (a folder
+            # carries no single identity, so it's a no-op here - quarantine was applied
+            # per-file above), wrong-edition + wrong-album (a live/boxset or a different
+            # album by the same artist scores near-identical under token_set_ratio),
+            # sample, ignored/required terms, quality-range, max-size, retention/min-age
+            # (Usenet-only, no-op here), free-space. Off-by-default gates short-circuit.
+            decision = pipeline.run(
+                Candidate(
+                    source="soulseek",
+                    match_text=parent,
+                    tier=candidate_tier(audio),
+                    size_bytes=sum(f.size for f in audio),
+                ),
+                target, context, policy,
+            )
+            if isinstance(decision, Reject):
+                pipeline_drops[decision.code] += 1
                 continue
 
             coherence = self._coherence(target, audio, parent)
@@ -240,9 +282,10 @@ class AlbumPreflightScorer:
                 )
             )
 
-        # highest tier first (any decent FLAC beats any MP3), then best match within it
+        # highest tier first (any decent FLAC beats any MP3), then hi-res before 16/44 within
+        # the tier (H1), then best match within that.
         scored.sort(
-            key=lambda c: (tier_rank(candidate_tier(c.files)), c.final_score),
+            key=lambda c: (tier_rank(candidate_tier(c.files)), *folder_hires_key(c.files), c.final_score),
             reverse=True,
         )
         ranked = scored[:50]
@@ -254,11 +297,12 @@ class AlbumPreflightScorer:
                 "auto_count": sum(1 for c in ranked if c.tier == "auto"),
                 "manual_count": sum(1 for c in ranked if c.tier == "manual"),
                 # why folders were dropped before scoring - a candidates_count of 0
-                # with a non-zero results_count is explained entirely by these.
+                # with a non-zero results_count is explained entirely by these. The
+                # inline gates (no_audio/codec) plus one key per shared-spec reject code.
                 "groups_total": len(groups),
                 "dropped_no_audio": drop_no_audio,
                 "dropped_codec": drop_codec,
-                "dropped_quality": drop_quality,
+                **{f"dropped_{code.value}": n for code, n in pipeline_drops.items()},
             },
         )
         return ranked

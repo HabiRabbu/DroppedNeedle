@@ -1576,6 +1576,74 @@ export interface TestConnectionResult {
 	message: string;
 }
 
+export interface IndexerSettings {
+	id: string;
+	type: string;
+	name: string;
+	url: string;
+	api_key: string;
+	categories: number[];
+	enabled: boolean;
+	priority: number;
+}
+
+export interface IndexerTestResult {
+	valid: boolean;
+	version?: string | null;
+	message: string;
+	supports_audio_search: boolean;
+	category_count: number;
+}
+
+export interface IndexerSavedResponse {
+	id: string;
+}
+
+export interface OperationResult {
+	success: boolean;
+	message?: string | null;
+}
+
+export interface SabnzbdConnectionSettings {
+	enabled: boolean;
+	client_type: string;
+	url: string;
+	api_key: string;
+	category: string;
+	priority: number;
+	post_processing: number;
+	downloads_mount: string;
+}
+
+export interface SabnzbdTestResult {
+	valid: boolean;
+	version?: string | null;
+	message: string;
+	categories: string[];
+	complete_dir?: string | null;
+}
+
+export interface SourcePriority {
+	order: string[];
+}
+
+export interface DownloadPolicySettings {
+	quality_min: string;
+	quality_max: string;
+	flac_mp3_only: boolean;
+	verify_downloads: boolean;
+	preflight_score_auto_accept: number;
+	preflight_score_manual_min: number;
+	download_stall_timeout_minutes: number;
+	download_queued_timeout_minutes: number;
+	max_failover_attempts: number;
+	max_concurrent_downloads: number;
+	auto_retry_enabled: boolean;
+	auto_retry_max_attempts: number;
+	auto_retry_base_interval_minutes: number;
+	usenet_min_release_age_minutes: number;
+}
+
 export interface DownloadSearchResultFile {
 	username: string;
 	filename: string;
@@ -1592,10 +1660,27 @@ export interface DownloadSearchResultFile {
 
 export type CandidateTier = 'auto' | 'manual' | 'rejected';
 
+export interface UsenetRelease {
+	indexer_id: string;
+	indexer_name: string;
+	guid: string;
+	title: string;
+	nzb_url: string;
+	size_bytes: number;
+	category_ids: number[];
+	grabs?: number | null;
+	files?: number | null;
+	usenet_date?: number | null;
+}
+
 export interface ScoredCandidate {
+	// "soulseek" | "usenet" - selects the review-card variant (D16). Optional for
+	// backward-compat with older cached candidate blobs (default soulseek).
+	source?: string;
 	username: string;
 	parent_directory: string;
 	files: DownloadSearchResultFile[];
+	usenet_release?: UsenetRelease | null;
 	coherence: number;
 	file_confidence: number;
 	final_score: number;
@@ -1635,6 +1720,9 @@ export interface DownloadTask {
 	id: string;
 	user_id: string;
 	download_type: string;
+	// "soulseek" | "usenet" - drives the source badge + the "via album NZB" label.
+	// Optional for backward-compat with cached/older responses.
+	source?: string;
 	release_group_mbid: string;
 	recording_mbid: string | null;
 	artist_name: string;
@@ -1657,14 +1745,47 @@ export interface DownloadTask {
 	retry_count: number;
 	created_at: number;
 	updated_at: number;
+	completed_at: number | null;
 	next_retry_at: number | null;
 	retry_max: number;
+	// The full auto-retry backoff schedule in minutes for this task's max attempts, e.g.
+	// [15, 30, 60, 120, 240, 480]. Empty when auto-retry is off. Drives the Wanted ladder.
+	retry_ladder_minutes: number[];
 }
 
 export interface DownloadListResponse {
 	items: DownloadTask[];
 	page: number;
 	page_size: number;
+}
+
+// A downloaded track that matched by duration but failed the AcoustID recording-identity
+// check (usually wrong MusicBrainz metadata). Held for a human "import anyway" / "discard"
+// decision instead of being dropped. `evidence_*` is what AcoustID heard.
+export interface HeldImport {
+	id: number;
+	release_group_mbid: string | null;
+	recording_mbid: string | null;
+	track_number: number | null;
+	disc_number: number | null;
+	track_title: string | null;
+	artist_name: string | null;
+	album_title: string | null;
+	year: number | null;
+	original_filename: string | null;
+	file_format: string | null;
+	duration_seconds: number | null;
+	reason: string;
+	source: string;
+	source_task_id: string | null;
+	created_at: number;
+	evidence_title: string | null;
+	evidence_artist: string | null;
+	evidence_score: number | null;
+}
+
+export interface HeldListResponse {
+	items: HeldImport[];
 }
 
 // SSE payload on the `download:{task_id}` channel `progress` event

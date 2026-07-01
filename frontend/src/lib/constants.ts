@@ -180,6 +180,7 @@ export const API = {
 		stats: () => '/api/v1/library/stats',
 		scanSchedule: () => '/api/v1/settings/library/schedule',
 		rescanAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/rescan`,
+		reidentifyAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/reidentify`,
 		updateTrackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}`,
 		trackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}/tags`,
 		scanStart: () => '/api/v1/library/scan/start',
@@ -324,6 +325,20 @@ export const API = {
 		test: () => '/api/v1/download-client/test',
 		status: () => '/api/v1/download-client/status'
 	},
+	indexers: {
+		list: () => '/api/v1/indexers',
+		create: () => '/api/v1/indexers',
+		update: (id: string) => `/api/v1/indexers/${id}`,
+		remove: (id: string) => `/api/v1/indexers/${id}`,
+		reorder: () => '/api/v1/indexers/reorder',
+		test: () => '/api/v1/indexers/test'
+	},
+	downloadClients: {
+		sabnzbd: () => '/api/v1/download-clients/sabnzbd',
+		sabnzbdTest: () => '/api/v1/download-clients/sabnzbd/test',
+		policy: () => '/api/v1/download-clients/policy',
+		sourcePriority: () => '/api/v1/download-clients/source-priority'
+	},
 	connectApps: {
 		settings: () => '/api/v1/connect-apps/settings',
 		appPasswords: () => '/api/v1/connect-apps/app-passwords',
@@ -348,7 +363,19 @@ export const API = {
 		get: (taskId: string) => `/api/v1/downloads/${taskId}`,
 		stream: (taskId: string) => `/api/v1/downloads/${taskId}/stream`,
 		cancel: (taskId: string) => `/api/v1/downloads/${taskId}/cancel`,
-		retry: (taskId: string) => `/api/v1/downloads/${taskId}/retry`
+		retry: (taskId: string) => `/api/v1/downloads/${taskId}/retry`,
+		clear: () => '/api/v1/downloads/clear',
+		stopAllRetries: () => '/api/v1/downloads/stop-all-retries',
+		retryAllFailed: () => '/api/v1/downloads/retry-all-failed',
+		held: (releaseGroupMbid?: string) => {
+			const params = new URLSearchParams();
+			if (releaseGroupMbid) params.set('release_group_mbid', releaseGroupMbid);
+			const qs = params.toString();
+			return `/api/v1/downloads/held${qs ? `?${qs}` : ''}`;
+		},
+		heldImport: (id: number) => `/api/v1/downloads/held/${id}/import`,
+		heldDiscard: (id: number) => `/api/v1/downloads/held/${id}/discard`,
+		heldAudio: (id: number) => `/api/v1/downloads/held/${id}/audio`
 	},
 	requests: {
 		new: () => '/api/v1/requests/new',

@@ -7,12 +7,14 @@ import type { DownloadTask } from '$lib/types';
 const h = vi.hoisted(() => ({
 	cancelMutate: vi.fn(),
 	retryMutate: vi.fn(),
+	stopRetryMutate: vi.fn(),
 	isAdmin: false
 }));
 
 vi.mock('$lib/queries/downloads/DownloadMutations.svelte', () => ({
 	cancelDownload: () => ({ mutate: h.cancelMutate, isPending: false }),
-	retryDownload: () => ({ mutate: h.retryMutate, isPending: false })
+	retryDownload: () => ({ mutate: h.retryMutate, isPending: false }),
+	stopAutoRetry: () => ({ mutate: h.stopRetryMutate, isPending: false })
 }));
 
 vi.mock('$lib/queries/downloads/DownloadSSE.svelte', () => ({
@@ -63,8 +65,10 @@ function task(overrides: Partial<DownloadTask> = {}): DownloadTask {
 		retry_count: 0,
 		created_at: 0,
 		updated_at: 0,
+		completed_at: null,
 		next_retry_at: null,
 		retry_max: 6,
+		retry_ladder_minutes: [15, 30, 60, 120, 240, 480],
 		...overrides
 	};
 }
@@ -79,6 +83,7 @@ describe('DownloadItem.svelte', () => {
 	beforeEach(() => {
 		h.cancelMutate = vi.fn();
 		h.retryMutate = vi.fn();
+		h.stopRetryMutate = vi.fn();
 		h.isAdmin = false;
 	});
 
@@ -105,5 +110,19 @@ describe('DownloadItem.svelte', () => {
 	it('shows a "View in Library" link when completed', async () => {
 		renderItem(task({ status: 'completed' }));
 		await expect.element(page.getByRole('link', { name: 'View in library' })).toBeVisible();
+	});
+
+	it('offers a "Stop retrying" off-switch for a scheduled auto-retry', async () => {
+		const future = Date.now() / 1000 + 10 * 60;
+		renderItem(task({ status: 'failed', retry_count: 1, next_retry_at: future }));
+		await page.getByRole('button', { name: 'Stop auto-retrying this download' }).click();
+		expect(h.stopRetryMutate).toHaveBeenCalledWith('t');
+	});
+
+	it('does not offer "Stop retrying" once auto-retries are exhausted', async () => {
+		renderItem(task({ status: 'failed', retry_count: 6, next_retry_at: null }));
+		await expect
+			.element(page.getByRole('button', { name: 'Stop auto-retrying this download' }))
+			.not.toBeInTheDocument();
 	});
 });

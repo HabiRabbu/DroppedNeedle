@@ -3,6 +3,7 @@ import { createMutation } from '@tanstack/svelte-query';
 import { api } from '$lib/api/client';
 import { API } from '$lib/constants';
 import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
+import { LibraryQueryKeyFactory } from '$lib/queries/library/LibraryQueryKeyFactory';
 import { toastStore } from '$lib/stores/toast';
 import type {
 	CancelDownloadResponse,
@@ -101,6 +102,21 @@ export function cancelDownload() {
 	}));
 }
 
+// Stop a scheduled auto-retry. Cancelling the failed/partial task drops it out of the
+// retry sweep (status -> cancelled); a manual Retry is still available afterwards.
+export function stopAutoRetry() {
+	return createMutation(() => ({
+		mutationFn: (id: string) =>
+			api.global.post<CancelDownloadResponse>(API.downloads.cancel(id), {}),
+		onSuccess: () => {
+			toastStore.show({ message: 'Stopped retrying', type: 'info' });
+			void invalidateTasks();
+		},
+		onError: (err: unknown) =>
+			toastStore.show({ message: errorMessage(err, 'Failed to stop retrying'), type: 'error' })
+	}));
+}
+
 export function retryDownload() {
 	return createMutation(() => ({
 		mutationFn: (id: string) => api.global.post<RetryDownloadResponse>(API.downloads.retry(id), {}),
@@ -110,5 +126,100 @@ export function retryDownload() {
 		},
 		onError: (err: unknown) =>
 			toastStore.show({ message: errorMessage(err, 'Failed to retry download'), type: 'error' })
+	}));
+}
+
+// Bulk queue actions for the dashboard. Each reports how many rows it touched so the
+// toast is honest ("Cleared 12 downloads", "Nothing to clear").
+function pluralDownloads(n: number): string {
+	return `${n} download${n === 1 ? '' : 's'}`;
+}
+
+export function clearFinished() {
+	return createMutation(() => ({
+		mutationFn: () => api.global.post<{ cleared: number }>(API.downloads.clear(), {}),
+		onSuccess: (data: { cleared: number }) => {
+			toastStore.show({
+				message: data.cleared > 0 ? `Cleared ${pluralDownloads(data.cleared)}` : 'Nothing to clear',
+				type: 'info'
+			});
+			void invalidateTasks();
+		},
+		onError: (err: unknown) =>
+			toastStore.show({ message: errorMessage(err, 'Failed to clear downloads'), type: 'error' })
+	}));
+}
+
+export function stopAllRetries() {
+	return createMutation(() => ({
+		mutationFn: () => api.global.post<{ stopped: number }>(API.downloads.stopAllRetries(), {}),
+		onSuccess: (data: { stopped: number }) => {
+			toastStore.show({
+				message: data.stopped > 0 ? `Stopped retrying ${pluralDownloads(data.stopped)}` : 'No retries to stop',
+				type: 'info'
+			});
+			void invalidateTasks();
+		},
+		onError: (err: unknown) =>
+			toastStore.show({ message: errorMessage(err, 'Failed to stop retries'), type: 'error' })
+	}));
+}
+
+export function retryAllFailed() {
+	return createMutation(() => ({
+		mutationFn: () => api.global.post<{ retried: number }>(API.downloads.retryAllFailed(), {}),
+		onSuccess: (data: { retried: number }) => {
+			toastStore.show({
+				message: data.retried > 0 ? `Retrying ${pluralDownloads(data.retried)}` : 'Nothing to retry',
+				type: 'info'
+			});
+			void invalidateTasks();
+		},
+		onError: (err: unknown) =>
+			toastStore.show({ message: errorMessage(err, 'Failed to retry downloads'), type: 'error' })
+	}));
+}
+
+// Held-track review actions. Both refresh the held list + the queue (invalidateTasks covers
+// the held query, nested under the tasks key); import also refreshes the album's library
+// status so the newly-placed track shows on the album page.
+interface HeldActionInput {
+	id: number;
+	release_group_mbid?: string | null;
+}
+
+function invalidateAlbum(releaseGroupMbid?: string | null) {
+	if (releaseGroupMbid) {
+		void invalidateQueriesWithPersister({ queryKey: LibraryQueryKeyFactory.album(releaseGroupMbid) });
+	}
+}
+
+export function importHeldTrack() {
+	return createMutation(() => ({
+		mutationFn: (input: HeldActionInput) =>
+			api.global.post<{ status: string; final_path: string | null }>(
+				API.downloads.heldImport(input.id),
+				{}
+			),
+		onSuccess: (_data: { status: string }, input: HeldActionInput) => {
+			toastStore.show({ message: 'Imported', type: 'success' });
+			void invalidateTasks();
+			invalidateAlbum(input.release_group_mbid);
+		},
+		onError: (err: unknown) =>
+			toastStore.show({ message: errorMessage(err, 'Failed to import track'), type: 'error' })
+	}));
+}
+
+export function discardHeldTrack() {
+	return createMutation(() => ({
+		mutationFn: (input: HeldActionInput) =>
+			api.global.post<{ status: string }>(API.downloads.heldDiscard(input.id), {}),
+		onSuccess: () => {
+			toastStore.show({ message: 'Discarded', type: 'info' });
+			void invalidateTasks();
+		},
+		onError: (err: unknown) =>
+			toastStore.show({ message: errorMessage(err, 'Failed to discard track'), type: 'error' })
 	}));
 }

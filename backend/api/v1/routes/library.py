@@ -21,7 +21,12 @@ from api.v1.schemas.library import (
     LibraryTrackResponse,
     TrackTagUpdateRequest,
 )
-from core.dependencies import get_library_service, get_library_manager, get_library_scanner
+from core.dependencies import (
+    get_download_service,
+    get_library_service,
+    get_library_manager,
+    get_library_scanner,
+)
 from core.exceptions import ExternalServiceError
 from infrastructure.msgspec_fastapi import MsgSpecRoute, MsgSpecBody
 from middleware import CurrentAdminDep, CurrentUserDep
@@ -172,13 +177,23 @@ async def get_album_removal_preview(
 async def remove_album(
     album_mbid: str,
     delete_files: bool = False,
-    library_service: LibraryService = Depends(get_library_service)
+    library_service: LibraryService = Depends(get_library_service),
+    download_service=Depends(get_download_service),
 ):
     try:
-        return await library_service.remove_album(album_mbid, delete_files=delete_files)
+        result = await library_service.remove_album(album_mbid, delete_files=delete_files)
     except ExternalServiceError as e:
         logger.error(f"Couldn't remove album {album_mbid}: {e}")
         raise HTTPException(status_code=500, detail="Couldn't remove this album")
+    # Removing the album must also clear its download-side state - pending auto-retries
+    # (or the "retry N/M in ..." loop re-downloads a deleted album), held "Couldn't verify"
+    # tracks (rows + files), and blocklist entries. Best-effort: a failure here must not
+    # fail the removal the user already confirmed.
+    try:
+        await download_service.purge_album_downloads(album_mbid)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Album {album_mbid} removed but download-state cleanup failed: {e}")
+    return result
 
 
 @router.post("/resolve-tracks", response_model=TrackResolveResponse)
@@ -265,3 +280,27 @@ async def rescan_native_album(
         return StatusMessageResponse(status="accepted", message="Album rescan already running")
     task.add_done_callback(_log_rescan_exception)
     return StatusMessageResponse(status="accepted", message="Album rescan started")
+
+
+@router.post(
+    "/albums/{mbid}/reidentify", status_code=202, response_model=StatusMessageResponse
+)
+async def reidentify_native_album(
+    mbid: str,
+    current_user: CurrentAdminDep,
+    scanner: LibraryScanner = Depends(get_library_scanner),
+):
+    """Force a fresh whole-folder re-identification of an album, overriding the scan's
+    stability guards - the correction path for an album stuck on the wrong release group."""
+    from core.task_registry import TaskRegistry
+
+    task = asyncio.create_task(scanner.reidentify_album(mbid))
+    try:
+        TaskRegistry.get_instance().register(f"library-reidentify-{mbid}", task)
+    except RuntimeError:
+        task.cancel()
+        return StatusMessageResponse(
+            status="accepted", message="Album re-identify already running"
+        )
+    task.add_done_callback(_log_rescan_exception)
+    return StatusMessageResponse(status="accepted", message="Album re-identify started")
