@@ -154,6 +154,9 @@ test-compat: backend-test-compat frontend-test-connect-apps ## Connect Apps: ful
 backend-test-album-refresh: $(BACKEND_VENV_STAMP) ## Run album refresh endpoint tests
 	$(PYTEST) tests/routes/test_album_refresh.py tests/services/test_navidrome_cache_invalidation.py -v
 
+backend-test-album-owned-release: $(BACKEND_VENV_STAMP) ## Owned album shows the edition on disc, not the largest ranked release
+	$(PYTEST) tests/services/test_album_service.py tests/services/test_album_singleflight.py -v
+
 backend-test-local-stats: $(BACKEND_VENV_STAMP) ## Listening Room stats sourced from the library DB (home entry-card parity)
 	$(PYTEST) tests/services/test_local_files_service.py tests/test_advanced_settings_roundtrip.py -v
 

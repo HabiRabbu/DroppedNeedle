@@ -16,6 +16,7 @@ def _make(record_status="awaiting_approval", *, request_album_result="task-9", d
             status=record_status,
             album_title="OK Computer",
             artist_name="Radiohead",
+            artist_mbid="artist-mbid-1",
             year=1997,
             user_id="u1",
             download_task_id=download_task_id,

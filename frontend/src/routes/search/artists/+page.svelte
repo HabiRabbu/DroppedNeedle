@@ -29,8 +29,9 @@
 	let sentinel = $state<HTMLElement>();
 	let abortController: AbortController | null = null;
 	let enrichmentController: AbortController | null = null;
-	let observer: IntersectionObserver | null = $state(null);
+	let observer: IntersectionObserver | null = null;
 	let enrichmentSource: EnrichmentSource = $state('none');
+	let lastQuery = $state('');
 
 	function navigateBack() {
 		if (data.query) {
@@ -165,7 +166,8 @@
 	}
 
 	run(() => {
-		if (browser && data.query) {
+		if (browser && data.query && data.query !== lastQuery) {
+			lastQuery = data.query;
 			resetAndLoad();
 		}
 	});

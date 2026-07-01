@@ -64,6 +64,7 @@ def _to_response(  # noqa: ANN001 - DownloadTask
         source=task.source,
         release_group_mbid=task.release_group_mbid,
         recording_mbid=task.recording_mbid,
+        artist_mbid=task.artist_mbid,
         artist_name=task.artist_name,
         album_title=task.album_title,
         track_title=task.track_title,

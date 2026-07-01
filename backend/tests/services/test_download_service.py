@@ -216,7 +216,9 @@ def _make_service_with_mb(owner_id="u1"):
     matcher.resolve_recording_to_release_group = AsyncMock(return_value="rg-x")
     mb = MagicMock()
     mb.get_release_group = AsyncMock(
-        return_value=SimpleNamespace(title="Resolved Album", artist_name="Resolved Artist", year=2001)
+        return_value=SimpleNamespace(
+            title="Resolved Album", artist_name="Resolved Artist", year=2001, artist_id="artist-mbid-1"
+        )
     )
     service._matcher = matcher
     service._mb = mb

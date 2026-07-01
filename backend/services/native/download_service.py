@@ -287,6 +287,7 @@ class DownloadService:
             user_id=user_id,
             download_type="album",
             release_group_mbid=job.release_group_mbid or "",
+            artist_mbid=job.artist_mbid,
             artist_name=job.artist_name,
             album_title=job.album_title,
             year=job.year,
@@ -318,6 +319,7 @@ class DownloadService:
         track_title: str | None = None,
         track_duration_seconds: float | None = None,
         download_type: str = "album",
+        artist_mbid: str | None = None,
     ) -> str:
         """Create a download task and dispatch the orchestrator. Returns the new
         task id, the existing active task id (dedup), or the ``already_in_library``
@@ -350,11 +352,11 @@ class DownloadService:
                 )
 
         # Folder naming uses the request's year ({album} ({year})); compact request
-        # buttons don't always supply it. Backfill from the release group when missing,
-        # or the folder is created as "Album ()". After dedup, so it runs once per new
-        # request; best-effort, since a MusicBrainz failure must not fail the download
-        # over a missing year.
-        if year is None and release_group_mbid and self._mb is not None:
+        # buttons don't always supply it. Backfill (year, and the artist mbid for the
+        # queue UI's artist link) from the release group when missing, or the folder
+        # is created as "Album ()". After dedup, so it runs once per new request;
+        # best-effort, since a MusicBrainz failure must not fail the download.
+        if (year is None or artist_mbid is None) and release_group_mbid and self._mb is not None:
             try:
                 album_meta = await self._mb.get_release_group(release_group_mbid)
             except Exception:  # noqa: BLE001 - year is best-effort, never block the request
@@ -367,6 +369,7 @@ class DownloadService:
                 year = album_meta.year
                 artist_name = artist_name or album_meta.artist_name
                 album_title = album_title or album_meta.title
+                artist_mbid = artist_mbid or album_meta.artist_id
 
         # Backfill the album track count (best-effort) so the completeness gate and
         # scorer can tell a partial source from a full one. Skipped for per-track
@@ -378,6 +381,7 @@ class DownloadService:
             download_type=download_type,
             release_group_mbid=release_group_mbid,
             recording_mbid=recording_mbid,
+            artist_mbid=artist_mbid,
             artist_name=artist_name,
             album_title=album_title,
             track_title=track_title,
@@ -397,6 +401,7 @@ class DownloadService:
         album_title: str | None = None,
         duration_seconds: int | None = None,
         release_group_mbid: str | None = None,
+        artist_mbid: str | None = None,
     ) -> str:
         """Request a single track. Orphan tracks (album not in the library) resolve
         the release group via MusicBrainz, auto-create the album folder, and download
@@ -418,11 +423,12 @@ class DownloadService:
                 )
 
         year: int | None = None
-        if (not album_title or not artist_name) and self._mb is not None:
+        if (not album_title or not artist_name or not artist_mbid) and self._mb is not None:
             album_meta = await self._mb.get_release_group(release_group_mbid)
             if album_meta is not None:
                 album_title = album_title or album_meta.title
                 artist_name = artist_name or album_meta.artist_name
+                artist_mbid = artist_mbid or album_meta.artist_id
                 year = album_meta.year
 
         return await self.request_album(
@@ -436,6 +442,7 @@ class DownloadService:
             track_title=track_title,
             track_duration_seconds=duration_seconds,
             download_type="track",
+            artist_mbid=artist_mbid,
         )
 
     async def get_task(self, task_id: str, user_id: str, user_role: str):

@@ -207,8 +207,9 @@
 						heldByPosition.get(
 							getDiscTrackKey({ disc_number: trackDiscNumber, track_number: track.position })
 						))}
-				{@const trackTask =
-					track.recording_id ? (trackDownloadTasks.get(track.recording_id) ?? null) : null}
+				{@const trackTask = track.recording_id
+					? (trackDownloadTasks.get(track.recording_id) ?? null)
+					: null}
 				{@const showTrackDownload = !libMeta && !!trackTask}
 				{@const showRequest =
 					!libMeta &&
@@ -279,6 +280,7 @@
 										albumMbid={releaseGroupMbid || album.musicbrainz_id}
 										albumTitle={album.title}
 										durationSeconds={track.length ? Math.round(track.length / 1000) : null}
+										artistMbid={album.artist_id}
 									/>
 								{/if}
 								{#if showPreview}

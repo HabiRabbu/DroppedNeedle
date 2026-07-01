@@ -22,7 +22,7 @@ import os
 import time
 from collections import Counter
 from pathlib import Path
-from typing import NamedTuple, TYPE_CHECKING
+from typing import Awaitable, Callable, NamedTuple, TYPE_CHECKING
 
 import msgspec
 
@@ -103,6 +103,7 @@ class LibraryScanner:
         library_manager: "LibraryManager",
         scan_state_store: "ScanStateStore",
         event_bus: "SSEPublisher",
+        invalidate_albums: "Callable[[set[str]], Awaitable[None]] | None" = None,
     ) -> None:
         self._tagger = audio_tagger
         self._fingerprinter = fingerprinter
@@ -113,6 +114,11 @@ class LibraryScanner:
         self._events = event_bus
         self._cancel = asyncio.Event()
         self._running = False
+        # Release groups a scan/re-identify re-attributed - their cached album pages are
+        # stale and get busted when the run finishes (so the page reflects the new identity
+        # without a manual refresh). Reset per run; ``None`` invalidator = no-op (tests).
+        self._invalidate_albums = invalidate_albums
+        self._changed_rgs: set[str] = set()
 
     def request_cancel(self) -> None:
         """Signal a running scan to stop at the next file boundary."""
@@ -330,39 +336,45 @@ class LibraryScanner:
         # A prior cancelled scan leaves the shared _cancel event set; clear it so a manual
         # re-identify isn't a silent no-op (mirrors _run_scan).
         self._cancel.clear()
-        rows = await self._library.get_file_rows_for_album(release_group_mbid)
-        by_folder: dict[str, list[Path]] = {}
-        for row in rows:
-            path = Path(row["file_path"])
-            if path.exists():
-                by_folder.setdefault(str(path.parent), []).append(path)
-        stats = ScanStats()
-        for paths in by_folder.values():
-            if self._cancel.is_set():
-                break
-            entries: list[_FileEntry] = []
-            for path in paths:
-                try:
-                    tag, info = await asyncio.to_thread(self._tagger.read_tags, path)
-                    mtime = path.stat().st_mtime
-                except Exception as exc:  # noqa: BLE001 - a bad file must not abort the re-id
-                    logger.warning("Re-identify: cannot read %s: %s", path, exc)
-                    continue
-                entries.append(
-                    _FileEntry(path=path, tag=self._enrich_tag_from_path(path, tag),
-                               info=info, mtime=mtime)
-                )
-            if entries:
-                await self._identify_entries(entries, stats, force=True)
-        # If re-identification moved every file off the old RG, drop its stale materialised
-        # album row so it stops reporting "In Library" as a zero-file ghost.
-        if not await self._library.has_album(release_group_mbid):
-            await self._library.delete_album_row(release_group_mbid)
-        logger.info(
-            "reidentify.album",
-            extra={"release_group_mbid": release_group_mbid, "matched": stats.matched},
-        )
-        return stats.matched
+        # Always bust the target group's cache: the user asked to re-identify it, so its page
+        # should reflect the outcome even if the attribution ends up unchanged.
+        self._changed_rgs = {release_group_mbid}
+        try:
+            rows = await self._library.get_file_rows_for_album(release_group_mbid)
+            by_folder: dict[str, list[Path]] = {}
+            for row in rows:
+                path = Path(row["file_path"])
+                if path.exists():
+                    by_folder.setdefault(str(path.parent), []).append(path)
+            stats = ScanStats()
+            for paths in by_folder.values():
+                if self._cancel.is_set():
+                    break
+                entries: list[_FileEntry] = []
+                for path in paths:
+                    try:
+                        tag, info = await asyncio.to_thread(self._tagger.read_tags, path)
+                        mtime = path.stat().st_mtime
+                    except Exception as exc:  # noqa: BLE001 - a bad file must not abort the re-id
+                        logger.warning("Re-identify: cannot read %s: %s", path, exc)
+                        continue
+                    entries.append(
+                        _FileEntry(path=path, tag=self._enrich_tag_from_path(path, tag),
+                                   info=info, mtime=mtime)
+                    )
+                if entries:
+                    await self._identify_entries(entries, stats, force=True)
+            # If re-identification moved every file off the old RG, drop its stale materialised
+            # album row so it stops reporting "In Library" as a zero-file ghost.
+            if not await self._library.has_album(release_group_mbid):
+                await self._library.delete_album_row(release_group_mbid)
+            logger.info(
+                "reidentify.album",
+                extra={"release_group_mbid": release_group_mbid, "matched": stats.matched},
+            )
+            return stats.matched
+        finally:
+            await self._flush_album_invalidations()
 
     async def startup_check(self, library_paths: list[Path]) -> None:
         """Resume an interrupted scan on boot (AUD-4): if state is ``scanning``,
@@ -392,6 +404,7 @@ class LibraryScanner:
         self, library_paths: list[Path], resume: bool = False, force: bool = False
     ) -> None:
         self._cancel.clear()
+        self._changed_rgs = set()
         try:
             if resume:
                 # os.walk is blocking; offload it.
@@ -514,6 +527,8 @@ class LibraryScanner:
             logger.exception("scan.failed", extra={"error": str(exc)})
             await self._state.fail(str(exc))
             await self._events.publish(_SCAN_CHANNEL, "failed", {"error": str(exc)})
+        finally:
+            await self._flush_album_invalidations()
 
     async def _reconcile_album_artists(self) -> bool:
         """Give every matched album a canonical MusicBrainz artist, retrying transient failures. Returns False only when MusicBrainz stayed unreachable and some remain."""
@@ -824,6 +839,32 @@ class LibraryScanner:
             file_mtime=entry.mtime,
         )
         stats.matched += 1
+        self._note_attribution_change(prior, release_group_mbid, release_mbid)
+
+    def _note_attribution_change(
+        self, prior: dict | None, new_rg: str | None, new_release: str | None
+    ) -> None:
+        """Flag the release groups whose cached album page is now stale, so the end-of-run
+        invalidation busts only what actually moved. A new attribution, a moved release
+        group, or a different release edition within the same group all count; re-writing
+        the identical attribution does not (it would needlessly re-fetch from MusicBrainz)."""
+        prior_rg = prior.get("release_group_mbid") if prior else None
+        prior_release = prior.get("release_mbid") if prior else None
+        if new_rg and (prior_rg != new_rg or prior_release != new_release):
+            self._changed_rgs.add(new_rg)
+        if prior_rg and prior_rg != new_rg:
+            self._changed_rgs.add(prior_rg)
+
+    async def _flush_album_invalidations(self) -> None:
+        """Bust the cached pages of the release groups this run re-attributed, then clear the
+        set. Never raises - a cache-invalidation failure must not fail the scan itself."""
+        changed, self._changed_rgs = self._changed_rgs, set()
+        if not changed or self._invalidate_albums is None:
+            return
+        try:
+            await self._invalidate_albums(changed)
+        except Exception as exc:  # noqa: BLE001 - invalidation is best-effort
+            logger.warning("Album cache invalidation failed after scan: %s", exc)
 
     async def _claim_album_match(
         self,

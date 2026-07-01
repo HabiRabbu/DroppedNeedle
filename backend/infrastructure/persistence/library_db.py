@@ -1214,6 +1214,25 @@ class LibraryDB(PersistenceBase):
             (release_group_mbid.lower(),),
         )
 
+    async def get_album_release_mbid(self, release_group_mbid: str) -> str | None:
+        """The specific release edition the library's files for this group belong to.
+
+        Returns the most common non-null ``release_mbid`` among the group's non-deleted
+        files (a whole folder is claimed under one release, so there's normally just one),
+        or ``None`` when nothing is stored - callers then fall back to release ranking.
+        """
+
+        def operation(conn: sqlite3.Connection) -> str | None:
+            row = conn.execute(
+                "SELECT release_mbid FROM library_files "
+                "WHERE release_group_mbid = ? AND release_mbid IS NOT NULL AND deleted_at IS NULL "
+                "GROUP BY release_mbid ORDER BY COUNT(*) DESC LIMIT 1",
+                (release_group_mbid.lower(),),
+            ).fetchone()
+            return str(row["release_mbid"]) if row and row["release_mbid"] else None
+
+        return await self._read(operation)
+
     async def has_recording(self, recording_mbid: str) -> bool:
         return await self._exists(
             "SELECT 1 FROM library_files WHERE recording_mbid = ? "

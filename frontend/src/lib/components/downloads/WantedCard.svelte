@@ -6,6 +6,7 @@
 	import { formatCountdown, retryLadderState } from '$lib/queries/downloads/downloadStatus';
 	import { nowSeconds, startSharedClock } from '$lib/stores/clock.svelte';
 	import type { DownloadTask } from '$lib/types';
+	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 	import { formatRelativeTime } from '$lib/utils/formatting';
 
 	import CueCountdown from './CueCountdown.svelte';
@@ -40,7 +41,9 @@
 	}
 </script>
 
-<article class="wanted-card rounded-2xl border border-warning/20 bg-base-200/50 p-3 backdrop-blur-sm sm:p-4">
+<article
+	class="wanted-card rounded-2xl border border-warning/20 bg-base-200/50 p-3 backdrop-blur-sm sm:p-4"
+>
 	<div class="flex items-start gap-3 sm:gap-4">
 		<div class="size-14 shrink-0 overflow-hidden rounded-lg ring-1 ring-base-content/10 sm:size-16">
 			<AlbumImage
@@ -53,11 +56,23 @@
 		</div>
 
 		<div class="min-w-0 flex-1">
-			<h3 class="truncate text-sm font-semibold sm:text-base">{task.album_title}</h3>
+			<h3 class="truncate text-sm font-semibold sm:text-base">
+				<a href={albumHref(task.release_group_mbid)} class="hover:text-primary transition-colors">
+					{task.album_title}
+				</a>
+			</h3>
 			<p class="truncate text-xs text-base-content/60">
-				{task.artist_name}{#if task.year}<span class="text-base-content/30"> · </span>{task.year}{/if}
+				{#if task.artist_mbid}
+					<a href={artistHref(task.artist_mbid)} class="hover:text-primary transition-colors">
+						{task.artist_name}
+					</a>
+				{:else}
+					{task.artist_name}
+				{/if}
+				{#if task.year}<span class="text-base-content/30"> · </span>{task.year}{/if}
 				{#if task.download_type === 'track' && task.track_title}<span class="text-base-content/30">
-						· </span>{task.track_title}{/if}
+						·
+					</span>{task.track_title}{/if}
 			</p>
 
 			<p class="mt-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-warning">
@@ -80,7 +95,8 @@
 
 			<p class="mt-1.5 text-xs text-base-content/55">
 				{#if isPartial && task.files_total > 0}
-					Got {task.files_completed}/{task.files_total} tracks{#if lastTried} · last tried {lastTried}{/if}
+					Got {task.files_completed}/{task.files_total} tracks{#if lastTried}
+						· last tried {lastTried}{/if}
 				{:else if lastTried}
 					Last tried {lastTried}
 				{/if}

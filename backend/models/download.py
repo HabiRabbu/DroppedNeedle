@@ -84,6 +84,7 @@ class SearchJob(AppStruct):
     year: int | None = None
     track_count: int | None = None
     release_group_mbid: str | None = None
+    artist_mbid: str | None = None
     search_query: str = ""
     status: str = "searching"
     error_message: str | None = None

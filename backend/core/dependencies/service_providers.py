@@ -116,6 +116,7 @@ def get_library_scanner() -> "LibraryScanner":
         library_manager=get_library_manager(),
         scan_state_store=get_scan_state_store(),
         event_bus=get_sse_publisher(),
+        invalidate_albums=_build_scan_invalidation(get_cache(), get_disk_cache()),
     )
 
 
@@ -231,6 +232,32 @@ def get_request_service() -> "RequestService":
 
     request_history = get_request_history_store()
     return RequestService(request_history, get_download_service())
+
+
+def _build_scan_invalidation(memory_cache, disk_cache):
+    """Bust the cached album pages of the release groups a scan or re-identify re-attributed,
+    so they reflect the new identity without a manual refresh. The per-album entries are
+    deleted for each changed group; the shared library/home list caches are cleared once."""
+
+    async def invalidate(changed_rgs: set[str]) -> None:
+        if not changed_rgs:
+            return
+        per_album = []
+        for rg in changed_rgs:
+            per_album.append(memory_cache.delete(f"{ALBUM_INFO_PREFIX}{rg}"))
+            per_album.append(memory_cache.delete(f"{LIBRARY_ALBUM_DETAILS_PREFIX}{rg}"))
+        shared = [
+            memory_cache.delete(library_raw_albums_key()),
+            memory_cache.clear_prefix(f"{LIBRARY_PREFIX}library:"),
+            memory_cache.clear_prefix(HOME_RESPONSE_PREFIX),
+        ]
+        await asyncio.gather(*per_album, *shared, return_exceptions=True)
+        await asyncio.gather(
+            *(disk_cache.delete_album(rg) for rg in changed_rgs),
+            return_exceptions=True,
+        )
+
+    return invalidate
 
 
 def _build_import_invalidation(memory_cache, disk_cache, library_db):

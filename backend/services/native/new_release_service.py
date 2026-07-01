@@ -227,6 +227,7 @@ class NewReleaseService:
                 release_group_mbid=rg_id,
                 artist_name=artist.artist_name,
                 album_title=title,
+                artist_mbid=artist.artist_mbid,
             )
         except ConfigurationError:
             logger.info(

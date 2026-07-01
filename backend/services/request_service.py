@@ -102,6 +102,7 @@ class RequestService:
                 artist_name=artist or "Unknown",
                 album_title=album or "Unknown",
                 year=year,
+                artist_mbid=artist_mbid,
             )
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to dispatch download for %s: %s", musicbrainz_id, e)
@@ -191,6 +192,7 @@ class RequestService:
                         artist_name=item.get("artist_name") or "Unknown",
                         album_title=item.get("album_title") or "Unknown",
                         year=item.get("year"),
+                        artist_mbid=item.get("artist_mbid"),
                     )
                 except Exception as e:  # noqa: BLE001 - one bad item must not sink the batch
                     logger.error("Batch download dispatch failed for %s: %s", mbid, e)

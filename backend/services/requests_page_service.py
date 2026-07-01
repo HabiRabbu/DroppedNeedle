@@ -159,6 +159,7 @@ class RequestsPageService:
                     artist_name=record.artist_name or "Unknown",
                     album_title=record.album_title or "Unknown",
                     year=record.year,
+                    artist_mbid=record.artist_mbid,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Failed to dispatch approved request {musicbrainz_id}: {e}")
@@ -269,6 +270,7 @@ class RequestsPageService:
                 artist_name=record.artist_name or "Unknown",
                 album_title=record.album_title or "Unknown",
                 year=record.year,
+                artist_mbid=record.artist_mbid,
             )
         except Exception as e:  # noqa: BLE001
             logger.error("Retry failed for %s: %s", musicbrainz_id, e)

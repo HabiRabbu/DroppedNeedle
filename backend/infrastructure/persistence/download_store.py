@@ -267,6 +267,7 @@ class DownloadStore(PersistenceBase):
                     year INTEGER,
                     track_count INTEGER,
                     release_group_mbid TEXT,
+                    artist_mbid TEXT,
                     search_query TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'searching'
                         CHECK(status IN ('searching','matched','completed','failed','cancelled')),
@@ -291,6 +292,10 @@ class DownloadStore(PersistenceBase):
                     conn.execute(f"ALTER TABLE download_tasks ADD COLUMN {column} {ddl}")
                 except sqlite3.OperationalError:
                     pass  # duplicate column - already present
+            try:
+                conn.execute("ALTER TABLE search_jobs ADD COLUMN artist_mbid TEXT")
+            except sqlite3.OperationalError:
+                pass  # duplicate column - already present
             self._migrate_quarantine(conn)
             conn.executescript(_HELD_IMPORTS_DDL)
             conn.commit()
@@ -875,6 +880,7 @@ class DownloadStore(PersistenceBase):
         track_count: int | None,
         release_group_mbid: str | None,
         search_query: str,
+        artist_mbid: str | None = None,
     ) -> SearchJob:
         now = time.time()
         job = SearchJob(
@@ -885,6 +891,7 @@ class DownloadStore(PersistenceBase):
             year=year,
             track_count=track_count,
             release_group_mbid=release_group_mbid,
+            artist_mbid=artist_mbid,
             search_query=search_query,
             status="searching",
             created_at=now,
@@ -895,9 +902,9 @@ class DownloadStore(PersistenceBase):
             conn.execute(
                 """INSERT INTO search_jobs
                    (id, user_id, artist_name, album_title, year, track_count,
-                    release_group_mbid, search_query, status, candidates_blob,
+                    release_group_mbid, artist_mbid, search_query, status, candidates_blob,
                     error_message, created_at, completed_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', NULL, ?, NULL, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', NULL, ?, NULL, ?)""",
                 (
                     job.id,
                     job.user_id,
@@ -906,6 +913,7 @@ class DownloadStore(PersistenceBase):
                     job.year,
                     job.track_count,
                     job.release_group_mbid,
+                    job.artist_mbid,
                     job.search_query,
                     job.status,
                     job.created_at,

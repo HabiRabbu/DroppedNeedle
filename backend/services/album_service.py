@@ -293,6 +293,11 @@ class AlbumService:
             release_data = None
 
             candidate_ids = [r.get("id") for r in ranked_releases[:3] if r.get("id")]
+            # Prefer the edition the library's files belong to, so an owned album shows
+            # what's on disc rather than a larger ranked release.
+            owned_release_id = await self._owned_release_id(release_group_id)
+            if owned_release_id:
+                candidate_ids = [owned_release_id, *(cid for cid in candidate_ids if cid != owned_release_id)]
             if candidate_ids:
                 release_results = await asyncio.gather(
                     *(self._mb_repo.get_release_by_id(rid, includes=["recordings", "labels"]) for rid in candidate_ids),
@@ -359,13 +364,22 @@ class AlbumService:
     ) -> AlbumInfo:
         return AlbumInfo(**build_album_basic_info(release_group, release_group_id, artist_name, artist_id, in_library))
     
+    async def _owned_release_id(self, release_group_id: str) -> str | None:
+        """The release edition the library's files belong to, so an owned album shows
+        what's on disc rather than the top-ranked release - often a deluxe/multi-disc
+        variant with extra tracks. ``None`` when nothing is owned: fall back to ranking."""
+        try:
+            return await self._library_db.get_album_release_mbid(release_group_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Owned-release lookup failed for %s: %s", release_group_id[:8], e)
+            return None
+
     async def _enrich_with_release_details(
         self,
         album_info: AlbumInfo,
-        primary_release: dict
+        release_id: str
     ) -> None:
         try:
-            release_id = primary_release.get("id")
             release_data = await self._mb_repo.get_release_by_id(
                 release_id,
                 includes=["recordings", "labels"]
@@ -395,20 +409,27 @@ class AlbumService:
     ) -> AlbumInfo:
         # in_library reflects non-deleted local files, not the library_albums row
         # (see get_album_basic_info).
-        in_library = await self._library_db.has_album_files(release_group_id)
+        has_files = await self._library_db.has_album_files(release_group_id)
+        in_library = has_files
 
         release_group = await self._fetch_release_group(release_group_id)
         primary_release = find_primary_release(release_group)
         artist_name, artist_id = extract_artist_info(release_group)
-        
+
         if not in_library:
             in_library = await self._check_in_library(release_group_id, library_mbids)
-        
+
         basic_info = self._build_basic_info(
             release_group, release_group_id, artist_name, artist_id, in_library
         )
-        
-        if primary_release:
-            await self._enrich_with_release_details(basic_info, primary_release)
-        
+
+        # An owned album shows the edition its files belong to (what's on disc); only fall
+        # back to the top-ranked release, which is often a larger deluxe/multi-disc variant.
+        owned_release_id = await self._owned_release_id(release_group_id) if has_files else None
+        primary_id = primary_release.get("id") if primary_release else None
+        for release_id in dict.fromkeys(rid for rid in (owned_release_id, primary_id) if rid):
+            await self._enrich_with_release_details(basic_info, release_id)
+            if basic_info.tracks:
+                break
+
         return basic_info

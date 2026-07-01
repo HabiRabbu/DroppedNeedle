@@ -144,6 +144,7 @@ class DownloadTaskResponse(AppStruct):
     updated_at: float
     # The task's last-attempt timestamp (None until it first reaches a terminal state).
     completed_at: float | None = None
+    artist_mbid: str | None = None
     # Auto-retry hints for the queue UI: when the next attempt is due (None if it won't
     # auto-retry), and the configured attempt cap (0 when auto-retry is off).
     next_retry_at: float | None = None
@@ -250,6 +251,7 @@ class TrackRequestBody(AppStruct):
     album_title: str | None = None
     duration_seconds: int | None = None
     release_group_mbid: str | None = None
+    artist_mbid: str | None = None
 
 
 class TrackRequestResponse(AppStruct):

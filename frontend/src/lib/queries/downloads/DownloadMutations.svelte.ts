@@ -29,6 +29,7 @@ interface TrackRequestInput {
 	album_title?: string | null;
 	duration_seconds?: number | null;
 	release_group_mbid?: string | null;
+	artist_mbid?: string | null;
 }
 
 const invalidateTasks = () =>
@@ -72,7 +73,8 @@ export function requestTrack() {
 				track_title: input.track_title,
 				album_title: input.album_title ?? null,
 				duration_seconds: input.duration_seconds ?? null,
-				release_group_mbid: input.release_group_mbid ?? null
+				release_group_mbid: input.release_group_mbid ?? null,
+				artist_mbid: input.artist_mbid ?? null
 			}),
 		onSuccess: (data: TrackRequestResponse) => {
 			toastStore.show({
@@ -155,7 +157,10 @@ export function stopAllRetries() {
 		mutationFn: () => api.global.post<{ stopped: number }>(API.downloads.stopAllRetries(), {}),
 		onSuccess: (data: { stopped: number }) => {
 			toastStore.show({
-				message: data.stopped > 0 ? `Stopped retrying ${pluralDownloads(data.stopped)}` : 'No retries to stop',
+				message:
+					data.stopped > 0
+						? `Stopped retrying ${pluralDownloads(data.stopped)}`
+						: 'No retries to stop',
 				type: 'info'
 			});
 			void invalidateTasks();
@@ -170,7 +175,8 @@ export function retryAllFailed() {
 		mutationFn: () => api.global.post<{ retried: number }>(API.downloads.retryAllFailed(), {}),
 		onSuccess: (data: { retried: number }) => {
 			toastStore.show({
-				message: data.retried > 0 ? `Retrying ${pluralDownloads(data.retried)}` : 'Nothing to retry',
+				message:
+					data.retried > 0 ? `Retrying ${pluralDownloads(data.retried)}` : 'Nothing to retry',
 				type: 'info'
 			});
 			void invalidateTasks();
@@ -190,7 +196,9 @@ interface HeldActionInput {
 
 function invalidateAlbum(releaseGroupMbid?: string | null) {
 	if (releaseGroupMbid) {
-		void invalidateQueriesWithPersister({ queryKey: LibraryQueryKeyFactory.album(releaseGroupMbid) });
+		void invalidateQueriesWithPersister({
+			queryKey: LibraryQueryKeyFactory.album(releaseGroupMbid)
+		});
 	}
 }
 

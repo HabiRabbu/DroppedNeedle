@@ -1725,6 +1725,9 @@ export interface DownloadTask {
 	source?: string;
 	release_group_mbid: string;
 	recording_mbid: string | null;
+	// Backfilled from the release group at request time; older tasks predating the
+	// backfill (or one MusicBrainz couldn't resolve) have no artist link.
+	artist_mbid?: string | null;
 	artist_name: string;
 	album_title: string;
 	track_title: string | null;

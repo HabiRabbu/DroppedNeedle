@@ -16,7 +16,7 @@
 	} from '$lib/queries/downloads/downloadStatus';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import type { DownloadTask } from '$lib/types';
-	import { albumHref } from '$lib/utils/entityRoutes';
+	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 
 	import DownloadProgressBar from './DownloadProgressBar.svelte';
 	import DownloadStatusBadge from './DownloadStatusBadge.svelte';
@@ -90,9 +90,19 @@
 		</div>
 
 		<div class="min-w-0 flex-1">
-			<h3 class="truncate text-sm font-semibold sm:text-base">{task.album_title}</h3>
+			<h3 class="truncate text-sm font-semibold sm:text-base">
+				<a href={albumHref(task.release_group_mbid)} class="hover:text-primary transition-colors">
+					{task.album_title}
+				</a>
+			</h3>
 			<p class="truncate text-xs text-base-content/60">
-				{task.artist_name}
+				{#if task.artist_mbid}
+					<a href={artistHref(task.artist_mbid)} class="hover:text-primary transition-colors">
+						{task.artist_name}
+					</a>
+				{:else}
+					{task.artist_name}
+				{/if}
 				{#if task.year}<span class="text-base-content/30"> · </span>{task.year}{/if}
 				{#if task.download_type === 'track' && task.track_title}
 					<span class="text-base-content/30"> · </span>{task.track_title}

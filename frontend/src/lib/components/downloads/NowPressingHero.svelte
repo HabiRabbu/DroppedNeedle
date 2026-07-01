@@ -2,6 +2,7 @@
 	import { createDownloadStream } from '$lib/queries/downloads/DownloadSSE.svelte';
 	import { derivedDownloadStatus } from '$lib/queries/downloads/downloadStatus';
 	import type { DownloadTask } from '$lib/types';
+	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 
 	import DownloadProgressBar from './DownloadProgressBar.svelte';
 	import DownloadStatusBadge from './DownloadStatusBadge.svelte';
@@ -38,11 +39,20 @@
 	<div class="relative flex items-center gap-5">
 		<VinylProgress percent={livePct} spinning indeterminate={isSearchingState} size={120} />
 		<div class="min-w-0 flex-1">
-			<h2 class="truncate text-xl font-black tracking-tight sm:text-2xl">{task.album_title}</h2>
+			<h2 class="truncate text-xl font-black tracking-tight sm:text-2xl">
+				<a href={albumHref(task.release_group_mbid)} class="hover:text-primary transition-colors">
+					{task.album_title}
+				</a>
+			</h2>
 			<p class="truncate text-sm text-base-content/60">
-				{task.artist_name}{#if task.year}<span class="text-base-content/30">
-						·
-					</span>{task.year}{/if}
+				{#if task.artist_mbid}
+					<a href={artistHref(task.artist_mbid)} class="hover:text-primary transition-colors">
+						{task.artist_name}
+					</a>
+				{:else}
+					{task.artist_name}
+				{/if}
+				{#if task.year}<span class="text-base-content/30"> · </span>{task.year}{/if}
 			</p>
 			<div class="mt-2"><DownloadStatusBadge {task} /></div>
 			{#if showBar}

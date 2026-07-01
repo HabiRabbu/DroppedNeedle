@@ -1019,3 +1019,59 @@ async def test_reidentify_album_forces_correction_past_stickiness(tmp_path):
     assert moved == 2
     assert len(await db.get_library_files_for_album("rg-right")) == 2  # corrected
     assert await db.get_library_files_for_album("rg-wrong") == []  # left the wrong album
+
+
+@pytest.mark.asyncio
+async def test_reidentify_invalidates_old_and_new_album_caches(tmp_path):
+    # The correction must bust the cached pages of both the group it left and the group it
+    # moved to, so neither shows stale numbers without a manual refresh.
+    from services.native.album_matcher import AlbumMatch
+
+    scanner, manager, _state, _db = _build(tmp_path)
+    paths = _album_dir(tmp_path, "Artist/Album", 2)
+    for p in paths:
+        tag, info = AudioTagger().read_tags(p)
+        await manager.upsert_file(
+            p, tag, info, release_group_mbid="rg-wrong", source="download", confidence=1.0
+        )
+
+    async def identify(locals_, *, seed_release_groups=None):
+        return AlbumMatch(
+            accepted=True, distance=0.02,
+            release_group_mbid="rg-right", release_mbid="rel-right",
+            assignments={lt.path: f"rec-{i}" for i, lt in enumerate(locals_)},
+        )
+
+    scanner._album_identifier.identify = AsyncMock(side_effect=identify)
+    busted: list[set[str]] = []
+
+    async def capture(changed):
+        busted.append(set(changed))
+
+    scanner._invalidate_albums = capture
+
+    await scanner.reidentify_album("rg-wrong")
+
+    assert busted, "invalidator should run"
+    assert {"rg-wrong", "rg-right"} <= busted[0]
+
+
+@pytest.mark.asyncio
+async def test_scan_invalidates_changed_albums_but_not_an_unchanged_rescan(tmp_path):
+    # A first attribution busts the album it lands on; an incremental re-scan that changes
+    # nothing must not re-invalidate (which would needlessly re-fetch from MusicBrainz).
+    scanner, _manager, _state, _db = _build(tmp_path)
+    music, _ = _music_dir(tmp_path, "flac_full_01.flac")  # tier1 tags -> _RG_AIRBAG
+    calls: list[set[str]] = []
+
+    async def capture(changed):
+        calls.append(set(changed))
+
+    scanner._invalidate_albums = capture
+
+    await scanner.scan([music])
+    assert calls and _RG_AIRBAG in calls[0]
+
+    calls.clear()
+    await scanner.scan([music])  # unchanged: incremental skip -> no write -> no invalidation
+    assert calls == []

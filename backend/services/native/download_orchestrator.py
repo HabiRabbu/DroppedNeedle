@@ -368,6 +368,7 @@ class DownloadOrchestrator:
             year=task.year,
             track_count=task.track_count,
             release_group_mbid=task.release_group_mbid,
+            artist_mbid=task.artist_mbid,
             search_query=f"{task.artist_name} - {task.album_title}",
         )
 
