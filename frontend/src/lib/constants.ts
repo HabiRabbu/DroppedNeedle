@@ -375,7 +375,10 @@ export const API = {
 		},
 		heldImport: (id: number) => `/api/v1/downloads/held/${id}/import`,
 		heldDiscard: (id: number) => `/api/v1/downloads/held/${id}/discard`,
-		heldAudio: (id: number) => `/api/v1/downloads/held/${id}/audio`
+		heldAudio: (id: number) => `/api/v1/downloads/held/${id}/audio`,
+		cutoffUnmet: () => '/api/v1/downloads/cutoff-unmet',
+		upgradeAlbum: () => '/api/v1/downloads/upgrade/album',
+		upgradeTrack: () => '/api/v1/downloads/upgrade/track'
 	},
 	requests: {
 		new: () => '/api/v1/requests/new',

@@ -78,6 +78,11 @@ class LibraryTrack(AppStruct):
     bit_depth: int | None = None
     duration_seconds: float | None = None
     file_size_bytes: int = 0
+    # Quality-upgrade annotations (CollectionManagement Feature B): the file's tier
+    # and whether it sits below the active cutoff while upgrades are on. Drives the
+    # admin/trusted per-track upgrade affordance on the album page.
+    current_tier: str | None = None
+    below_cutoff: bool = False
 
 
 class LibraryTrackListItem(AppStruct):
@@ -171,6 +176,28 @@ class LibraryManager(LibraryStub):
         rows = await self._db.get_library_files_for_album(release_group_mbid)
         tiers = [tier_for(row.get("file_format") or "", row.get("bit_rate")) for row in rows]
         return min(tiers, key=tier_rank) if tiers else None
+
+    async def list_cutoff_unmet(self, cutoff: str) -> list[dict]:
+        """The upgrade worklist: albums whose worst held tier is below ``cutoff``,
+        each row annotated with its ``current_tier`` key."""
+        from services.native.quality_tiers import TIER_KEYS, tier_rank
+
+        rows = await self._db.list_cutoff_unmet(tier_rank(cutoff))
+        rank_to_key = tuple(reversed(TIER_KEYS))  # rank index -> tier key
+        for row in rows:
+            row["current_tier"] = rank_to_key[int(row.pop("worst_rank"))]
+        return rows
+
+    async def recording_quality_tier(self, recording_mbid: str) -> str | None:
+        """The BEST held tier for one recording, or ``None`` when it isn't in the
+        library. A per-track upgrade must beat the best copy the library already has
+        (unlike ``album_quality_tier``, whose worst-track semantics measure album
+        completeness, not what a single track's replacement must exceed)."""
+        from services.native.quality_tiers import tier_for, tier_rank
+
+        rows = await self._db.get_library_files_for_recording(recording_mbid)
+        tiers = [tier_for(row.get("file_format") or "", row.get("bit_rate")) for row in rows]
+        return max(tiers, key=tier_rank) if tiers else None
 
     async def has_track(self, recording_mbid: str) -> bool:
         return await self._db.has_recording(recording_mbid)
@@ -297,8 +324,23 @@ class LibraryManager(LibraryStub):
         rows = await self._db.get_library_files_for_album(release_group_mbid)
         return [self._to_track(row) for row in rows]
 
-    async def get_album_status(self, release_group_mbid: str) -> LibraryAlbumStatus:
+    async def get_album_status(
+        self,
+        release_group_mbid: str,
+        *,
+        quality_cutoff: str | None = None,
+        upgrade_allowed: bool = False,
+    ) -> LibraryAlbumStatus:
+        from services.native.quality_tiers import tier_for, tier_rank
+
         tracks = await self.get_tracks(release_group_mbid)
+        for track in tracks:
+            track.current_tier = tier_for(track.file_format or "", track.bit_rate)
+            track.below_cutoff = (
+                upgrade_allowed
+                and quality_cutoff is not None
+                and tier_rank(track.current_tier) < tier_rank(quality_cutoff)
+            )
         return LibraryAlbumStatus(
             in_library=bool(tracks),
             track_count=len(tracks),

@@ -110,15 +110,71 @@ async def test_search_album_already_in_library():
 
 
 @pytest.mark.asyncio
-async def test_search_album_upgrades_a_sub_cutoff_held_album():
-    # Step 8: with upgrades ON, a held album BELOW the cutoff is re-searched (an upgrade),
-    # not skipped as "already in library".
+async def test_search_album_below_cutoff_still_satisfied_for_non_upgrade():
+    # D18 (origin-aware gate): only an origin='upgrade' request may re-fetch a
+    # below-cutoff held album. A manual search is a user action - re-fetching here
+    # would download bytes replace-on-import then refuses to place.
     service, store, *_ = _make_service(
         held_tier="mp3_320", upgrade_allowed=True, quality_cutoff="lossless"
     )
     result = await service.search_album("u1", "A", "B", release_group_mbid="rg")
-    assert result != ALREADY_IN_LIBRARY
-    store.create_search_job.assert_called_once()
+    assert result == ALREADY_IN_LIBRARY
+    store.create_search_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_album_upgrade_origin_refetches_below_cutoff():
+    # The upgrade path itself: origin='upgrade' + upgrades on + held below cutoff
+    # -> not satisfied -> a task is created.
+    service, store, *_ = _make_service(
+        held_tier="mp3_320", upgrade_allowed=True, quality_cutoff="lossless"
+    )
+    store.get_active_task_for_album.return_value = None
+    result = await service.request_album("u1", "rg", "A", "B", origin="upgrade")
+    assert result == "task1"
+    store.create_task.assert_called_once()
+    assert store.create_task.call_args.kwargs["origin"] == "upgrade"
+
+
+@pytest.mark.asyncio
+async def test_request_album_upgrade_origin_blocked_when_upgrades_off():
+    # The master toggle wins: origin='upgrade' with upgrade_allowed=False is satisfied.
+    service, store, *_ = _make_service(
+        held_tier="mp3_320", upgrade_allowed=False, quality_cutoff="lossless"
+    )
+    result = await service.request_album("u1", "rg", "A", "B", origin="upgrade")
+    assert result == ALREADY_IN_LIBRARY
+    store.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_album_user_origin_never_refetches_held_album():
+    service, store, *_ = _make_service(
+        held_tier="mp3_192", upgrade_allowed=True, quality_cutoff="lossless"
+    )
+    result = await service.request_album("u1", "rg", "A", "B", origin="user")
+    assert result == ALREADY_IN_LIBRARY
+    store.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_track_upgrade_uses_recording_floor():
+    # Per-track upgrades gate on the RECORDING's best held tier (D12), not album-worst.
+    service, store, *_ = _make_service(upgrade_allowed=True, quality_cutoff="lossless")
+    service._library.recording_quality_tier = AsyncMock(return_value="mp3_320")
+    store.get_active_task_for_track.return_value = None
+    result = await service.request_track(
+        "u1", "rec-1", "A", "Track", release_group_mbid="rg", origin="upgrade"
+    )
+    assert result == "task1"
+    service._library.recording_quality_tier.assert_awaited_once_with("rec-1")
+
+    # At the cutoff already -> nothing to upgrade.
+    service._library.recording_quality_tier = AsyncMock(return_value="lossless")
+    result = await service.request_track(
+        "u1", "rec-1", "A", "Track", release_group_mbid="rg", origin="upgrade"
+    )
+    assert result == ALREADY_IN_LIBRARY
 
 
 @pytest.mark.asyncio
@@ -675,3 +731,79 @@ async def test_purge_album_downloads_clears_tasks_held_and_quarantine(tmp_path):
     assert await store.list_held_imports("user-a", "user") == []  # held rows gone
     assert not held_file.exists()  # held file deleted from disk
     assert await store.list_quarantine() == []  # blocklist cleared
+
+
+@pytest.mark.asyncio
+async def test_storage_admission_blocks_request_album_before_task_creation():
+    """Layer 2 (Feature C): an over-cap user is rejected at request_album with no
+    task created; an upgrade with the same quota service is exempt (checked by the
+    service passing origin through)."""
+    from core.exceptions import ValidationError as VErr
+
+    service, store, *_ = _make_service()
+    quota = AsyncMock()
+    quota.check_storage_admission.side_effect = VErr("Library storage limit reached (10.0 / 10 GB)")
+    service._quota = quota
+    store.get_active_task_for_album.return_value = None
+
+    with pytest.raises(VErr):
+        await service.request_album("u1", "rg", "A", "B")
+    store.create_task.assert_not_called()
+    quota.check_storage_admission.assert_awaited_once_with("u1", "user")
+
+
+@pytest.mark.asyncio
+async def test_storage_admission_blocks_pick_candidate():
+    """The manual-pick path is a task-creation site too - it gets the same gate."""
+    from core.exceptions import ValidationError as VErr
+
+    service, store, *_ = _make_service()
+    quota = AsyncMock()
+    quota.check_storage_admission.side_effect = VErr("Your storage budget is full (5.0 / 5 GB)")
+    service._quota = quota
+
+    with pytest.raises(VErr):
+        await service.pick_candidate("u1", "job1", 0)
+    store.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_origin_passes_through_admission():
+    service, store, *_ = _make_service(
+        held_tier="mp3_192", upgrade_allowed=True, quality_cutoff="lossless"
+    )
+    quota = AsyncMock()
+    service._quota = quota
+    store.get_active_task_for_album.return_value = None
+
+    await service.request_album("u1", "rg", "A", "B", origin="upgrade")
+
+    quota.check_storage_admission.assert_awaited_once_with("u1", "upgrade")
+
+
+@pytest.mark.asyncio
+async def test_upgrade_origin_never_fetches_an_unheld_album():
+    """An un-held album is no upgrade target - origin='upgrade' would
+    otherwise bypass the caps/quotas (upgrades are exempt) and the master toggle."""
+    service, store, *_ = _make_service(
+        held_tier=None, upgrade_allowed=True, quality_cutoff="lossless"
+    )
+    service._library.album_quality_tier = AsyncMock(return_value=None)
+
+    result = await service.request_album("u1", "rg", "A", "B", origin="upgrade")
+
+    assert result == ALREADY_IN_LIBRARY
+    store.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_origin_never_fetches_an_unheld_recording():
+    service, store, *_ = _make_service(upgrade_allowed=True, quality_cutoff="lossless")
+    service._library.recording_quality_tier = AsyncMock(return_value=None)
+
+    result = await service.request_track(
+        "u1", "rec-1", "A", "Track", release_group_mbid="rg", origin="upgrade"
+    )
+
+    assert result == ALREADY_IN_LIBRARY
+    store.create_task.assert_not_called()

@@ -34,6 +34,9 @@ class HeldImport(AppStruct):
     evidence_artist: str | None = None
     evidence_score: float | None = None
     source_task_id: str | None = None
+    # the owning task's origin, persisted at hold time - the task row is deletable,
+    # and an upgrade's "import anyway" must keep its replace semantics (D10/D18)
+    origin: str = "user"
     # the naming template the rest of the album imported under, so "import anyway" places
     # this track consistently with its siblings even if the setting later changes
     naming_template: str | None = None

@@ -75,6 +75,19 @@ _LIBRARY_FILE_VALUE_COLUMNS = (
     "channels",
 )
 
+# SQL mirror of quality_tiers.tier_for (lossless extension set + kbps bands), ranked
+# like quality_tiers._RANK (low=0 .. lossless=4). test_cutoff_unmet asserts this CASE
+# agrees with tier_for for every (format, bitrate) band - change BOTH together.
+_TIER_RANK_CASE = """
+    CASE
+        WHEN LOWER(COALESCE(file_format, '')) IN ('flac', 'alac', 'wav', 'ape', 'wv') THEN 4
+        WHEN COALESCE(bit_rate, 0) >= 320 THEN 3
+        WHEN COALESCE(bit_rate, 0) >= 256 THEN 2
+        WHEN COALESCE(bit_rate, 0) >= 192 THEN 1
+        ELSE 0
+    END
+"""
+
 # Stored, pre-folded mirrors of the searchable text columns: {folded_column: source_column}.
 # Search LIKEs run against these so the per-row fold() UDF is not invoked on every
 # scanned row (it stays only on the query pattern). Kept in sync on every write via
@@ -1230,6 +1243,75 @@ class LibraryDB(PersistenceBase):
                 (release_group_mbid.lower(),),
             ).fetchone()
             return str(row["release_mbid"]) if row and row["release_mbid"] else None
+
+        return await self._read(operation)
+
+    async def get_total_library_bytes(self) -> int:
+        """Whole-library active bytes - the global storage cap's usage side (a thin
+        cut of get_library_stats so the admission check doesn't pay for the rest)."""
+
+        def operation(conn: sqlite3.Connection) -> int:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(file_size_bytes), 0) FROM library_files "
+                "WHERE deleted_at IS NULL"
+            ).fetchone()
+            return int(row[0])
+
+        return await self._read(operation)
+
+    async def get_user_library_bytes(self, user_id: str) -> int:
+        """Bytes attributable to one user's downloads (A5): active files whose
+        download_task_id belongs to a task that user created. Scan-discovered files
+        have no task -> unowned, they count only toward the global cap. The stores
+        share one SQLite file, so the cross-table join is local."""
+
+        def operation(conn: sqlite3.Connection) -> int:
+            row = conn.execute(
+                """SELECT COALESCE(SUM(lf.file_size_bytes), 0)
+                   FROM library_files lf
+                   JOIN download_tasks dt ON dt.id = lf.download_task_id
+                   WHERE lf.deleted_at IS NULL AND dt.user_id = ?""",
+                (user_id,),
+            ).fetchone()
+            return int(row[0])
+
+        return await self._read(operation)
+
+    async def list_cutoff_unmet(self, cutoff_rank: int) -> list[dict[str, Any]]:
+        """Albums whose WORST active file ranks below ``cutoff_rank`` - the upgrade
+        worklist (CollectionManagement D7). ``_TIER_RANK_CASE`` must rank every
+        (format, bitrate) band exactly like ``quality_tiers.tier_for`` (asserted by
+        ``test_cutoff_unmet``); rows return ``worst_rank`` for the caller to map back
+        to a tier key."""
+
+        def operation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = conn.execute(
+                f"""SELECT release_group_mbid,
+                       MIN({_TIER_RANK_CASE}) AS worst_rank,
+                       COUNT(*) AS track_count,
+                       COALESCE(MAX(album_artist_name), MAX(artist_name)) AS artist_name,
+                       MAX(album_artist_mbid) AS artist_mbid,
+                       MAX(album_title) AS album_title,
+                       MAX(year) AS year
+                   FROM library_files
+                   WHERE deleted_at IS NULL
+                     AND release_group_mbid IS NOT NULL AND release_group_mbid != ''
+                   GROUP BY release_group_mbid
+                   HAVING MIN({_TIER_RANK_CASE}) < ?
+                   ORDER BY artist_name COLLATE NOCASE, album_title COLLATE NOCASE""",
+                (cutoff_rank,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+        return await self._read(operation)
+
+    async def get_library_files_for_recording(self, recording_mbid: str) -> list[dict[str, Any]]:
+        def operation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = conn.execute(
+                "SELECT * FROM library_files WHERE recording_mbid = ? AND deleted_at IS NULL",
+                (recording_mbid,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
         return await self._read(operation)
 
