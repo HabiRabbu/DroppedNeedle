@@ -17,9 +17,7 @@ export const getImportCandidatesQuery = (
 		enabled: enabled(),
 		queryFn: ({ signal }) =>
 			api.get<ImportCandidateListResponse>(
-				provider() === 'plex'
-					? AUTH_ENDPOINTS.adminImportPlex
-					: AUTH_ENDPOINTS.adminImportJellyfin,
+				provider() === 'plex' ? AUTH_ENDPOINTS.adminImportPlex : AUTH_ENDPOINTS.adminImportJellyfin,
 				{ signal }
 			)
 	}));

@@ -27,7 +27,11 @@ async function poll(): Promise<void> {
 		for (const t of items) {
 			const prev = prevStatus.get(t.id);
 			const wasActive = prev !== undefined && isActiveDownloadStatus(prev);
-			if (wasActive && (t.status === 'completed' || t.status === 'partial') && t.release_group_mbid) {
+			if (
+				wasActive &&
+				(t.status === 'completed' || t.status === 'partial') &&
+				t.release_group_mbid
+			) {
 				libraryStore.addMbid(t.release_group_mbid);
 				landed = true;
 			}

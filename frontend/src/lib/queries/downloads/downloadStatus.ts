@@ -69,7 +69,8 @@ export function canReimport(task: DownloadTask): boolean {
 	return (
 		(task.status === 'failed' || task.status === 'partial') &&
 		task.search_job_id != null &&
-		task.candidate_index != null
+		task.candidate_index != null &&
+		task.source_username != null
 	);
 }
 

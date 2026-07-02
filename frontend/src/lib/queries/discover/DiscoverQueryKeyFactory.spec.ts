@@ -30,9 +30,14 @@ describe('DiscoverQueryKeyFactory (AMU-5)', () => {
 
 	describe('radio', () => {
 		it('includes userId', () => {
-			expect(
-				DiscoverQueryKeyFactory.radio('user-a', 'artist', 'mbid-1', 'listenbrainz')
-			).toEqual(['discover', 'user-a', 'radio', 'artist', 'mbid-1', { source: 'listenbrainz' }]);
+			expect(DiscoverQueryKeyFactory.radio('user-a', 'artist', 'mbid-1', 'listenbrainz')).toEqual([
+				'discover',
+				'user-a',
+				'radio',
+				'artist',
+				'mbid-1',
+				{ source: 'listenbrainz' }
+			]);
 		});
 
 		it('differs per user', () => {

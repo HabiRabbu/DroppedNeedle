@@ -50,7 +50,8 @@ vi.mock('$lib/queries/downloads/DownloadMutations.svelte', () => ({
 	stopAllRetries: () => ({ mutate: vi.fn(), isPending: false }),
 	retryAllFailed: () => ({ mutate: vi.fn(), isPending: false }),
 	importHeldTrack: () => ({ mutate: vi.fn(), isPending: false }),
-	discardHeldTrack: () => ({ mutate: vi.fn(), isPending: false })
+	discardHeldTrack: () => ({ mutate: vi.fn(), isPending: false }),
+	reimportDownload: () => ({ mutate: vi.fn(), isPending: false })
 }));
 
 vi.mock('$lib/queries/downloads/DownloadSSE.svelte', () => ({
@@ -172,11 +173,11 @@ describe('DownloadQueue.svelte', () => {
 	});
 
 	it('hides Quarantine from non-admins and shows it (with entries) to admins', async () => {
-		h.quarantine = [{ id: 1, filename: '/x.flac', username: 'p', reason: 'dupe', quarantined_at: 0 }];
+		h.quarantine = [
+			{ id: 1, filename: '/x.flac', username: 'p', reason: 'dupe', quarantined_at: 0 }
+		];
 		render(DownloadQueue);
-		await expect
-			.element(page.getByRole('button', { name: /Quarantine/ }))
-			.not.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: /Quarantine/ })).not.toBeInTheDocument();
 
 		h.isAdmin = true;
 		render(DownloadQueue);
@@ -186,12 +187,25 @@ describe('DownloadQueue.svelte', () => {
 	it('surfaces held tracks in a "Couldn\'t verify" section', async () => {
 		h.held = [
 			{
-				id: 1, release_group_mbid: 'rg-1', recording_mbid: 'rec-3', track_number: 3,
-				disc_number: 1, track_title: 'You Shook Me', artist_name: 'Led Zeppelin',
-				album_title: 'Led Zeppelin', year: 1969, original_filename: 'x.flac', file_format: 'flac',
-				duration_seconds: 388, reason: 'fingerprint_mismatch', source: 'usenet',
-				source_task_id: 't', created_at: 0, evidence_title: "Nobody's Fault but Mine",
-				evidence_artist: 'Led Zeppelin', evidence_score: 0.99
+				id: 1,
+				release_group_mbid: 'rg-1',
+				recording_mbid: 'rec-3',
+				track_number: 3,
+				disc_number: 1,
+				track_title: 'You Shook Me',
+				artist_name: 'Led Zeppelin',
+				album_title: 'Led Zeppelin',
+				year: 1969,
+				original_filename: 'x.flac',
+				file_format: 'flac',
+				duration_seconds: 388,
+				reason: 'fingerprint_mismatch',
+				source: 'usenet',
+				source_task_id: 't',
+				created_at: 0,
+				evidence_title: "Nobody's Fault but Mine",
+				evidence_artist: 'Led Zeppelin',
+				evidence_score: 0.99
 			}
 		];
 		render(DownloadQueue);

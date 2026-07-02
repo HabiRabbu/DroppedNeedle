@@ -101,7 +101,9 @@
 					{:else}
 						<Download class="w-4 h-4" />
 					{/if}
-					{importResult?.already_imported ? 'Already in DroppedNeedle' : 'Import into DroppedNeedle'}
+					{importResult?.already_imported
+						? 'Already in DroppedNeedle'
+						: 'Import into DroppedNeedle'}
 				</button>
 				{#if importResult && !importResult.already_imported}
 					<p class="text-sm text-success">

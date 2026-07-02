@@ -79,7 +79,8 @@
 
 <div class="space-y-2">
 	<p class="text-xs text-base-content/55">
-		Downloaded, but couldn't confirm it's the right recording.{#if evidence} {evidence}.{/if}
+		Downloaded, but couldn't confirm it's the right recording.{#if evidence}
+			{evidence}.{/if}
 	</p>
 
 	<div class="flex items-center gap-2">

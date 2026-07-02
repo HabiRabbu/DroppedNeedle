@@ -28,31 +28,36 @@
 	const aSourceConfigured = $derived(slskdConfigured || hasIndexer);
 	const aClientConfigured = $derived(slskdConfigured || sabnzbdEnabled);
 
-	const items = $derived(
-		[
-			{ label: 'Add a library path', done: hasLibraryPath, required: true, optional: false },
-			{
-				label: 'Add an indexer or configure Soulseek',
-				done: aSourceConfigured,
-				required: true,
-				optional: false
-			},
-			{
-				label: 'Configure a download client (slskd and/or SABnzbd)',
-				done: aClientConfigured,
-				required: true,
-				optional: false
-			},
-			...(slskdConfigured
-				? [{ label: "Mount slskd's downloads folder", done: mountOk, required: true, optional: false }]
-				: []),
-			...(sabnzbdEnabled
-				? [{ label: "Mount SABnzbd's downloads folder", done: true, required: false, optional: true }]
-				: []),
-			{ label: 'Run a library scan', done: false, required: false, optional: true },
-			{ label: 'Set an AcoustID key', done: hasAcoustid, required: false, optional: true }
-		]
-	);
+	const items = $derived([
+		{ label: 'Add a library path', done: hasLibraryPath, required: true, optional: false },
+		{
+			label: 'Add an indexer or configure Soulseek',
+			done: aSourceConfigured,
+			required: true,
+			optional: false
+		},
+		{
+			label: 'Configure a download client (slskd and/or SABnzbd)',
+			done: aClientConfigured,
+			required: true,
+			optional: false
+		},
+		...(slskdConfigured
+			? [
+					{
+						label: "Mount slskd's downloads folder",
+						done: mountOk,
+						required: true,
+						optional: false
+					}
+				]
+			: []),
+		...(sabnzbdEnabled
+			? [{ label: "Mount SABnzbd's downloads folder", done: true, required: false, optional: true }]
+			: []),
+		{ label: 'Run a library scan', done: false, required: false, optional: true },
+		{ label: 'Set an AcoustID key', done: hasAcoustid, required: false, optional: true }
+	]);
 
 	const doneCount = $derived(items.filter((i) => i.done).length);
 	const requiredDone = $derived(items.filter((i) => i.required).every((i) => i.done));

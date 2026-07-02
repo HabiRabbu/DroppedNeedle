@@ -81,7 +81,9 @@
 	);
 
 	const heading = $derived(
-		isUsenet ? albumTitle || rel?.title || 'Unknown' : candidate.parent_directory || 'Unknown folder'
+		isUsenet
+			? albumTitle || rel?.title || 'Unknown'
+			: candidate.parent_directory || 'Unknown folder'
 	);
 	const subtitle = $derived(isUsenet ? (rel?.title ?? '') : candidate.username);
 

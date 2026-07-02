@@ -424,7 +424,11 @@
 		border-radius: 9999px;
 		color: var(--color-primary);
 		background:
-			radial-gradient(circle at 35% 30%, oklch(from var(--color-base-content) l c h / 0.14), transparent 55%),
+			radial-gradient(
+				circle at 35% 30%,
+				oklch(from var(--color-base-content) l c h / 0.14),
+				transparent 55%
+			),
 			radial-gradient(circle at center, var(--color-base-300), var(--color-base-100) 92%);
 		box-shadow:
 			inset 0 0 0 1px oklch(from var(--color-base-content) l c h / 0.1),
@@ -581,7 +585,11 @@
 				transparent 0 2px,
 				oklch(from var(--color-base-content) l c h / 0.16) 2px 3px
 			),
-			radial-gradient(circle at 36% 30%, oklch(from var(--color-base-content) l c h / 0.28), transparent 48%),
+			radial-gradient(
+				circle at 36% 30%,
+				oklch(from var(--color-base-content) l c h / 0.28),
+				transparent 48%
+			),
 			radial-gradient(circle at center, var(--color-base-300) 0%, var(--color-base-100) 95%);
 		box-shadow:
 			inset 0 0 0 1px oklch(from var(--color-base-content) l c h / 0.14),

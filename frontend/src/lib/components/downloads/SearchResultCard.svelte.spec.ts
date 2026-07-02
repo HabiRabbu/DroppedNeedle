@@ -59,7 +59,9 @@ describe('SearchResultCard.svelte', () => {
 		const onPick = vi.fn();
 		renderCard({ candidate: makeCandidate(), onPick, disabled: true });
 		// a disabled button can't dispatch onclick, so this proves a second pick can't fire
-		await expect.element(page.getByRole('button', { name: /Pick candidate from alice/ })).toBeDisabled();
+		await expect
+			.element(page.getByRole('button', { name: /Pick candidate from alice/ }))
+			.toBeDisabled();
 		expect(onPick).not.toHaveBeenCalled();
 	});
 

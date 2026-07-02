@@ -103,16 +103,8 @@ describe('discoverQueueCache', () => {
 
 	it('isolates cache entries per user (no cross-user leak)', () => {
 		expect.assertions(3);
-		setQueueCachedData(
-			{ items: [], currentIndex: 0, queueId: 'queue-a' },
-			USER_A,
-			'listenbrainz'
-		);
-		setQueueCachedData(
-			{ items: [], currentIndex: 0, queueId: 'queue-b' },
-			USER_B,
-			'listenbrainz'
-		);
+		setQueueCachedData({ items: [], currentIndex: 0, queueId: 'queue-a' }, USER_A, 'listenbrainz');
+		setQueueCachedData({ items: [], currentIndex: 0, queueId: 'queue-b' }, USER_B, 'listenbrainz');
 
 		expect(getQueueCachedData(USER_A, 'listenbrainz')?.data.queueId).toBe('queue-a');
 		expect(getQueueCachedData(USER_B, 'listenbrainz')?.data.queueId).toBe('queue-b');

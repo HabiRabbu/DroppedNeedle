@@ -305,7 +305,9 @@ describe('Playlist detail page', () => {
 			.toBeVisible();
 		await expect.element(page.getByText(/Shared by Ann/)).toBeVisible();
 		expect(page.getByRole('button', { name: /Edit playlist name/ }).elements()).toHaveLength(0);
-		expect(page.getByRole('checkbox', { name: /Make playlist (public|private)/ }).elements()).toHaveLength(0);
+		expect(
+			page.getByRole('checkbox', { name: /Make playlist (public|private)/ }).elements()
+		).toHaveLength(0);
 	});
 
 	it('inline name editing: clicking name shows input, Escape cancels', async () => {

@@ -370,7 +370,11 @@
 						class="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 overflow-hidden"
 					>
 						{#if user.avatar_url}
-							<img src={user.avatar_url} alt={user.display_name} class="h-full w-full object-cover" />
+							<img
+								src={user.avatar_url}
+								alt={user.display_name}
+								class="h-full w-full object-cover"
+							/>
 						{:else}
 							<UserRound class="h-5 w-5 text-primary/60" />
 						{/if}

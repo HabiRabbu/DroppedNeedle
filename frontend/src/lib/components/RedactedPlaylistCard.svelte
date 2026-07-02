@@ -4,9 +4,7 @@
 
 	let { playlist }: { playlist: RedactedPlaylist } = $props();
 
-	let trackText = $derived(
-		`${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}`
-	);
+	let trackText = $derived(`${playlist.track_count} track${playlist.track_count === 1 ? '' : 's'}`);
 </script>
 
 <!-- Admin-only redacted projection of another user's PRIVATE playlist (D4): no name,

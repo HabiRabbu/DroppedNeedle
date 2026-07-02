@@ -45,7 +45,9 @@ describe('saveConnectAppsSettings', () => {
 		saveConnectAppsSettings();
 		const opts = lastMutationOpts();
 		await (opts.mutationFn as (v: unknown) => Promise<unknown>)({ subsonic_enabled: true });
-		expect(mockPut).toHaveBeenCalledWith('/api/v1/connect-apps/settings', { subsonic_enabled: true });
+		expect(mockPut).toHaveBeenCalledWith('/api/v1/connect-apps/settings', {
+			subsonic_enabled: true
+		});
 		await (opts.onSuccess as () => Promise<unknown>)();
 		expect(mockInvalidate).toHaveBeenCalledWith({
 			queryKey: ConnectAppsQueryKeyFactory.settings()

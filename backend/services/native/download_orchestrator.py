@@ -44,7 +44,12 @@ from services.native.acquisition.strategy import (
     UsenetStrategy,
 )
 from services.native.album_preflight_scorer import AlbumPreflightScorer
-from services.native.file_processor import FileProcessor
+from services.native.file_processor import (
+    DOWNLOADS_MOUNT_UNAVAILABLE,
+    IMPORT_FAILED,
+    SOURCE_FILE_MISSING,
+    FileProcessor,
+)
 from services.native.library_manager import LibraryManager
 from services.native.track_matcher import TrackMatcher
 
@@ -1193,35 +1198,34 @@ class DownloadOrchestrator:
         await self._store.update_status(task.id, "processing")
         await self._bus.publish(f"download:{task.id}", "status", {"status": "processing"})
 
-        from services.native.file_processor import (
-            DOWNLOADS_MOUNT_UNAVAILABLE,
-            IMPORT_FAILED,
-            SOURCE_FILE_MISSING,
-        )
+        try:
+            result, _ = await self._import_files(task, manifest, completed=True)
+            await self._cancel_transfers(task, manifest)
 
-        result, _ = await self._import_files(task, manifest, completed=True)
-        await self._cancel_transfers(task, manifest)
+            if not result.succeeded and any(
+                f.reason == DOWNLOADS_MOUNT_UNAVAILABLE for f in result.failed
+            ):
+                await self._finalize(
+                    task, "failed", error_message=DOWNLOADS_MOUNT_UNAVAILABLE
+                )
+                return await self._store.get_task(task.id)
 
-        if not result.succeeded and any(
-            f.reason == DOWNLOADS_MOUNT_UNAVAILABLE for f in result.failed
-        ):
-            await self._finalize(
-                task, "failed", error_message=DOWNLOADS_MOUNT_UNAVAILABLE
-            )
-            return await self._store.get_task(task.id)
-
-        if await self._download_is_complete(task, bool(result.succeeded), result):
-            await self._finalize(task, "completed")
-        elif result.succeeded:
-            await self._finalize(task, "partial")
-        else:
-            if any(f.reason == SOURCE_FILE_MISSING for f in result.failed):
-                fail_msg = _FILES_NOT_FOUND_MSG
-            elif any(f.reason == IMPORT_FAILED for f in result.failed):
-                fail_msg = _IMPORT_FAILED_MSG
+            if await self._download_is_complete(task, bool(result.succeeded), result):
+                await self._finalize(task, "completed")
+            elif result.succeeded:
+                await self._finalize(task, "partial")
             else:
-                fail_msg = _NO_SOURCE_MSG
-            await self._finalize(task, "failed", error_message=fail_msg)
+                if any(f.reason == SOURCE_FILE_MISSING for f in result.failed):
+                    fail_msg = _FILES_NOT_FOUND_MSG
+                elif any(f.reason == IMPORT_FAILED for f in result.failed):
+                    fail_msg = _IMPORT_FAILED_MSG
+                else:
+                    fail_msg = _NO_SOURCE_MSG
+                await self._finalize(task, "failed", error_message=fail_msg)
+        except Exception:
+            logger.exception("Unexpected error during reimport of task %s", task.id)
+            await self._finalize(task, "failed", error_message="Reimport failed unexpectedly")
+
         return await self._store.get_task(task.id)
 
     async def _create_retry_task(self, task) -> str:  # noqa: ANN001 - DownloadTask

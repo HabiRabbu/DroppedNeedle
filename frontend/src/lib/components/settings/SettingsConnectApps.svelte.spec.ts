@@ -16,14 +16,26 @@ const h = vi.hoisted(() => ({
 	},
 	passwords: {
 		items: [
-			{ id: 'ap-1', name: 'Symfonium (phone)', created_at: '2026-06-01T00:00:00Z', last_used_at: null, last_client: null }
+			{
+				id: 'ap-1',
+				name: 'Symfonium (phone)',
+				created_at: '2026-06-01T00:00:00Z',
+				last_used_at: null,
+				last_client: null
+			}
 		],
 		cap: 25,
 		active_count: 1
 	},
 	createMutate: vi.fn().mockResolvedValue({
 		secret: 'super-secret-123',
-		app_password: { id: 'ap-2', name: 'Finamp (tablet)', created_at: '', last_used_at: null, last_client: null }
+		app_password: {
+			id: 'ap-2',
+			name: 'Finamp (tablet)',
+			created_at: '',
+			last_used_at: null,
+			last_client: null
+		}
 	}),
 	revokeMutate: vi.fn().mockResolvedValue(undefined),
 	saveMutate: vi.fn().mockResolvedValue({})
@@ -67,7 +79,13 @@ beforeEach(() => {
 	};
 	h.passwords = {
 		items: [
-			{ id: 'ap-1', name: 'Symfonium (phone)', created_at: '2026-06-01T00:00:00Z', last_used_at: null, last_client: null }
+			{
+				id: 'ap-1',
+				name: 'Symfonium (phone)',
+				created_at: '2026-06-01T00:00:00Z',
+				last_used_at: null,
+				last_client: null
+			}
 		],
 		cap: 25,
 		active_count: 1
@@ -95,7 +113,9 @@ describe('SettingsConnectApps.svelte', () => {
 		render(SettingsConnectApps);
 		await expect.element(page.getByLabelText('OpenSubsonic server URL')).toBeInTheDocument();
 		await expect.element(page.getByLabelText('Jellyfin server URL')).toBeInTheDocument();
-		await expect.element(page.getByText(/Tested clients: Symfonium, Feishin, Amperfy/)).toBeInTheDocument();
+		await expect
+			.element(page.getByText(/Tested clients: Symfonium, Feishin, Amperfy/))
+			.toBeInTheDocument();
 	});
 
 	it('reveals the created secret exactly once', async () => {
@@ -104,7 +124,9 @@ describe('SettingsConnectApps.svelte', () => {
 		await page.getByRole('button', { name: 'Create' }).click();
 		// The reveal modal markup is always in the DOM (no CSS hides it in tests), so key the
 		// assertion off bound values that only populate after a successful create.
-		await expect.element(page.getByLabelText('App-password secret')).toHaveValue('super-secret-123');
+		await expect
+			.element(page.getByLabelText('App-password secret'))
+			.toHaveValue('super-secret-123');
 		await expect
 			.element(page.getByText(/only time "Finamp \(tablet\)" will be shown/))
 			.toBeInTheDocument();
@@ -127,7 +149,9 @@ describe('SettingsConnectApps.svelte', () => {
 	it('non-admin sees a read-only note instead of editable controls', async () => {
 		h.isAdmin = false;
 		render(SettingsConnectApps);
-		await expect.element(page.getByText(/Only an administrator can change these/)).toBeInTheDocument();
+		await expect
+			.element(page.getByText(/Only an administrator can change these/))
+			.toBeInTheDocument();
 		await expect.element(page.getByLabelText('Enable OpenSubsonic API')).toBeDisabled();
 	});
 
