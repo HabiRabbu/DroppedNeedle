@@ -375,7 +375,8 @@ export const API = {
 		},
 		heldImport: (id: number) => `/api/v1/downloads/held/${id}/import`,
 		heldDiscard: (id: number) => `/api/v1/downloads/held/${id}/discard`,
-		heldAudio: (id: number) => `/api/v1/downloads/held/${id}/audio`
+		heldAudio: (id: number) => `/api/v1/downloads/held/${id}/audio`,
+		reimport: (taskId: string) => `/api/v1/downloads/${taskId}/reimport`
 	},
 	requests: {
 		new: () => '/api/v1/requests/new',

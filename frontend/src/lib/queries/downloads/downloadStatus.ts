@@ -65,6 +65,14 @@ export function canRetry(task: DownloadTask): boolean {
 	return task.status === 'failed' || task.status === 'cancelled' || task.status === 'partial';
 }
 
+export function canReimport(task: DownloadTask): boolean {
+	return (
+		(task.status === 'failed' || task.status === 'partial') &&
+		task.search_job_id != null &&
+		task.candidate_index != null
+	);
+}
+
 export type RetryDisplay =
 	| { kind: 'scheduled'; etaMinutes: number }
 	| { kind: 'retrying'; attempt: number; max: number }

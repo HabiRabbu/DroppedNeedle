@@ -532,6 +532,10 @@ class DownloadService:
                 },
             )
 
+    async def reimport_task(self, task_id: str, user_id: str, user_role: str):
+        self._ensure_enabled()
+        return await self._orchestrator.reimport_task(task_id, user_id, user_role)
+
     @property
     def auto_retry_max(self) -> int:
         """Configured max auto-retry attempts, for the queue UI's attempt counter."""

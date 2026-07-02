@@ -8,13 +8,15 @@ const h = vi.hoisted(() => ({
 	cancelMutate: vi.fn(),
 	retryMutate: vi.fn(),
 	stopRetryMutate: vi.fn(),
+	reimportMutate: vi.fn(),
 	isAdmin: false
 }));
 
 vi.mock('$lib/queries/downloads/DownloadMutations.svelte', () => ({
 	cancelDownload: () => ({ mutate: h.cancelMutate, isPending: false }),
 	retryDownload: () => ({ mutate: h.retryMutate, isPending: false }),
-	stopAutoRetry: () => ({ mutate: h.stopRetryMutate, isPending: false })
+	stopAutoRetry: () => ({ mutate: h.stopRetryMutate, isPending: false }),
+	reimportDownload: () => ({ mutate: h.reimportMutate, isPending: false })
 }));
 
 vi.mock('$lib/queries/downloads/DownloadSSE.svelte', () => ({
@@ -84,6 +86,7 @@ describe('DownloadItem.svelte', () => {
 		h.cancelMutate = vi.fn();
 		h.retryMutate = vi.fn();
 		h.stopRetryMutate = vi.fn();
+		h.reimportMutate = vi.fn();
 		h.isAdmin = false;
 	});
 

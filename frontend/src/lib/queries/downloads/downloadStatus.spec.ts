@@ -7,6 +7,7 @@ import {
 	bucketDownloads,
 	bucketSections,
 	canCancel,
+	canReimport,
 	canRetry,
 	collapseRetryChains,
 	derivedDownloadStatus,
@@ -130,6 +131,35 @@ describe('canCancel / canRetry', () => {
 	});
 });
 
+describe('canReimport', () => {
+	it('allows reimport for failed/partial tasks that picked a candidate', () => {
+		expect(canReimport(task({ status: 'failed', search_job_id: 'j', candidate_index: 0 }))).toBe(
+			true
+		);
+		expect(canReimport(task({ status: 'partial', search_job_id: 'j', candidate_index: 2 }))).toBe(
+			true
+		);
+	});
+
+	it('disallows reimport for a task that never picked a candidate', () => {
+		expect(
+			canReimport(task({ status: 'failed', search_job_id: null, candidate_index: null }))
+		).toBe(false);
+	});
+
+	it('disallows reimport for statuses other than failed/partial', () => {
+		expect(canReimport(task({ status: 'cancelled', search_job_id: 'j', candidate_index: 0 }))).toBe(
+			false
+		);
+		expect(canReimport(task({ status: 'completed', search_job_id: 'j', candidate_index: 0 }))).toBe(
+			false
+		);
+		expect(
+			canReimport(task({ status: 'downloading', search_job_id: 'j', candidate_index: 0 }))
+		).toBe(false);
+	});
+});
+
 describe('nowPressing', () => {
 	it('prefers the most recent downloading/processing task over a newer searching one', () => {
 		const dl = task({ id: 'dl', status: 'downloading', created_at: 1 });
@@ -172,8 +202,12 @@ describe('retryDisplay', () => {
 	});
 
 	it('is null when auto-retry is off (retry_max 0): plain status, never "out of retries" or "/0"', () => {
-		expect(retryDisplay(task({ status: 'failed', next_retry_at: null, retry_max: 0 }), NOW)).toBeNull();
-		expect(retryDisplay(task({ status: 'downloading', retry_count: 1, retry_max: 0 }), NOW)).toBeNull();
+		expect(
+			retryDisplay(task({ status: 'failed', next_retry_at: null, retry_max: 0 }), NOW)
+		).toBeNull();
+		expect(
+			retryDisplay(task({ status: 'downloading', retry_count: 1, retry_max: 0 }), NOW)
+		).toBeNull();
 	});
 });
 
@@ -204,12 +238,12 @@ describe('isWanted + sectionForTask + bucketSections', () => {
 	const NOW = 1_000_000;
 
 	it('a failed/partial task with a scheduled retry is wanted', () => {
-		expect(isWanted(task({ status: 'failed', retry_count: 1, next_retry_at: NOW + 600 }), NOW)).toBe(
-			true
-		);
-		expect(isWanted(task({ status: 'partial', retry_count: 1, next_retry_at: NOW + 600 }), NOW)).toBe(
-			true
-		);
+		expect(
+			isWanted(task({ status: 'failed', retry_count: 1, next_retry_at: NOW + 600 }), NOW)
+		).toBe(true);
+		expect(
+			isWanted(task({ status: 'partial', retry_count: 1, next_retry_at: NOW + 600 }), NOW)
+		).toBe(true);
 		expect(isWanted(task({ status: 'failed', next_retry_at: null }), NOW)).toBe(false);
 	});
 
@@ -229,7 +263,9 @@ describe('isWanted + sectionForTask + bucketSections', () => {
 	});
 
 	it('an in-flight retry stays in now_spinning, not wanted', () => {
-		expect(sectionForTask(task({ status: 'downloading', retry_count: 2 }), NOW)).toBe('now_spinning');
+		expect(sectionForTask(task({ status: 'downloading', retry_count: 2 }), NOW)).toBe(
+			'now_spinning'
+		);
 	});
 
 	it('buckets a mixed queue and sorts wanted by soonest next attempt', () => {
@@ -276,8 +312,20 @@ describe('retryLadderState', () => {
 
 describe('collapseRetryChains', () => {
 	it('keeps only the latest attempt per (type, identity, owner) by created_at', () => {
-		const original = task({ id: 'o', status: 'failed', retry_count: 0, created_at: 1, release_group_mbid: 'rg1' });
-		const retry = task({ id: 'r', status: 'downloading', retry_count: 1, created_at: 2, release_group_mbid: 'rg1' });
+		const original = task({
+			id: 'o',
+			status: 'failed',
+			retry_count: 0,
+			created_at: 1,
+			release_group_mbid: 'rg1'
+		});
+		const retry = task({
+			id: 'r',
+			status: 'downloading',
+			retry_count: 1,
+			created_at: 2,
+			release_group_mbid: 'rg1'
+		});
 		const collapsed = collapseRetryChains([original, retry]);
 		expect(collapsed).toHaveLength(1);
 		expect(collapsed[0].id).toBe('r');
@@ -300,8 +348,20 @@ describe('collapseRetryChains', () => {
 		// The live bug: a re-request resets retry_count to 0, so a stale failed retry-7 task
 		// from yesterday must NOT outrank, and hide, today's active retry-0 download. Newest
 		// created_at wins - the higher retry_count does not.
-		const stale = task({ id: 'old', status: 'failed', retry_count: 7, created_at: 100, release_group_mbid: 'rg1' });
-		const fresh = task({ id: 'new', status: 'downloading', retry_count: 0, created_at: 200, release_group_mbid: 'rg1' });
+		const stale = task({
+			id: 'old',
+			status: 'failed',
+			retry_count: 7,
+			created_at: 100,
+			release_group_mbid: 'rg1'
+		});
+		const fresh = task({
+			id: 'new',
+			status: 'downloading',
+			retry_count: 0,
+			created_at: 200,
+			release_group_mbid: 'rg1'
+		});
 		const collapsed = collapseRetryChains([stale, fresh]);
 		expect(collapsed).toHaveLength(1);
 		expect(collapsed[0].id).toBe('new');
