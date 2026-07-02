@@ -23,7 +23,6 @@ NPM    ?= pnpm
 	backend-test-artist-monitoring \
 	backend-test-artist-page \
 	backend-test-local-stats \
-	backend-test-artist-releases-dedup \
 	backend-test-artist-discovery \
 	backend-test-audiodb \
 	backend-test-audiodb-parallel \
@@ -70,7 +69,6 @@ NPM    ?= pnpm
 	backend-test-monitoring-cache \
 	backend-test-navidrome \
 	backend-test-multidisc \
-	backend-test-mus15-status-race \
 	backend-test-performance \
 	backend-test-preferences \
 	backend-test-plex \
@@ -78,7 +76,6 @@ NPM    ?= pnpm
 	backend-test-plex-routes \
 	backend-test-playlist \
 	backend-test-queue-strategies \
-	backend-test-request-queue \
 	backend-test-request-service \
 	backend-test-search-top-result \
 	backend-test-security \
@@ -137,13 +134,13 @@ backend-test-compat: $(BACKEND_VENV_STAMP) ## Connect Apps: all compat backend t
 	$(PYTEST) tests/compat -v
 
 backend-test-compat-subsonic: $(BACKEND_VENV_STAMP) ## Connect Apps: Subsonic shim only
-	$(PYTEST) tests/compat/test_auth_subsonic.py tests/compat/test_subsonic_serializer.py tests/compat/test_subsonic_endpoints.py -v
+	$(PYTEST) tests/compat/test_subsonic_*.py -v
 
 backend-test-compat-jellyfin: $(BACKEND_VENV_STAMP) ## Connect Apps: Jellyfin shim only
-	$(PYTEST) tests/compat/test_auth_jellyfin.py tests/compat/test_jellyfin_serializer.py tests/compat/test_jellyfin_endpoints.py -v
+	$(PYTEST) tests/compat/test_jellyfin_*.py -v
 
 backend-test-compat-streaming: $(BACKEND_VENV_STAMP) ## Connect Apps: streaming + transcode (ffprobe-gated)
-	$(PYTEST) tests/compat/test_streaming.py -v
+	$(PYTEST) tests/compat/test_subsonic_streaming.py tests/compat/test_jellyfin_stream.py tests/compat/test_transcode_service.py -v
 
 frontend-test-connect-apps: ## Connect Apps: SettingsConnectApps component + data-layer tests
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsConnectApps.svelte.spec.ts
@@ -165,9 +162,6 @@ backend-test-artist-monitoring: $(BACKEND_VENV_STAMP) ## Run MUS-15B artist moni
 
 backend-test-artist-page: $(BACKEND_VENV_STAMP) ## Run artist page latency tests (basic route, releases, Last.fm fast path)
 	$(PYTEST) tests/routes/test_artist_basic_route.py tests/routes/test_artist_releases_route.py tests/services/test_artist_basic_info.py tests/services/test_top_albums_lastfm_fast.py -v
-
-backend-test-artist-releases-dedup: $(BACKEND_VENV_STAMP) ## Run artist release de-duplication regressions (each_key_duplicate)
-	$(PYTEST) tests/services/test_categorize_lidarr_albums_dedup.py -v
 
 backend-test-artist-discovery: $(BACKEND_VENV_STAMP) ## Run artist discovery service tests (similar artists, top songs/albums)
 	$(PYTEST) tests/services/test_artist_discovery_service.py -v
@@ -380,16 +374,13 @@ backend-test-local-files: $(BACKEND_VENV_STAMP) ## Run native local-files servic
 	$(PYTEST) tests/services/test_local_files_service.py tests/routes/test_stream_routes.py -v
 
 backend-test-monitoring-cache: $(BACKEND_VENV_STAMP) ## Run artist monitoring cache/flag refresh tests
-	$(PYTEST) tests/services/test_refresh_library_flags.py tests/test_queue_disk_invalidation.py tests/services/test_artist_utils_tags.py -v
+	$(PYTEST) tests/services/test_refresh_library_flags.py tests/services/test_artist_utils_tags.py -v
 
 backend-test-multidisc: $(BACKEND_VENV_STAMP) ## Run multi-disc album tests
 	$(PYTEST) tests/services/test_album_utils.py tests/services/test_album_service.py tests/infrastructure/test_cache_layer_followups.py
 
 backend-test-navidrome: $(BACKEND_VENV_STAMP) ## Run all Navidrome integration backend tests
 	$(PYTEST) tests/repositories/test_navidrome_repository.py tests/services/test_navidrome_library_service.py tests/services/test_navidrome_playback_service.py tests/services/test_navidrome_cache_invalidation.py tests/services/test_navidrome_stream_proxy.py tests/routes/test_navidrome_routes.py -v
-
-backend-test-mus15-status-race: $(BACKEND_VENV_STAMP) ## Run MUS-15 status race condition tests
-	$(PYTEST) tests/test_mus15_status_race.py -v
 
 backend-test-performance: $(BACKEND_VENV_STAMP) ## Run performance regression tests
 	$(PYTEST) tests/services/test_album_singleflight.py tests/services/test_artist_singleflight.py tests/services/test_genre_batch_parallel.py tests/services/test_cache_stats_nonblocking.py tests/services/test_settings_cache_invalidation.py tests/services/test_discover_enrich_singleflight.py
@@ -405,9 +396,6 @@ backend-test-playlist-ownership: $(BACKEND_VENV_STAMP) ## Run playlist ownership
 
 backend-test-queue-strategies: $(BACKEND_VENV_STAMP) ## Run queue strategy extraction tests
 	$(PYTEST) tests/services/test_queue_strategies.py -v
-
-backend-test-request-queue: $(BACKEND_VENV_STAMP) ## Run MUS-14 request queue tests (dedup, cancel, concurrency)
-	$(PYTEST) tests/infrastructure/test_request_queue_mus14.py tests/infrastructure/test_queue_persistence.py -v
 
 backend-test-request-service: $(BACKEND_VENV_STAMP) ## Run request service tests
 	$(PYTEST) tests/services/test_request_service.py -v
@@ -457,7 +445,7 @@ test-discover-all: backend-test-discover-all frontend-test-discover-page ## Run 
 
 test-audiodb-all: backend-test-audiodb backend-test-audiodb-prewarm backend-test-audiodb-settings backend-test-coverart-audiodb backend-test-audiodb-phase8 backend-test-audiodb-phase9 frontend-test-audiodb-images ## Run every AudioDB test target
 
-test-mus14-all: backend-test-request-queue backend-test-request-service ## Run all MUS-14 request system tests
+test-mus14-all: backend-test-dedup-cancellation backend-test-request-service ## Run all MUS-14 request system tests
 
 test-sync-all: backend-test-sync-watchdog backend-test-sync-resume backend-test-audiodb-parallel backend-test-sync-generation ## Run all sync reliability tests
 

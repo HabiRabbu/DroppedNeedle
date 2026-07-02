@@ -55,7 +55,7 @@ export default defineConfig(
 					selector:
 						"CallExpression[callee.object.name='queryClient'][callee.property.name='setQueriesData']",
 					message:
-						"Direct use of 'queryClient.setQueriesData' is forbidden. Please use the 'setQueriesDataWithPersister' function instead."
+						"Direct use of 'queryClient.setQueriesData' is forbidden. Please use 'setQueryDataWithPersister' per matching query key instead (no plural helper exists)."
 				},
 				{
 					selector:
