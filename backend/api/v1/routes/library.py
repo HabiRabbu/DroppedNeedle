@@ -164,6 +164,7 @@ async def get_library_grouped(
 
 @router.get("/album/{album_mbid}/removal-preview", response_model=AlbumRemovePreviewResponse)
 async def get_album_removal_preview(
+    _admin: CurrentAdminDep,
     album_mbid: str,
     library_service: LibraryService = Depends(get_library_service)
 ):
@@ -176,6 +177,7 @@ async def get_album_removal_preview(
 
 @router.delete("/album/{album_mbid}", response_model=AlbumRemoveResponse)
 async def remove_album(
+    _admin: CurrentAdminDep,
     album_mbid: str,
     delete_files: bool = False,
     library_service: LibraryService = Depends(get_library_service),
