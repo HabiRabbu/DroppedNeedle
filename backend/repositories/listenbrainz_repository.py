@@ -1,9 +1,9 @@
 import asyncio
 import httpx
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import msgspec
-from core.exceptions import ExternalServiceError, RateLimitedError
+from core.exceptions import ExternalServiceError, RateLimitedError, ServiceDisabledUpstreamError
 from infrastructure.cache.cache_keys import LB_PREFIX
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.resilience.retry import with_retry, CircuitBreaker
@@ -43,6 +43,49 @@ def _parse_retry_after(response: httpx.Response) -> float:
                 continue
     return 2.0
 
+def _mark_popularity_degraded() -> None:
+    """Flag LB popularity as genuinely degraded (drives fallbacks + the UI status
+    dot). Only ever called on LB's own explicit "disabled"/"auth-gate" replies."""
+    from infrastructure.service_health import service_health
+
+    service_health.mark_degraded(
+        "listenbrainz",
+        "popularity",
+        message="ListenBrainz's popularity data is temporarily unavailable.",
+        fallback="lastfm",
+        severity="degraded",
+    )
+
+
+def lb_popularity_degraded() -> bool:
+    """True ONLY when ListenBrainz's popularity API is DEFINITELY degraded - i.e. LB
+    itself has recently returned an explicit outage response ("Popularity API currently
+    disabled due to high load" 500, or the anti-scraper 401), recorded via
+    _mark_popularity_degraded() with a sliding TTL that auto-heals. It is NOT set by
+    timeouts, network blips, or empty results. Callers use this as the single, shared
+    gate for 'may I fall back to Last.fm?' - the answer defaults to NO (prefer LB)."""
+    from infrastructure.service_health import service_health
+
+    return service_health.is_degraded("listenbrainz", "popularity")
+
+
+def _is_upstream_policy_block(response: httpx.Response) -> bool:
+    """LB deterministically refuses some endpoints for an outage's duration; these
+    must fail fast (no retry storm) and NOT trip the shared breaker (they'd take
+    down endpoints that still work, e.g. authenticated similar-artists):
+      - popularity feature-flag 500 ("currently disabled due to high load"),
+      - anti-scraper 401 ("...please provide an Auth token", added 2026-07 when LB
+        began gating anonymous popularity calls) - retrying/tripping on this let one
+        token-less caller open the shared breaker and blind every other LB feature.
+    """
+    text = response.text
+    if response.status_code == 500 and "currently disabled" in text:
+        return True
+    if response.status_code == 401 and ("provide an Auth token" in text or "AI scrapers" in text):
+        return True
+    return False
+
+
 _listenbrainz_circuit_breaker = CircuitBreaker(
     failure_threshold=10,
     success_threshold=2,
@@ -72,7 +115,8 @@ class ListenBrainzRepository:
         http_client: httpx.AsyncClient,
         cache: CacheInterface,
         username: str = "",
-        user_token: str = ""
+        user_token: str = "",
+        fallback_token_provider: "Callable[[], Awaitable[str | None]] | None" = None,
     ):
         self._client = http_client
         self._cache = cache
@@ -80,10 +124,26 @@ class ListenBrainzRepository:
         self._user_token = user_token
         self._base_url = LISTENBRAINZ_API_URL
         self._request_semaphore = asyncio.Semaphore(2)
-    
+        # borrowed token for PUBLIC reads when this (usually global/enrichment) repo
+        # has none of its own; LB now anti-scraper-gates anonymous popularity calls.
+        # Resolved once, lazily, and NEVER used for require_auth writes.
+        self._fallback_token_provider = fallback_token_provider
+        self._fallback_resolved = False
+
     def configure(self, username: str, user_token: str = "") -> None:
         self._username = username
         self._user_token = user_token
+
+    async def _ensure_read_token(self) -> None:
+        if self._user_token or self._fallback_token_provider is None or self._fallback_resolved:
+            return
+        self._fallback_resolved = True
+        try:
+            token = await self._fallback_token_provider()
+        except Exception:  # noqa: BLE001 - a missing borrowed token just means anonymous
+            token = None
+        if token:
+            self._user_token = token
     
     @staticmethod
     def reset_circuit_breaker() -> None:
@@ -115,10 +175,15 @@ class ListenBrainzRepository:
         require_auth: bool = False,
     ) -> Any:
         url = f"{self._base_url}{endpoint}"
-        
+
+        # a borrowed fallback token authenticates public reads only; writes must use
+        # this repo's own (real user) token, never someone else's
+        if not require_auth:
+            await self._ensure_read_token()
+
         if require_auth and not self._user_token:
             raise ExternalServiceError("ListenBrainz user token required for this request")
-        
+
         await _listenbrainz_rate_limiter.acquire()
 
         async with self._request_semaphore:
@@ -147,6 +212,17 @@ class ListenBrainzRepository:
                     )
 
                 if response.status_code != 200:
+                    # deterministic upstream policy blocks (disabled-under-load 500,
+                    # anti-scraper 401): fail fast, outside the retriable set and outside
+                    # ExternalServiceError, so with_retry doesn't storm and the shared LB
+                    # breaker stays closed for endpoints that still work
+                    if _is_upstream_policy_block(response):
+                        _mark_popularity_degraded()
+                        raise ServiceDisabledUpstreamError(
+                            f"ListenBrainz {method} {endpoint} unavailable upstream "
+                            f"({response.status_code})",
+                            response.text,
+                        )
                     raise ExternalServiceError(
                         f"ListenBrainz {method} failed ({response.status_code})",
                         response.text

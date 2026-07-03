@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
+from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from fastapi import HTTPException
@@ -17,8 +19,10 @@ from repositories.protocols import (
 )
 from services.discover.integration_helpers import IntegrationHelpers
 from services.discover.mbid_resolution_service import MbidResolutionService
+from repositories.listenbrainz_repository import lb_popularity_degraded
 from services.discover.queue_strategies import (
     build_similar_artist_pools,
+    build_similar_artist_pools_lastfm,
     queue_item_to_home_album,
     round_robin_dedup_select,
 )
@@ -40,8 +44,10 @@ class DiscoverRadioService:
         genre_index: Any = None,
         integration: IntegrationHelpers | None = None,
         transformers: Any = None,
+        lfm_repo: Any = None,
     ) -> None:
         self._lb_repo = lb_repo
+        self._lfm_repo = lfm_repo
         self._mb_repo = mb_repo
         self._mbid = mbid_svc
         self._artist_discovery = artist_discovery
@@ -49,6 +55,29 @@ class DiscoverRadioService:
         self._genre_index = genre_index
         self._integration = integration
         self._transformers = transformers
+
+    async def _similar_artist_pools(self, seeds, seed_mbids, *, excluded_mbids, similar_limit, albums_per):
+        """Similar-artist album pools. ALWAYS prefers ListenBrainz; swaps to the Last.fm
+        builder ONLY when LB popularity is DEFINITELY degraded (lb_popularity_degraded()
+        - set solely on LB's explicit disabled/auth-gate reply) and Last.fm is available."""
+        lfm_enabled = self._integration.is_lastfm_enabled() if self._integration else False
+        if lb_popularity_degraded() and lfm_enabled and self._lfm_repo is not None:
+            return await build_similar_artist_pools_lastfm(
+                seed_mbids,
+                excluded_mbids=excluded_mbids,
+                similar_limit=similar_limit,
+                albums_per=albums_per,
+                lfm_repo=self._lfm_repo,
+                mbid_svc=self._mbid,
+            )
+        return await build_similar_artist_pools(
+            seeds,
+            excluded_mbids=excluded_mbids,
+            similar_limit=similar_limit,
+            albums_per=albums_per,
+            lb_repo=self._lb_repo,
+            mbid_svc=self._mbid,
+        )
 
     async def generate_radio(self, request: RadioRequest) -> HomeSection:
         if not request.seed_id or not request.seed_id.strip():
@@ -123,13 +152,12 @@ class DiscoverRadioService:
             listen_count=0,
         )
 
-        pools = await build_similar_artist_pools(
+        pools = await self._similar_artist_pools(
             [seed_stub],
+            [normalized],
             excluded_mbids=library_mbids,
             similar_limit=15,
             albums_per=3,
-            lb_repo=self._lb_repo,
-            mbid_svc=self._mbid,
         )
         selected = round_robin_dedup_select(pools, count)
         albums = [queue_item_to_home_album(item) for item in selected]
@@ -230,7 +258,10 @@ class DiscoverRadioService:
             raise HTTPException(status_code=422, detail=f"Unknown genre tag: {seed_id}")
 
         sample_size = min(len(artist_mbids), 5)
-        sampled = random.sample(artist_mbids, sample_size)
+        # deterministic per day: same-day refreshes reproduce the same station seeds
+        today = datetime.now(timezone.utc).date().isoformat()
+        rng = random.Random(int(hashlib.md5(f"{today}:{seed_id}".encode()).hexdigest()[:12], 16))
+        sampled = rng.sample(artist_mbids, sample_size)
 
         seeds = [
             ListenBrainzArtist(
@@ -241,13 +272,12 @@ class DiscoverRadioService:
             for mbid in sampled
         ]
 
-        pools = await build_similar_artist_pools(
+        pools = await self._similar_artist_pools(
             seeds,
+            sampled,
             excluded_mbids=library_mbids,
             similar_limit=10,
             albums_per=3,
-            lb_repo=self._lb_repo,
-            mbid_svc=self._mbid,
         )
         selected = round_robin_dedup_select(pools, count)
         albums = [queue_item_to_home_album(item) for item in selected]

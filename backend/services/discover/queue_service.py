@@ -78,14 +78,13 @@ class DiscoverQueueService:
         resolved = resolve_source_value(source, primary_source, lb_enabled, lfm_enabled)
         return lb_client, lfm_client, lb_username, lfm_username, lb_enabled, lfm_enabled, resolved
 
-    async def build_queue(
-        self, user_id: str, count: int | None = None, source: str | None = None
-    ) -> DiscoverQueueResponse:
+    async def build_queue(self, user_id: str, count: int | None = None) -> DiscoverQueueResponse:
         qs = self._integration.get_queue_settings()
         if count is None:
             count = qs.queue_size
+        # queue strategies follow the user's primary source
         (lb_client, _lfm_client, username, lfm_username,
-         lb_enabled, lfm_enabled, resolved_source) = await self._resolve_user_music(user_id, source)
+         lb_enabled, lfm_enabled, resolved_source) = await self._resolve_user_music(user_id, None)
         jf_enabled = self._integration.is_jellyfin_enabled()
         library_configured = self._integration.is_library_configured()
 
@@ -414,7 +413,15 @@ class DiscoverQueueService:
             )
 
         qs = self._integration.get_queue_settings()
-        use_lastfm = resolved_source == "lastfm" and lfm_enabled and self._lfm_repo is not None
+        # during a genuine LB popularity outage, source albums from Last.fm even when the
+        # user's primary is ListenBrainz (the LB similar-artist seeds above still work)
+        from repositories.listenbrainz_repository import lb_popularity_degraded
+
+        use_lastfm = (
+            (resolved_source == "lastfm" or lb_popularity_degraded())
+            and lfm_enabled
+            and self._lfm_repo is not None
+        )
         seeds = seed_artists[:qs.seed_artists]
         wildcard_slots = qs.wildcard_slots
         personalized_target = max(count - wildcard_slots, 0)

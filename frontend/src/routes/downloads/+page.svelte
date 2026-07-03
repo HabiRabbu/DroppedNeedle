@@ -4,6 +4,7 @@
 	import { Download } from 'lucide-svelte';
 
 	import DownloadQueue from '$lib/components/downloads/DownloadQueue.svelte';
+	import DiscoveryBatchList from '$lib/components/discover/DiscoveryBatchList.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { integrationStore } from '$lib/stores/integration';
@@ -51,5 +52,6 @@
 		{/if}
 	{:else}
 		<DownloadQueue />
+		<DiscoveryBatchList />
 	{/if}
 </div>

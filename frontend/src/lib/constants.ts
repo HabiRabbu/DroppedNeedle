@@ -203,18 +203,15 @@ export const API = {
 		suggest: (query: string, limit = 5) =>
 			`/api/v1/search/suggest?q=${encodeURIComponent(query.trim())}&limit=${limit}`
 	},
-	home: (source?: string) =>
-		source ? `/api/v1/home?source=${encodeURIComponent(source)}` : '/api/v1/home',
+	system: {
+		health: () => '/api/v1/system/health'
+	},
+	home: () => '/api/v1/home',
 	homeIntegrationStatus: () => '/api/v1/home/integration-status',
-	discover: (source?: string) =>
-		source ? `/api/v1/discover?source=${encodeURIComponent(source)}` : '/api/v1/discover',
-	discoverRefresh: (source?: string) =>
-		source
-			? `/api/v1/discover/refresh?source=${encodeURIComponent(source)}`
-			: '/api/v1/discover/refresh',
-	discoverQueue: (source?: string) => `/api/v1/discover/queue${source ? `?source=${source}` : ''}`,
-	discoverQueueStatus: (source?: string) =>
-		`/api/v1/discover/queue/status${source ? `?source=${source}` : ''}`,
+	discover: () => '/api/v1/discover',
+	discoverRefresh: () => '/api/v1/discover/refresh',
+	discoverQueue: () => '/api/v1/discover/queue',
+	discoverQueueStatus: () => '/api/v1/discover/queue/status',
 	discoverQueueGenerate: () => '/api/v1/discover/queue/generate',
 	discoverQueueEnrich: (mbid: string) => `/api/v1/discover/queue/enrich/${mbid}`,
 	discoverQueueIgnore: () => '/api/v1/discover/queue/ignore',
@@ -227,6 +224,15 @@ export const API = {
 	discoverQueueYoutubeQuota: () => '/api/v1/discover/queue/youtube-quota',
 	discoverQueueYoutubeCacheCheck: () => '/api/v1/discover/queue/youtube-cache-check',
 	discoverRadio: () => '/api/v1/discover/radio',
+	discoverRadioPlan: () => '/api/v1/discover/radio/plan',
+	discoverBatches: () => '/api/v1/discover/batches',
+	discoverBatch: (id: string) => `/api/v1/discover/batches/${id}`,
+	discoverBatchRemove: (id: string, removeAlbums: boolean) =>
+		`/api/v1/discover/batches/${id}?remove_albums=${removeAlbums}`,
+	discoverTrackPreview: (artist: string, track: string) =>
+		`/api/v1/discover/track-preview?artist=${encodeURIComponent(artist)}&track=${encodeURIComponent(track)}`,
+	discoverAlbumPreview: (artist: string, album: string) =>
+		`/api/v1/discover/album-preview?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`,
 	discoverPlaylistSuggestions: () => '/api/v1/discover/playlist-suggestions',
 	discoverGenreDetail: (tag: string) => `/api/v1/discover/genres/${encodeURIComponent(tag)}`,
 	youtube: {
@@ -270,6 +276,7 @@ export const API = {
 		connections: () => '/api/v1/me/connections',
 		connection: (service: string) => `/api/v1/me/connections/${service}`,
 		scrobblePreferences: () => '/api/v1/me/scrobble-preferences',
+		sectionPrefs: () => '/api/v1/me/section-prefs',
 		lastfmAuthToken: () => '/api/v1/me/connections/lastfm/auth/token',
 		lastfmAuthSession: () => '/api/v1/me/connections/lastfm/auth/session',
 		listenbrainz: () => '/api/v1/me/connections/listenbrainz'

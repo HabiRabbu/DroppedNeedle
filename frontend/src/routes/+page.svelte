@@ -1,5 +1,13 @@
 <script lang="ts">
-	import { Download, Music, CircleAlert, TrendingUp, Sparkles, Library } from 'lucide-svelte';
+	import {
+		Download,
+		Music,
+		CircleAlert,
+		TrendingUp,
+		Sparkles,
+		Library,
+		SlidersHorizontal
+	} from 'lucide-svelte';
 	import HomeSection from '$lib/components/HomeSection.svelte';
 	import WeeklyExploration from '$lib/components/WeeklyExploration.svelte';
 	import ServicePromptCard from '$lib/components/ServicePromptCard.svelte';
@@ -10,39 +18,20 @@
 		HomeSection as HomeSectionType,
 		WeeklyExplorationSection as WeeklyExplorationSectionType
 	} from '$lib/types';
-	import { type MusicSource, isMusicSource } from '$lib/stores/musicSource';
 	import CarouselSkeleton from '$lib/components/CarouselSkeleton.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { getGreeting } from '$lib/utils/homeCache';
-	import { removeQueueCachedData } from '$lib/utils/discoverQueueCache';
 	import { isDismissed } from '$lib/utils/dismissedPrompts';
 	import HomeSectionNowPlaying from '$lib/components/HomeSectionNowPlaying.svelte';
 	import HomeEntryCards from '$lib/components/HomeEntryCards.svelte';
+	import DiscoverTeaserBand from '$lib/components/discover/DiscoverTeaserBand.svelte';
 	import { getHomeQuery } from '$lib/queries/HomeQuery.svelte';
-	import type { PageProps } from './$types';
-	import { PersistedState } from 'runed';
-	import { PAGE_SOURCE_KEYS } from '$lib/constants';
-	import SimpleSourceSwitcher from '$lib/components/SimpleSourceSwitcher.svelte';
 
-	const { data }: PageProps = $props();
-
-	// svelte-ignore state_referenced_locally
-	let activeSource = new PersistedState<MusicSource>(PAGE_SOURCE_KEYS['home'], data.primarySource);
-
-	let validSource = $derived(
-		isMusicSource(activeSource.current) ? activeSource.current : data.primarySource
-	);
-
-	const homeQuery = getHomeQuery(() => validSource);
+	const homeQuery = getHomeQuery();
 	const homeData = $derived(homeQuery.data);
 	const loading = $derived(homeQuery.isLoading);
 	const isUpdating = $derived(homeQuery.isRefetching);
 	const lastUpdated = $derived(homeQuery.dataUpdatedAt ? new Date(homeQuery.dataUpdatedAt) : null);
-
-	function handleSourceChange(source: MusicSource) {
-		activeSource.current = source;
-		removeQueueCachedData(authStore.user?.id ?? 'anon');
-	}
 
 	type PreGenreBlock =
 		| {
@@ -73,11 +62,7 @@
 				link: '/trending'
 			});
 		}
-		if (
-			validSource === 'listenbrainz' &&
-			homeData.weekly_exploration &&
-			homeData.weekly_exploration.tracks.length > 0
-		) {
+		if (homeData.weekly_exploration && homeData.weekly_exploration.tracks.length > 0) {
 			blocks.push({
 				key: 'weekly_exploration',
 				kind: 'weekly',
@@ -182,7 +167,14 @@
 	</PageHeader>
 
 	<div class="flex justify-end px-4 -mt-4 mb-4 sm:px-6 lg:px-8">
-		<SimpleSourceSwitcher currentSource={validSource} onSourceChange={handleSourceChange} />
+		<a
+			href="/settings?tab=home"
+			class="btn btn-ghost btn-sm gap-2 text-base-content/60 hover:text-base-content"
+			title="Choose which sections appear here"
+		>
+			<SlidersHorizontal class="h-4 w-4" />
+			<span class="hidden sm:inline">Customise</span>
+		</a>
 	</div>
 
 	<div class="mb-10 px-4 sm:mb-12 sm:px-6 lg:px-8">
@@ -197,6 +189,12 @@
 		</div>
 	{:else}
 		<div class="space-y-10 px-4 sm:space-y-12 sm:px-6 lg:px-8">
+			{#if homeData?.refreshing}
+				<div class="flex items-center justify-center gap-2 pb-1 text-xs text-base-content/50">
+					<span class="loading loading-spinner loading-xs text-primary"></span>
+					Loading your recommendations…
+				</div>
+			{/if}
 			{#if !downloadClientConfigured && downloadClientPrompt}
 				<div
 					class="card bg-linear-to-br from-accent/20 via-accent/10 to-base-200 border-2 border-accent/40 shadow-xl relative overflow-hidden"
@@ -254,14 +252,17 @@
 											showPreview={block.showPreview}
 										/>
 									{:else}
-										<WeeklyExploration
-											section={block.section}
-											ytConfigured={homeData?.integration_status?.youtube ?? false}
-										/>
+										<WeeklyExploration section={block.section} />
 									{/if}
 								</div>
 							{/each}
 						</div>
+					</div>
+				{/if}
+
+				{#if !loading || homeData}
+					<div class="discover-section-enter">
+						<DiscoverTeaserBand preview={homeData?.discover_preview ?? null} />
 					</div>
 				{/if}
 
@@ -280,10 +281,7 @@
 											showPreview={block.showPreview}
 										/>
 									{:else}
-										<WeeklyExploration
-											section={block.section}
-											ytConfigured={homeData?.integration_status?.youtube ?? false}
-										/>
+										<WeeklyExploration section={block.section} />
 									{/if}
 								</div>
 							{/each}

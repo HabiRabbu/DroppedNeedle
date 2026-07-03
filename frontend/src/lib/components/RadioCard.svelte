@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { HomeSection as HomeSectionType, HomeAlbum } from '$lib/types';
-	import type { MusicSource } from '$lib/stores/musicSource';
 	import HomeSection from '$lib/components/HomeSection.svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import { getRadioQuery } from '$lib/queries/discover/DiscoverQuery.svelte';
@@ -8,19 +7,19 @@
 	import { DiscoverQueryKeyFactory } from '$lib/queries/discover/DiscoverQueryKeyFactory';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { ChevronDown, Disc3, Radio, RefreshCw } from 'lucide-svelte';
+	import RadioPlayButton from '$lib/components/discover/RadioPlayButton.svelte';
 	import { tilt } from '$lib/actions/tilt';
 	import { slide } from 'svelte/transition';
 
 	interface Props {
 		seedType: string;
 		seedId: string;
-		source: MusicSource;
 		initialSection?: HomeSectionType | null;
 	}
 
-	let { seedType, seedId, source, initialSection = null }: Props = $props();
+	let { seedType, seedId, initialSection = null }: Props = $props();
 
-	const radioQuery = getRadioQuery(() => ({ seedType, seedId, source }));
+	const radioQuery = getRadioQuery(() => ({ seedType, seedId }));
 	const section = $derived(radioQuery.data ?? initialSection);
 
 	let expanded = $state(false);
@@ -37,7 +36,7 @@
 
 	async function handleRefresh() {
 		await invalidateQueriesWithPersister({
-			queryKey: DiscoverQueryKeyFactory.radio(authStore.user?.id, seedType, seedId, source)
+			queryKey: DiscoverQueryKeyFactory.radio(authStore.user?.id, seedType, seedId)
 		});
 	}
 </script>
@@ -144,7 +143,15 @@
 	{#if expanded}
 		<div transition:slide={{ duration: 300 }} class="col-span-full overflow-hidden">
 			<div class="relative pt-3">
-				<div class="absolute right-0 top-3 z-10">
+				<div class="absolute right-0 top-3 z-10 flex items-center gap-2">
+					<RadioPlayButton
+						seed={{
+							seed_type: seedType === 'genre' ? 'genre' : seedType === 'album' ? 'album' : 'artist',
+							seed_id: seedId
+						}}
+						size="sm"
+						label="Play station"
+					/>
 					<button
 						class="btn btn-ghost btn-sm gap-1"
 						onclick={handleRefresh}

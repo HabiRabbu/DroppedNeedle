@@ -13,7 +13,6 @@ from api.v1.schemas.settings import (
     ListenBrainzConnectionSettings,
     OIDCConnectionSettings,
     YouTubeConnectionSettings,
-    HomeSettings,
     LocalFilesConnectionSettings,
     LastFmConnectionSettings,
     ScrobbleSettings,
@@ -623,15 +622,6 @@ class PreferencesService:
             logger.error(f"Failed to save YouTube connection settings: {e}")
             raise ConfigurationError(f"Failed to save YouTube connection settings: {e}")
 
-    def get_home_settings(self) -> HomeSettings:
-        return self._get_section("home_settings", HomeSettings)
-
-    def save_home_settings(self, settings: HomeSettings) -> None:
-        try:
-            self._save_section("home_settings", settings)
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Failed to save home settings: {e}")
-            raise ConfigurationError(f"Failed to save home settings: {e}")
 
     def get_connect_apps_settings(self) -> ConnectAppsSettings:
         return self._get_section("connect_apps", ConnectAppsSettings)

@@ -23,7 +23,10 @@ export function discoverHasContent(d: DiscoverResponse | null | undefined): bool
 		(d.genre_list?.items?.length ?? 0) > 0 ||
 		(d.daily_mixes?.length ?? 0) > 0 ||
 		(d.radio_sections?.length ?? 0) > 0 ||
-		d.discover_picks != null ||
+		(d.top_picks?.items?.length ?? 0) > 0 ||
+		d.listeners_like_you != null ||
+		d.anniversaries != null ||
+		d.new_from_followed != null ||
 		d.unexplored_genres != null
 	);
 }

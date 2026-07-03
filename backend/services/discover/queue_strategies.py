@@ -360,7 +360,13 @@ async def get_trending_filler(
     if count <= 0:
         return []
     exclude = ignored_mbids | library_mbids | (seen_mbids or set())
-    use_lastfm = source == "lastfm" and is_lastfm_enabled and lfm_repo is not None
+    from repositories.listenbrainz_repository import lb_popularity_degraded
+
+    use_lastfm = (
+        (source == "lastfm" or lb_popularity_degraded())
+        and is_lastfm_enabled
+        and lfm_repo is not None
+    )
     target = max(count * 2, 6)
 
     try:

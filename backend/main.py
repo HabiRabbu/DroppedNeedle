@@ -40,6 +40,9 @@ from static_server import mount_frontend
 from api.v1.routes import (
     search, requests, library, status, covers, artists, albums, settings, home, discover, profile, playlists, following
 )
+from api.v1.routes import (
+    discovery_batches as discovery_batches_routes
+)
 from api.v1.routes import library_scan as library_scan_routes
 from api.v1.routes import cache as cache_routes
 from api.v1.routes import cache_status as cache_status_routes
@@ -52,6 +55,7 @@ from api.v1.routes import local_library as local_library_routes
 from api.v1.routes import lastfm as lastfm_routes
 from api.v1.routes import scrobble as scrobble_routes
 from api.v1.routes import me_connections as me_connections_routes
+from api.v1.routes import system as system_routes
 from api.v1.routes import now_playing as now_playing_routes
 from api.v1.routes import plex_library as plex_library_routes
 from api.v1.routes import plex_auth as plex_auth_routes
@@ -653,6 +657,9 @@ v1_router.include_router(following.router)
 v1_router.include_router(albums.router)
 v1_router.include_router(settings.router)
 v1_router.include_router(home.router)
+# literal /discover/batches paths registered before the discover router (which owns
+# the broader /discover prefix) so they can never be shadowed
+v1_router.include_router(discovery_batches_routes.router)
 v1_router.include_router(discover.router)
 v1_router.include_router(youtube_routes.router)
 v1_router.include_router(cache_routes.router)
@@ -667,6 +674,7 @@ v1_router.include_router(local_library_routes.router)
 v1_router.include_router(lastfm_routes.router)
 v1_router.include_router(scrobble_routes.router)
 v1_router.include_router(me_connections_routes.router)
+v1_router.include_router(system_routes.router)
 v1_router.include_router(now_playing_routes.router)
 v1_router.include_router(profile.router)
 v1_router.include_router(playlists.router)

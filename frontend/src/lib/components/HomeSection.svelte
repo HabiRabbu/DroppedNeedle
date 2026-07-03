@@ -19,7 +19,7 @@
 	import AlbumRequestButton from './AlbumRequestButton.svelte';
 	import HorizontalCarousel from './HorizontalCarousel.svelte';
 	import SourceBadge from './SourceBadge.svelte';
-	import TrackPreviewButton from './TrackPreviewButton.svelte';
+	import SampleButton from './discover/SampleButton.svelte';
 
 	interface Props {
 		section: HomeSectionType;
@@ -254,15 +254,15 @@
 										artistMbid={item.artist_mbid ?? undefined}
 									/>
 								{/if}
-								{#if showPreview}
-									<TrackPreviewButton
+								{#if showPreview && item.mbid}
+									<SampleButton
+										sampleKey={item.mbid}
 										artist={item.artist_name ?? ''}
-										track={item.name}
-										ytConfigured={$integrationStore.youtube_api}
+										title={item.name}
+										kind="album"
 										size="sm"
-										albumId={item.mbid}
+										artistMbid={item.artist_mbid}
 										coverUrl={item.image_url}
-										artistId={item.artist_mbid ?? undefined}
 									/>
 								{/if}
 							</div>

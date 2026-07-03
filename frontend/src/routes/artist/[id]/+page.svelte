@@ -16,7 +16,6 @@
 	import LibraryAlbumsCarousel from '$lib/components/LibraryAlbumsCarousel.svelte';
 	import ArtistPageToc from '$lib/components/ArtistPageToc.svelte';
 	import { requestAlbum } from '$lib/utils/albumRequest';
-	import { integrationStore } from '$lib/stores/integration';
 	import { libraryStore } from '$lib/stores/library';
 	import { type MusicSource, isMusicSource } from '$lib/stores/musicSource';
 	import {
@@ -378,7 +377,6 @@
 							loading={loadingTopSongs}
 							configured={topSongs?.configured ?? true}
 							source={topSongs?.source || ''}
-							ytConfigured={$integrationStore.youtube_api}
 						/>
 					</div>
 				</div>

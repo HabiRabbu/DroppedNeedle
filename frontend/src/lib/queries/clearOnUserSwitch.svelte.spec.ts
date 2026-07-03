@@ -15,7 +15,7 @@ describe('clear-on-user-switch (AMU-5)', () => {
 
 	it('queryClient.clear() drops the user-keyed home entry', () => {
 		const qc = new QueryClient();
-		const key = HomeQueryKeyFactory.home('user-a', 'listenbrainz');
+		const key = HomeQueryKeyFactory.home('user-a');
 		qc.setQueryData(key, { greeting: 'hi A' });
 		expect(qc.getQueryData(key)).toBeDefined();
 
@@ -24,8 +24,8 @@ describe('clear-on-user-switch (AMU-5)', () => {
 	});
 
 	it('clearUserScopedLocalCaches() removes the prior user discover-queue + time-range entries', () => {
-		setQueueCachedData({ items: [], currentIndex: 0, queueId: 'q-a' }, 'user-a', 'listenbrainz');
-		const queueKey = `${CACHE_KEYS.DISCOVER_QUEUE}_user-a:listenbrainz`;
+		setQueueCachedData({ items: [], currentIndex: 0, queueId: 'q-a' }, 'user-a');
+		const queueKey = `${CACHE_KEYS.DISCOVER_QUEUE}_user-a`;
 		const trKey = `${CACHE_KEYS.TIME_RANGE_OVERVIEW_CACHE}_${overviewCacheSuffix(
 			'user-a',
 			'album',

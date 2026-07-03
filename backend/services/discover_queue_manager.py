@@ -57,15 +57,14 @@ class DiscoverQueueManager:
         self._discover = discover_service
         self._preferences = preferences_service
         self._cover_repo = cover_repo
-        # Keyed by (user_id, source) so per-user queues never collide (Phase 5).
-        self._states: dict[tuple[str, str], SourceQueueState] = {}
+        # Keyed per user; the queue follows the user's primary source internally.
+        self._states: dict[str, SourceQueueState] = {}
         self._lock = asyncio.Lock()
 
-    def _get_state(self, user_id: str, source: str) -> SourceQueueState:
-        key = (user_id, source)
-        if key not in self._states:
-            self._states[key] = SourceQueueState()
-        return self._states[key]
+    def _get_state(self, user_id: str) -> SourceQueueState:
+        if user_id not in self._states:
+            self._states[user_id] = SourceQueueState()
+        return self._states[user_id]
 
     def _get_ttl(self) -> int:
         adv = self._preferences.get_advanced_settings()
@@ -76,12 +75,11 @@ class DiscoverQueueManager:
             return True
         return (time.time() - state.built_at) > self._get_ttl()
 
-    def get_status(self, user_id: str, source: str) -> DiscoverQueueStatusResponse:
-        state = self._get_state(user_id, source)
+    def get_status(self, user_id: str) -> DiscoverQueueStatusResponse:
+        state = self._get_state(user_id)
         if state.status == QueueBuildStatus.READY and state.queue:
             return DiscoverQueueStatusResponse(
                 status=state.status.value,
-                source=source,
                 queue_id=state.queue.queue_id,
                 item_count=len(state.queue.items),
                 built_at=state.built_at,
@@ -90,17 +88,15 @@ class DiscoverQueueManager:
         if state.status == QueueBuildStatus.ERROR:
             return DiscoverQueueStatusResponse(
                 status=state.status.value,
-                source=source,
                 error=state.error,
             )
-        return DiscoverQueueStatusResponse(status=state.status.value, source=source)
+        return DiscoverQueueStatusResponse(status=state.status.value)
 
     @staticmethod
     def _build_generate_response(action: str, status: DiscoverQueueStatusResponse) -> QueueGenerateResponse:
         return QueueGenerateResponse(
             action=action,
             status=status.status,
-            source=status.source,
             queue_id=status.queue_id,
             item_count=status.item_count,
             built_at=status.built_at,
@@ -108,44 +104,44 @@ class DiscoverQueueManager:
             error=status.error,
         )
 
-    def get_queue(self, user_id: str, source: str) -> DiscoverQueueResponse | None:
-        state = self._get_state(user_id, source)
+    def get_queue(self, user_id: str) -> DiscoverQueueResponse | None:
+        state = self._get_state(user_id)
         if state.status == QueueBuildStatus.READY and state.queue and not self._is_stale(state):
             return state.queue
         return None
 
-    async def start_build(self, user_id: str, source: str, *, force: bool = False) -> QueueGenerateResponse:
+    async def start_build(self, user_id: str, *, force: bool = False) -> QueueGenerateResponse:
         async with self._lock:
-            state = self._get_state(user_id, source)
+            state = self._get_state(user_id)
 
             if state.status == QueueBuildStatus.BUILDING:
-                return self._build_generate_response("already_building", self.get_status(user_id, source))
+                return self._build_generate_response("already_building", self.get_status(user_id))
 
             if not force and state.status == QueueBuildStatus.READY and not self._is_stale(state):
-                return self._build_generate_response("already_ready", self.get_status(user_id, source))
+                return self._build_generate_response("already_ready", self.get_status(user_id))
 
             if state.task and not state.task.done():
                 state.task.cancel()
 
             state.status = QueueBuildStatus.BUILDING
             state.error = None
-            state.task = asyncio.create_task(self._do_build(user_id, source))
+            state.task = asyncio.create_task(self._do_build(user_id))
             from core.task_registry import TaskRegistry
             try:
-                TaskRegistry.get_instance().register(f"discover-build-{user_id}-{source}", state.task)
+                TaskRegistry.get_instance().register(f"discover-build-{user_id}", state.task)
             except RuntimeError:
                 pass
 
-        return self._build_generate_response("started", self.get_status(user_id, source))
+        return self._build_generate_response("started", self.get_status(user_id))
 
     async def build_hydrated_queue(
-        self, user_id: str, source: str, count: int | None = None
+        self, user_id: str, count: int | None = None
     ) -> DiscoverQueueResponse:
-        queue = await self._discover.build_queue(user_id, count=count, source=source)
-        return await self._hydrate_queue_items(queue, source)
+        queue = await self._discover.build_queue(user_id, count=count)
+        return await self._hydrate_queue_items(queue)
 
     async def _hydrate_queue_items(
-        self, queue: DiscoverQueueResponse, source: str
+        self, queue: DiscoverQueueResponse
     ) -> DiscoverQueueResponse:
         if not queue.items:
             return queue
@@ -161,8 +157,7 @@ class DiscoverQueueManager:
                     enrichment = await self._discover.enrich_queue_item(item.release_group_mbid)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Queue item enrichment failed (source=%s, release_group_mbid=%s): %s",
-                    source,
+                    "Queue item enrichment failed (release_group_mbid=%s): %s",
                     item.release_group_mbid,
                     exc,
                 )
@@ -175,17 +170,17 @@ class DiscoverQueueManager:
         hydrated_items = await asyncio.gather(*(hydrate_item(item) for item in queue.items))
         return clone_with_updates(queue, {"items": hydrated_items})
 
-    async def _do_build(self, user_id: str, source: str) -> None:
-        state = self._get_state(user_id, source)
+    async def _do_build(self, user_id: str) -> None:
+        state = self._get_state(user_id)
         try:
-            queue = await self.build_hydrated_queue(user_id, source)
+            queue = await self.build_hydrated_queue(user_id)
             state.queue = queue
             state.built_at = time.time()
             state.status = QueueBuildStatus.READY
-            task = asyncio.create_task(self._prewarm_covers(queue, source))
+            task = asyncio.create_task(self._prewarm_covers(queue))
             from core.task_registry import TaskRegistry
             try:
-                TaskRegistry.get_instance().register(f"discover-cover-prewarm-{user_id}-{source}", task)
+                TaskRegistry.get_instance().register(f"discover-cover-prewarm-{user_id}", task)
             except RuntimeError:
                 pass
         except asyncio.CancelledError:
@@ -193,11 +188,11 @@ class DiscoverQueueManager:
                 state.status = QueueBuildStatus.IDLE
             raise
         except Exception as e:  # noqa: BLE001
-            logger.error("Background queue build failed (source=%s): %s", source, e)
+            logger.error("Background queue build failed: %s", e)
             state.status = QueueBuildStatus.ERROR
             state.error = str(e)
 
-    async def _prewarm_covers(self, queue: DiscoverQueueResponse, source: str) -> None:
+    async def _prewarm_covers(self, queue: DiscoverQueueResponse) -> None:
         if not self._cover_repo or not queue.items:
             return
 
@@ -226,8 +221,8 @@ class DiscoverQueueManager:
 
         await asyncio.gather(*(warm_one(m) for m in mbids), return_exceptions=True)
 
-    async def consume_queue(self, user_id: str, source: str) -> DiscoverQueueResponse | None:
-        state = self._get_state(user_id, source)
+    async def consume_queue(self, user_id: str) -> DiscoverQueueResponse | None:
+        state = self._get_state(user_id)
         if state.status != QueueBuildStatus.READY or state.queue is None:
             return None
         if self._is_stale(state):
@@ -241,17 +236,13 @@ class DiscoverQueueManager:
         state.built_at = 0.0
         return queue
 
-    def invalidate(self, user_id: str | None = None, source: str | None = None) -> None:
+    def invalidate(self, user_id: str | None = None) -> None:
         if user_id is None:
             # Invalidate every user's queues (shutdown / global cache clear).
             for key in list(self._states.keys()):
-                self.invalidate(key[0], key[1])
+                self.invalidate(key)
             return
-        if source:
-            state = self._get_state(user_id, source)
-            if state.task and not state.task.done():
-                state.task.cancel()
-            self._states[(user_id, source)] = SourceQueueState()
-        else:
-            for key in [k for k in self._states if k[0] == user_id]:
-                self.invalidate(user_id, key[1])
+        state = self._get_state(user_id)
+        if state.task and not state.task.done():
+            state.task.cancel()
+        self._states[user_id] = SourceQueueState()

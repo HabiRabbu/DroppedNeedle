@@ -175,7 +175,8 @@
 			{#if authStore.isAdmin && canReimport(task)}
 				<button
 					class="btn btn-ghost btn-xs"
-					onclick={() => reimport.mutate(task.id)}
+					onclick={() =>
+						reimport.mutate({ id: task.id, release_group_mbid: task.release_group_mbid })}
 					disabled={reimport.isPending}
 					title="Already fixed this in slskd? Check the downloads mount again without re-searching."
 					aria-label="Retry import from slskd"

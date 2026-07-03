@@ -395,6 +395,8 @@ class YouTubeConnectionSettings(AppStruct):
         return bool(self.api_key and self.api_key.strip())
 
 
+# Vestigial: kept only so old config.json files with a `home_settings` section
+# still parse. Section visibility is now per-user (user_section_prefs).
 class HomeSettings(AppStruct):
     cache_ttl_trending: int = 3600
     cache_ttl_personal: int = 300

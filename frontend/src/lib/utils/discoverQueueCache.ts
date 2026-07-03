@@ -15,57 +15,45 @@ const queueCache = createLocalStorageCache<QueueCacheData>(
 
 const QUEUE_CACHE_EVENT = 'discover-queue-cache-changed';
 
-// Entries scoped per user so a shared browser never serves one user's queue to
-// another. The change event still carries only `source` (what consumers react to).
-function scopedSuffix(userId: string, source?: string): string {
-	return source ? `${userId}:${source}` : userId;
-}
-
-function notifyQueueCacheChanged(source?: string): void {
+function notifyQueueCacheChanged(): void {
 	if (typeof window === 'undefined') return;
-	window.dispatchEvent(
-		new CustomEvent<{ source?: string }>(QUEUE_CACHE_EVENT, {
-			detail: { source }
-		})
-	);
+	window.dispatchEvent(new CustomEvent(QUEUE_CACHE_EVENT));
 }
 
-export function subscribeQueueCacheChanges(listener: (source?: string) => void): () => void {
+export function subscribeQueueCacheChanges(listener: () => void): () => void {
 	if (typeof window === 'undefined') return () => {};
 
-	const handler = (event: Event) => {
-		const customEvent = event as CustomEvent<{ source?: string }>;
-		listener(customEvent.detail?.source);
-	};
-
+	const handler = () => listener();
 	window.addEventListener(QUEUE_CACHE_EVENT, handler);
 	return () => {
 		window.removeEventListener(QUEUE_CACHE_EVENT, handler);
 	};
 }
 
-export const getQueueCachedData = (userId: string, source?: string) => {
-	const suffix = scopedSuffix(userId, source);
-	const cached = queueCache.get(suffix);
+// Entries scoped per user so a shared browser never serves one user's queue to
+// another. One queue per user (the source dimension is gone: the queue follows
+// the user's primary source server-side).
+export const getQueueCachedData = (userId: string) => {
+	const cached = queueCache.get(userId);
 	if (!cached) return null;
 
 	if (queueCache.isStale(cached.timestamp)) {
-		queueCache.remove(suffix);
-		notifyQueueCacheChanged(source);
+		queueCache.remove(userId);
+		notifyQueueCacheChanged();
 		return null;
 	}
 
 	return cached;
 };
 
-export const setQueueCachedData = (data: QueueCacheData, userId: string, source?: string) => {
-	queueCache.set(data, scopedSuffix(userId, source));
-	notifyQueueCacheChanged(source);
+export const setQueueCachedData = (data: QueueCacheData, userId: string) => {
+	queueCache.set(data, userId);
+	notifyQueueCacheChanged();
 };
 
-export const removeQueueCachedData = (userId: string, source?: string) => {
-	queueCache.remove(scopedSuffix(userId, source));
-	notifyQueueCacheChanged(source);
+export const removeQueueCachedData = (userId: string) => {
+	queueCache.remove(userId);
+	notifyQueueCacheChanged();
 };
 export const updateDiscoverQueueCacheTTL = queueCache.updateTTL;
 

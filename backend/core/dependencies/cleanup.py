@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 def clear_lastfm_dependent_caches() -> None:
     """Clear LRU caches for all services that hold a reference to LastFmRepository."""
     get_artist_discovery_service.cache_clear()
+    get_album_discovery_service.cache_clear()
     get_artist_enrichment_service.cache_clear()
     get_album_enrichment_service.cache_clear()
     get_search_enrichment_service.cache_clear()

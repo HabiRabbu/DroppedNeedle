@@ -166,6 +166,54 @@ def test_retry_not_found_404():
     assert response.status_code == 404
 
 
+def _admin_app(service) -> FastAPI:
+    """Like _app but wired for the admin-gated reimport route (CurrentAdminDep)."""
+    from middleware import _get_current_admin
+    from tests.helpers import mock_admin_user
+
+    app = _app(service)
+    app.dependency_overrides[_get_current_admin] = mock_admin_user
+    return app
+
+
+def test_reimport_success_reports_completed():
+    service = AsyncMock()
+    service.reimport_task.return_value = _task(
+        "t1", status="completed", files_completed=3, files_failed=0
+    )
+    response = build_test_client(_admin_app(service)).post("/downloads/t1/reimport")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["status"] == "completed"
+    assert body["files_imported"] == 3
+    service.reimport_task.assert_awaited_once_with("t1")
+
+
+def test_reimport_partial_is_success():
+    service = AsyncMock()
+    service.reimport_task.return_value = _task("t1", status="partial", files_failed=1)
+    response = build_test_client(_admin_app(service)).post("/downloads/t1/reimport")
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+
+def test_reimport_not_found_404():
+    service = AsyncMock()
+    service.reimport_task.side_effect = ResourceNotFoundError("Download task not found")
+    response = build_test_client(_admin_app(service)).post("/downloads/missing/reimport")
+    assert response.status_code == 404
+
+
+def test_reimport_wrong_state_400():
+    service = AsyncMock()
+    service.reimport_task.side_effect = ValidationError(
+        "Only failed or partial downloads can be reimported"
+    )
+    response = build_test_client(_admin_app(service)).post("/downloads/t1/reimport")
+    assert response.status_code == 400
+
+
 def test_response_exposes_completed_at_and_retry_ladder():
     """The queue contract: each task carries its last-attempt timestamp + the full
     backoff ladder (constant across the list, computed once by the route)."""

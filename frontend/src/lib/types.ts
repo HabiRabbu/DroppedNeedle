@@ -207,13 +207,6 @@ export type OIDCConnectionSettings = {
 	redirect_uri: string;
 };
 
-export type HomeSettings = {
-	cache_ttl_trending: number;
-	cache_ttl_personal: number;
-	show_whats_hot: boolean;
-	show_globally_trending: boolean;
-};
-
 export type HomeArtist = {
 	mbid: string | null;
 	name: string;
@@ -272,7 +265,21 @@ export type ServicePrompt = {
 	features: string[];
 };
 
+export type ServiceHealthItem = {
+	service: string;
+	capability: string;
+	severity: string;
+	message: string;
+	fallback?: string | null;
+	degraded_seconds?: number;
+};
+
+export type SystemHealthResponse = {
+	degraded: ServiceHealthItem[];
+};
+
 export type HomeResponse = {
+	refreshing?: boolean;
 	recently_added: HomeSection | null;
 	library_artists: HomeSection | null;
 	library_albums: HomeSection | null;
@@ -327,6 +334,19 @@ export type WeeklyExplorationSection = {
 	source_url: string;
 };
 
+export interface TopPickItem {
+	album: HomeAlbum;
+	match_pct: number;
+	reasons: string[];
+	seed_artist: string | null;
+}
+
+export interface TopPicksSection {
+	title: string;
+	items: TopPickItem[];
+	source: string | null;
+}
+
 export type DiscoverResponse = {
 	because_you_listen_to: BecauseYouListenTo[];
 	discover_queue_enabled: boolean;
@@ -343,7 +363,10 @@ export type DiscoverResponse = {
 	lastfm_recent_scrobbles: HomeSection | null;
 	daily_mixes: HomeSection[];
 	radio_sections: HomeSection[];
-	discover_picks: HomeSection | null;
+	top_picks: TopPicksSection | null;
+	listeners_like_you: HomeSection | null;
+	anniversaries: HomeSection | null;
+	new_from_followed: HomeSection | null;
 	unexplored_genres: HomeSection | null;
 	genre_artists: Record<string, string | null>;
 	genre_artist_images: Record<string, string | null>;
@@ -509,6 +532,8 @@ export type TrackCacheCheckItem = {
 
 export type DiscoverQueueItemFull = DiscoverQueueItemLight & {
 	enrichment?: DiscoverQueueEnrichment;
+	// client-side marker set after the user requests the album from the deck
+	requested?: boolean;
 };
 
 export type DiscoverQueueResponse = {
@@ -1937,4 +1962,120 @@ export interface AppPasswordListResponse {
 export interface AppPasswordCreateResponse {
 	secret: string;
 	app_password: AppPasswordView;
+}
+
+export interface SectionPrefItem {
+	key: string;
+	title: string;
+	description: string;
+	zone: string;
+	enabled: boolean;
+	available: boolean;
+	requires: string | null;
+}
+
+export interface SectionPrefsResponse {
+	pages: Record<string, SectionPrefItem[]>;
+}
+
+export interface SectionPrefsUpdate {
+	page: 'home' | 'discover';
+	sections: { key: string; enabled: boolean }[];
+}
+
+export interface PreviewTrackItem {
+	title: string;
+	artist_name: string;
+	preview_url: string;
+	duration_s: number | null;
+	position: number | null;
+}
+
+export interface TrackPreviewResponse {
+	preview_url: string | null;
+	title: string | null;
+	duration_s: number | null;
+	provider: string | null;
+}
+
+export interface AlbumPreviewResponse {
+	tracks: PreviewTrackItem[];
+	provider: string | null;
+}
+
+export interface RadioSeedItem {
+	artist_mbid: string;
+	artist_name?: string;
+	album_mbid?: string | null;
+}
+
+export interface RadioPlanRequest {
+	seed_type: 'artist' | 'album' | 'genre' | 'items';
+	seed_id?: string | null;
+	items?: RadioSeedItem[];
+	mode?: 'library' | 'hybrid';
+	count?: number;
+	exclude_recording_mbids?: string[];
+	fast?: boolean;
+}
+
+export interface RadioPlanTrack {
+	track_name: string;
+	artist_name: string;
+	artist_mbid: string;
+	recording_mbid: string | null;
+	album_mbid: string | null;
+	album_name: string | null;
+	in_library: boolean;
+	local_file_id: string | null;
+	file_format: string | null;
+	duration_s: number | null;
+}
+
+export interface RadioPlanResponse {
+	title: string;
+	tracks: RadioPlanTrack[];
+}
+
+export interface DiscoveryBatchItemIn {
+	release_group_mbid: string;
+	artist_mbid: string;
+	album_name: string;
+	artist_name: string;
+}
+
+export interface DiscoveryBatchCreate {
+	name: string;
+	source_section: string;
+	items: DiscoveryBatchItemIn[];
+}
+
+export interface DiscoveryBatchItemStatus extends DiscoveryBatchItemIn {
+	outcome: 'requested' | 'skipped_in_library' | 'skipped_duplicate';
+	request_status: string | null;
+	in_library: boolean;
+}
+
+export interface DiscoveryBatchSummary {
+	id: string;
+	name: string;
+	source_section: string;
+	created_at: string;
+	item_count: number;
+	imported_count: number;
+	pending_count: number;
+}
+
+export interface DiscoveryBatchDetail extends DiscoveryBatchSummary {
+	items: DiscoveryBatchItemStatus[];
+}
+
+export interface DiscoveryBatchListResponse {
+	batches: DiscoveryBatchSummary[];
+}
+
+export interface DiscoveryBatchRemoveResult {
+	removed_albums: number;
+	cancelled_requests: number;
+	kept: number;
 }

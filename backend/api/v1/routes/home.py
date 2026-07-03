@@ -11,15 +11,21 @@ from api.v1.schemas.home import (
     PopularAlbumsResponse,
     PopularAlbumsRangeResponse,
 )
-from core.dependencies import get_home_service, get_home_charts_service
+from core.dependencies import (
+    get_home_service,
+    get_home_charts_service,
+    get_user_section_prefs_store,
+)
 from core.dependencies.type_aliases import CurrentUserDep
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.msgspec_fastapi import MsgSpecRoute
+from infrastructure.persistence.user_section_prefs_store import UserSectionPrefsStore
 
 import logging
 import msgspec.structs
 from services.home_service import HomeService
 from services.home_charts_service import HomeChartsService
+from services.section_catalog import apply_section_prefs
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +35,12 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/home", tags=["home"])
 @router.get("", response_model=HomeResponse)
 async def get_home_data(
     current_user: CurrentUserDep,
-    source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source: listenbrainz or lastfm"),
     home_service: HomeService = Depends(get_home_service),
+    section_prefs: UserSectionPrefsStore = Depends(get_user_section_prefs_store),
 ):
-    result = await home_service.get_home_data(user_id=current_user.id, source=source)
+    result = await home_service.get_home_data(user_id=current_user.id)
+    disabled = await section_prefs.get_disabled(current_user.id, "home")
+    result = apply_section_prefs(result, "home", disabled)
     ctx = try_get_degradation_context()
     if ctx is not None and ctx.has_degradation():
         result = msgspec.structs.replace(result, service_status=ctx.degraded_summary())

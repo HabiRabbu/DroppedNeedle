@@ -233,11 +233,16 @@ export function discardHeldTrack() {
 	}));
 }
 
+interface ReimportInput {
+	id: string;
+	release_group_mbid?: string | null;
+}
+
 export function reimportDownload() {
 	return createMutation(() => ({
-		mutationFn: (id: string) =>
-			api.global.post<ReimportDownloadResponse>(API.downloads.reimport(id), {}),
-		onSuccess: (data: ReimportDownloadResponse) => {
+		mutationFn: (input: ReimportInput) =>
+			api.global.post<ReimportDownloadResponse>(API.downloads.reimport(input.id), {}),
+		onSuccess: (data: ReimportDownloadResponse, input: ReimportInput) => {
 			if (data.status === 'completed') {
 				toastStore.show({ message: 'Import complete', type: 'success' });
 			} else if (data.status === 'partial') {
@@ -252,6 +257,11 @@ export function reimportDownload() {
 				});
 			}
 			void invalidateTasks();
+			// A completed/partial reimport writes files into the library; refresh the album
+			// so its page/badge don't show stale data (the persister survives reloads).
+			if (data.status === 'completed' || data.status === 'partial') {
+				invalidateAlbum(input.release_group_mbid);
+			}
 		},
 		onError: (err: unknown) =>
 			toastStore.show({ message: errorMessage(err, 'Failed to reimport download'), type: 'error' })

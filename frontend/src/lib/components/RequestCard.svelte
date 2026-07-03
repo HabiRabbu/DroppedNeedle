@@ -373,9 +373,13 @@
 							class="btn btn-xs btn-ghost"
 							onclick={(e) => {
 								e.stopPropagation();
-								reimport.mutate(historyItem.download_task_id!, {
-									onSuccess: () => onreimported?.()
-								});
+								reimport.mutate(
+									{
+										id: historyItem.download_task_id!,
+										release_group_mbid: historyItem.musicbrainz_id
+									},
+									{ onSuccess: () => onreimported?.() }
+								);
 							}}
 							disabled={reimport.isPending}
 							title="Already fixed this in slskd? Check the downloads mount again without re-searching."

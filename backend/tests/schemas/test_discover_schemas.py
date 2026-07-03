@@ -23,25 +23,41 @@ class TestDiscoverResponseNewFields:
         resp = DiscoverResponse()
         assert resp.radio_sections == []
 
-    def test_default_discover_picks_is_none(self) -> None:
+    def test_default_top_picks_is_none(self) -> None:
         resp = DiscoverResponse()
-        assert resp.discover_picks is None
+        assert resp.top_picks is None
+        assert resp.listeners_like_you is None
+        assert resp.anniversaries is None
+        assert resp.new_from_followed is None
 
     def test_default_unexplored_genres_is_none(self) -> None:
         resp = DiscoverResponse()
         assert resp.unexplored_genres is None
 
     def test_roundtrip_with_new_fields(self) -> None:
+        from api.v1.schemas.discover import TopPickItem, TopPicksSection
+        from api.v1.schemas.home import HomeAlbum
+
         section = HomeSection(title="Test", type="albums")
+        picks = TopPicksSection(
+            items=[
+                TopPickItem(
+                    album=HomeAlbum(name="Album", mbid="rg-1"),
+                    match_pct=78,
+                    reasons=["Because you listen to X"],
+                )
+            ],
+            source="listenbrainz",
+        )
         resp = DiscoverResponse(
             daily_mixes=[section],
             radio_sections=[section],
-            discover_picks=section,
+            top_picks=picks,
             unexplored_genres=section,
         )
         data = json.loads(msgspec.json.encode(resp))
         assert len(data["daily_mixes"]) == 1
-        assert data["discover_picks"]["title"] == "Test"
+        assert data["top_picks"]["items"][0]["match_pct"] == 78
         assert data["unexplored_genres"]["title"] == "Test"
         assert len(data["radio_sections"]) == 1
 
@@ -51,7 +67,7 @@ class TestDiscoverResponseNewFields:
         assert data["refreshing"] is True
         assert data["discover_queue_enabled"] is False
         assert data["daily_mixes"] == []
-        assert data["discover_picks"] is None
+        assert data["top_picks"] is None
 
 
 class TestRadioRequest:

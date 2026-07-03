@@ -132,3 +132,58 @@ class TestMoreByArtistUnaffected:
         assert isinstance(result, MoreByArtistResponse)
         assert [a.musicbrainz_id for a in result.albums] == ["rg-2"]
         assert result.artist_name == "Artist X"
+
+
+class TestSimilarAlbumsPopularityFallback:
+    """Similar Albums must prefer ListenBrainz and only use Last.fm when LB popularity
+    is DEFINITELY degraded."""
+
+    def _clear(self):
+        from infrastructure.service_health import service_health
+        service_health.clear()
+
+    @pytest.mark.asyncio
+    async def test_uses_listenbrainz_when_healthy(self):
+        self._clear()
+        lb_repo = _make_lb_repo()
+        lfm_repo = AsyncMock()
+        svc = AlbumDiscoveryService(
+            listenbrainz_repo=lb_repo, musicbrainz_repo=AsyncMock(),
+            library_db=AsyncMock(), library_repo=_make_library_repo(),
+            lastfm_repo=lfm_repo, mbid_svc=AsyncMock(),
+        )
+        resp = await svc.get_similar_albums("album-x", "art-x", count=5)
+        assert [a.musicbrainz_id for a in resp.albums] == ["rg-1"]  # LB path
+        lfm_repo.get_artist_top_albums.assert_not_called()
+        self._clear()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_lastfm_when_definitely_degraded(self):
+        from infrastructure.service_health import service_health
+        self._clear()
+        # LB popularity returns nothing (degraded); similar-artists still work
+        lb_repo = _make_lb_repo()
+        lb_repo.get_artist_top_release_groups = AsyncMock(return_value=[])
+        lfm_repo = AsyncMock()
+        lfm_repo.get_artist_top_albums = AsyncMock(
+            return_value=[SimpleNamespace(name="LFM Album", artist_name="Artist A", mbid="al-9")]
+        )
+        mbid_svc = AsyncMock()
+        mbid_svc.lastfm_albums_to_queue_items = AsyncMock(
+            return_value=[SimpleNamespace(
+                release_group_mbid="rg-lfm", album_name="LFM Album",
+                artist_name="Artist A", artist_mbid="art-a",
+            )]
+        )
+        svc = AlbumDiscoveryService(
+            listenbrainz_repo=lb_repo, musicbrainz_repo=AsyncMock(),
+            library_db=AsyncMock(), library_repo=_make_library_repo(),
+            lastfm_repo=lfm_repo, mbid_svc=mbid_svc,
+        )
+
+        service_health.mark_degraded("listenbrainz", "popularity", message="down")
+        resp = await svc.get_similar_albums("album-x", "art-x", count=5)
+
+        assert [a.musicbrainz_id for a in resp.albums] == ["rg-lfm"]
+        lfm_repo.get_artist_top_albums.assert_awaited()
+        self._clear()

@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import logging
 import random
+from types import SimpleNamespace
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -9,6 +11,8 @@ from api.v1.schemas.discover import (
     DiscoverResponse,
     BecauseYouListenTo,
     PlaylistProfile,
+    TopPickItem,
+    TopPicksSection,
 )
 from api.v1.schemas.home import (
     HomeSection,
@@ -37,9 +41,20 @@ from infrastructure.persistence.user_listening_prefs_store import UserListeningP
 from services.discover.integration_helpers import IntegrationHelpers
 from services.discover.mbid_resolution_service import MbidResolutionService
 from services.discover.queue_strategies import build_similar_artist_pools, build_similar_artist_pools_lastfm, discover_by_genres, queue_item_to_home_album, round_robin_dedup_select
+from repositories.listenbrainz_repository import lb_popularity_degraded
+from services.discover.top_picks import TopPickCandidate, score_candidates
 from services.weekly_exploration_service import WeeklyExplorationService
 
 logger = logging.getLogger(__name__)
+
+
+def _log_task_error(task: "asyncio.Task[None]") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Discover background task failed: %s", exc, exc_info=exc)
+
 
 DISCOVER_CACHE_TTL = 43200  # 12 hours
 # stale-while-revalidate: serve a cached response immediately but rebuild it in the
@@ -75,6 +90,9 @@ class DiscoverHomepageService:
         mbid_store: MBIDStore | None = None,
         client_factory: PerUserClientFactory | None = None,
         listening_prefs_store: UserListeningPrefsStore | None = None,
+        library_db: Any = None,
+        follow_service: Any = None,
+        cover_repo: Any = None,
     ) -> None:
         self._lb_repo = listenbrainz_repo
         self._jf_repo = jellyfin_repo
@@ -89,19 +107,32 @@ class DiscoverHomepageService:
         self._mbid_store = mbid_store
         self._client_factory = client_factory
         self._prefs_store = listening_prefs_store
+        self._library_db = library_db
+        self._follow_service = follow_service
+        self._cover_repo = cover_repo
         self._transformers = HomeDataTransformers(jellyfin_repo)
         self._weekly_exploration = WeeklyExplorationService(listenbrainz_repo, musicbrainz_repo)
-        # per-(user, source) in-flight warm guard so one user never blocks another
-        self._building_keys: set[tuple[str, str]] = set()
+        # per-user in-flight warm guard so one user never blocks another
+        self._building_keys: set[str] = set()
         # cache_key -> unix time of the last successful build, for stale-while-revalidate
         self._built_at: dict[str, float] = {}
+        # task keys that failed in the most recent _execute_tasks call
+        self._last_failed_task_keys: set[str] = set()
+
+    @staticmethod
+    def _daily_rng(*parts: str) -> random.Random:
+        """Deterministic-per-day randomness: a refresh within the same day
+        reproduces the same sections instead of reshuffling under the user."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        seed = hashlib.md5(":".join([today, *parts]).encode()).hexdigest()
+        return random.Random(int(seed[:12], 16))
 
     def _daily_mix_cache_key(self, user_id: str, source: str) -> str:
         today = datetime.now(timezone.utc).date().isoformat()
         return f"daily_mix:{user_id}:{source}:{today}"
 
-    def _discover_picks_cache_key(self, user_id: str, source: str) -> str:
-        return f"discover_picks:{user_id}:{source}"
+    def _top_picks_cache_key(self, user_id: str, source: str) -> str:
+        return f"top_picks:{user_id}:{source}"
 
     async def _resolve_user_music(self, user_id: str, source: str | None):
         # request-scoped LB/Last.fm clients; never mutates a shared singleton's creds
@@ -120,26 +151,26 @@ class DiscoverHomepageService:
         resolved = resolve_source_value(source, primary_source, lb_enabled, lfm_enabled)
         return lb_client, lfm_client, lb_username, lfm_username, lb_enabled, lfm_enabled, resolved
 
-    def _trigger_warm(self, user_id: str, resolved_source: str) -> None:
-        """Kick off a background rebuild for (user, source) if one isn't already running."""
+    def _trigger_warm(self, user_id: str) -> None:
+        """Kick off a background rebuild for the user if one isn't already running."""
         from core.task_registry import TaskRegistry
 
         registry = TaskRegistry.get_instance()
-        task_name = f"discover-homepage-warm-{user_id}-{resolved_source}"
+        task_name = f"discover-homepage-warm-{user_id}"
         if registry.is_running(task_name):
             return
-        task = asyncio.create_task(self.warm_cache(user_id, source=resolved_source))
+        task = asyncio.create_task(self.warm_cache(user_id))
         try:
             registry.register(task_name, task)
         except RuntimeError:
             pass
 
-    async def get_discover_data(self, user_id: str, source: str | None = None) -> DiscoverResponse:
-        _, _, _, _, lb_enabled, lfm_enabled, resolved_source = await self._resolve_user_music(user_id, source)
-        building = (user_id, resolved_source) in self._building_keys
+    async def get_discover_data(self, user_id: str) -> DiscoverResponse:
+        _, _, _, _, lb_enabled, lfm_enabled, _ = await self._resolve_user_music(user_id, None)
+        building = user_id in self._building_keys
         if self._memory_cache:
             cache_key = self._integration.get_discover_cache_key(
-                user_id, resolved_source, lb_enabled, lfm_enabled
+                user_id, lb_enabled, lfm_enabled
             )
             cached = await self._memory_cache.get(cache_key)
             if cached is not None and isinstance(cached, DiscoverResponse):
@@ -148,26 +179,22 @@ class DiscoverHomepageService:
                 # always converges to fresh without ever showing the build screen again
                 age = time.time() - self._built_at.get(cache_key, 0.0)
                 if not building and age > STALE_REVALIDATE_SECONDS:
-                    self._trigger_warm(user_id, resolved_source)
+                    self._trigger_warm(user_id)
                     building = True
-                updates = {"refreshing": building}
-                home_settings = self._integration.get_home_settings()
-                if not home_settings.show_globally_trending:
-                    updates["globally_trending"] = None
-                return clone_with_updates(cached, updates)
+                return clone_with_updates(cached, {"refreshing": building})
         # cache miss (first build, restart-wiped cache, or a user whose build is
         # legitimately empty). Back off if a build was attempted within the freshness
         # window so an empty/failed build doesn't rebuild on every 3s poll and hammer
         # upstream APIs; if backed off we report refreshing=false so the UI settles on
         # the empty state instead of polling forever.
         cache_key = self._integration.get_discover_cache_key(
-            user_id, resolved_source, lb_enabled, lfm_enabled
+            user_id, lb_enabled, lfm_enabled
         )
         attempted_recently = (
             time.time() - self._built_at.get(cache_key, 0.0) <= STALE_REVALIDATE_SECONDS
         )
         if not building and not attempted_recently:
-            self._trigger_warm(user_id, resolved_source)
+            self._trigger_warm(user_id)
             building = True
         return DiscoverResponse(
             integration_status=self._integration.get_integration_status(),
@@ -178,8 +205,8 @@ class DiscoverHomepageService:
     async def get_discover_preview(self, user_id: str) -> DiscoverPreview | None:
         if not self._memory_cache:
             return None
-        _, _, _, _, lb_enabled, lfm_enabled, resolved = await self._resolve_user_music(user_id, None)
-        cache_key = self._integration.get_discover_cache_key(user_id, resolved, lb_enabled, lfm_enabled)
+        _, _, _, _, lb_enabled, lfm_enabled, _ = await self._resolve_user_music(user_id, None)
+        cache_key = self._integration.get_discover_cache_key(user_id, lb_enabled, lfm_enabled)
         cached = await self._memory_cache.get(cache_key)
         if not cached or not isinstance(cached, DiscoverResponse):
             return None
@@ -196,42 +223,75 @@ class DiscoverHomepageService:
             items=preview_items,
         )
 
-    async def refresh_discover_data(self, user_id: str, source: str | None = None) -> None:
-        _, _, _, _, lb_enabled, lfm_enabled, resolved = await self._resolve_user_music(user_id, source)
-        if (user_id, resolved) in self._building_keys:
+    async def refresh_discover_data(self, user_id: str) -> None:
+        _, _, _, _, lb_enabled, lfm_enabled, _ = await self._resolve_user_music(user_id, None)
+        if user_id in self._building_keys:
             return
         # mark the current cache stale so the next GET's stale-while-revalidate reliably
         # reports refreshing=true (the UI then shows the updating indicator and polls),
         # even when the manual refresh hits already-fresh data
         cache_key = self._integration.get_discover_cache_key(
-            user_id, resolved, lb_enabled, lfm_enabled
+            user_id, lb_enabled, lfm_enabled
         )
         self._built_at.pop(cache_key, None)
-        self._trigger_warm(user_id, resolved)
+        self._trigger_warm(user_id)
 
-    async def warm_cache(self, user_id: str, source: str | None = None) -> None:
-        _, _, _, _, lb_enabled, lfm_enabled, resolved = await self._resolve_user_music(user_id, source)
-        key = (user_id, resolved)
-        if key in self._building_keys:
+    async def warm_cache(self, user_id: str) -> None:
+        _, _, _, _, lb_enabled, lfm_enabled, _ = await self._resolve_user_music(user_id, None)
+        if user_id in self._building_keys:
             return
-        self._building_keys.add(key)
+        self._building_keys.add(user_id)
         cache_key = self._integration.get_discover_cache_key(
-            user_id, resolved, lb_enabled, lfm_enabled
+            user_id, lb_enabled, lfm_enabled
         )
         try:
-            response = await self.build_discover_data(user_id, source=resolved)
+            response = await self.build_discover_data(user_id)
             if self._memory_cache and self._has_meaningful_content(response):
                 await self._memory_cache.set(cache_key, response, DISCOVER_CACHE_TTL)
+                self._spawn_cover_prewarm(user_id, response)
             else:
                 logger.warning("Discover build produced no meaningful content, keeping existing cache")
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to build discover data: {e}")
         finally:
-            self._building_keys.discard(key)
+            self._building_keys.discard(user_id)
             # record the attempt time on every build (success, empty, or failure) so both
             # the stale-while-revalidate window and the cache-miss path back off instead of
             # rebuilding on every poll - including users whose build is legitimately empty
             self._built_at[cache_key] = time.time()
+
+    def _spawn_cover_prewarm(self, user_id: str, response: DiscoverResponse) -> None:
+        """Warm Top Picks covers so the scored deck paints instantly (mirrors the
+        queue manager's prewarm; BACKGROUND_SYNC keeps user requests ahead of it)."""
+        if self._cover_repo is None or not response.top_picks:
+            return
+        mbids = [i.album.mbid for i in response.top_picks.items if i.album.mbid]
+        if not mbids:
+            return
+        from core.task_registry import TaskRegistry
+
+        async def _warm() -> None:
+            from infrastructure.queue.priority_queue import RequestPriority
+
+            semaphore = asyncio.Semaphore(4)
+
+            async def one(mbid: str) -> None:
+                async with semaphore:
+                    try:
+                        await self._cover_repo.get_release_group_cover(
+                            mbid, size="500", priority=RequestPriority.BACKGROUND_SYNC
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Top picks cover prewarm failed for %s: %s", mbid[:8], exc)
+
+            await asyncio.gather(*(one(m) for m in mbids), return_exceptions=True)
+
+        task = asyncio.create_task(_warm())
+        task.add_done_callback(_log_task_error)
+        try:
+            TaskRegistry.get_instance().register(f"top-picks-cover-prewarm-{user_id}", task)
+        except RuntimeError:
+            pass
 
     def _has_meaningful_content(self, response: DiscoverResponse) -> bool:
         return bool(
@@ -247,23 +307,29 @@ class DiscoverHomepageService:
             or response.lastfm_recent_scrobbles
             or response.weekly_exploration
             or response.daily_mixes
-            or response.discover_picks
+            or response.top_picks
             or response.radio_sections
             or response.unexplored_genres
+            or response.listeners_like_you
+            or response.anniversaries
+            or response.new_from_followed
         )
 
-    async def build_discover_data(self, user_id: str, source: str | None = None) -> DiscoverResponse:
+    async def build_discover_data(self, user_id: str) -> DiscoverResponse:
         (lb_client, lfm_client, username, lfm_username,
-         lb_enabled, lfm_enabled, resolved_source) = await self._resolve_user_music(user_id, source)
-        home_settings = self._integration.get_home_settings()
+         lb_enabled, lfm_enabled, primary) = await self._resolve_user_music(user_id, None)
         jf_enabled = self._integration.is_jellyfin_enabled()
         library_configured = self._integration.is_library_configured()
 
         library_mbids = await self._mbid.get_library_artist_mbids(library_configured)
+        # album sections must check ALBUM membership; checking release-group mbids
+        # against the artist set made in_library always-false (owned albums showed
+        # download buttons) and neutered the don't-suggest-what-you-own exclusions
+        library_album_mbids = await self._mbid.get_library_album_mbids(library_configured)
 
         seed_artists = await self._get_seed_artists(
             lb_enabled, username, jf_enabled,
-            resolved_source=resolved_source,
+            resolved_source=primary,
             lfm_enabled=lfm_enabled,
             lfm_username=lfm_username,
             lb_client=lb_client,
@@ -274,19 +340,19 @@ class DiscoverHomepageService:
         for i, seed in enumerate(seed_artists[:3]):
             mbid = seed.artist_mbids[0] if hasattr(seed, 'artist_mbids') and seed.artist_mbids else getattr(seed, 'artist_mbid', None)
             if mbid:
-                if resolved_source == "lastfm" and self._lfm_repo and lfm_enabled:
+                if primary == "lastfm" and self._lfm_repo and lfm_enabled:
                     tasks[f"similar_{i}"] = self._lfm_repo.get_similar_artists(
                         seed.artist_name, mbid=mbid, limit=20
                     )
                 else:
                     tasks[f"similar_{i}"] = self._lb_repo.get_similar_artists(mbid, max_similar=20)
 
-        if home_settings.show_globally_trending:
-            if resolved_source == "listenbrainz":
-                tasks["lb_trending"] = self._lb_repo.get_sitewide_top_artists(count=20)
-            elif resolved_source == "lastfm" and self._lfm_repo and lfm_enabled:
-                tasks["lfm_global_top"] = self._lfm_repo.get_global_top_artists(limit=20)
+        if primary == "lastfm" and self._lfm_repo and lfm_enabled:
+            tasks["lfm_global_top"] = self._lfm_repo.get_global_top_artists(limit=20)
+        else:
+            tasks["lb_trending"] = self._lb_repo.get_sitewide_top_artists(count=20)
 
+        # Last.fm-specific sections run whenever the user's Last.fm is linked
         if self._lfm_repo and lfm_enabled and lfm_username:
             tasks["lfm_weekly_artists"] = self._lfm_repo.get_user_weekly_artist_chart(
                 lfm_username
@@ -298,10 +364,11 @@ class DiscoverHomepageService:
                 lfm_username, limit=20
             )
 
-        if resolved_source == "listenbrainz" and lb_client and username:
+        # LB-specific sections run whenever the user's ListenBrainz is linked
+        if lb_client and username:
             tasks["lb_fresh"] = lb_client.get_user_fresh_releases()
             tasks["lb_genres"] = lb_client.get_user_genre_activity(username)
-        elif resolved_source == "lastfm" and self._lfm_repo and lfm_enabled and lfm_username:
+        if primary == "lastfm" and self._lfm_repo and lfm_enabled and lfm_username:
             tasks["lfm_user_top_artists_for_genres"] = self._lfm_repo.get_user_top_artists(
                 lfm_username, period="3month", limit=5
             )
@@ -314,38 +381,47 @@ class DiscoverHomepageService:
             tasks["library_albums"] = self._library_repo.get_library(include_unmonitored=True)
 
         results = await self._execute_tasks(tasks)
+        degraded = self._degraded_sources(list(tasks.keys()), self._last_failed_task_keys)
 
         response = DiscoverResponse(
             integration_status=self._integration.get_integration_status(),
+            service_status=degraded or None,
         )
 
         seen_artist_mbids: set[str] = set()
 
         response.because_you_listen_to = self._build_because_sections(
             seed_artists, results, library_mbids, seen_artist_mbids,
-            resolved_source=resolved_source,
+            resolved_source=primary,
         )
         await self._enrich_because_sections_audiodb(response.because_you_listen_to)
 
-        response.fresh_releases = self._build_fresh_releases(results, library_mbids)
+        response.fresh_releases = self._build_fresh_releases(results, library_album_mbids)
 
         post_tasks: dict[str, Any] = {
-            "missing_essentials": self._build_missing_essentials(results, library_mbids),
+            "missing_essentials": self._build_missing_essentials(results, library_album_mbids),
             "lastfm_weekly_album_chart": self._build_lastfm_weekly_album_chart(
-                results, library_mbids
+                results, library_album_mbids
             ),
             "lastfm_recent_scrobbles": self._build_lastfm_recent_scrobbles(
-                results, library_mbids
+                results, library_album_mbids
             ),
-            "daily_mixes": self._build_daily_mix_sections(user_id, resolved_source, library_mbids),
-            "discover_picks": self._build_discover_picks(
-                user_id, library_mbids, resolved_source, lb_enabled, username,
+            "daily_mixes": self._build_daily_mix_sections(user_id, primary, library_album_mbids, lfm_enabled),
+            "top_picks": self._build_top_picks(
+                user_id, primary, lb_enabled, username, results, seed_artists, lfm_enabled,
             ),
             "radio_sections": self._build_radio_sections(
-                seed_artists, library_mbids, resolved_source,
+                seed_artists, library_album_mbids, primary, lfm_enabled,
             ),
+            "anniversaries": self._build_anniversaries(),
+            "new_from_followed": self._build_new_from_followed(user_id),
         }
-        if resolved_source == "listenbrainz" and lb_client and username:
+        if lb_client and username:
+            post_tasks["listeners_like_you"] = self._build_listeners_like_you(
+                lb_client, username, user_id,
+            )
+        # LB-specific: runs whenever the user's ListenBrainz is linked
+        if lb_client and username:
             post_tasks["weekly_exploration"] = self._weekly_exploration.build_section(
                 username, lb_repo=lb_client
             )
@@ -353,19 +429,22 @@ class DiscoverHomepageService:
         response.missing_essentials = post_results.get("missing_essentials")
         response.weekly_exploration = post_results.get("weekly_exploration")
         response.daily_mixes = post_results.get("daily_mixes") or []
-        response.discover_picks = post_results.get("discover_picks")
+        response.top_picks = post_results.get("top_picks")
         response.radio_sections = post_results.get("radio_sections") or []
+        response.listeners_like_you = post_results.get("listeners_like_you")
+        response.anniversaries = post_results.get("anniversaries")
+        response.new_from_followed = post_results.get("new_from_followed")
 
         response.rediscover = self._build_rediscover(results, library_mbids, jf_enabled)
 
         response.artists_you_might_like = self._build_artists_you_might_like(
             seed_artists, results, library_mbids, seen_artist_mbids,
-            resolved_source=resolved_source,
+            resolved_source=primary,
         )
 
         response.popular_in_your_genres = await self._build_popular_in_genres(
             results, library_mbids, seen_artist_mbids,
-            resolved_source=resolved_source,
+            resolved_source=primary,
         )
 
         response.genre_list = self._build_genre_list(results, lb_enabled)
@@ -409,15 +488,14 @@ class DiscoverHomepageService:
                     response.genre_artists
                 )
 
-        if home_settings.show_globally_trending:
-            if resolved_source == "lastfm":
-                response.globally_trending = self._build_lastfm_globally_trending(
-                    results, library_mbids, seen_artist_mbids
-                )
-            else:
-                response.globally_trending = self._build_globally_trending(
-                    results, library_mbids, seen_artist_mbids
-                )
+        if primary == "lastfm":
+            response.globally_trending = self._build_lastfm_globally_trending(
+                results, library_mbids, seen_artist_mbids
+            )
+        else:
+            response.globally_trending = self._build_globally_trending(
+                results, library_mbids, seen_artist_mbids
+            )
 
         response.lastfm_weekly_artist_chart = self._build_lastfm_weekly_artist_chart(
             results, library_mbids, seen_artist_mbids
@@ -683,7 +761,7 @@ class DiscoverHomepageService:
 
         return sections
 
-    async def _build_daily_mix_sections(self, user_id: str, resolved_source: str, library_mbids: set[str]) -> list[HomeSection]:
+    async def _build_daily_mix_sections(self, user_id: str, resolved_source: str, library_mbids: set[str], lfm_enabled: bool = False) -> list[HomeSection]:
         # 3-5 genre-clustered daily mixes, 60/40 new-to-familiar ratio
         try:
             if self._genre_index is None:
@@ -727,6 +805,7 @@ class DiscoverHomepageService:
                 try:
                     section = await self._build_single_daily_mix(
                         i, genre_lower, cluster_artists, resolved_source, library_mbids,
+                        lfm_enabled,
                     )
                     if section:
                         sections.append(section)
@@ -748,12 +827,13 @@ class DiscoverHomepageService:
         cluster_artists: list[str],
         resolved_source: str,
         library_mbids: set[str],
+        lfm_enabled: bool = False,
     ) -> HomeSection | None:
         genre_label = genre_lower.title()
         MAX_ITEMS = 12
 
         seed_count = min(3, len(cluster_artists))
-        seed_mbids = random.sample(cluster_artists, seed_count)
+        seed_mbids = self._daily_rng("daily-mix", genre_lower).sample(cluster_artists, seed_count)
 
         name_results = await asyncio.gather(
             *[
@@ -781,13 +861,13 @@ class DiscoverHomepageService:
 
         new_items: list[HomeAlbum] = []
         try:
-            pools = await build_similar_artist_pools(
-                seeds=seeds,
+            pools = await self._similar_artist_album_pools(
+                seeds,
+                seed_mbids,
                 excluded_mbids=library_mbids,
                 similar_limit=10,
                 albums_per=3,
-                lb_repo=self._lb_repo,
-                mbid_svc=self._mbid,
+                lfm_enabled=lfm_enabled,
             )
             for pool in pools:
                 for item in pool:
@@ -869,155 +949,452 @@ class DiscoverHomepageService:
             cache_key = self._daily_mix_cache_key(user_id, source)
             await self._memory_cache.set(cache_key, sections, DAILY_MIX_CACHE_TTL)
 
-    async def _build_discover_picks(
+    async def _add_lastfm_top_pick_candidates(
+        self,
+        sim_artist_list: list,
+        exclude: set[str],
+        seen_rgs: set[str],
+        candidates: list,
+    ) -> None:
+        """Build Top Picks candidates from Last.fm top-albums for each already-scored
+        similar artist (used only when LB popularity is degraded). Reuses the queue's
+        Last.fm album -> release-group-mbid resolver so covers/links/dedup stay correct;
+        the LB-derived similarity score rides along."""
+        if self._lfm_repo is None:
+            return
+        sim_lookup: dict[str, tuple[float, str, str | None]] = {}
+        for mbid, (sim, artist_name, seed_name) in sim_artist_list:
+            norm = self._mbid.normalize_mbid(mbid) or mbid
+            sim_lookup[norm] = (sim, artist_name, seed_name or None)
+
+        album_results = await asyncio.gather(
+            *(
+                self._lfm_repo.get_artist_top_albums(artist_name, mbid=mbid, limit=3)
+                for mbid, (_sim, artist_name, _seed) in sim_artist_list
+            ),
+            return_exceptions=True,
+        )
+        pairs: list[tuple[Any, list]] = []
+        for (mbid, (_sim, artist_name, _seed)), albums in zip(sim_artist_list, album_results):
+            if isinstance(albums, Exception) or not albums:
+                continue
+            pairs.append((SimpleNamespace(mbid=mbid, name=artist_name), albums))
+        if not pairs:
+            return
+
+        items = await self._mbid.lastfm_albums_to_queue_items(
+            pairs, exclude=exclude, target=24, reason="top_picks"
+        )
+        for it in items:
+            if it.release_group_mbid in seen_rgs:
+                continue
+            look = sim_lookup.get(self._mbid.normalize_mbid(it.artist_mbid) or it.artist_mbid)
+            sim, _name, seed_name = look if look else (0.0, "", None)
+            seen_rgs.add(it.release_group_mbid)
+            candidates.append(TopPickCandidate(
+                release_group_mbid=it.release_group_mbid,
+                album_name=it.album_name,
+                artist_name=it.artist_name,
+                artist_mbid=it.artist_mbid,
+                sim=sim,
+                # Last.fm playcount isn't on LB's listen-count scale; leave the
+                # popularity term neutral and let similarity + genre carry the score
+                listen_count=0,
+                seed_artist=seed_name,
+            ))
+
+    def _use_lastfm_for_popularity(self, lfm_enabled: bool) -> bool:
+        """The ONE gate for popularity fallback. We ALWAYS prefer ListenBrainz; we only
+        use Last.fm when LB's popularity API is DEFINITELY degraded - meaning LB itself
+        returned an explicit outage response ("Popularity API currently disabled" or the
+        anti-scraper 401), recorded in the ServiceHealthRegistry with a sliding TTL (see
+        repositories/listenbrainz_repository._mark_popularity_degraded). A transient
+        timeout, a network blip, or a merely-empty result does NOT count. And only then,
+        if Last.fm is actually available."""
+        return lb_popularity_degraded() and lfm_enabled and self._lfm_repo is not None
+
+    async def _similar_artist_album_pools(
+        self,
+        seeds: list,
+        seed_mbids: list[str],
+        *,
+        excluded_mbids: set[str],
+        similar_limit: int,
+        albums_per: int,
+        lfm_enabled: bool,
+    ) -> list[list[Any]]:
+        """Turn seed artists into pools of candidate albums. ALWAYS prefers
+        ListenBrainz; swaps to the Last.fm pool builder ONLY when LB popularity is
+        DEFINITELY degraded (see _use_lastfm_for_popularity). Used by Daily Mixes and
+        the Radio shelves, whose albums otherwise come from LB's dead popularity API."""
+        if self._use_lastfm_for_popularity(lfm_enabled):
+            return await build_similar_artist_pools_lastfm(
+                seed_mbids,
+                excluded_mbids=excluded_mbids,
+                similar_limit=similar_limit,
+                albums_per=albums_per,
+                lfm_repo=self._lfm_repo,
+                mbid_svc=self._mbid,
+            )
+        return await build_similar_artist_pools(
+            seeds,
+            excluded_mbids=excluded_mbids,
+            similar_limit=similar_limit,
+            albums_per=albums_per,
+            lb_repo=self._lb_repo,
+            mbid_svc=self._mbid,
+        )
+
+    async def _build_top_picks(
         self,
         user_id: str,
-        library_mbids: set[str],
-        resolved_source: str,
+        primary: str,
         lb_enabled: bool,
         username: str | None,
-    ) -> HomeSection | None:
-        # genre-affinity-weighted undiscovered albums; library/genre-derived (no
-        # external account) so it renders for unlinked users too (D1).
+        results: dict[str, Any],
+        seed_artists: list,
+        lfm_enabled: bool = False,
+    ) -> TopPicksSection | None:
+        """Scored "we think you'd like X - N% match" picks. Candidates come from the
+        already-fetched similar-artist pools plus sitewide trending; scoring is pure
+        (services.discover.top_picks) and deterministic within a day."""
         try:
-            if self._genre_index is None:
-                return None
-
             if self._memory_cache is not None:
-                cache_key = self._discover_picks_cache_key(user_id, resolved_source)
+                cache_key = self._top_picks_cache_key(user_id, primary)
                 cached = await self._memory_cache.get(cache_key)
                 if isinstance(cached, dict) and "section" in cached:
                     return cached["section"]  # type: ignore[return-value]
 
-            affinity_weight, count = self._integration.get_discover_picks_settings()
-
-            candidates: list = []
-            if resolved_source == "lastfm" and self._lfm_repo is not None:
-                try:
-                    top_artists = await asyncio.wait_for(
-                        self._lfm_repo.get_global_top_artists(limit=30),
-                        timeout=30,
-                    )
-                    valid_artists = [a for a in top_artists if a.mbid]
-                    rg_results = await asyncio.gather(
-                        *[
-                            asyncio.wait_for(
-                                self._lb_repo.get_artist_top_release_groups(
-                                    artist.mbid, count=3,
-                                ),
-                                timeout=30,
-                            )
-                            for artist in valid_artists
-                        ],
-                        return_exceptions=True,
-                    )
-                    for result in rg_results:
-                        if isinstance(result, Exception):
-                            continue
-                        candidates.extend(result)
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout fetching top artists for discover picks")
-                except Exception:  # noqa: BLE001
-                    pass
-            else:
-                # sitewide candidates (no account needed) so unlinked users still get picks
-                try:
-                    candidates = await asyncio.wait_for(
-                        self._lb_repo.get_sitewide_top_release_groups(count=100),
-                        timeout=30,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout fetching sitewide top release groups for discover picks")
-                except Exception:  # noqa: BLE001
-                    pass
-
-            if not candidates:
-                await self._cache_discover_picks_result(None, user_id, resolved_source)
-                return None
-
-            ignored_mbids: set[str] = set()
+            _, count = self._integration.get_discover_picks_settings()
+            library_configured = self._integration.is_library_configured()
+            library_album_mbids = await self._mbid.get_library_album_mbids(library_configured)
+            listened = await self._mbid.get_user_listened_release_group_mbids(
+                lb_enabled, username, primary
+            )
+            ignored: set[str] = set()
             if self._mbid_store is not None:
                 try:
-                    ignored_mbids = await self._mbid_store.get_ignored_release_mbids(user_id)
+                    ignored = await self._mbid_store.get_ignored_release_mbids(user_id)
                 except Exception:  # noqa: BLE001
-                    logger.warning("Failed to load ignored release MBIDs for discover picks")
+                    logger.warning("Failed to load ignored release MBIDs for top picks")
+            exclude = library_album_mbids | listened | ignored
 
-            exclude_mbids = library_mbids | ignored_mbids
-            filtered = [
-                c for c in candidates
-                if c.release_group_mbid
-                and c.release_group_mbid.lower() not in exclude_mbids
-            ]
-
-            if not filtered:
-                await self._cache_discover_picks_result(None, user_id, resolved_source)
-                return None
-
-            top_genres = await self._genre_index.get_top_genres(limit=10)
-            user_genres: set[str] = {g for g, _ in top_genres} if top_genres else set()
-
-            artist_mbids_to_lookup: list[str] = []
-            for c in filtered:
-                if c.artist_mbids:
-                    artist_mbids_to_lookup.append(c.artist_mbids[0])
-
-            genres_by_artist: dict[str, list[str]] = {}
-            if artist_mbids_to_lookup:
-                genres_by_artist = await self._genre_index.get_genres_for_artists(
-                    artist_mbids_to_lookup,
-                )
-
-            scored: list[tuple[float, object]] = []
-            for c in filtered:
-                artist_mbid = c.artist_mbids[0] if c.artist_mbids else None
-                candidate_genres = (
-                    set(genres_by_artist.get(artist_mbid.lower(), []))
-                    if artist_mbid
-                    else set()
-                )
-                genre_overlap = (
-                    len(candidate_genres & user_genres) / max(len(user_genres), 1)
-                )
-                score = affinity_weight * genre_overlap + (1 - affinity_weight) * random.random()
-                scored.append((score, c))
-
-            scored.sort(key=lambda x: x[0], reverse=True)
-            selected = [c for _, c in scored[:count]]
-
-            items: list[HomeAlbum] = []
-            for release in selected:
-                try:
-                    items.append(
-                        self._transformers.lb_release_to_home(release, library_mbids),
+            # 1) similarity pool: the similar-artist results fetched for the
+            #    because-you-listen-to sections (no extra similarity calls)
+            similar_artists: list[tuple[str, str, float, str]] = []  # (mbid, name, raw, seed)
+            for i, seed in enumerate(seed_artists[:3]):
+                seed_name = getattr(seed, "artist_name", "")
+                for artist in results.get(f"similar_{i}") or []:
+                    mbid = self._mbid.normalize_mbid(
+                        getattr(artist, "artist_mbid", None) or getattr(artist, "mbid", None)
                     )
-                except Exception:  # noqa: BLE001
-                    continue
+                    if not mbid or mbid == VARIOUS_ARTISTS_MBID:
+                        continue
+                    name = getattr(artist, "artist_name", None) or getattr(artist, "name", "")
+                    raw = getattr(artist, "score", None)
+                    if raw is None:
+                        raw = getattr(artist, "match", 0.0) or 0.0
+                    similar_artists.append((mbid, name, float(raw or 0.0), seed_name))
+            # LB scores are unbounded counts: normalise by the batch max
+            max_raw = max((raw for _, _, raw, _ in similar_artists), default=0.0)
+            sim_by_artist: dict[str, tuple[float, str, str]] = {}
+            for mbid, name, raw, seed_name in similar_artists:
+                sim = (raw / max_raw) if max_raw > 1.0 else min(1.0, raw)
+                prev = sim_by_artist.get(mbid)
+                if prev is None or sim > prev[0]:
+                    sim_by_artist[mbid] = (sim, name, seed_name)
 
-            if not items:
-                await self._cache_discover_picks_result(None, user_id, resolved_source)
+            candidates: list[TopPickCandidate] = []
+            seen_rgs: set[str] = set()
+
+            sim_artist_list = sorted(
+                sim_by_artist.items(), key=lambda kv: kv[1][0], reverse=True
+            )[:12]
+
+            if self._use_lastfm_for_popularity(lfm_enabled):
+                # LB popularity is DEFINITELY degraded: turn these (LB-derived) similar
+                # artists into albums via Last.fm's top-albums instead of LB's dead
+                # popularity endpoint. The similarity scores still come from LB.
+                await self._add_lastfm_top_pick_candidates(
+                    sim_artist_list, exclude, seen_rgs, candidates
+                )
+            else:
+                # ALWAYS-preferred path: ListenBrainz popularity
+                rg_results = await asyncio.gather(
+                    *(
+                        self._lb_repo.get_artist_top_release_groups(mbid, count=2)
+                        for mbid, _ in sim_artist_list
+                    ),
+                    return_exceptions=True,
+                )
+                for (artist_mbid, (sim, artist_name, seed_name)), rgs in zip(
+                    sim_artist_list, rg_results
+                ):
+                    if isinstance(rgs, Exception):
+                        continue
+                    for rg in rgs:
+                        rg_mbid = self._mbid.normalize_mbid(rg.release_group_mbid)
+                        if not rg_mbid or rg_mbid in exclude or rg_mbid in seen_rgs:
+                            continue
+                        seen_rgs.add(rg_mbid)
+                        candidates.append(TopPickCandidate(
+                            release_group_mbid=rg_mbid,
+                            album_name=rg.release_group_name,
+                            artist_name=rg.artist_name or artist_name,
+                            artist_mbid=artist_mbid,
+                            sim=sim,
+                            listen_count=getattr(rg, "listen_count", 0) or 0,
+                            seed_artist=seed_name or None,
+                        ))
+
+            # 2) trending pool: the diversity tail (no account needed)
+            try:
+                trending = await asyncio.wait_for(
+                    self._lb_repo.get_sitewide_top_release_groups(count=100), timeout=30
+                )
+            except Exception:  # noqa: BLE001
+                trending = []
+            for rg in trending:
+                rg_mbid = self._mbid.normalize_mbid(rg.release_group_mbid)
+                if not rg_mbid or rg_mbid in exclude or rg_mbid in seen_rgs:
+                    continue
+                artist_mbid = self._mbid.normalize_mbid(
+                    rg.artist_mbids[0] if rg.artist_mbids else None
+                )
+                if artist_mbid == VARIOUS_ARTISTS_MBID:
+                    continue
+                seen_rgs.add(rg_mbid)
+                candidates.append(TopPickCandidate(
+                    release_group_mbid=rg_mbid,
+                    album_name=rg.release_group_name,
+                    artist_name=rg.artist_name,
+                    artist_mbid=artist_mbid or "",
+                    listen_count=getattr(rg, "listen_count", 0) or 0,
+                    from_trending=True,
+                ))
+
+            if not candidates:
+                await self._cache_top_picks_result(None, user_id, primary)
                 return None
 
-            section = HomeSection(
-                title="Discover Picks",
-                type="albums",
-                items=items,
-                source=resolved_source,
+            # genre signals
+            user_genres: set[str] = set()
+            if self._genre_index is not None:
+                try:
+                    top_genres = await self._genre_index.get_top_genres(limit=10)
+                    user_genres = {g.lower() for g, _ in top_genres}
+                except Exception:  # noqa: BLE001
+                    pass
+            for g in results.get("lb_genres") or []:
+                name = getattr(g, "genre", None)
+                if name:
+                    user_genres.add(name.lower())
+            genres_by_artist: dict[str, list[str]] = {}
+            if self._genre_index is not None:
+                artist_mbids = [c.artist_mbid for c in candidates if c.artist_mbid]
+                try:
+                    genres_by_artist = await self._genre_index.get_genres_for_artists(artist_mbids)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            picks = score_candidates(
+                candidates,
+                user_id=user_id,
+                date_iso=datetime.now(timezone.utc).date().isoformat(),
+                user_genres=user_genres,
+                genres_by_artist=genres_by_artist,
+                count=count,
             )
-            await self._cache_discover_picks_result(section, user_id, resolved_source)
+            if not picks:
+                await self._cache_top_picks_result(None, user_id, primary)
+                return None
+
+            section = TopPicksSection(
+                items=[
+                    TopPickItem(
+                        album=HomeAlbum(
+                            name=p_.candidate.album_name,
+                            mbid=p_.candidate.release_group_mbid,
+                            artist_name=p_.candidate.artist_name,
+                            artist_mbid=p_.candidate.artist_mbid or None,
+                            image_url=f"/api/v1/covers/release-group/{p_.candidate.release_group_mbid}?size=500",
+                            listen_count=p_.candidate.listen_count or None,
+                        ),
+                        match_pct=p_.match_pct,
+                        reasons=p_.reasons,
+                        seed_artist=p_.candidate.seed_artist,
+                    )
+                    for p_ in picks
+                ],
+                source=primary,
+            )
+            await self._cache_top_picks_result(section, user_id, primary)
             return section
 
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"Discover picks builder failed: {e}")
+            logger.warning(f"Top picks builder failed: {e}")
             return None
 
-    async def _cache_discover_picks_result(
-        self, result: HomeSection | None, user_id: str, source: str,
+    async def _cache_top_picks_result(
+        self, result: TopPicksSection | None, user_id: str, source: str,
     ) -> None:
         if self._memory_cache:
-            cache_key = self._discover_picks_cache_key(user_id, source)
+            cache_key = self._top_picks_cache_key(user_id, source)
             await self._memory_cache.set(
                 cache_key, {"section": result}, DISCOVER_PICKS_CACHE_TTL,
             )
+
+    async def _build_listeners_like_you(
+        self, lb_client: Any, username: str, user_id: str,
+    ) -> HomeSection | None:
+        """Albums that ListenBrainz users with similar taste are playing this month.
+        Optional enrichment: any failure degrades to None (no banner - LB partial)."""
+        try:
+            similar_users = await lb_client.get_similar_users(username)
+            if not similar_users:
+                return None
+            names = [
+                u.get("user_name")
+                for u in similar_users[:3]
+                if isinstance(u, dict) and u.get("user_name")
+            ]
+            if not names:
+                return None
+
+            library_configured = self._integration.is_library_configured()
+            library_album_mbids = await self._mbid.get_library_album_mbids(library_configured)
+            ignored: set[str] = set()
+            if self._mbid_store is not None:
+                try:
+                    ignored = await self._mbid_store.get_ignored_release_mbids(user_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            exclude = library_album_mbids | ignored
+
+            rg_lists = await asyncio.gather(
+                *(
+                    lb_client.get_user_top_release_groups(
+                        username=name, range_="this_month", count=15
+                    )
+                    for name in names
+                ),
+                return_exceptions=True,
+            )
+            items: list[HomeAlbum] = []
+            seen: set[str] = set()
+            for rg_list in rg_lists:
+                if isinstance(rg_list, Exception):
+                    continue
+                for rg in rg_list:
+                    rg_mbid = self._mbid.normalize_mbid(rg.release_group_mbid)
+                    if not rg_mbid or rg_mbid in exclude or rg_mbid in seen:
+                        continue
+                    artist_mbid = self._mbid.normalize_mbid(
+                        rg.artist_mbids[0] if rg.artist_mbids else None
+                    )
+                    if artist_mbid == VARIOUS_ARTISTS_MBID:
+                        continue
+                    seen.add(rg_mbid)
+                    items.append(HomeAlbum(
+                        name=rg.release_group_name,
+                        mbid=rg_mbid,
+                        artist_name=rg.artist_name,
+                        artist_mbid=artist_mbid or None,
+                        image_url=f"/api/v1/covers/release-group/{rg_mbid}?size=500",
+                        listen_count=getattr(rg, "listen_count", 0) or None,
+                    ))
+                    if len(items) >= 15:
+                        break
+                if len(items) >= 15:
+                    break
+            if not items:
+                return None
+            return HomeSection(
+                title="Listeners Like You Are Playing",
+                type="albums",
+                items=items,
+                source="listenbrainz",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Listeners-like-you builder failed: %s", e)
+            return None
+
+    # milestone birthdays celebrated per anniversary year; the library stores only a
+    # release YEAR (no month/day), so "on this day" precision isn't possible without
+    # per-album MusicBrainz lookups - see DECISIONS-LIVE 2026-07-03
+    _ANNIVERSARY_YEARS = (10, 20, 25, 30, 40, 50, 60)
+
+    async def _build_anniversaries(self) -> HomeSection | None:
+        """Library albums hitting a round anniversary this year."""
+        if self._library_db is None:
+            return None
+        try:
+            albums = await self._library_db.get_albums()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Anniversaries builder failed to read the library: %s", e)
+            return None
+        this_year = datetime.now(timezone.utc).year
+        matches: list[tuple[int, dict[str, Any]]] = []
+        for album in albums:
+            year = album.get("year")
+            if not isinstance(year, int) or year <= 0:
+                continue
+            age = this_year - year
+            if age in self._ANNIVERSARY_YEARS:
+                matches.append((age, album))
+        if not matches:
+            return None
+        # roundest birthdays first (50 before 10), newest within a tier
+        matches.sort(key=lambda m: (-m[0], -(m[1].get("year") or 0)))
+        items: list[HomeAlbum] = []
+        for age, album in matches[:12]:
+            mbid = album.get("mbid") or album.get("mbid_lower")
+            items.append(HomeAlbum(
+                name=album.get("title", "Unknown"),
+                mbid=mbid,
+                artist_name=album.get("artist_name"),
+                artist_mbid=album.get("artist_mbid"),
+                image_url=(
+                    f"/api/v1/covers/release-group/{mbid}?size=500" if mbid else None
+                ),
+                release_date=str(album.get("year") or ""),
+                in_library=True,
+            ))
+        return HomeSection(
+            title="Milestone Anniversaries",
+            type="albums",
+            items=items,
+            source="library",
+        )
+
+    async def _build_new_from_followed(self, user_id: str) -> HomeSection | None:
+        """Newest releases from artists this user follows (native follow system)."""
+        if self._follow_service is None:
+            return None
+        try:
+            releases, _total = await self._follow_service.list_new_releases(user_id, 10, 0)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("New-from-followed builder failed: %s", e)
+            return None
+        if not releases:
+            return None
+        items = [
+            HomeAlbum(
+                name=r.title,
+                mbid=r.release_group_mbid,
+                artist_name=r.artist_name,
+                artist_mbid=r.artist_mbid,
+                image_url=f"/api/v1/covers/release-group/{r.release_group_mbid}?size=500",
+                release_date=r.first_release_date,
+            )
+            for r in releases
+        ]
+        return HomeSection(
+            title="New From Artists You Follow",
+            type="albums",
+            items=items,
+            source="library",
+        )
 
     def _build_fresh_releases(
         self, results: dict[str, Any], library_mbids: set[str],
@@ -1426,7 +1803,7 @@ class DiscoverHomepageService:
                     continue
                 filtered.append((lower, display, count))
 
-            random.shuffle(filtered)
+            self._daily_rng("unexplored").shuffle(filtered)
             filtered = filtered[:UNEXPLORED_GENRES_MAX]
 
             if not filtered:
@@ -1434,7 +1811,7 @@ class DiscoverHomepageService:
                 fallback = await self._genre_index.get_underrepresented_genres(
                     top_genre_names, threshold=UNEXPLORED_GENRES_THRESHOLD
                 )
-                random.shuffle(fallback)
+                self._daily_rng("unexplored-fallback").shuffle(fallback)
                 fallback = fallback[:UNEXPLORED_GENRES_MAX]
                 if not fallback:
                     return None
@@ -1714,19 +2091,33 @@ class DiscoverHomepageService:
         coros = [asyncio.wait_for(c, timeout=DISCOVER_TASK_TIMEOUT_SECONDS) for c in tasks.values()]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
         results = {}
+        self._last_failed_task_keys = set()
         for key, result in zip(keys, raw_results):
             if isinstance(result, Exception):
                 logger.warning(f"Discover task {key} failed: {result}")
                 results[key] = None
+                self._last_failed_task_keys.add(key)
             else:
                 results[key] = result
         return results
+
+    @staticmethod
+    def _degraded_sources(task_keys: list[str], failed: set[str]) -> dict[str, str]:
+        """When EVERY task of a source family failed, tell the user (DegradedBanner)
+        instead of silently rendering a page with holes."""
+        status: dict[str, str] = {}
+        for prefix, label in (("lb_", "listenbrainz"), ("lfm_", "lastfm")):
+            family = [k for k in task_keys if k.startswith(prefix)]
+            if family and all(k in failed for k in family):
+                status[label] = "unavailable"
+        return status
 
     async def _build_radio_sections(
         self,
         seed_artists: list[ListenBrainzArtist],
         library_mbids: set[str],
         source: str,
+        lfm_enabled: bool = False,
     ) -> list[HomeSection]:
         valid_seeds = [
             seed for seed in seed_artists[:3]
@@ -1739,13 +2130,13 @@ class DiscoverHomepageService:
             seed_mbid = seed.artist_mbids[0]
             try:
                 pools = await asyncio.wait_for(
-                    build_similar_artist_pools(
+                    self._similar_artist_album_pools(
                         [seed],
+                        [seed_mbid],
                         excluded_mbids=library_mbids,
                         similar_limit=15,
                         albums_per=3,
-                        lb_repo=self._lb_repo,
-                        mbid_svc=self._mbid,
+                        lfm_enabled=lfm_enabled,
                     ),
                     timeout=30,
                 )

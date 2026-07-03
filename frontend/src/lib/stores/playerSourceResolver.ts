@@ -58,6 +58,7 @@ export function buildNowPlayingMetadata(item: QueueItem): NowPlaying {
 		artistName: item.artistName,
 		coverUrl: item.coverUrl,
 		coverRemoteUrl: item.coverRemoteUrl,
+		isPreview: item.isPreview,
 		sourceType: item.sourceType,
 		discNumber: item.discNumber,
 		trackSourceId: item.trackSourceId,

@@ -16,6 +16,11 @@ from api.v1.schemas.me_connections import (
     ScrobblePreferences,
     ScrobblePreferencesUpdate,
 )
+from api.v1.schemas.section_prefs import (
+    SectionPrefItem,
+    SectionPrefsResponse,
+    SectionPrefsUpdate,
+)
 from api.v1.schemas.settings import (
     LastFmAuthSessionRequest,
     LastFmAuthSessionResponse,
@@ -25,10 +30,12 @@ from api.v1.schemas.settings import (
 from core.dependencies import (
     get_lastfm_auth_service,
     get_now_playing_service,
+    get_per_user_client_factory,
     get_preferences_service,
     get_settings_service,
     get_user_connections_store,
     get_user_listening_prefs_store,
+    get_user_section_prefs_store,
 )
 from core.exceptions import (
     ConfigurationError,
@@ -38,9 +45,12 @@ from core.exceptions import (
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from infrastructure.persistence.user_connections_store import UserConnectionsStore
 from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
+from infrastructure.persistence.user_section_prefs_store import UserSectionPrefsStore
 from middleware import CurrentUserDep
 from services.lastfm_auth_service import LastFmAuthService
+from services.per_user_client_factory import PerUserClientFactory
 from services.preferences_service import PreferencesService
+from services.section_catalog import Page, sections_for, valid_keys
 from services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -190,3 +200,68 @@ async def disconnect(
         raise HTTPException(status_code=404, detail="Unknown service")
     deleted = await store.delete(current_user.id, service)
     return ConnectionActionResponse(service=service, deleted=deleted)
+
+
+async def _build_section_page(
+    page: Page,
+    user_id: str,
+    section_prefs: UserSectionPrefsStore,
+    client_factory: PerUserClientFactory,
+) -> list[SectionPrefItem]:
+    disabled = await section_prefs.get_disabled(user_id, page)
+    lb_linked = await client_factory.is_listenbrainz_linked(user_id)
+    lfm_linked = await client_factory.is_lastfm_linked(user_id)
+    availability = {
+        "listenbrainz": lb_linked,
+        "lastfm": lfm_linked,
+        # the native library engine is always present
+        "library": True,
+    }
+    return [
+        SectionPrefItem(
+            key=s.key,
+            title=s.title,
+            description=s.description,
+            zone=s.zone,
+            enabled=s.key not in disabled,
+            available=availability.get(s.requires, True) if s.requires else True,
+            requires=s.requires,
+        )
+        for s in sections_for(page)
+    ]
+
+
+@router.get("/section-prefs", response_model=SectionPrefsResponse)
+async def get_section_prefs(
+    current_user: CurrentUserDep,
+    section_prefs: UserSectionPrefsStore = Depends(get_user_section_prefs_store),
+    client_factory: PerUserClientFactory = Depends(get_per_user_client_factory),
+) -> SectionPrefsResponse:
+    pages: dict[str, list[SectionPrefItem]] = {}
+    for page in ("home", "discover"):
+        pages[page] = await _build_section_page(
+            page, current_user.id, section_prefs, client_factory
+        )
+    return SectionPrefsResponse(pages=pages)
+
+
+@router.put("/section-prefs", response_model=SectionPrefsResponse)
+async def update_section_prefs(
+    current_user: CurrentUserDep,
+    body: SectionPrefsUpdate = MsgSpecBody(SectionPrefsUpdate),
+    section_prefs: UserSectionPrefsStore = Depends(get_user_section_prefs_store),
+    client_factory: PerUserClientFactory = Depends(get_per_user_client_factory),
+) -> SectionPrefsResponse:
+    known = valid_keys(body.page)
+    unknown = [s.key for s in body.sections if s.key not in known]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown section keys: {', '.join(sorted(unknown))}")
+    disabled = {s.key for s in body.sections if not s.enabled}
+    await section_prefs.set_disabled(current_user.id, body.page, disabled)
+    return SectionPrefsResponse(
+        pages={
+            body.page: await _build_section_page(
+                body.page, current_user.id, section_prefs, client_factory
+            )
+        }
+    )

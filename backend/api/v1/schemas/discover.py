@@ -1,6 +1,6 @@
 from typing import Literal
 
-from api.v1.schemas.home import HomeSection, ServicePrompt
+from api.v1.schemas.home import HomeAlbum, HomeSection, ServicePrompt
 from api.v1.schemas.common import GenreArtistMap, IntegrationStatus
 from api.v1.schemas.weekly_exploration import WeeklyExplorationSection
 from models.youtube import YouTubeQuotaResponse as YouTubeQuotaResponse
@@ -103,7 +103,6 @@ class QueueSettings(AppStruct):
 
 class DiscoverQueueStatusResponse(AppStruct):
     status: str
-    source: str
     queue_id: str | None = None
     item_count: int | None = None
     built_at: float | None = None
@@ -112,14 +111,12 @@ class DiscoverQueueStatusResponse(AppStruct):
 
 
 class QueueGenerateRequest(AppStruct):
-    source: str | None = None
     force: bool = False
 
 
 class QueueGenerateResponse(AppStruct):
     action: str
     status: str
-    source: str
     queue_id: str | None = None
     item_count: int | None = None
     built_at: float | None = None
@@ -133,6 +130,43 @@ class DiscoverIgnoredRelease(AppStruct):
     release_name: str
     artist_name: str
     ignored_at: float
+
+
+class RadioSeedItem(AppStruct):
+    artist_mbid: str
+    artist_name: str = ""
+    album_mbid: str | None = None
+
+
+class RadioPlanRequest(AppStruct):
+    seed_type: Literal["artist", "album", "genre", "items"]
+    seed_id: str | None = None
+    items: list[RadioSeedItem] = []
+    mode: Literal["library", "hybrid"] = "hybrid"
+    count: int = 30
+    exclude_recording_mbids: list[str] = []
+    # fast=True expands only the seed itself (+ library pool) so first audio
+    # lands within the <=5s budget; the client follows up with fast=False
+    fast: bool = False
+
+
+class RadioPlanTrack(AppStruct):
+    track_name: str
+    artist_name: str
+    artist_mbid: str = ""
+    recording_mbid: str | None = None
+    album_mbid: str | None = None
+    album_name: str | None = None
+    in_library: bool = False
+    # library tracks resolve straight to the native stream endpoint
+    local_file_id: str | None = None
+    file_format: str | None = None
+    duration_s: float | None = None
+
+
+class RadioPlanResponse(AppStruct):
+    title: str
+    tracks: list[RadioPlanTrack] = []
 
 
 class RadioRequest(AppStruct):
@@ -160,6 +194,39 @@ class PlaylistSuggestionsResponse(AppStruct):
     profile: PlaylistProfile
 
 
+class TopPickItem(AppStruct):
+    album: HomeAlbum
+    match_pct: int
+    reasons: list[str] = []
+    seed_artist: str | None = None
+
+
+class TopPicksSection(AppStruct):
+    title: str = "Top Picks for You"
+    items: list[TopPickItem] = []
+    source: str | None = None
+
+
+class PreviewTrackItem(AppStruct):
+    title: str
+    artist_name: str = ""
+    preview_url: str = ""
+    duration_s: int | None = None
+    position: int | None = None
+
+
+class TrackPreviewResponse(AppStruct):
+    preview_url: str | None = None
+    title: str | None = None
+    duration_s: int | None = None
+    provider: str | None = None
+
+
+class AlbumPreviewResponse(AppStruct):
+    tracks: list[PreviewTrackItem] = []
+    provider: str | None = None
+
+
 class DiscoverIntegrationStatus(IntegrationStatus):
     pass
 
@@ -184,7 +251,10 @@ class DiscoverResponse(AppStruct):
     lastfm_recent_scrobbles: HomeSection | None = None
     daily_mixes: list[HomeSection] = []
     radio_sections: list[HomeSection] = []
-    discover_picks: HomeSection | None = None
+    top_picks: TopPicksSection | None = None
+    listeners_like_you: HomeSection | None = None
+    anniversaries: HomeSection | None = None
+    new_from_followed: HomeSection | None = None
     unexplored_genres: HomeSection | None = None
     refreshing: bool = False
     service_status: dict[str, str] | None = None

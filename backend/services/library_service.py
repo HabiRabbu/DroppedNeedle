@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import os
+from pathlib import Path
 import time
 from typing import Any, TYPE_CHECKING
 from repositories.protocols import LibraryRepositoryProtocol, CoverArtRepositoryProtocol
@@ -488,6 +489,38 @@ class LibraryService:
         artist_name = first.get("album_artist_name") or first.get("artist_name") or "Unknown"
         return artist_mbid, artist_name
 
+    def _recycle_paths(self, paths: list[str]) -> int:
+        """Move files to the recycle bin (falls back to hard delete when no bin
+        can be resolved - e.g. no library path configured)."""
+        from services.native.recycle_bin import recycle, resolve_bin_path
+
+        policy = self._preferences.get_download_policy()
+        lib = self._preferences.get_library_settings()
+        bin_path = resolve_bin_path(policy.recycle_bin_path, lib.library_paths)
+        if bin_path is None:
+            logger.warning("No recycle bin available; hard-deleting %d files", len(paths))
+            return self._unlink_paths(paths)
+        moved = 0
+        parents: set[str] = set()
+        for path in paths:
+            parents.add(os.path.dirname(path))
+            try:
+                recycle(Path(path), bin_path)
+                moved += 1
+            except FileNotFoundError:
+                moved += 1
+            except OSError as e:
+                logger.warning("Couldn't recycle library file: %s (%s)", path, e)
+        for parent in sorted(parents, key=len, reverse=True):
+            current = parent
+            while current and current != os.path.dirname(current):
+                try:
+                    os.rmdir(current)
+                except OSError:
+                    break
+                current = os.path.dirname(current)
+        return moved
+
     @staticmethod
     def _unlink_paths(paths: list[str]) -> int:
         # a missing file counts as success (already gone); other OS errors are logged
@@ -545,7 +578,9 @@ class LibraryService:
             logger.error(f"Failed to build removal preview for album {album_mbid}: {e}")
             raise ExternalServiceError(f"Failed to load removal preview: {e}")
 
-    async def remove_album(self, album_mbid: str, delete_files: bool = False) -> AlbumRemoveResponse:
+    async def remove_album(
+        self, album_mbid: str, delete_files: bool = False, *, to_recycle: bool = False
+    ) -> AlbumRemoveResponse:
         try:
             rows = await self._library_db.get_library_files_for_album(album_mbid)
             artist_mbid: str | None = None
@@ -555,9 +590,13 @@ class LibraryService:
             if rows:
                 artist_mbid, artist_name = self._album_artist_identity(rows)
                 # soft-delete the DB rows (recoverable via re-import); delete_files
-                # (which the UI now always requests) also unlinks from disk
+                # (which the UI now always requests) also unlinks from disk.
+                # to_recycle (discovery-batch removal) moves files to the recycle
+                # bin instead, so an undone discovery spree is restorable.
                 paths = await self._library_db.soft_delete_album_files(album_mbid)
-                if delete_files and paths:
+                if to_recycle and paths:
+                    await asyncio.to_thread(self._recycle_paths, paths)
+                elif delete_files and paths:
                     await asyncio.to_thread(self._unlink_paths, paths)
             else:
                 # ghost album: no active files, but a stale library_albums row may

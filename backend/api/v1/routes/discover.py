@@ -1,4 +1,3 @@
-from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from api.v1.schemas.discover import (
     DiscoverResponse,
@@ -9,11 +8,16 @@ from api.v1.schemas.discover import (
     DiscoverQueueValidateRequest,
     DiscoverQueueValidateResponse,
     DiscoverQueueStatusResponse,
+    AlbumPreviewResponse,
+    PreviewTrackItem,
     QueueGenerateRequest,
+    RadioPlanRequest,
+    RadioPlanResponse,
     QueueGenerateResponse,
     RadioRequest,
     PlaylistSuggestionsRequest,
     PlaylistSuggestionsResponse,
+    TrackPreviewResponse,
     YouTubeSearchResponse,
     YouTubeQuotaResponse,
     TrackCacheCheckRequest,
@@ -22,15 +26,24 @@ from api.v1.schemas.discover import (
 )
 from api.v1.schemas.common import StatusMessageResponse
 from api.v1.schemas.home import HomeSection
-from core.dependencies import get_discover_service, get_discover_queue_manager, get_youtube_repo
+from core.dependencies import (
+    get_discover_service,
+    get_discover_queue_manager,
+    get_preview_repository,
+    get_user_section_prefs_store,
+    get_youtube_repo,
+)
 from core.dependencies.type_aliases import CurrentUserDep
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 
 import msgspec.structs
+from infrastructure.persistence.user_section_prefs_store import UserSectionPrefsStore
+from repositories.preview_repository import PreviewRepository
 from repositories.youtube import YouTubeRepository
 from services.discover_service import DiscoverService
 from services.discover_queue_manager import DiscoverQueueManager
+from services.section_catalog import apply_section_prefs
 
 router = APIRouter(route_class=MsgSpecRoute, prefix="/discover", tags=["discover"])
 
@@ -38,10 +51,12 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/discover", tags=["discover
 @router.get("", response_model=DiscoverResponse)
 async def get_discover_data(
     current_user: CurrentUserDep,
-    source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source: listenbrainz or lastfm"),
     discover_service: DiscoverService = Depends(get_discover_service),
+    section_prefs: UserSectionPrefsStore = Depends(get_user_section_prefs_store),
 ):
-    result = await discover_service.get_discover_data(user_id=current_user.id, source=source)
+    result = await discover_service.get_discover_data(user_id=current_user.id)
+    disabled = await section_prefs.get_disabled(current_user.id, "discover")
+    result = apply_section_prefs(result, "discover", disabled)
     ctx = try_get_degradation_context()
     if ctx is not None and ctx.has_degradation():
         result = msgspec.structs.replace(result, service_status=ctx.degraded_summary())
@@ -51,10 +66,9 @@ async def get_discover_data(
 @router.post("/refresh", response_model=StatusMessageResponse)
 async def refresh_discover_data(
     current_user: CurrentUserDep,
-    source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
     discover_service: DiscoverService = Depends(get_discover_service),
 ):
-    await discover_service.refresh_discover_data(current_user.id, source)
+    await discover_service.refresh_discover_data(current_user.id)
     return StatusMessageResponse(status="ok", message="Discover refresh triggered")
 
 
@@ -64,6 +78,17 @@ async def discover_radio(
     service: DiscoverService = Depends(get_discover_service),
 ) -> HomeSection:
     return await service.generate_radio(body)
+
+
+@router.post("/radio/plan", response_model=RadioPlanResponse)
+async def discover_radio_plan(
+    current_user: CurrentUserDep,
+    body: RadioPlanRequest = MsgSpecBody(RadioPlanRequest),
+    service: DiscoverService = Depends(get_discover_service),
+) -> RadioPlanResponse:
+    """Track-level radio plan: the frontend resolves playback per track
+    (library -> native stream, un-owned -> YouTube / 30s previews)."""
+    return await service.build_radio_plan(current_user.id, body)
 
 
 @router.post("/playlist-suggestions", response_model=PlaylistSuggestionsResponse)
@@ -79,38 +104,30 @@ async def playlist_suggestions(
 async def get_discover_queue(
     current_user: CurrentUserDep,
     count: int | None = Query(default=None, description="Number of items (default from settings, max 20)"),
-    source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source: listenbrainz or lastfm"),
-    discover_service: DiscoverService = Depends(get_discover_service),
     queue_manager: DiscoverQueueManager = Depends(get_discover_queue_manager),
 ):
-    resolved = await discover_service.resolve_source_for_user(current_user.id, source)
-    cached = await queue_manager.consume_queue(current_user.id, resolved)
+    cached = await queue_manager.consume_queue(current_user.id)
     if cached:
         return cached
     effective_count = min(count, 20) if count is not None else None
-    return await queue_manager.build_hydrated_queue(current_user.id, resolved, effective_count)
+    return await queue_manager.build_hydrated_queue(current_user.id, effective_count)
 
 
 @router.get("/queue/status", response_model=DiscoverQueueStatusResponse)
 async def get_queue_status(
     current_user: CurrentUserDep,
-    source: Literal["listenbrainz", "lastfm"] | None = Query(default=None, description="Data source"),
-    discover_service: DiscoverService = Depends(get_discover_service),
     queue_manager: DiscoverQueueManager = Depends(get_discover_queue_manager),
 ):
-    resolved = await discover_service.resolve_source_for_user(current_user.id, source)
-    return queue_manager.get_status(current_user.id, resolved)
+    return queue_manager.get_status(current_user.id)
 
 
 @router.post("/queue/generate", response_model=QueueGenerateResponse)
 async def generate_queue(
     current_user: CurrentUserDep,
     body: QueueGenerateRequest = MsgSpecBody(QueueGenerateRequest),
-    discover_service: DiscoverService = Depends(get_discover_service),
     queue_manager: DiscoverQueueManager = Depends(get_discover_queue_manager),
 ):
-    resolved = await discover_service.resolve_source_for_user(current_user.id, body.source)
-    return await queue_manager.start_build(current_user.id, resolved, force=body.force)
+    return await queue_manager.start_build(current_user.id, force=body.force)
 
 
 @router.get("/queue/enrich/{release_group_mbid}", response_model=DiscoverQueueEnrichment)
@@ -236,4 +253,56 @@ async def youtube_cache_check(
             )
             for artist, track in deduped
         ]
+    )
+
+
+_PREVIEW_PARAM_MAX_LEN = 200
+
+
+@router.get("/track-preview", response_model=TrackPreviewResponse)
+async def track_preview(
+    current_user: CurrentUserDep,
+    artist: str = Query(..., min_length=1, description="Artist name"),
+    track: str = Query(..., min_length=1, description="Track name"),
+    preview_repo: PreviewRepository = Depends(get_preview_repository),
+):
+    """A keyless 30s audio preview (Deezer -> iTunes). Preview URLs expire, so
+    responses are resolved just-in-time and must not be long-cached."""
+    found, provider = await preview_repo.get_track_preview(
+        artist[:_PREVIEW_PARAM_MAX_LEN], track[:_PREVIEW_PARAM_MAX_LEN]
+    )
+    if not found:
+        return TrackPreviewResponse()
+    return TrackPreviewResponse(
+        preview_url=found.preview_url,
+        title=found.title,
+        duration_s=found.duration_s,
+        provider=provider,
+    )
+
+
+@router.get("/album-preview", response_model=AlbumPreviewResponse)
+async def album_preview(
+    current_user: CurrentUserDep,
+    artist: str = Query(..., min_length=1, description="Artist name"),
+    album: str = Query(..., min_length=1, description="Album name"),
+    count: int = Query(default=4, ge=1, le=8),
+    preview_repo: PreviewRepository = Depends(get_preview_repository),
+):
+    """Ordered 30s samples of an album's first tracks (the deck's "Sample album")."""
+    tracks, provider = await preview_repo.get_album_preview_tracks(
+        artist[:_PREVIEW_PARAM_MAX_LEN], album[:_PREVIEW_PARAM_MAX_LEN], limit=count
+    )
+    return AlbumPreviewResponse(
+        tracks=[
+            PreviewTrackItem(
+                title=t.title,
+                artist_name=t.artist_name,
+                preview_url=t.preview_url,
+                duration_s=t.duration_s,
+                position=t.position,
+            )
+            for t in tracks
+        ],
+        provider=provider,
     )

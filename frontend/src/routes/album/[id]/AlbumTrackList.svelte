@@ -21,7 +21,7 @@
 	import { playerStore } from '$lib/stores/player.svelte';
 	import NowPlayingIndicator from '$lib/components/NowPlayingIndicator.svelte';
 	import TrackPlayButton from '$lib/components/TrackPlayButton.svelte';
-	import TrackPreviewButton from '$lib/components/TrackPreviewButton.svelte';
+	import SampleButton from '$lib/components/discover/SampleButton.svelte';
 	import TrackSourceButton from '$lib/components/TrackSourceButton.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
@@ -60,7 +60,6 @@
 		trackLinks: YouTubeTrackLink[];
 		youtubeEnabled: boolean;
 		youtubeApiConfigured: boolean;
-		previewCacheMap: Map<string, boolean>;
 		jellyfinEnabled: boolean;
 		localfilesEnabled: boolean;
 		navidromeEnabled: boolean;
@@ -107,7 +106,6 @@
 		trackLinks,
 		youtubeEnabled,
 		youtubeApiConfigured,
-		previewCacheMap,
 		jellyfinEnabled,
 		localfilesEnabled,
 		navidromeEnabled,
@@ -231,7 +229,7 @@
 					localTrack !== null ||
 					navidromeTrack !== null ||
 					plexTrack !== null}
-				{@const showPreview = youtubeApiConfigured && !hasAnySource}
+				{@const showPreview = !hasAnySource}
 				{@const libMeta =
 					(track.recording_id ? libraryTracksByRecording.get(track.recording_id) : undefined) ??
 					libraryTracksByPosition.get(
@@ -344,16 +342,15 @@
 									{/if}
 								{/if}
 								{#if showPreview}
-									<TrackPreviewButton
+									<SampleButton
+										sampleKey={`track:${album.artist_name}|${track.title}`}
 										artist={album.artist_name}
-										track={track.title}
-										ytConfigured={youtubeApiConfigured}
-										initialCached={previewCacheMap.get(
-											`${album.artist_name.toLowerCase()}|${track.title.toLowerCase()}`
-										) ?? null}
-										albumId={album.musicbrainz_id}
+										title={track.title}
+										kind="track"
+										size="xs"
+										albumMbid={album.musicbrainz_id}
+										artistMbid={album.artist_id}
 										coverUrl={album.cover_url ?? null}
-										artistId={album.artist_id}
 									/>
 								{/if}
 

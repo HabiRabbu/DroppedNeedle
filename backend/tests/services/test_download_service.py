@@ -557,6 +557,26 @@ async def test_retry_task_delegates_to_orchestrator():
     orchestrator.retry_task.assert_awaited_once_with("t1", "u1", "user")
 
 
+@pytest.mark.asyncio
+async def test_reimport_task_delegates_to_orchestrator():
+    # Admin gating lives at the route (CurrentAdminDep); the facade just forwards the
+    # task id. Guards the facade<->orchestrator signature from drifting apart.
+    service, _store, _bus, _client, _scorer, orchestrator = _make_service()
+    orchestrator.reimport_task = AsyncMock(return_value="reimported")
+    result = await service.reimport_task("t1")
+    assert result == "reimported"
+    orchestrator.reimport_task.assert_awaited_once_with("t1")
+
+
+@pytest.mark.asyncio
+async def test_reimport_task_blocked_when_disabled():
+    service, _store, _bus, _client, _scorer, orchestrator = _make_service(enabled=False)
+    orchestrator.reimport_task = AsyncMock()
+    with pytest.raises(ConfigurationError):
+        await service.reimport_task("t1")
+    orchestrator.reimport_task.assert_not_called()
+
+
 def test_mount_not_set():
     assert check_downloads_mount(None, []).reason == "not_set"
     assert check_downloads_mount("", []).reason == "not_set"

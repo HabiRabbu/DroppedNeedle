@@ -23,6 +23,7 @@ const COVERAGE: Array<[string, string, string]> = [
 	['download stream', API.downloads.stream('T1'), '/api/v1/downloads/T1/stream'],
 	['download cancel', API.downloads.cancel('T1'), '/api/v1/downloads/T1/cancel'],
 	['download retry', API.downloads.retry('T1'), '/api/v1/downloads/T1/retry'],
+	['download reimport', API.downloads.reimport('T1'), '/api/v1/downloads/T1/reimport'],
 	// search (user-scoped)
 	['search album', API.downloads.searchAlbum(), '/api/v1/downloads/search/album'],
 	['search job', API.downloads.searchJob('J1'), '/api/v1/downloads/search/J1'],
@@ -54,6 +55,31 @@ const COVERAGE: Array<[string, string, string]> = [
 		'resolve unmatched batch',
 		API.library.resolveUnmatchedBatch(),
 		'/api/v1/library/scan/unmatched/resolve-batch'
+	],
+	// per-user section visibility (user-scoped)
+	['section prefs', API.me.sectionPrefs(), '/api/v1/me/section-prefs'],
+	// external-service health for the header status indicator
+	['system health', API.system.health(), '/api/v1/system/health'],
+	// keyless 30s previews (user-scoped)
+	[
+		'track preview',
+		API.discoverTrackPreview('A', 'T'),
+		'/api/v1/discover/track-preview?artist=A&track=T'
+	],
+	[
+		'album preview',
+		API.discoverAlbumPreview('A', 'B'),
+		'/api/v1/discover/album-preview?artist=A&album=B'
+	],
+	// smart radio (user-scoped)
+	['radio plan', API.discoverRadioPlan(), '/api/v1/discover/radio/plan'],
+	// discovery batches (user-scoped)
+	['batches list/create', API.discoverBatches(), '/api/v1/discover/batches'],
+	['batch detail', API.discoverBatch('B1'), '/api/v1/discover/batches/B1'],
+	[
+		'batch remove',
+		API.discoverBatchRemove('B1', true),
+		'/api/v1/discover/batches/B1?remove_albums=true'
 	]
 ];
 

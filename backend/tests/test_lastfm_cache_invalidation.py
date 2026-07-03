@@ -10,6 +10,7 @@ from core.dependencies import cleanup as _cleanup_mod
 
 LASTFM_DEPENDENT_FACTORIES = [
     "get_artist_discovery_service",
+    "get_album_discovery_service",
     "get_artist_enrichment_service",
     "get_album_enrichment_service",
     "get_search_enrichment_service",

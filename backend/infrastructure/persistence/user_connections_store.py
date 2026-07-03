@@ -169,6 +169,32 @@ class UserConnectionsStore:
             )
         return records
 
+    async def get_service_token(self, service: str, token_field: str = "user_token") -> str | None:
+        """Any stored auth token for a service, from the earliest enabled connection
+        (typically the admin/owner). Used to authenticate app-wide PUBLIC-data lookups
+        (e.g. ListenBrainz popularity) that run outside a user context - never writes."""
+
+        def operation(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                "SELECT connection_data FROM user_connections "
+                "WHERE service = ? AND enabled = 1 ORDER BY created_at ASC",
+                (service,),
+            ).fetchall()
+
+        rows = await self._read(operation)
+        for row in rows:
+            plaintext, failed = decrypt(row["connection_data"])
+            if failed:
+                continue
+            try:
+                data = json.loads(plaintext)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            token = data.get(token_field)
+            if token:
+                return str(token)
+        return None
+
     async def set_enabled(self, user_id: str, service: str, enabled: bool) -> None:
         now = datetime.now(timezone.utc).isoformat()
 

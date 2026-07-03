@@ -35,9 +35,7 @@ import Page from './+page.svelte';
 describe('/+page.svelte', () => {
 	it('should render the greeting h1', async () => {
 		expect.assertions(2);
-		render(Page, {
-			props: { data: { primarySource: 'listenbrainz' } }
-		} as Parameters<typeof render<typeof Page>>[1]);
+		render(Page);
 
 		const heading = page.getByRole('heading', { level: 1 });
 		await expect.element(heading).toBeInTheDocument();
@@ -47,9 +45,7 @@ describe('/+page.svelte', () => {
 
 	it('renders the page subtitle', async () => {
 		expect.assertions(1);
-		render(Page, {
-			props: { data: { primarySource: 'listenbrainz' } }
-		} as Parameters<typeof render<typeof Page>>[1]);
+		render(Page);
 
 		await expect
 			.element(page.getByText('Discover music, explore your library, and find new favorites.'))

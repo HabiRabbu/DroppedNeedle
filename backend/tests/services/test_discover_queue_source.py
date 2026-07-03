@@ -147,7 +147,7 @@ class TestBuildQueueSourceRouting:
             LastFmAlbum(name="Album1", mbid="album-mbid-1", playcount=100, artist_name="Artist1"),
         ]
 
-        result = await service.build_queue(_UID,count=5, source="lastfm")
+        result = await service.build_queue(_UID, count=5)
         assert result is not None
         lfm_repo.get_global_top_artists.assert_awaited()
         lb_repo.get_sitewide_top_release_groups.assert_not_awaited()
@@ -159,7 +159,7 @@ class TestBuildQueueSourceRouting:
         )
         lb_repo.get_sitewide_top_release_groups.return_value = []
 
-        result = await service.build_queue(_UID,count=5, source="listenbrainz")
+        result = await service.build_queue(_UID, count=5)
         assert result is not None
         lb_repo.get_sitewide_top_release_groups.assert_awaited()
         lfm_repo.get_global_top_artists.assert_not_awaited()
@@ -171,14 +171,14 @@ class TestBuildQueueSourceRouting:
         )
         lfm_repo.get_global_top_artists.return_value = []
 
-        result = await service.build_queue(_UID,count=5, source=None)
+        result = await service.build_queue(_UID, count=5)
         assert result is not None
         lfm_repo.get_global_top_artists.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_build_queue_returns_valid_response(self):
         service, _, _, _ = _make_service(lb_enabled=False, lfm_enabled=False)
-        result = await service.build_queue(_UID,count=5)
+        result = await service.build_queue(_UID, count=5)
         assert result is not None
         assert result.queue_id
         assert isinstance(result.items, list)
@@ -195,7 +195,7 @@ class TestBuildQueuePersonalizedSourceRouting:
         ]
         lfm_repo.get_similar_artists.return_value = []
 
-        await service.build_queue(_UID,count=5, source="lastfm")
+        await service.build_queue(_UID, count=5)
         lfm_repo.get_user_top_artists.assert_awaited()
         lfm_repo.get_similar_artists.assert_awaited()
         lb_repo.get_similar_artists.assert_not_awaited()
@@ -210,7 +210,7 @@ class TestBuildQueuePersonalizedSourceRouting:
         ]
         lb_repo.get_similar_artists.return_value = []
 
-        await service.build_queue(_UID,count=5, source="listenbrainz")
+        await service.build_queue(_UID, count=5)
         lb_repo.get_user_top_artists.assert_awaited()
         lb_repo.get_similar_artists.assert_awaited()
         lfm_repo.get_similar_artists.assert_not_awaited()
@@ -231,7 +231,7 @@ class TestLastFmQueueDataQuality:
             LastFmAlbum(name="Album1", mbid="release-mbid-1", playcount=100, artist_name="Artist1"),
         ]
 
-        result = await service.build_queue(_UID,count=5, source="lastfm")
+        result = await service.build_queue(_UID, count=5)
 
         assert any(item.release_group_mbid == "rg-mbid-1" for item in result.items)
         service._mbid_resolution._mb_repo.get_release_group_id_from_release.assert_awaited()
@@ -244,7 +244,7 @@ class TestLastFmQueueDataQuality:
         lfm_repo.get_user_top_artists.return_value = []
         lfm_repo.get_global_top_artists.return_value = []
 
-        await service.build_queue(_UID,count=5, source="lastfm")
+        await service.build_queue(_UID, count=5)
 
         lb_repo.get_user_top_artists.assert_not_awaited()
 
@@ -263,7 +263,7 @@ class TestLastFmQueueDataQuality:
             LastFmAlbum(name="Album1", mbid="release-mbid-1", playcount=100, artist_name="Artist1"),
         ]
 
-        result = await service.build_queue(_UID,count=5, source="lastfm")
+        result = await service.build_queue(_UID, count=5)
 
         assert result.items
         assert any(item.release_group_mbid == "release-mbid-1" for item in result.items)
@@ -338,7 +338,7 @@ class TestLastFmQueueResilience:
             side_effect=_search_release_groups_by_tag
         )
 
-        result = await service.build_queue(_UID,count=5, source="lastfm")
+        result = await service.build_queue(_UID, count=5)
 
         assert result.items
         assert any(item.release_group_mbid == "rg-fallback-1" for item in result.items)

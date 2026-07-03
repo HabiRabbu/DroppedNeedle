@@ -17,6 +17,7 @@ function createNowPlayingReporter() {
 		const state = playerStore.playbackState;
 		return (
 			!!np &&
+			!np.isPreview &&
 			!!np.trackName &&
 			REPORTED_SOURCES.has(np.sourceType) &&
 			state !== 'idle' &&

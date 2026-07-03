@@ -104,6 +104,26 @@ class ArtistDiscoveryService:
             return self._lastfm_repo
         return None
 
+    async def _lastfm_fallback(
+        self, kind: str, user_id: str | None, artist_mbid: str, count: int
+    ):
+        """When the ListenBrainz source yields nothing (popularity disabled/auth-gated
+        or breaker tripped upstream), try the same section from Last.fm. Returns the
+        response (possibly empty) or None when Last.fm isn't available/failed."""
+        lastfm_repo = await self._resolve_lastfm(user_id)
+        if lastfm_repo is None:
+            return None
+        try:
+            if kind == "similar":
+                return await self._get_similar_artists_lastfm(lastfm_repo, artist_mbid, count)
+            if kind == "top_songs":
+                return await self._get_top_songs_lastfm(lastfm_repo, artist_mbid, count)
+            if kind == "top_albums":
+                return await self._get_top_albums_lastfm(lastfm_repo, artist_mbid, count)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Last.fm %s fallback failed for %s: %s", kind, artist_mbid[:8], e)
+        return None
+
     def _resolve_source(
         self, source: Literal["listenbrainz", "lastfm"] | None
     ) -> Literal["listenbrainz", "lastfm"]:
@@ -154,6 +174,7 @@ class ArtistDiscoveryService:
         if cached:
             return cached
 
+        lb_unavailable = False
         if effective_source == "lastfm":
             lastfm_repo = await self._resolve_lastfm(user_id)
             try:
@@ -180,16 +201,27 @@ class ArtistDiscoveryService:
                 ]
                 result = SimilarArtistsResponse(similar_artists=artists)
             except CircuitOpenError:
-                logger.warning("Circuit open for similar artists %s, using short TTL", artist_mbid[:8])
+                logger.warning("Circuit open for similar artists %s", artist_mbid[:8])
                 result = SimilarArtistsResponse(similar_artists=[])
-                await self._cache.set(cache_key, result, ttl_seconds=CIRCUIT_OPEN_CACHE_TTL)
-                return result
+                lb_unavailable = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to get similar artists for %s: %s(%s)", artist_mbid[:8], type(e).__name__, e)
                 result = SimilarArtistsResponse(similar_artists=[])
 
+        # LB similar/popularity is intermittently disabled or breaker-tripped upstream
+        # (2026-07); fall back to Last.fm so the section still fills
+        if effective_source == "listenbrainz" and not result.similar_artists:
+            fb = await self._lastfm_fallback(
+                "similar", user_id, artist_mbid, count
+            )
+            if fb is not None and fb.similar_artists:
+                result, lb_unavailable = fb, False
+
         result.similar_artists = _dedupe_similar_artists(result.similar_artists)
 
+        if lb_unavailable and not result.similar_artists:
+            await self._cache.set(cache_key, result, ttl_seconds=CIRCUIT_OPEN_CACHE_TTL)
+            return result
         in_library = await self._is_library_artist(artist_mbid)
         ttl = (
             self._get_discovery_ttl(in_library)
@@ -212,6 +244,7 @@ class ArtistDiscoveryService:
         if cached:
             return cached
 
+        lb_unavailable = False
         if effective_source == "lastfm":
             lastfm_repo = await self._resolve_lastfm(user_id)
             try:
@@ -254,14 +287,23 @@ class ArtistDiscoveryService:
                     ))
                 result = TopSongsResponse(songs=songs)
             except CircuitOpenError:
-                logger.warning("Circuit open for top songs %s, using short TTL", artist_mbid[:8])
+                logger.warning("Circuit open for top songs %s", artist_mbid[:8])
                 result = TopSongsResponse(songs=[])
-                await self._cache.set(cache_key, result, ttl_seconds=CIRCUIT_OPEN_CACHE_TTL)
-                return result
+                lb_unavailable = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to get top songs for %s: %s(%s)", artist_mbid[:8], type(e).__name__, e)
                 result = TopSongsResponse(songs=[])
 
+        # LB popularity (top-recordings) is disabled/auth-gated upstream (2026-07);
+        # fall back to Last.fm so the section still fills
+        if effective_source == "listenbrainz" and not result.songs:
+            fb = await self._lastfm_fallback("top_songs", user_id, artist_mbid, count)
+            if fb is not None and fb.songs:
+                result, lb_unavailable = fb, False
+
+        if lb_unavailable and not result.songs:
+            await self._cache.set(cache_key, result, ttl_seconds=CIRCUIT_OPEN_CACHE_TTL)
+            return result
         in_library = await self._is_library_artist(artist_mbid)
         ttl = (
             self._get_discovery_ttl(in_library)
@@ -284,6 +326,7 @@ class ArtistDiscoveryService:
         if cached:
             return cached
 
+        lb_unavailable = False
         if effective_source == "lastfm":
             lastfm_repo = await self._resolve_lastfm(user_id)
             try:
@@ -337,10 +380,9 @@ class ArtistDiscoveryService:
                     ]
                     result = TopAlbumsResponse(albums=albums)
             except CircuitOpenError:
-                logger.warning("Circuit open for top albums %s, using short TTL", artist_mbid[:8])
+                logger.warning("Circuit open for top albums %s", artist_mbid[:8])
                 result = TopAlbumsResponse(albums=[])
-                await self._cache.set(cache_key, result, ttl_seconds=CIRCUIT_OPEN_CACHE_TTL)
-                return result
+                lb_unavailable = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to get top albums for %s: %s(%s)", artist_mbid[:8], type(e).__name__, e)
                 try:
@@ -357,6 +399,16 @@ class ArtistDiscoveryService:
                     )
                     result = TopAlbumsResponse(albums=[])
 
+        # LB popularity (top-release-groups) is disabled/auth-gated upstream (2026-07);
+        # fall back to Last.fm so the section still fills
+        if effective_source == "listenbrainz" and not result.albums:
+            fb = await self._lastfm_fallback("top_albums", user_id, artist_mbid, count)
+            if fb is not None and fb.albums:
+                result, lb_unavailable = fb, False
+
+        if lb_unavailable and not result.albums:
+            await self._cache.set(cache_key, result, ttl_seconds=CIRCUIT_OPEN_CACHE_TTL)
+            return result
         in_library = await self._is_library_artist(artist_mbid)
         empty_ttl = (
             60

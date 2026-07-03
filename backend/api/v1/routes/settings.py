@@ -14,7 +14,6 @@ from api.v1.schemas.settings import (
     NavidromeConnectionSettings,
     ListenBrainzConnectionSettings,
     YouTubeConnectionSettings,
-    HomeSettings,
     LastFmConnectionSettings,
     LastFmConnectionSettingsResponse,
     LastFmVerifyResponse,
@@ -422,28 +421,6 @@ async def verify_youtube_connection(
 ):
     result = await settings_service.verify_youtube(settings)
     return VerifyConnectionResponse(valid=result.valid, message=result.message)
-
-
-@router.get("/home", response_model=HomeSettings)
-async def get_home_settings(
-    preferences_service: PreferencesService = Depends(get_preferences_service),
-):
-    return preferences_service.get_home_settings()
-
-
-@router.put("/home", response_model=HomeSettings)
-async def update_home_settings(
-    settings: HomeSettings = MsgSpecBody(HomeSettings),
-    preferences_service: PreferencesService = Depends(get_preferences_service),
-    settings_service: SettingsService = Depends(get_settings_service),
-):
-    try:
-        preferences_service.save_home_settings(settings)
-        await settings_service.clear_home_cache()
-        return settings
-    except ConfigurationError as e:
-        logger.warning(f"Configuration error updating home settings: {e}")
-        raise HTTPException(status_code=400, detail="Home settings are incomplete or invalid")
 
 
 @router.get("/lastfm", response_model=LastFmConnectionSettingsResponse)

@@ -52,6 +52,8 @@ export interface NowPlaying {
 	streamUrl?: string;
 	format?: string;
 	playlistTrackId?: string;
+	/** 30s preview stream (radio preview tier): never scrobbled/reported, fades out. */
+	isPreview?: boolean;
 }
 
 export type PlaybackMeta = {
@@ -87,4 +89,6 @@ export interface QueueItem {
 	queueOrigin?: QueueOrigin;
 	/** Stable playlist-level track identifier that survives source changes. */
 	playlistTrackId?: string;
+	/** 30s preview stream (radio preview tier): never scrobbled/reported, fades out. */
+	isPreview?: boolean;
 }

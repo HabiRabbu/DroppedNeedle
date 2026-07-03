@@ -4,15 +4,13 @@
 	import type { TopSong, ResolvedTrack } from '$lib/types';
 	import AlbumImage from './AlbumImage.svelte';
 	import LastFmPlaceholder from './LastFmPlaceholder.svelte';
-	import TrackPreviewButton from './TrackPreviewButton.svelte';
+	import SampleButton from './discover/SampleButton.svelte';
 
 	interface Props {
 		song: TopSong;
 		position: number;
 		source?: string;
 		showPreview?: boolean;
-		ytConfigured?: boolean;
-		initialCached?: boolean | null;
 		resolvedTrack?: ResolvedTrack | null;
 		onPlay?: () => void;
 	}
@@ -22,8 +20,6 @@
 		position,
 		source = '',
 		showPreview = false,
-		ytConfigured = false,
-		initialCached = null,
 		resolvedTrack = null,
 		onPlay
 	}: Props = $props();
@@ -31,7 +27,7 @@
 	let hasAlbum = $derived(!!song.release_group_mbid);
 	let isLastfmNoAlbum = $derived(!hasAlbum && source === 'lastfm');
 	let canPlay = $derived(!!resolvedTrack?.source);
-	let previewEnabled = $derived(showPreview && ytConfigured && !canPlay);
+	let previewEnabled = $derived(showPreview && !canPlay);
 </script>
 
 {#if hasAlbum}
@@ -51,13 +47,13 @@
 			<span class="w-6 shrink-0 flex items-center justify-center">
 				<span class="group-hover:hidden">{position}</span>
 				<span class="hidden group-hover:block">
-					<TrackPreviewButton
+					<SampleButton
+						sampleKey={`track:${song.artist_name}|${song.title}`}
 						artist={song.artist_name}
-						track={song.title}
-						{ytConfigured}
-						{initialCached}
-						size="sm"
-						albumId={song.release_group_mbid ?? ''}
+						title={song.title}
+						kind="track"
+						size="xs"
+						albumMbid={song.release_group_mbid}
 					/>
 				</span>
 			</span>
@@ -115,12 +111,13 @@
 			<span class="w-6 shrink-0 flex items-center justify-center">
 				<span class="group-hover:hidden">{position}</span>
 				<span class="hidden group-hover:block">
-					<TrackPreviewButton
+					<SampleButton
+						sampleKey={`track:${song.artist_name}|${song.title}`}
 						artist={song.artist_name}
-						track={song.title}
-						{ytConfigured}
-						{initialCached}
-						size="sm"
+						title={song.title}
+						kind="track"
+						size="xs"
+						albumMbid={song.release_group_mbid}
 					/>
 				</span>
 			</span>

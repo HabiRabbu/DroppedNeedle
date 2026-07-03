@@ -128,4 +128,21 @@ describe('DownloadItem.svelte', () => {
 			.element(page.getByRole('button', { name: 'Stop auto-retrying this download' }))
 			.not.toBeInTheDocument();
 	});
+
+	it('shows a "Retry import" button for an admin on a reimportable task and fires the mutation with the album mbid', async () => {
+		h.isAdmin = true;
+		renderItem(task({ status: 'failed' }));
+		const button = page.getByRole('button', { name: 'Retry import from slskd' });
+		await expect.element(button).toBeVisible();
+		await button.click();
+		expect(h.reimportMutate).toHaveBeenCalledWith({ id: 't', release_group_mbid: 'rg' });
+	});
+
+	it('does not show "Retry import" for a non-admin', async () => {
+		h.isAdmin = false;
+		renderItem(task({ status: 'failed' }));
+		await expect
+			.element(page.getByRole('button', { name: 'Retry import from slskd' }))
+			.not.toBeInTheDocument();
+	});
 });

@@ -27,6 +27,7 @@ from .cache_providers import (
     get_preferences_service,
 )
 from .repo_providers import (
+    get_preview_repository,
     get_library_repository,
     get_musicbrainz_repository,
     get_wikidata_repository,
@@ -552,12 +553,22 @@ def get_album_discovery_service() -> "AlbumDiscoveryService":
     musicbrainz_repo = get_musicbrainz_repository()
     library_db = get_library_db()
     library_repo = get_library_repository()
+    from services.discover.mbid_resolution_service import MbidResolutionService
+    album_disc_mbid_svc = MbidResolutionService(
+        musicbrainz_repo=musicbrainz_repo,
+        library_repo=library_repo,
+        listenbrainz_repo=listenbrainz_repo,
+        library_db=library_db,
+        mbid_store=get_mbid_store(),
+    )
     return AlbumDiscoveryService(
         listenbrainz_repo=listenbrainz_repo,
         musicbrainz_repo=musicbrainz_repo,
         library_db=library_db,
         library_repo=library_repo,
         client_factory=get_per_user_client_factory(),
+        lastfm_repo=get_lastfm_repository(),
+        mbid_svc=album_disc_mbid_svc,
     )
 
 
@@ -646,6 +657,7 @@ def get_discover_service() -> "DiscoverService":
         lb_repo=listenbrainz_repo,
         mb_repo=musicbrainz_repo,
         mbid_svc=radio_mbid_svc,
+        lfm_repo=lastfm_repo,
         artist_discovery=get_artist_discovery_service(),
         album_discovery=get_album_discovery_service(),
         genre_index=genre_index,
@@ -670,6 +682,24 @@ def get_discover_service() -> "DiscoverService":
         playlist_service=get_playlist_service(),
         client_factory=get_per_user_client_factory(),
         listening_prefs_store=get_user_listening_prefs_store(),
+        follow_service=get_follow_service(),
+        cover_repo=get_coverart_repository(),
+        preview_repo=get_preview_repository(),
+    )
+
+
+@singleton
+def get_discovery_batch_service() -> "DiscoveryBatchService":
+    from services.discovery_batch_service import DiscoveryBatchService
+    from .repo_providers import get_discovery_batch_store, get_request_history_store
+
+    return DiscoveryBatchService(
+        batch_store=get_discovery_batch_store(),
+        request_service=get_request_service(),
+        request_history=get_request_history_store(),
+        library_service=get_library_service(),
+        library_db=get_library_db(),
+        download_service=get_download_service(),
     )
 
 

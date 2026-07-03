@@ -119,6 +119,17 @@ function createScrobbleManager() {
 				return;
 			}
 
+			if (np?.isPreview) {
+				// 30s radio previews are tastes, not listens: never scrobbled
+				track = null;
+				if (status !== 'idle') status = 'idle';
+				if (progressInterval) {
+					clearInterval(progressInterval);
+					progressInterval = null;
+				}
+				return;
+			}
+
 			if (!np || !np.trackName || !np.artistName) {
 				if (!np || !np.trackName) {
 					track = null;

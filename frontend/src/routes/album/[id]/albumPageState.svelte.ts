@@ -19,7 +19,6 @@ import type {
 	PlexAlbumMatch,
 	PlexTrackInfo,
 	LastFmAlbumEnrichment,
-	TrackCacheCheckItem,
 	LibraryAlbumStatus,
 	LibraryFileMeta,
 	DownloadTask,
@@ -30,7 +29,6 @@ import { integrationStore } from '$lib/stores/integration';
 import { API } from '$lib/constants';
 import { isAbortError } from '$lib/utils/errorHandling';
 import { extractServiceStatus } from '$lib/utils/serviceStatus';
-import { api } from '$lib/api/client';
 import {
 	albumBasicCache,
 	albumDiscoveryCache,
@@ -186,10 +184,6 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		});
 	});
 
-	const previewCacheMap = new SvelteMap<string, boolean>();
-	let lastPreviewCacheKey = '';
-	let previewCacheAbort: AbortController | null = null;
-
 	const trackLinkMap = $derived.by(
 		() => new SvelteMap(trackLinks.map((tl) => [getDiscTrackKey(tl), tl]))
 	);
@@ -259,49 +253,11 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 	// any held track below the quality cutoff -> the header's curator "Upgrade quality" affordance
 	const libraryBelowCutoff = $derived((libraryStatus?.tracks ?? []).some((t) => t.below_cutoff));
 
-	$effect(() => {
-		const artist = album?.artist_name;
-		const tracks = tracksInfo?.tracks;
-		if (!artist || !tracks || tracks.length === 0) return;
-		const integrations = get(integrationStore);
-		if (!integrations.youtube_api) return;
-
-		const key = `${artist}|${tracks.map((t) => t.title).join('|')}`;
-		if (key === lastPreviewCacheKey) return;
-		lastPreviewCacheKey = key;
-
-		previewCacheAbort?.abort();
-		previewCacheAbort = new AbortController();
-		const signal = previewCacheAbort.signal;
-
-		(async () => {
-			try {
-				const data = await api.global.post<{ items: TrackCacheCheckItem[] }>(
-					API.discoverQueueYoutubeCacheCheck(),
-					{ items: tracks.map((t) => ({ artist, track: t.title })) },
-					{ signal }
-				);
-				if (lastPreviewCacheKey === key) {
-					for (const item of data.items) {
-						previewCacheMap.set(
-							`${item.artist.toLowerCase()}|${item.track.toLowerCase()}`,
-							item.cached
-						);
-					}
-				}
-			} catch (e) {
-				if (isAbortError(e)) return;
-			}
-		})();
-	});
-
 	function resetState() {
 		if (abortController) {
 			abortController.abort();
 			abortController = null;
 		}
-		previewCacheAbort?.abort();
-		previewCacheAbort = null;
 		clearExternalRecheck();
 		seenActiveTaskIds.clear();
 		settledTaskIds.clear();
@@ -330,8 +286,6 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		lastfmEnrichment = null;
 		loadingLastfm = true;
 		refreshing = false;
-		previewCacheMap.clear();
-		lastPreviewCacheKey = '';
 	}
 
 	function hydrateFromCache(albumId: string) {
@@ -956,9 +910,6 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		},
 		get plexTrackMap() {
 			return plexTrackMap;
-		},
-		get previewCacheMap() {
-			return previewCacheMap;
 		},
 		get inLibrary() {
 			return inLibrary;

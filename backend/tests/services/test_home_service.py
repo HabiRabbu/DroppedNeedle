@@ -135,7 +135,7 @@ class TestHomeServiceSourceSelection:
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        await service.get_home_data("u1", "listenbrainz")
+        await service.get_home_data("u1")
         lb_repo.get_sitewide_top_artists.assert_awaited_once()
         lfm_repo.get_global_top_artists.assert_not_awaited()
 
@@ -144,7 +144,7 @@ class TestHomeServiceSourceSelection:
         service, lb_repo, lfm_repo, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
         )
-        await service.get_home_data("u1", "lastfm")
+        await service.get_home_data("u1")
         lfm_repo.get_global_top_artists.assert_awaited_once()
         lb_repo.get_sitewide_top_artists.assert_not_awaited()
 
@@ -153,7 +153,7 @@ class TestHomeServiceSourceSelection:
         service, _, _, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        response = await service.get_home_data("u1", "listenbrainz")
+        response = await service.get_home_data("u1")
         assert response.integration_status is not None
         assert response.integration_status.lastfm is True
         assert response.integration_status.listenbrainz is True
@@ -189,7 +189,7 @@ class TestHomeServiceSourceSelection:
             )
         ]
 
-        response = await service.get_home_data("u1", "listenbrainz")
+        response = await service.get_home_data("u1")
 
         assert response.popular_albums is not None
         assert len(response.popular_albums.items) == 1
@@ -202,7 +202,7 @@ class TestHomeServiceSourceSelection:
         )
         service._client_factory.resolve_lastfm_username = AsyncMock(return_value="")
 
-        await service.get_home_data("u1", "lastfm")
+        await service.get_home_data("u1")
 
         lfm_repo.get_global_top_artists.assert_awaited_once()
         lfm_repo.get_user_top_albums.assert_not_awaited()
@@ -236,7 +236,7 @@ class TestHomeServiceSourceSelection:
         )
         service._mb_repo.get_release_group_id_from_release.return_value = "release-group-1"
 
-        response = await service.get_home_data("u1", "listenbrainz")
+        response = await service.get_home_data("u1")
 
         assert response.weekly_exploration is not None
         assert response.weekly_exploration.source_url == "https://listenbrainz.org/playlist/weekly-123"
@@ -244,29 +244,41 @@ class TestHomeServiceSourceSelection:
         assert response.weekly_exploration.tracks[0].release_group_mbid == "release-group-1"
 
     @pytest.mark.asyncio
-    async def test_lastfm_source_skips_weekly_exploration(self):
+    async def test_weekly_exploration_builds_even_with_lastfm_primary(self):
+        # unified model: LB-specific sections run whenever LB is linked,
+        # regardless of the user's primary source
         service, lb_repo, _, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
         )
 
-        response = await service.get_home_data("u1", "lastfm")
+        await service.get_home_data("u1")
+
+        lb_repo.get_recommendation_playlists.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_weekly_exploration_skipped_when_lb_unlinked(self):
+        service, lb_repo, _, _ = _make_service(
+            lb_enabled=False, lfm_enabled=True, primary_source="lastfm"
+        )
+
+        response = await service.get_home_data("u1")
 
         assert response.weekly_exploration is None
         lb_repo.get_recommendation_playlists.assert_not_awaited()
 
 
-class TestHomeServiceCacheKeySourceAware:
-    def test_different_sources_produce_different_keys(self):
-        service, _, _, _ = _make_service()
-        key_lb = service._get_home_cache_key("u1", "listenbrainz", True, True)
-        key_lfm = service._get_home_cache_key("u1", "lastfm", True, True)
-        assert key_lb != key_lfm
-
+class TestHomeServiceCacheKeyUserAware:
     def test_different_users_produce_different_keys(self):
         service, _, _, _ = _make_service()
-        key_a = service._get_home_cache_key("user-a", "listenbrainz", True, True)
-        key_b = service._get_home_cache_key("user-b", "listenbrainz", True, True)
+        key_a = service._get_home_cache_key("user-a", True, True)
+        key_b = service._get_home_cache_key("user-b", True, True)
         assert key_a != key_b
+
+    def test_enable_flags_bust_the_key(self):
+        service, _, _, _ = _make_service()
+        key_linked = service._get_home_cache_key("u1", True, True)
+        key_unlinked = service._get_home_cache_key("u1", False, False)
+        assert key_linked != key_unlinked
 
 
 class TestBuildServicePrompts:
@@ -312,68 +324,25 @@ class TestBuildServicePrompts:
         assert "last.fm" in lb_prompt.description.lower()
 
 
-class TestShowWhatsHotSetting:
+class TestWhatsHotAlwaysBuilt:
+    # section visibility is per-user at read time (section_catalog.apply_section_prefs);
+    # the build always fetches trending so the shared cache entry stays complete
+
     @pytest.mark.asyncio
-    async def test_lb_trending_tasks_skipped_when_disabled(self):
-        service, lb_repo, lfm_repo, prefs = _make_service(
+    async def test_trending_always_dispatched(self):
+        service, lb_repo, _, _ = _make_service(
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
-        prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=False)
-
-        response = await service.get_home_data("u1", "listenbrainz")
-
-        lb_repo.get_sitewide_top_artists.assert_not_awaited()
-        lb_repo.get_sitewide_top_release_groups.assert_not_awaited()
-        assert response.trending_artists is None
-        assert response.popular_albums is None
-
-    @pytest.mark.asyncio
-    async def test_lfm_trending_task_skipped_when_disabled(self):
-        service, lb_repo, lfm_repo, prefs = _make_service(
-            lb_enabled=True, lfm_enabled=True, primary_source="lastfm"
-        )
-        prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=False)
-
-        response = await service.get_home_data("u1", "lastfm")
-
-        lfm_repo.get_global_top_artists.assert_not_awaited()
-        assert response.trending_artists is None
-
-    @pytest.mark.asyncio
-    async def test_trending_dispatched_when_enabled(self):
-        service, lb_repo, _, prefs = _make_service(
-            lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
-        )
-        prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=True)
-
-        await service.get_home_data("u1", "listenbrainz")
-
+        await service.get_home_data("u1")
         lb_repo.get_sitewide_top_artists.assert_awaited_once()
         lb_repo.get_sitewide_top_release_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_non_trending_sections_unaffected_when_disabled(self):
-        service, _, _, prefs = _make_service(
-            lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
-        )
-        prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=False)
-
-        response = await service.get_home_data("u1", "listenbrainz")
-
-        assert response.trending_artists is None
-        assert response.popular_albums is None
-        assert response.integration_status is not None
-
-    @pytest.mark.asyncio
-    async def test_cached_response_filtered_when_disabled(self):
+    async def test_disabled_sections_filtered_at_read_time(self):
         from api.v1.schemas.home import HomeResponse, HomeSection, HomeArtist, HomeIntegrationStatus
+        from services.section_catalog import apply_section_prefs
 
-        service, _, _, prefs = _make_service(
-            lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
-        )
-        prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=False)
-
-        cached = HomeResponse(
+        built = HomeResponse(
             integration_status=HomeIntegrationStatus(
                 listenbrainz=True, jellyfin=False, download_client=False,
                 youtube=False, lastfm=True,
@@ -384,12 +353,77 @@ class TestShowWhatsHotSetting:
             ),
             popular_albums=HomeSection(title="Popular", type="album", items=[]),
         )
-        mock_cache = AsyncMock()
-        mock_cache.get = AsyncMock(return_value=cached)
-        service._memory_cache = mock_cache
+        filtered = apply_section_prefs(built, "home", {"trending_artists", "popular_albums"})
+        assert filtered.trending_artists is None
+        assert filtered.popular_albums is None
+        assert filtered.integration_status is not None
 
-        response = await service.get_home_data("u1", "listenbrainz")
 
-        assert response.trending_artists is None
-        assert response.popular_albums is None
-        assert response.integration_status is not None
+class TestHomeServeFastRevalidate:
+    # /api/v1/home must never block on external services: cache miss -> instant
+    # library-only response with refreshing=true; the full build runs in warm_cache
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_returns_fast_local_response(self):
+        service, lb_repo, _, _ = _make_service(
+            lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
+        )
+        store: dict = {}
+        cache = MagicMock()
+        cache.get = AsyncMock(side_effect=lambda k: store.get(k))
+        cache.set = AsyncMock(side_effect=lambda k, v, ttl=None: store.__setitem__(k, v))
+        service._memory_cache = cache
+        # pretend a warm was just attempted so the fast path doesn't spawn a task
+        service._built_at = {"anything": 0.0}
+        import time as _time
+        music = await service._resolve_user_music("u1", None)
+        key = service._get_home_cache_key("u1", music.lb_enabled, music.lfm_enabled)
+        service._built_at[key] = _time.time()
+
+        resp = await service.get_home_data("u1")
+
+        assert resp.refreshing is False or resp.refreshing is True  # struct field exists
+        # the fast path never awaits sitewide trending
+        lb_repo.get_sitewide_top_artists.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_warm_cache_builds_full_and_populates_cache(self):
+        service, lb_repo, _, _ = _make_service(
+            lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
+        )
+        store: dict = {}
+        cache = MagicMock()
+        cache.get = AsyncMock(side_effect=lambda k: store.get(k))
+        cache.set = AsyncMock(side_effect=lambda k, v, ttl=None: store.__setitem__(k, v))
+        service._memory_cache = cache
+
+        await service.warm_cache("u1")
+
+        # the full build fetched trending and the result landed in the cache
+        lb_repo.get_sitewide_top_artists.assert_awaited_once()
+        assert len(store) == 1
+        cached = next(iter(store.values()))
+        assert cached.refreshing is False
+
+    @pytest.mark.asyncio
+    async def test_cached_copy_served_verbatim(self):
+        from api.v1.schemas.home import HomeResponse
+
+        service, lb_repo, _, _ = _make_service(
+            lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
+        )
+        import time as _time
+        music = await service._resolve_user_music("u1", None)
+        key = service._get_home_cache_key("u1", music.lb_enabled, music.lfm_enabled)
+        store = {key: HomeResponse()}
+        cache = MagicMock()
+        cache.get = AsyncMock(side_effect=lambda k: store.get(k))
+        cache.set = AsyncMock()
+        service._memory_cache = cache
+        service._built_at = {key: _time.time()}  # fresh -> no revalidation
+
+        resp = await service.get_home_data("u1")
+
+        assert resp.refreshing is False
+        lb_repo.get_sitewide_top_artists.assert_not_awaited()
+

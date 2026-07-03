@@ -72,6 +72,7 @@ import {
 } from './playerPlaybackMethods';
 
 const MAX_CONSECUTIVE_ERRORS = 3;
+const PREVIEW_FADE_S = 2;
 const ERROR_SKIP_DELAY_MS = 2000;
 const MAX_HISTORY_LENGTH = 3;
 const SESSION_PERSIST_INTERVAL_MS = 5000;
@@ -394,6 +395,15 @@ function createPlayerStore() {
 			if (gen !== loadGeneration) return;
 			progress = t;
 			duration = d;
+			// preview tier: DJ-style fade over the last 2s so 30s clips blend
+			// instead of stopping dead (owner-signed anti-jarring rule)
+			const item = queue[currentIndex];
+			if (item?.isPreview && d > 0) {
+				const remaining = d - t;
+				if (remaining <= PREVIEW_FADE_S && remaining >= 0) {
+					source.setVolume(volume * Math.max(0, remaining / PREVIEW_FADE_S));
+				}
+			}
 			const now = Date.now();
 			if (now - lastPersistTime >= SESSION_PERSIST_INTERVAL_MS) {
 				lastPersistTime = now;
@@ -707,6 +717,18 @@ function createPlayerStore() {
 			}
 			queue = r.newQueue;
 			persist();
+		},
+
+		/** Radio hydration: patch a not-yet-playing item (video id / preview URL)
+		 * without touching the current track. */
+		patchQueueItemByPlaylistTrackId(playlistTrackId: string, patch: Partial<QueueItem>): boolean {
+			const index = queue.findIndex((q) => q.playlistTrackId === playlistTrackId);
+			if (index < 0 || index === currentIndex) return false;
+			const uq = [...queue];
+			uq[index] = { ...uq[index], ...patch };
+			queue = uq;
+			persist();
+			return true;
 		},
 
 		updateQueueItemByPlaylistTrackId(

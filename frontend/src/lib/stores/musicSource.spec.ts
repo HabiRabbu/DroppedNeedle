@@ -99,19 +99,7 @@ describe('isMusicSource', () => {
 });
 
 describe('API.home', () => {
-	it('includes source param when provided', () => {
-		expect(API.home('listenbrainz')).toBe('/api/v1/home?source=listenbrainz');
-	});
-
-	it('omits source param when undefined', () => {
-		expect(API.home(undefined)).toBe('/api/v1/home');
-	});
-
-	it('omits source param when called with no arguments', () => {
+	it('is the unified endpoint with no source param', () => {
 		expect(API.home()).toBe('/api/v1/home');
-	});
-
-	it('encodes special characters in source', () => {
-		expect(API.home('listen brainz')).toBe('/api/v1/home?source=listen%20brainz');
 	});
 });

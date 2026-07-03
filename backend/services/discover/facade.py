@@ -19,6 +19,8 @@ from api.v1.schemas.discover import (
     DiscoverIgnoredRelease,
     PlaylistSuggestionsRequest,
     PlaylistSuggestionsResponse,
+    RadioPlanRequest,
+    RadioPlanResponse,
 )
 from api.v1.schemas.home import DiscoverPreview
 from infrastructure.cache.memory_cache import CacheInterface
@@ -36,9 +38,9 @@ from services.discover.homepage_service import DiscoverHomepageService
 from services.discover.integration_helpers import IntegrationHelpers
 from services.discover.mbid_resolution_service import MbidResolutionService
 from services.discover.queue_service import DiscoverQueueService
+from services.discover.radio_plan_service import RadioPlanService
 from services.preferences_service import PreferencesService
 from services.per_user_client_factory import PerUserClientFactory
-from services.home.integration_helpers import resolve_source_value
 from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
 
 
@@ -67,6 +69,9 @@ class DiscoverService:
         playlist_service: Any = None,
         client_factory: PerUserClientFactory | None = None,
         listening_prefs_store: UserListeningPrefsStore | None = None,
+        follow_service: Any = None,
+        cover_repo: Any = None,
+        preview_repo: Any = None,
     ):
         self._integration = IntegrationHelpers(preferences_service)
         self._client_factory = client_factory
@@ -117,33 +122,40 @@ class DiscoverService:
             mbid_store=mbid_store,
             client_factory=client_factory,
             listening_prefs_store=listening_prefs_store,
+            library_db=library_db,
+            follow_service=follow_service,
+            cover_repo=cover_repo,
         )
 
         self._radio = radio_service
         self._playlist_service = playlist_service
+        self._radio_plan = RadioPlanService(
+            lb_repo=listenbrainz_repo,
+            mb_repo=musicbrainz_repo,
+            mbid_svc=self._mbid_resolution,
+            library_db=library_db,
+            genre_index=genre_index,
+            lfm_repo=lastfm_repo,
+            preview_repo=preview_repo,
+        )
 
-    async def get_discover_data(self, user_id: str, source: str | None = None):
-        return await self._homepage.get_discover_data(user_id, source)
+    async def get_discover_data(self, user_id: str):
+        return await self._homepage.get_discover_data(user_id)
 
     async def get_discover_preview(self, user_id: str) -> DiscoverPreview | None:
         return await self._homepage.get_discover_preview(user_id)
 
-    async def refresh_discover_data(self, user_id: str, source: str | None = None) -> None:
-        return await self._homepage.refresh_discover_data(user_id, source)
+    async def refresh_discover_data(self, user_id: str) -> None:
+        return await self._homepage.refresh_discover_data(user_id)
 
-    async def warm_cache(self, user_id: str, source: str | None = None) -> None:
-        return await self._homepage.warm_cache(user_id, source)
+    async def warm_cache(self, user_id: str) -> None:
+        return await self._homepage.warm_cache(user_id)
 
-    async def build_discover_data(self, user_id: str, source: str | None = None):
-        return await self._homepage.build_discover_data(user_id, source)
+    async def build_discover_data(self, user_id: str):
+        return await self._homepage.build_discover_data(user_id)
 
-    async def resolve_source_for_user(self, user_id: str, source: str | None) -> str:
-        lb = await self._client_factory.is_listenbrainz_linked(user_id) if self._client_factory else False
-        lfm = await self._client_factory.is_lastfm_linked(user_id) if self._client_factory else False
-        primary = "listenbrainz"
-        if self._prefs_store:
-            primary = (await self._prefs_store.get(user_id)).primary_music_source
-        return resolve_source_value(source, primary, lb, lfm)
+    async def build_radio_plan(self, user_id: str, request: RadioPlanRequest) -> RadioPlanResponse:
+        return await self._radio_plan.build_plan(user_id, request)
 
     async def generate_radio(self, request: Any) -> HomeSection:
         if self._radio is None:
@@ -169,10 +181,8 @@ class DiscoverService:
             profile=profile,
         )
 
-    async def build_queue(
-        self, user_id: str, count: int | None = None, source: str | None = None
-    ) -> DiscoverQueueResponse:
-        return await self._queue.build_queue(user_id, count, source)
+    async def build_queue(self, user_id: str, count: int | None = None) -> DiscoverQueueResponse:
+        return await self._queue.build_queue(user_id, count)
 
     async def validate_queue_mbids(self, mbids: list[str]) -> list[str]:
         return await self._queue.validate_queue_mbids(mbids)

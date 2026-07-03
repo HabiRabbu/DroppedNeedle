@@ -1,48 +1,14 @@
 <script lang="ts">
-	import type {
-		WeeklyExplorationSection as SectionType,
-		YouTubeQuotaStatus,
-		TrackCacheCheckItem
-	} from '$lib/types';
+	import type { WeeklyExplorationSection as SectionType } from '$lib/types';
 	import { Sparkles, ExternalLink } from 'lucide-svelte';
-	import { onMount } from 'svelte';
-	import { API } from '$lib/constants';
-	import { api } from '$lib/api/client';
 	import HorizontalCarousel from './HorizontalCarousel.svelte';
 	import WeeklyExplorationCard from './WeeklyExplorationCard.svelte';
-	import { SvelteMap } from 'svelte/reactivity';
 
 	interface Props {
 		section: SectionType;
-		ytConfigured?: boolean;
 	}
 
-	let { section, ytConfigured = false }: Props = $props();
-
-	let activeQuotaIndex = $state<number | null>(null);
-	let quotaInfo = $state<YouTubeQuotaStatus | null>(null);
-	let cacheMap = new SvelteMap<string, boolean>();
-
-	function cacheKey(artist: string, track: string): string {
-		return `${artist.toLowerCase()}|${track.toLowerCase()}`;
-	}
-
-	onMount(async () => {
-		if (!ytConfigured || section.tracks.length === 0) return;
-		try {
-			const data = await api.global.post<{ items: TrackCacheCheckItem[] }>(
-				API.discoverQueueYoutubeCacheCheck(),
-				{
-					items: section.tracks.map((t) => ({ artist: t.artist_name, track: t.title }))
-				}
-			);
-			for (const item of data.items) {
-				cacheMap.set(cacheKey(item.artist, item.track), item.cached);
-			}
-		} catch {
-			// cache check is best-effort
-		}
-	});
+	let { section }: Props = $props();
 
 	function formatPlaylistDate(dateStr: string): string {
 		try {
@@ -85,15 +51,8 @@
 	</div>
 
 	<HorizontalCarousel>
-		{#each section.tracks as track, i (track.artist_name + track.title)}
-			<WeeklyExplorationCard
-				{track}
-				index={i}
-				{ytConfigured}
-				initialCached={cacheMap.get(cacheKey(track.artist_name, track.title)) ?? null}
-				showQuota={activeQuotaIndex === i}
-				{quotaInfo}
-			/>
+		{#each section.tracks as track (track.artist_name + track.title)}
+			<WeeklyExplorationCard {track} />
 		{/each}
 	</HorizontalCarousel>
 </section>

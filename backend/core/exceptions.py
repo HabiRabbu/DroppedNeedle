@@ -28,6 +28,14 @@ class RateLimitedError(ExternalServiceError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class ServiceDisabledUpstreamError(DroppedNeedleException):
+    """A provider has deliberately switched a sub-API off (e.g. ListenBrainz's
+    "Popularity API currently disabled due to high load"). Deliberately NOT an
+    ExternalServiceError: it must not be retried (deterministic for the outage)
+    and must not trip the provider's shared circuit breaker (the rest of the
+    provider's endpoints are healthy)."""
+
+
 class ResourceNotFoundError(DroppedNeedleException):
     pass
 

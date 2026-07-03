@@ -4,7 +4,6 @@ from api.v1.schemas.discover import (
     DiscoverIntegrationStatus,
     QueueSettings,
 )
-from api.v1.schemas.settings import HomeSettings
 from services.preferences_service import PreferencesService
 
 logger = logging.getLogger(__name__)
@@ -74,15 +73,13 @@ class IntegrationHelpers:
         )
 
     def get_discover_cache_key(
-        self, user_id: str, resolved_source: str, lb_enabled: bool = False, lfm_enabled: bool = False
+        self, user_id: str, lb_enabled: bool = False, lfm_enabled: bool = False
     ) -> str:
-        # Per-user dimension (Phase 5); the caller resolves the source per user. The
-        # enable flags are part of the key (matching Home) so connecting/disconnecting
-        # a service busts the cache instead of serving stale unlinked content.
-        return f"{DISCOVER_CACHE_KEY}:{user_id}:{resolved_source}:{lb_enabled}:{lfm_enabled}"
-
-    def get_home_settings(self) -> HomeSettings:
-        return self._preferences.get_home_settings()
+        # Per-user dimension; no source dimension - the unified page builds both
+        # services into one response. The enable flags are part of the key (matching
+        # Home) so connecting/disconnecting a service busts the cache instead of
+        # serving stale unlinked content.
+        return f"{DISCOVER_CACHE_KEY}:{user_id}:{lb_enabled}:{lfm_enabled}"
 
     def get_integration_status(self) -> DiscoverIntegrationStatus:
         return DiscoverIntegrationStatus(

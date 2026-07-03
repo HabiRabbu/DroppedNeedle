@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from api.v1.schemas.settings import HomeSettings
 from services.home_service import HomeService
 from services.discover_queue_manager import DiscoverQueueManager, QueueBuildStatus
 
@@ -50,7 +49,6 @@ def _global_prefs() -> MagicMock:
     prefs.get_plex_connection.return_value = _conn(plex_url="", plex_token="", music_library_ids=[])
     prefs.is_lastfm_enabled.return_value = False
     prefs.get_lastfm_connection.return_value = _conn(api_key="", shared_secret="", session_key="", username="")
-    prefs.get_home_settings.return_value = HomeSettings(show_whats_hot=True)
     prefs.get_primary_music_source.return_value = SimpleNamespace(source="listenbrainz")
     return prefs
 
@@ -129,8 +127,8 @@ async def test_recently_played_is_per_user_from_play_history():
     svc_a, _ = _home_service(_factory(lb_linked=True, lfm_linked=False), play_records=[_play_record("Song A")])
     svc_b, _ = _home_service(_factory(lb_linked=False, lfm_linked=False), play_records=[_play_record("Song B")])
 
-    resp_a = await svc_a.get_home_data("user-a", "listenbrainz")
-    resp_b = await svc_b.get_home_data("user-b", "listenbrainz")
+    resp_a = await svc_a.get_home_data("user-a")
+    resp_b = await svc_b.get_home_data("user-b")
 
     assert resp_a.recently_played is not None
     assert resp_a.recently_played.items[0].name == "Song A"
@@ -142,7 +140,7 @@ async def test_recently_played_is_per_user_from_play_history():
 async def test_unlinked_user_omits_personalized_and_shows_connect_prompt():
     svc, _ = _home_service(_factory(lb_linked=False, lfm_linked=False), play_records=[_play_record("Local Song")])
 
-    resp = await svc.get_home_data("unlinked-user", "listenbrainz")
+    resp = await svc.get_home_data("unlinked-user")
 
     # D1: identity-gated sections are omitted for an unlinked user
     assert resp.your_top_albums is None
@@ -162,8 +160,9 @@ async def test_two_linked_users_write_distinct_cache_entries():
     svc_a, _ = _home_service(_factory(lb_linked=True, lfm_linked=False), cache=cache, play_records=[_play_record("A")])
     svc_b, _ = _home_service(_factory(lb_linked=True, lfm_linked=False), cache=cache, play_records=[_play_record("B")])
 
-    await svc_a.get_home_data("user-a", "listenbrainz")
-    await svc_b.get_home_data("user-b", "listenbrainz")
+    # the SWR shell hands the full build to warm_cache; that's the cache writer now
+    await svc_a.warm_cache("user-a")
+    await svc_b.warm_cache("user-b")
 
     keys = list(cache.store.keys())
     assert any("user-a" in k for k in keys)
@@ -177,9 +176,9 @@ async def test_personalized_path_never_mutates_singleton_credentials():
     svc_a, lb_singleton_a = _home_service(_factory(lb_linked=True, lfm_linked=False))
     svc_b, lb_singleton_b = _home_service(_factory(lb_linked=True, lfm_linked=False))
 
-    await svc_a.get_home_data("user-a", "listenbrainz")
-    await svc_b.get_home_data("user-b", "listenbrainz")
-    await svc_a.get_home_data("user-a", "listenbrainz")
+    await svc_a.get_home_data("user-a")
+    await svc_b.get_home_data("user-b")
+    await svc_a.get_home_data("user-a")
 
     lb_singleton_a.configure.assert_not_called()
     lb_singleton_b.configure.assert_not_called()
@@ -194,30 +193,30 @@ def _queue_manager() -> DiscoverQueueManager:
 @pytest.mark.asyncio
 async def test_queue_state_is_isolated_per_user():
     qm = _queue_manager()
-    state_a = qm._get_state("user-a", "listenbrainz")
+    state_a = qm._get_state("user-a")
     state_a.status = QueueBuildStatus.READY
     state_a.queue = SimpleNamespace(queue_id="queue-a", items=[1, 2, 3])
     state_a.built_at = time.time()
 
-    assert qm.get_status("user-b", "listenbrainz").status == "idle"
-    assert qm.get_queue("user-b", "listenbrainz") is None
+    assert qm.get_status("user-b").status == "idle"
+    assert qm.get_queue("user-b") is None
 
     # consuming A's queue must not drain B's
-    consumed = await qm.consume_queue("user-a", "listenbrainz")
+    consumed = await qm.consume_queue("user-a")
     assert consumed is not None
     assert consumed.queue_id == "queue-a"
-    assert await qm.consume_queue("user-b", "listenbrainz") is None
+    assert await qm.consume_queue("user-b") is None
 
 
 def test_queue_invalidate_is_scoped_to_one_user():
     qm = _queue_manager()
-    qm._get_state("user-a", "listenbrainz").status = QueueBuildStatus.READY
-    qm._get_state("user-b", "listenbrainz").status = QueueBuildStatus.READY
+    qm._get_state("user-a").status = QueueBuildStatus.READY
+    qm._get_state("user-b").status = QueueBuildStatus.READY
 
     qm.invalidate("user-a")
 
-    assert qm._get_state("user-a", "listenbrainz").status == QueueBuildStatus.IDLE
-    assert qm._get_state("user-b", "listenbrainz").status == QueueBuildStatus.READY
+    assert qm._get_state("user-a").status == QueueBuildStatus.IDLE
+    assert qm._get_state("user-b").status == QueueBuildStatus.READY
 
 
 def test_discover_cache_key_includes_enable_flags():
@@ -226,8 +225,8 @@ def test_discover_cache_key_includes_enable_flags():
     from services.discover.integration_helpers import IntegrationHelpers
 
     helpers = IntegrationHelpers(MagicMock())
-    linked = helpers.get_discover_cache_key("u1", "listenbrainz", lb_enabled=True, lfm_enabled=False)
-    unlinked = helpers.get_discover_cache_key("u1", "listenbrainz", lb_enabled=False, lfm_enabled=False)
+    linked = helpers.get_discover_cache_key("u1", lb_enabled=True, lfm_enabled=False)
+    unlinked = helpers.get_discover_cache_key("u1", lb_enabled=False, lfm_enabled=False)
     assert linked != unlinked
 
 
@@ -288,7 +287,6 @@ def _swr_service(cache_key: str, cached_response):
     svc._memory_cache = cache
     svc._integration = MagicMock()
     svc._integration.get_discover_cache_key.return_value = cache_key
-    svc._integration.get_home_settings.return_value = SimpleNamespace(show_globally_trending=True)
     svc._trigger_warm = MagicMock()
     return svc
 
@@ -300,15 +298,15 @@ async def test_stale_cache_serves_immediately_and_revalidates_in_background():
     from api.v1.schemas.discover import DiscoverResponse
     from services.discover.homepage_service import STALE_REVALIDATE_SECONDS
 
-    key = "discover_response:u1:listenbrainz:True:False"
+    key = "discover_response:u1:True:False"
     svc = _swr_service(key, DiscoverResponse(refreshing=False))
     # built long ago -> serve the cached copy but kick off a background rebuild
     svc._built_at = {key: _time.time() - STALE_REVALIDATE_SECONDS - 10}
 
-    resp = await svc.get_discover_data("u1", "listenbrainz")
+    resp = await svc.get_discover_data("u1")
 
     assert resp.refreshing is True  # frontend shows the "updating" indicator + polls
-    svc._trigger_warm.assert_called_once_with("u1", "listenbrainz")
+    svc._trigger_warm.assert_called_once_with("u1")
 
 
 @pytest.mark.asyncio
@@ -317,40 +315,37 @@ async def test_fresh_cache_served_without_rebuild():
 
     from api.v1.schemas.discover import DiscoverResponse
 
-    key = "discover_response:u1:listenbrainz:True:False"
+    key = "discover_response:u1:True:False"
     svc = _swr_service(key, DiscoverResponse(refreshing=False))
     # just built -> serve as-is, no rebuild, not refreshing
     svc._built_at = {key: _time.time()}
 
-    resp = await svc.get_discover_data("u1", "listenbrainz")
+    resp = await svc.get_discover_data("u1")
 
     assert resp.refreshing is False
     svc._trigger_warm.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_manual_refresh_targets_viewed_source_and_marks_it_stale():
+async def test_manual_refresh_marks_cache_stale_and_rebuilds():
     from services.discover.homepage_service import DiscoverHomepageService
 
     svc = DiscoverHomepageService.__new__(DiscoverHomepageService)
-    # primary source is listenbrainz, but the user is viewing (and refreshing) lastfm
     svc._resolve_user_music = AsyncMock(
         return_value=(None, None, None, None, False, True, "lastfm")
     )
     svc._building_keys = set()
-    key = "discover_response:u1:lastfm:False:True"
+    key = "discover_response:u1:False:True"
     svc._integration = MagicMock()
     svc._integration.get_discover_cache_key.return_value = key
     svc._built_at = {key: 999999999.0}  # currently "fresh"
     svc._trigger_warm = MagicMock()
 
-    await svc.refresh_discover_data("u1", "lastfm")
+    await svc.refresh_discover_data("u1")
 
-    # resolves the VIEWED source, not the primary
-    svc._resolve_user_music.assert_awaited_once_with("u1", "lastfm")
-    # marks that source stale so the next GET reliably revalidates (shows the spinner)
+    # marks the cache stale so the next GET reliably revalidates (shows the spinner)
     assert key not in svc._built_at
-    svc._trigger_warm.assert_called_once_with("u1", "lastfm")
+    svc._trigger_warm.assert_called_once_with("u1")
 
 
 def _miss_service(built_at: dict):
@@ -363,7 +358,7 @@ def _miss_service(built_at: dict):
     svc._building_keys = set()
     svc._memory_cache = _FakeCache()  # no cached response -> cache miss
     svc._integration = MagicMock()
-    svc._integration.get_discover_cache_key.return_value = "discover_response:u1:listenbrainz:True:False"
+    svc._integration.get_discover_cache_key.return_value = "discover_response:u1:True:False"
     svc._integration.get_integration_status.return_value = MagicMock()
     svc._build_service_prompts = MagicMock(return_value=[])
     svc._trigger_warm = MagicMock()
@@ -374,9 +369,9 @@ def _miss_service(built_at: dict):
 @pytest.mark.asyncio
 async def test_first_visit_cache_miss_triggers_build():
     svc = _miss_service(built_at={})  # never built
-    resp = await svc.get_discover_data("u1", "listenbrainz")
+    resp = await svc.get_discover_data("u1")
     assert resp.refreshing is True
-    svc._trigger_warm.assert_called_once_with("u1", "listenbrainz")
+    svc._trigger_warm.assert_called_once_with("u1")
 
 
 @pytest.mark.asyncio
@@ -385,7 +380,7 @@ async def test_empty_build_backs_off_instead_of_rebuilding_every_poll():
 
     # a build was just attempted but produced nothing (empty user): the next poll must
     # NOT rebuild, and must settle (refreshing=false) instead of polling forever
-    svc = _miss_service(built_at={"discover_response:u1:listenbrainz:True:False": _time.time()})
-    resp = await svc.get_discover_data("u1", "listenbrainz")
+    svc = _miss_service(built_at={"discover_response:u1:True:False": _time.time()})
+    resp = await svc.get_discover_data("u1")
     assert resp.refreshing is False
     svc._trigger_warm.assert_not_called()

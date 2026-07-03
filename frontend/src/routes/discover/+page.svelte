@@ -1,28 +1,25 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
 	import HomeSection from '$lib/components/HomeSection.svelte';
 	import DailyMixCard from '$lib/components/DailyMixCard.svelte';
 	import RadioCard from '$lib/components/RadioCard.svelte';
-	import DiscoverPicksSection from '$lib/components/DiscoverPicksSection.svelte';
+	import TopPicksDeck from '$lib/components/discover/TopPicksDeck.svelte';
+	import PlayableSection from '$lib/components/discover/PlayableSection.svelte';
+	import ListeningLounge from '$lib/components/discover/ListeningLounge.svelte';
+	import DiscoverZoneNav from '$lib/components/discover/DiscoverZoneNav.svelte';
 	import GenrePills from '$lib/components/GenrePills.svelte';
 	import GenreGrid from '$lib/components/GenreGrid.svelte';
-	import DiscoverQueueCard from '$lib/components/DiscoverQueueCard.svelte';
-	import DiscoverQueueModal from '$lib/components/DiscoverQueueModal.svelte';
+	import DiscoverQueueDeck from '$lib/components/discover/DiscoverQueueDeck.svelte';
 	import PlaylistDiscoveryModal from '$lib/components/PlaylistDiscoveryModal.svelte';
 	import WeeklyExploration from '$lib/components/WeeklyExploration.svelte';
 	import ServicePromptCard from '$lib/components/ServicePromptCard.svelte';
-	import SourceSwitcher from '$lib/components/SourceSwitcher.svelte';
 	import DiscoverArtistHero from '$lib/components/DiscoverArtistHero.svelte';
 	import DiscoverArtistMiniBand from '$lib/components/DiscoverArtistMiniBand.svelte';
 	import SectionDivider from '$lib/components/SectionDivider.svelte';
 	import CarouselSkeleton from '$lib/components/CarouselSkeleton.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
-	import { removeAllQueueCachedData } from '$lib/utils/discoverQueueCache';
 	import { api } from '$lib/api/client';
 	import { isDismissed } from '$lib/utils/dismissedPrompts';
-	import { musicSourceStore, type MusicSource } from '$lib/stores/musicSource';
-	import { discoverQueueStatusStore } from '$lib/stores/discoverQueueStatus';
 	import {
 		Compass,
 		CircleAlert,
@@ -34,20 +31,26 @@
 		TrendingUp,
 		LayoutGrid,
 		Wand2,
-		Heart
+		Heart,
+		SlidersHorizontal
 	} from 'lucide-svelte';
 	import { getDiscoverQuery } from '$lib/queries/discover/DiscoverQuery.svelte';
+	import { getSectionPrefsQuery } from '$lib/queries/section-prefs/SectionPrefsQuery.svelte';
 	import { discoverHasContent } from '$lib/utils/discoverContent';
 	import { DiscoverQueryKeyFactory } from '$lib/queries/discover/DiscoverQueryKeyFactory';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 	import { API } from '$lib/constants';
 
-	let queueModalOpen = $state(false);
 	let playlistDiscoverOpen = $state(false);
-	let activeSource: MusicSource = $state('listenbrainz');
 
-	const discoverQuery = getDiscoverQuery(() => activeSource);
+	const discoverQuery = getDiscoverQuery();
+	const sectionPrefsQuery = getSectionPrefsQuery();
+	// client-only chrome: the backend can't blank an action card, so filter here
+	const playlistDiscoveryEnabled = $derived(
+		sectionPrefsQuery.data?.pages?.discover?.find((s) => s.key === 'playlist_discovery')?.enabled ??
+			true
+	);
 	const discoverData = $derived(discoverQuery.data ?? null);
 	const loading = $derived(discoverQuery.isLoading);
 	const refreshing = $derived(discoverQuery.isFetching && !discoverQuery.isLoading);
@@ -58,28 +61,11 @@
 	const error = $derived(discoverQuery.error?.message ?? '');
 
 	async function handleRefresh() {
-		await api.global.post(API.discoverRefresh(activeSource));
+		await api.global.post(API.discoverRefresh());
 		await invalidateQueriesWithPersister({
-			queryKey: DiscoverQueryKeyFactory.discover(authStore.user?.id, activeSource)
+			queryKey: DiscoverQueryKeyFactory.discover(authStore.user?.id)
 		});
 	}
-
-	function handleSourceChange(source: MusicSource) {
-		activeSource = source;
-		removeAllQueueCachedData();
-		discoverQueueStatusStore.reset();
-		discoverQueueStatusStore.init(source);
-	}
-
-	onMount(async () => {
-		await musicSourceStore.load();
-		activeSource = musicSourceStore.getPageSource('discover');
-		discoverQueueStatusStore.init(activeSource);
-	});
-
-	onDestroy(() => {
-		discoverQueueStatusStore.stopPolling();
-	});
 
 	let hasContent = $derived(discoverHasContent(discoverData));
 	let isBuilding = $derived(
@@ -93,19 +79,34 @@
 	});
 
 	let hasWeeklyExploration = $derived(
-		activeSource === 'listenbrainz' &&
-			!!discoverData?.weekly_exploration &&
-			discoverData.weekly_exploration.tracks.length > 0
+		!!discoverData?.weekly_exploration && discoverData.weekly_exploration.tracks.length > 0
 	);
 
-	let queueIsHero = $derived(!hasWeeklyExploration && !!discoverData?.discover_queue_enabled);
-
-	let hasHero = $derived(hasWeeklyExploration || queueIsHero);
-	let showQueueInQuickActions = $derived(!!discoverData?.discover_queue_enabled && !queueIsHero);
+	let queueEnabled = $derived(discoverData?.discover_queue_enabled ?? true);
 
 	let hasMadeForYou = $derived(
 		(discoverData?.daily_mixes?.length ?? 0) > 0 || (discoverData?.radio_sections?.length ?? 0) > 0
 	);
+
+	let hasLounge = $derived(
+		(discoverData?.listeners_like_you?.items?.length ?? 0) > 0 ||
+			(discoverData?.top_picks?.items?.length ?? 0) > 3
+	);
+
+	let zones = $derived.by(() => {
+		const list: { id: string; label: string }[] = [];
+		if (queueEnabled) list.push({ id: 'zone-queue', label: 'Queue' });
+		if ((discoverData?.top_picks?.items?.length ?? 0) > 0)
+			list.push({ id: 'zone-picks', label: 'Top Picks' });
+		if (hasLounge) list.push({ id: 'zone-lounge', label: 'Lounge' });
+		if (hasMadeForYou) list.push({ id: 'zone-made', label: 'Made For You' });
+		if (hasBecauseYouListened) list.push({ id: 'zone-because', label: 'For You' });
+		if (hasNewFresh) list.push({ id: 'zone-fresh', label: 'New' });
+		if (hasFromYourLibrary) list.push({ id: 'zone-library', label: 'Your Library' });
+		if (hasBrowseGenres) list.push({ id: 'zone-genres', label: 'Genres' });
+		if (hasTrending) list.push({ id: 'zone-trending', label: 'Trending' });
+		return list;
+	});
 
 	let hasBecauseYouListened = $derived(
 		(discoverData?.because_you_listen_to?.length ?? 0) > 0 ||
@@ -115,12 +116,13 @@
 
 	let hasNewFresh = $derived(
 		(discoverData?.fresh_releases?.items?.length ?? 0) > 0 ||
-			(discoverData?.discover_picks?.items?.length ?? 0) > 0 ||
+			(discoverData?.new_from_followed?.items?.length ?? 0) > 0 ||
 			(discoverData?.missing_essentials?.items?.length ?? 0) > 0
 	);
 
 	let hasFromYourLibrary = $derived(
 		(discoverData?.rediscover?.items?.length ?? 0) > 0 ||
+			(discoverData?.anniversaries?.items?.length ?? 0) > 0 ||
 			(discoverData?.lastfm_recent_scrobbles?.items?.length ?? 0) > 0
 	);
 
@@ -183,7 +185,14 @@
 	</PageHeader>
 
 	<div class="flex justify-end px-4 -mt-4 mb-4 sm:px-6 lg:px-8">
-		<SourceSwitcher pageKey="discover" onSourceChange={handleSourceChange} />
+		<a
+			href="/settings?tab=discover"
+			class="btn btn-ghost btn-sm gap-2 text-base-content/60 hover:text-base-content"
+			title="Choose which sections appear here"
+		>
+			<SlidersHorizontal class="h-4 w-4" />
+			<span class="hidden sm:inline">Customise</span>
+		</a>
 	</div>
 
 	{#if error && !discoverData}
@@ -222,6 +231,7 @@
 					{/each}
 				</div>
 			{:else if discoverData}
+				<DiscoverZoneNav {zones} />
 				<div class="space-y-10 sm:space-y-12">
 					{#if isUpdatingInBackground}
 						<div class="flex items-center justify-center gap-2 pb-1 text-xs text-base-content/50">
@@ -229,56 +239,69 @@
 							Updating your recommendations…
 						</div>
 					{/if}
-					{#if hasHero}
+					{#if queueEnabled}
+						<div id="zone-queue" class="discover-section-enter scroll-mt-14">
+							<DiscoverQueueDeck />
+						</div>
+					{/if}
+
+					{#if discoverData.top_picks && discoverData.top_picks.items.length > 0}
+						<div id="zone-picks" class="discover-section-enter scroll-mt-14">
+							<TopPicksDeck section={discoverData.top_picks} />
+						</div>
+					{/if}
+
+					{#if hasLounge}
+						<div id="zone-lounge" class="discover-section-enter scroll-mt-14">
+							<ListeningLounge
+								section={discoverData.listeners_like_you}
+								topPicks={discoverData.top_picks}
+							/>
+						</div>
+					{/if}
+
+					{#if hasWeeklyExploration && discoverData.weekly_exploration}
 						<div class="discover-section-enter">
-							{#if hasWeeklyExploration && discoverData.weekly_exploration}
-								<WeeklyExploration
-									section={discoverData.weekly_exploration}
-									ytConfigured={discoverData.integration_status?.youtube ?? false}
-								/>
-							{:else if queueIsHero}
-								<DiscoverQueueCard source={activeSource} onLaunch={() => (queueModalOpen = true)} />
-							{/if}
+							<WeeklyExploration section={discoverData.weekly_exploration} />
 						</div>
 					{/if}
 
 					<div class="discover-section-enter">
-						<div class="grid grid-cols-1 gap-4 {showQueueInQuickActions ? 'md:grid-cols-2' : ''}">
-							{#if showQueueInQuickActions}
-								<DiscoverQueueCard source={activeSource} onLaunch={() => (queueModalOpen = true)} />
+						<div class="grid grid-cols-1 gap-4">
+							{#if playlistDiscoveryEnabled}
+								<button
+									type="button"
+									class="group relative w-full overflow-hidden rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/8 via-base-200/50 to-secondary/8 px-5 py-7 backdrop-blur-sm shadow-[0_4px_24px_oklch(from_var(--color-primary)_l_c_h_/_0.06)] transition-all duration-300 cursor-pointer text-left motion-safe:hover:-translate-y-0.5 hover:shadow-[0_8px_32px_oklch(from_var(--color-primary)_l_c_h_/_0.15)] hover:border-primary/25 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+									onclick={() => (playlistDiscoverOpen = true)}
+								>
+									<div
+										class="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-white/[0.03] to-transparent"
+									></div>
+									<div class="flex items-center gap-4">
+										<div
+											class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/15 shadow-[0_0_16px_oklch(from_var(--color-primary)_l_c_h_/_0.15)]"
+										>
+											<Wand2 class="h-5 w-5 text-primary" />
+										</div>
+										<div class="flex-1 min-w-0">
+											<h3 class="font-bold text-sm sm:text-base">Discover for a Playlist</h3>
+											<p class="text-xs text-base-content/50 mt-0.5">
+												Get album suggestions based on any playlist.
+											</p>
+										</div>
+										<div
+											class="shrink-0 text-primary/50 transition-transform duration-300 group-hover:translate-x-1"
+										>
+											<Sparkles class="h-5 w-5" />
+										</div>
+									</div>
+								</button>
 							{/if}
-							<button
-								type="button"
-								class="group relative w-full overflow-hidden rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/8 via-base-200/50 to-secondary/8 px-5 py-7 backdrop-blur-sm shadow-[0_4px_24px_oklch(from_var(--color-primary)_l_c_h_/_0.06)] transition-all duration-300 cursor-pointer text-left motion-safe:hover:-translate-y-0.5 hover:shadow-[0_8px_32px_oklch(from_var(--color-primary)_l_c_h_/_0.15)] hover:border-primary/25 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
-								onclick={() => (playlistDiscoverOpen = true)}
-							>
-								<div
-									class="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-white/[0.03] to-transparent"
-								></div>
-								<div class="flex items-center gap-4">
-									<div
-										class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/15 shadow-[0_0_16px_oklch(from_var(--color-primary)_l_c_h_/_0.15)]"
-									>
-										<Wand2 class="h-5 w-5 text-primary" />
-									</div>
-									<div class="flex-1 min-w-0">
-										<h3 class="font-bold text-sm sm:text-base">Discover for a Playlist</h3>
-										<p class="text-xs text-base-content/50 mt-0.5">
-											Get album suggestions based on any playlist.
-										</p>
-									</div>
-									<div
-										class="shrink-0 text-primary/50 transition-transform duration-300 group-hover:translate-x-1"
-									>
-										<Sparkles class="h-5 w-5" />
-									</div>
-								</div>
-							</button>
 						</div>
 					</div>
 
 					{#if hasMadeForYou}
-						<div>
+						<div id="zone-made" class="scroll-mt-14">
 							<SectionDivider label="Made For You">
 								{#snippet icon()}<Sparkles class="w-3.5 h-3.5" />{/snippet}
 							</SectionDivider>
@@ -313,7 +336,6 @@
 												<RadioCard
 													seedType={radio.radio_seed_type ?? 'artist'}
 													seedId={radio.radio_seed_id ?? ''}
-													source={activeSource}
 													initialSection={radio}
 												/>
 											{/each}
@@ -324,7 +346,7 @@
 						</div>
 					{/if}
 
-					<div>
+					<div id="zone-because" class="scroll-mt-14">
 						<SectionDivider label="Because You Listened">
 							{#snippet icon()}<Heart class="w-3.5 h-3.5" />{/snippet}
 						</SectionDivider>
@@ -359,29 +381,39 @@
 					</div>
 
 					{#if hasNewFresh}
-						<div>
+						<div id="zone-fresh" class="scroll-mt-14">
 							<SectionDivider label="New & Fresh">
 								{#snippet icon()}<Music class="w-3.5 h-3.5" />{/snippet}
 							</SectionDivider>
 
 							<div class="discover-section-enter space-y-2">
 								{#if discoverData.fresh_releases && discoverData.fresh_releases.items.length > 0}
-									<HomeSection section={discoverData.fresh_releases} />
+									<PlayableSection
+										section={discoverData.fresh_releases}
+										sectionKey="fresh_releases"
+									/>
 								{/if}
 
-								{#if discoverData.discover_picks && discoverData.discover_picks.items.length > 0}
-									<DiscoverPicksSection section={discoverData.discover_picks} />
+								{#if discoverData.new_from_followed && discoverData.new_from_followed.items.length > 0}
+									<PlayableSection
+										section={discoverData.new_from_followed}
+										headerLink="/following/new-releases"
+										sectionKey="new_from_followed"
+									/>
 								{/if}
 
 								{#if discoverData.missing_essentials && discoverData.missing_essentials.items.length > 0}
-									<HomeSection section={discoverData.missing_essentials} />
+									<PlayableSection
+										section={discoverData.missing_essentials}
+										sectionKey="missing_essentials"
+									/>
 								{/if}
 							</div>
 						</div>
 					{/if}
 
 					{#if hasFromYourLibrary}
-						<div>
+						<div id="zone-library" class="scroll-mt-14">
 							<SectionDivider label="From Your Library">
 								{#snippet icon()}<Library class="w-3.5 h-3.5" />{/snippet}
 							</SectionDivider>
@@ -389,6 +421,10 @@
 							<div class="discover-section-enter space-y-2">
 								{#if discoverData.rediscover && discoverData.rediscover.items.length > 0}
 									<HomeSection section={discoverData.rediscover} />
+								{/if}
+
+								{#if discoverData.anniversaries && discoverData.anniversaries.items.length > 0}
+									<HomeSection section={discoverData.anniversaries} />
 								{/if}
 
 								{#if discoverData.lastfm_recent_scrobbles && discoverData.lastfm_recent_scrobbles.items.length > 0}
@@ -399,7 +435,7 @@
 					{/if}
 
 					{#if hasBrowseGenres}
-						<div>
+						<div id="zone-genres" class="scroll-mt-14">
 							<SectionDivider label="Browse Genres">
 								{#snippet icon()}<LayoutGrid class="w-3.5 h-3.5" />{/snippet}
 							</SectionDivider>
@@ -429,7 +465,7 @@
 					{/if}
 
 					{#if hasTrending}
-						<div>
+						<div id="zone-trending" class="scroll-mt-14">
 							<SectionDivider label="Trending Now">
 								{#snippet icon()}<TrendingUp class="w-3.5 h-3.5" />{/snippet}
 							</SectionDivider>
@@ -462,6 +498,22 @@
 							</p>
 							<a href="/settings" class="btn btn-primary">Connect Services</a>
 						</div>
+					{:else if !hasContent && !queueEnabled}
+						<div class="flex flex-col items-center justify-center py-12 sm:py-16">
+							<SlidersHorizontal
+								class="mb-4 h-12 w-12 sm:mb-6 sm:h-14 sm:w-14 text-base-content/50"
+							/>
+							<h2 class="mb-2 text-center text-xl font-bold sm:text-2xl">
+								You've hidden every section
+							</h2>
+							<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+								Turn some discovery sections back on to fill this page.
+							</p>
+							<a href="/settings?tab=discover" class="btn btn-primary gap-2">
+								<SlidersHorizontal class="h-4 w-4" />
+								Customise Sections
+							</a>
+						</div>
 					{:else if !hasContent}
 						<div class="flex flex-col items-center justify-center py-12 sm:py-16">
 							<Compass class="mb-4 h-12 w-12 sm:mb-6 sm:h-14 sm:w-14 text-base-content/50" />
@@ -487,5 +539,4 @@
 	{/if}
 </div>
 
-<DiscoverQueueModal bind:open={queueModalOpen} source={activeSource} />
-<PlaylistDiscoveryModal bind:open={playlistDiscoverOpen} source={activeSource} />
+<PlaylistDiscoveryModal bind:open={playlistDiscoverOpen} />

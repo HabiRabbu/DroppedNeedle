@@ -734,6 +734,18 @@ textarea {
 		animation: none !important;
 		opacity: 1 !important;
 	}
+	/* discovery rework: deck equalizer + hero backdrops settle instantly */
+	.animate-equalizer-1,
+	.animate-equalizer-2,
+	.animate-equalizer-3 {
+		animation: none !important;
+	}
+	.hero-backdrop-img,
+	.deck-cover,
+	.deck-strip-item,
+	.match-ring-arc {
+		transition: none !important;
+	}
 }
 
 :root {

@@ -12,7 +12,7 @@
 	} from 'lucide-svelte';
 	import AlbumRequestButton from '$lib/components/AlbumRequestButton.svelte';
 	import GenreAlbumCard from '$lib/components/GenreAlbumCard.svelte';
-	import TrackPreviewButton from '$lib/components/TrackPreviewButton.svelte';
+	import SampleButton from '$lib/components/discover/SampleButton.svelte';
 	import { getPlaylistSuggestionsQuery } from '$lib/queries/discover/DiscoverQuery.svelte';
 	import { getPlaylistListQuery } from '$lib/queries/playlists/PlaylistQuery.svelte';
 	import { isRedactedPlaylist, type PlaylistSummary } from '$lib/api/playlists';
@@ -24,21 +24,14 @@
 	import { integrationStore } from '$lib/stores/integration';
 	import { libraryStore } from '$lib/stores/library';
 	import { albumHrefOrNull } from '$lib/utils/entityRoutes';
-	import type { MusicSource } from '$lib/stores/musicSource';
 
 	interface Props {
 		open: boolean;
 		playlistId?: string;
 		playlistName?: string;
-		source?: MusicSource;
 	}
 
-	let {
-		open = $bindable(false),
-		playlistId = '',
-		playlistName = '',
-		source = 'listenbrainz'
-	}: Props = $props();
+	let { open = $bindable(false), playlistId = '', playlistName = '' }: Props = $props();
 
 	let dialogEl: HTMLDialogElement | undefined = $state();
 	let selectedPlaylistId = $state('');
@@ -65,7 +58,6 @@
 	const suggestionsQuery = getPlaylistSuggestionsQuery(() => ({
 		playlistId: activePlaylistId,
 		count: suggestionCount,
-		source,
 		enabled: open
 	}));
 
@@ -429,14 +421,15 @@
 																			>{formatDuration(track.length)}</td
 																		>
 																		<td class="w-8 px-0">
-																			<TrackPreviewButton
+																			<SampleButton
+																				sampleKey={`track:${album.artist_name ?? ''}|${track.title}`}
 																				artist={album.artist_name ?? ''}
-																				track={track.title}
-																				ytConfigured={$integrationStore.youtube_api}
-																				size="sm"
-																				albumId={album.mbid ?? `track-${track.position}`}
+																				title={track.title}
+																				kind="track"
+																				size="xs"
+																				albumMbid={album.mbid}
+																				artistMbid={album.artist_mbid}
 																				coverUrl={album.image_url}
-																				artistId={album.artist_mbid ?? undefined}
 																			/>
 																		</td>
 																	</tr>
@@ -488,15 +481,17 @@
 												</div>
 											{/if}
 
-											<TrackPreviewButton
-												artist={album.artist_name ?? ''}
-												track={album.name}
-												ytConfigured={$integrationStore.youtube_api}
-												size="sm"
-												albumId={album.mbid}
-												coverUrl={album.image_url}
-												artistId={album.artist_mbid ?? undefined}
-											/>
+											{#if album.mbid}
+												<SampleButton
+													sampleKey={album.mbid}
+													artist={album.artist_name ?? ''}
+													title={album.name}
+													kind="album"
+													size="sm"
+													artistMbid={album.artist_mbid}
+													coverUrl={album.image_url}
+												/>
+											{/if}
 										{/if}
 										<button
 											type="button"

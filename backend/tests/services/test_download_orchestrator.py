@@ -1582,7 +1582,7 @@ async def test_reimport_task_completes_when_files_now_present(tmp_path: Path):
     task = await _new_task(store, status="failed", track_count=1)
     await _link_candidate(store, task.id, _candidate(0.9, files=1))
 
-    result = await orch.reimport_task(task.id, "user-a", "admin")
+    result = await orch.reimport_task(task.id)
 
     assert result.status == "completed"
     fp.process_downloaded.assert_awaited()
@@ -1597,7 +1597,7 @@ async def test_reimport_task_partial_when_some_still_missing(tmp_path: Path):
     task = await _new_task(store, status="partial", track_count=2)
     await _link_candidate(store, task.id, candidate)
 
-    result = await orch.reimport_task(task.id, "user-a", "admin")
+    result = await orch.reimport_task(task.id)
 
     assert result.status == "partial"
 
@@ -1608,7 +1608,7 @@ async def test_reimport_task_rejects_no_picked_candidate(tmp_path: Path):
     task = await _new_task(store, status="failed")
 
     with pytest.raises(ValidationError):
-        await orch.reimport_task(task.id, "user-a", "admin")
+        await orch.reimport_task(task.id)
 
 
 @pytest.mark.asyncio
@@ -1617,19 +1617,17 @@ async def test_reimport_task_rejects_wrong_status(tmp_path: Path):
     task = await _new_task(store, status="queued")
 
     with pytest.raises(ValidationError):
-        await orch.reimport_task(task.id, "user-a", "admin")
+        await orch.reimport_task(task.id)
 
 
+# The admin gate now lives at the route (CurrentAdminDep), not the service - see the
+# route test and the security auth-matrix. The service only rejects a missing task.
 @pytest.mark.asyncio
-async def test_reimport_task_admin_only(tmp_path: Path):
+async def test_reimport_task_rejects_missing_task(tmp_path: Path):
     store, orch, *_ = _build(tmp_path)
-    task = await _new_task(store, status="failed")
-    await _link_candidate(store, task.id, _candidate(0.9, files=1))
 
     with pytest.raises(ResourceNotFoundError):
-        await orch.reimport_task("missing", "user-a", "admin")
-    with pytest.raises(PermissionDeniedError):
-        await orch.reimport_task(task.id, "user-a", "user")
+        await orch.reimport_task("missing")
 
 
 @pytest.mark.asyncio
@@ -1639,8 +1637,33 @@ async def test_reimport_task_second_call_after_completion_rejected(tmp_path: Pat
     task = await _new_task(store, status="failed", track_count=1)
     await _link_candidate(store, task.id, _candidate(0.9, files=1))
 
-    first = await orch.reimport_task(task.id, "user-a", "admin")
+    first = await orch.reimport_task(task.id)
     assert first.status == "completed"
 
     with pytest.raises(ValidationError):
-        await orch.reimport_task(task.id, "user-a", "admin")
+        await orch.reimport_task(task.id)
+
+
+@pytest.mark.asyncio
+async def test_reimport_task_mount_fault_does_not_cancel_transfers(tmp_path: Path):
+    """A mount fault must bail BEFORE _cancel_transfers - cancel(del_files) would tell
+    slskd to delete data the user is still manually fixing, and the mount may recover
+    (review H1). The failover loop does the same."""
+    from services.native.file_processor import DOWNLOADS_MOUNT_UNAVAILABLE
+
+    store, orch, fp, lib = _build(tmp_path)
+    fp.process_downloaded = AsyncMock(
+        return_value=ProcessResult(
+            succeeded=[],
+            failed=[FileFailure(filename="peer/01.flac", reason=DOWNLOADS_MOUNT_UNAVAILABLE)],
+        )
+    )
+    orch._cancel_transfers = AsyncMock()
+    task = await _new_task(store, status="failed", track_count=1)
+    await _link_candidate(store, task.id, _candidate(0.9, files=1))
+
+    result = await orch.reimport_task(task.id)
+
+    assert result.status == "failed"
+    assert result.error_message == DOWNLOADS_MOUNT_UNAVAILABLE
+    orch._cancel_transfers.assert_not_awaited()

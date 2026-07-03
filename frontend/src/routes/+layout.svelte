@@ -23,6 +23,7 @@
 	import { resumeAudioEngine, setAudioElement } from '$lib/player/audioElement';
 	import { eqStore } from '$lib/stores/eq.svelte';
 	import Player from '$lib/components/Player.svelte';
+	import PreviewWidget from '$lib/components/discover/PreviewWidget.svelte';
 	import CacheSyncIndicator from '$lib/components/CacheSyncIndicator.svelte';
 	import AddToPlaylistModal, {
 		registerPlaylistModal,
@@ -37,6 +38,7 @@
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
 	import SidebarServiceHint from '$lib/components/SidebarServiceHint.svelte';
 	import DegradedBanner from '$lib/components/DegradedBanner.svelte';
+	import ServiceHealthIndicator from '$lib/components/ServiceHealthIndicator.svelte';
 	import VersionOverlays from '$lib/components/VersionOverlays.svelte';
 	import SearchSuggestions from '$lib/components/SearchSuggestions.svelte';
 	import Footer from '$lib/components/Footer.svelte';
@@ -317,7 +319,7 @@
 			<div class="drawer md:drawer-open">
 				<input id="main-drawer" type="checkbox" class="drawer-toggle" />
 
-				<div class="drawer-content flex min-w-0 flex-col">
+				<div class="drawer-content flex min-w-0 flex-col isolate">
 					<div
 						class="droppedneedle-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50"
 					>
@@ -338,6 +340,7 @@
 							</div>
 						</div>
 						<div class="navbar-end w-auto pr-1 sm:pr-2">
+							<ServiceHealthIndicator />
 							<a href="/profile" class="btn btn-ghost btn-circle btn-md" aria-label="Profile">
 								{#if authStore.user?.avatar_url}
 									<img
@@ -867,6 +870,7 @@
 		{/if}
 
 		<Player />
+		<PreviewWidget />
 		<CacheSyncIndicator />
 		<BatchDownloadIndicator />
 		<DiscographyDownloadModal />

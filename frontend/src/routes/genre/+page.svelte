@@ -13,6 +13,9 @@
 	import { api } from '$lib/api/client';
 	import { createLocalStorageCache } from '$lib/utils/localStorageCache';
 	import { ArrowLeft, BookOpen, Music2, CircleAlert, Mic, Disc3, ChevronDown } from 'lucide-svelte';
+	import RadioPlayButton from '$lib/components/discover/RadioPlayButton.svelte';
+	import type { RadioMode } from '$lib/player/launchRadio';
+	import type { SampleEntry } from '$lib/stores/deckSampler.svelte';
 
 	let genreName = $derived(page.url.searchParams.get('name') || '');
 	let genreData: GenreDetailResponse | null = $state(null);
@@ -177,6 +180,32 @@
 		const data = genreData;
 		return (data?.library?.artists?.length ?? 0) > 0 || (data?.library?.albums?.length ?? 0) > 0;
 	});
+
+	// station mode: full tracks (library + YouTube), 30s previews, or library-only
+	let radioMode = $state<RadioMode | 'previews'>('hybrid');
+	const effectiveMode = $derived<RadioMode>(radioMode === 'previews' ? 'hybrid' : radioMode);
+
+	// Quick-previews station: hear this genre's albums as 30s clips in the widget.
+	// Popular (discovery) albums first, then library, deduped.
+	const previewStation = $derived.by(() => {
+		const seen: Record<string, true> = {};
+		const entries: SampleEntry[] = [];
+		const albums = [...(genreData?.popular?.albums ?? []), ...(genreData?.library?.albums ?? [])];
+		for (const album of albums) {
+			if (!album.mbid || seen[album.mbid]) continue;
+			seen[album.mbid] = true;
+			entries.push({
+				key: album.mbid,
+				kind: 'album',
+				artist: album.artist_name ?? '',
+				title: album.name,
+				albumMbid: album.mbid,
+				artistMbid: album.artist_mbid,
+				coverUrl: album.image_url
+			});
+		}
+		return { title: genreName ? `${genreName} previews` : 'Genre previews', entries };
+	});
 </script>
 
 <svelte:head>
@@ -231,6 +260,42 @@
 					{/if}
 				</div>
 			</div>
+			{#if genreName}
+				<div class="mt-6 flex flex-wrap items-center gap-3">
+					<RadioPlayButton
+						seed={{ seed_type: 'genre', seed_id: genreName, mode: effectiveMode }}
+						mode={effectiveMode}
+						forcePreviews={radioMode === 'previews'}
+						previewStation={radioMode === 'previews' ? previewStation : null}
+						showShuffle={true}
+						size="md"
+						label="Play"
+					/>
+					<div class="join" role="radiogroup" aria-label="Station mode">
+						<button
+							class="btn btn-xs join-item {radioMode === 'hybrid' ? 'btn-active' : 'btn-ghost'}"
+							onclick={() => (radioMode = 'hybrid')}
+							title="Your library plus streamed full tracks"
+						>
+							Full tracks
+						</button>
+						<button
+							class="btn btn-xs join-item {radioMode === 'previews' ? 'btn-active' : 'btn-ghost'}"
+							onclick={() => (radioMode = 'previews')}
+							title="30-second tastes - fast crate-digging"
+						>
+							Quick previews
+						</button>
+						<button
+							class="btn btn-xs join-item {radioMode === 'library' ? 'btn-active' : 'btn-ghost'}"
+							onclick={() => (radioMode = 'library')}
+							title="Only music you own"
+						>
+							My library
+						</button>
+					</div>
+				</div>
+			{/if}
 		</header>
 
 		{#if loading}

@@ -129,28 +129,6 @@ async def test_unrelated_keys_survive():
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_update_home_settings_route_clears_cache():
-    """The update_home_settings route must call clear_home_cache."""
-    from unittest.mock import AsyncMock, MagicMock
-    from api.v1.routes.settings import update_home_settings
-
-    mock_prefs = MagicMock()
-    mock_settings_svc = AsyncMock()
-    mock_settings_svc.clear_home_cache = AsyncMock(return_value=5)
-    mock_settings_obj = MagicMock()
-
-    result = await update_home_settings(
-        settings=mock_settings_obj,
-        preferences_service=mock_prefs,
-        settings_service=mock_settings_svc,
-    )
-
-    mock_prefs.save_home_settings.assert_called_once_with(mock_settings_obj)
-    mock_settings_svc.clear_home_cache.assert_awaited_once()
-    assert result is mock_settings_obj
-
-
-@pytest.mark.asyncio(loop_scope="function")
 async def test_jellyfin_settings_change_clears_user_import_service():
     """Phase 6: configuring Jellyfin must rebuild the import service singleton so a
     newly-configured server is enumerable without an app restart."""

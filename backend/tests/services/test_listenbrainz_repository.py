@@ -156,3 +156,117 @@ class TestSubmitSingleListen:
             await repo.submit_single_listen(
                 artist_name="A", track_name="T", listened_at=1700000000
             )
+
+
+class TestUpstreamPolicyBlocks:
+    """LB's deterministic outage responses (popularity 500 'currently disabled', and
+    the 2026-07 anti-scraper 401) must fail fast without tripping the SHARED breaker,
+    so one token-less caller can't blind every other LB feature."""
+
+    def _resp(self, status: int, text: str):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        resp.json.return_value = {}
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_anti_scraper_401_is_non_breaking(self):
+        from repositories.listenbrainz_repository import (
+            _listenbrainz_circuit_breaker,
+            ServiceDisabledUpstreamError,
+        )
+
+        _listenbrainz_circuit_breaker.reset()
+        repo, http_client = _make_repo(user_token="")
+        http_client.request = AsyncMock(
+            return_value=self._resp(
+                401,
+                '{"error":"Due to AI scrapers causing undue traffic on our sites, '
+                'please provide an Auth token. Sorry for this mess."}',
+            )
+        )
+
+        with pytest.raises(ServiceDisabledUpstreamError):
+            await repo.get_release_group_popularity_batch(["rg-1"])
+
+        # one attempt, no retry storm, breaker still closed
+        assert http_client.request.await_count == 1
+        assert not _listenbrainz_circuit_breaker.is_open()
+
+    @pytest.mark.asyncio
+    async def test_popularity_disabled_500_is_non_breaking(self):
+        from repositories.listenbrainz_repository import (
+            _listenbrainz_circuit_breaker,
+            ServiceDisabledUpstreamError,
+        )
+
+        _listenbrainz_circuit_breaker.reset()
+        repo, http_client = _make_repo()
+        http_client.request = AsyncMock(
+            return_value=self._resp(
+                500, '{"code":500,"error":"Popularity API currently disabled due to high load..."}'
+            )
+        )
+
+        with pytest.raises(ServiceDisabledUpstreamError):
+            await repo.get_artist_top_recordings("artist-1")
+        assert http_client.request.await_count == 1
+        assert not _listenbrainz_circuit_breaker.is_open()
+
+    @pytest.mark.asyncio
+    async def test_genuine_500_still_breaks(self):
+        # a non-policy 500 remains a real error (retried, counts toward the breaker)
+        _make_repo()
+        repo, http_client = _make_repo()
+        http_client.request = AsyncMock(return_value=self._resp(500, "internal error"))
+
+        with pytest.raises(ExternalServiceError):
+            await repo.get_artist_top_recordings("artist-1")
+        assert http_client.request.await_count > 1  # retried
+
+
+class TestBorrowedReadToken:
+    """A tokenless global/enrichment repo borrows a connected account's token to
+    authenticate PUBLIC reads (LB's anti-scraper gate), but NEVER for writes."""
+
+    def _list_response(self, items):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = None
+        resp.json.return_value = items
+        resp.text = ""
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_read_uses_borrowed_token(self):
+        repo, http_client = _make_repo(user_token="")
+
+        async def provider():
+            return "borrowed-tok"
+
+        repo._fallback_token_provider = provider
+        repo._fallback_resolved = False
+        http_client.request = AsyncMock(return_value=self._list_response([]))
+
+        await repo.get_release_group_popularity_batch(["rg-1"])
+
+        sent_headers = http_client.request.await_args.kwargs["headers"]
+        assert sent_headers.get("Authorization") == "Token borrowed-tok"
+
+    @pytest.mark.asyncio
+    async def test_write_never_borrows_a_token(self):
+        # submitting a listen with someone else's token would write to the WRONG
+        # account - require_auth must stay strict and reject
+        repo, http_client = _make_repo(user_token="")
+
+        async def provider():
+            return "borrowed-tok"
+
+        repo._fallback_token_provider = provider
+        repo._fallback_resolved = False
+        http_client.request = AsyncMock(return_value=self._list_response([]))
+
+        with pytest.raises(ExternalServiceError):
+            await repo.submit_now_playing("Artist", "Track")
+        http_client.request.assert_not_called()

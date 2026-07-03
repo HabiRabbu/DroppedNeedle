@@ -23,37 +23,54 @@ from api.v1.routes import download_client as download_client_routes
 from api.v1.routes import downloads as downloads_routes
 from api.v1.routes import downloads_search as downloads_search_routes
 from api.v1.routes import library as library_routes
+from api.v1.routes import discovery_batches as discovery_batches_routes
 from api.v1.routes import library_scan as library_scan_routes
+from api.v1.routes import me_connections as me_routes
 from api.v1.routes import quarantine as quarantine_routes
+from api.v1.routes import system as system_routes
 from api.v1.routes import tracks as tracks_routes
 from core.dependencies import (
     get_cache,
+    get_discovery_batch_service,
     get_download_client_repository,
     get_download_service,
     get_download_store,
+    get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
     get_library_service,
+    get_now_playing_service,
+    get_per_user_client_factory,
     get_preferences_service,
     get_scan_state_store,
     get_settings_service,
     get_sse_publisher,
+    get_user_connections_store,
+    get_user_listening_prefs_store,
+    get_user_section_prefs_store,
 )
 from middleware import _get_current_admin, _get_current_user
 from tests.helpers import build_test_client, mock_admin_user, mock_user
 
 _SERVICE_PROVIDERS = (
     get_cache,
+    get_discovery_batch_service,
     get_download_client_repository,
     get_download_service,
     get_download_store,
+    get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
     get_library_service,
+    get_now_playing_service,
+    get_per_user_client_factory,
     get_preferences_service,
     get_scan_state_store,
     get_settings_service,
     get_sse_publisher,
+    get_user_connections_store,
+    get_user_listening_prefs_store,
+    get_user_section_prefs_store,
 )
 
 # (method, path, body-or-None). Path params use dummy values; bodies are valid so
@@ -70,6 +87,7 @@ _ADMIN_ENDPOINTS = [
     ("POST", "/api/v1/download-client/test", {}),
     ("GET", "/api/v1/downloads/quarantine", None),
     ("DELETE", "/api/v1/downloads/quarantine/1", None),
+    ("POST", "/api/v1/downloads/task-1/reimport", None),
     ("GET", "/api/v1/library/tracks/file-1/tags", None),
     ("POST", "/api/v1/library/tracks/file-1",
      {"title": "t", "artist": "a", "album": "al", "track_number": 1}),
@@ -95,6 +113,14 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/library/stats", None),
     ("GET", "/api/v1/library/albums/rg-1/tracks", None),
     ("GET", "/api/v1/library/albums/rg-1/status", None),
+    ("GET", "/api/v1/me/section-prefs", None),
+    ("PUT", "/api/v1/me/section-prefs", {"page": "home", "sections": []}),
+    ("GET", "/api/v1/discover/batches", None),
+    ("POST", "/api/v1/discover/batches",
+     {"name": "b", "items": [{"release_group_mbid": "rg-1"}]}),
+    ("GET", "/api/v1/discover/batches/b-1", None),
+    ("DELETE", "/api/v1/discover/batches/b-1", None),
+    ("GET", "/api/v1/system/health", None),
 ]
 
 _ALL_ENDPOINTS = _ADMIN_ENDPOINTS + _USER_ENDPOINTS
@@ -118,6 +144,9 @@ def _client(scenario: str):
         downloads_routes.router,
         tracks_routes.router,
         library_routes.router,
+        me_routes.router,
+        discovery_batches_routes.router,
+        system_routes.router,
     ):
         v1.include_router(router)
     app.include_router(v1)

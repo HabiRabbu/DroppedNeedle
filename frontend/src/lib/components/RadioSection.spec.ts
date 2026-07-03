@@ -12,48 +12,35 @@ const USER = 'user-a';
 
 describe('DiscoverQueryKeyFactory.radio', () => {
 	it('returns the expected key shape for artist seed', () => {
-		const key = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid', 'listenbrainz');
-		expect(key).toEqual([
-			'discover',
-			USER,
-			'radio',
-			'artist',
-			'test-mbid',
-			{ source: 'listenbrainz' }
-		]);
+		const key = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid');
+		expect(key).toEqual(['discover', USER, 'radio', 'artist', 'test-mbid']);
 	});
 
 	it('returns the expected key shape for album seed', () => {
-		const key = DiscoverQueryKeyFactory.radio(USER, 'album', 'album-mbid', 'lastfm');
-		expect(key).toEqual(['discover', USER, 'radio', 'album', 'album-mbid', { source: 'lastfm' }]);
+		const key = DiscoverQueryKeyFactory.radio(USER, 'album', 'album-mbid');
+		expect(key).toEqual(['discover', USER, 'radio', 'album', 'album-mbid']);
 	});
 
 	it('generates different keys for different seed types', () => {
-		const artistKey = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid', 'listenbrainz');
-		const albumKey = DiscoverQueryKeyFactory.radio(USER, 'album', 'test-mbid', 'listenbrainz');
+		const artistKey = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid');
+		const albumKey = DiscoverQueryKeyFactory.radio(USER, 'album', 'test-mbid');
 		expect(artistKey).not.toEqual(albumKey);
 	});
 
 	it('generates different keys for different seed IDs', () => {
-		const key1 = DiscoverQueryKeyFactory.radio(USER, 'artist', 'mbid-1', 'listenbrainz');
-		const key2 = DiscoverQueryKeyFactory.radio(USER, 'artist', 'mbid-2', 'listenbrainz');
-		expect(key1).not.toEqual(key2);
-	});
-
-	it('generates different keys for different sources', () => {
-		const key1 = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid', 'listenbrainz');
-		const key2 = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid', 'lastfm');
+		const key1 = DiscoverQueryKeyFactory.radio(USER, 'artist', 'mbid-1');
+		const key2 = DiscoverQueryKeyFactory.radio(USER, 'artist', 'mbid-2');
 		expect(key1).not.toEqual(key2);
 	});
 
 	it('generates different keys for different users (AMU-5)', () => {
-		const key1 = DiscoverQueryKeyFactory.radio('user-a', 'artist', 'test-mbid', 'listenbrainz');
-		const key2 = DiscoverQueryKeyFactory.radio('user-b', 'artist', 'test-mbid', 'listenbrainz');
+		const key1 = DiscoverQueryKeyFactory.radio('user-a', 'artist', 'test-mbid');
+		const key2 = DiscoverQueryKeyFactory.radio('user-b', 'artist', 'test-mbid');
 		expect(key1).not.toEqual(key2);
 	});
 
 	it('starts with the discover prefix and carries userId before the radio marker', () => {
-		const key = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid', 'listenbrainz');
+		const key = DiscoverQueryKeyFactory.radio(USER, 'artist', 'test-mbid');
 		expect(key[0]).toBe('discover');
 		expect(key[1]).toBe(USER);
 		expect(key[2]).toBe('radio');
@@ -68,27 +55,24 @@ describe('RadioSection refresh invalidation contract', () => {
 	it('refresh calls invalidateQueriesWithPersister with correct radio query key', async () => {
 		const seedType = 'artist';
 		const seedId = 'abc-123';
-		const source = 'listenbrainz' as const;
 
-		// Mirrors RadioSection.svelte handleRefresh().
+		// Mirrors RadioCard.svelte handleRefresh().
 		await invalidateQueriesWithPersister({
-			queryKey: DiscoverQueryKeyFactory.radio(USER, seedType, seedId, source)
+			queryKey: DiscoverQueryKeyFactory.radio(USER, seedType, seedId)
 		});
 
 		expect(mockInvalidate).toHaveBeenCalledOnce();
 		expect(mockInvalidate).toHaveBeenCalledWith({
-			queryKey: ['discover', USER, 'radio', 'artist', 'abc-123', { source: 'listenbrainz' }]
+			queryKey: ['discover', USER, 'radio', 'artist', 'abc-123']
 		});
 	});
 
 	it('refresh uses distinct keys for different seeds', async () => {
-		const source = 'listenbrainz' as const;
-
 		await invalidateQueriesWithPersister({
-			queryKey: DiscoverQueryKeyFactory.radio(USER, 'artist', 'seed-1', source)
+			queryKey: DiscoverQueryKeyFactory.radio(USER, 'artist', 'seed-1')
 		});
 		await invalidateQueriesWithPersister({
-			queryKey: DiscoverQueryKeyFactory.radio(USER, 'album', 'seed-2', source)
+			queryKey: DiscoverQueryKeyFactory.radio(USER, 'album', 'seed-2')
 		});
 
 		expect(mockInvalidate).toHaveBeenCalledTimes(2);

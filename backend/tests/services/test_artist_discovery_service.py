@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 from api.v1.schemas.discovery import SimilarArtist
@@ -71,12 +72,36 @@ class TestGetSimilarArtistsSource:
     @pytest.mark.asyncio
     async def test_default_source_uses_listenbrainz(self):
         svc, lb_repo, lastfm_repo, _ = _make_service()
+        # LB returns data -> Last.fm is never consulted
+        lb_repo.get_similar_artists = AsyncMock(
+            return_value=[
+                SimpleNamespace(artist_mbid="mbid-a", artist_name="Artist A", listen_count=10)
+            ]
+        )
 
         result = await svc.get_similar_artists("mbid-123", count=5)
 
         assert result.source == "listenbrainz"
+        assert len(result.similar_artists) == 1
         lb_repo.get_similar_artists.assert_called_once()
         lastfm_repo.get_similar_artists.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_listenbrainz_falls_back_to_lastfm(self):
+        # LB popularity/similar is disabled or breaker-tripped upstream (2026-07);
+        # an empty LB result must fall back to Last.fm so the section still fills
+        svc, lb_repo, lastfm_repo, _ = _make_service()
+        lb_repo.get_similar_artists = AsyncMock(return_value=[])
+        lastfm_repo.get_similar_artists = AsyncMock(
+            return_value=[
+                LastFmSimilarArtist(name="Fallback Artist", mbid="mbid-fb", match=0.9, url="")
+            ]
+        )
+
+        result = await svc.get_similar_artists("mbid-123", count=5)
+
+        lastfm_repo.get_similar_artists.assert_called_once()
+        assert any(a.name == "Fallback Artist" for a in result.similar_artists)
 
     @pytest.mark.asyncio
     async def test_source_lastfm_calls_lastfm(self):

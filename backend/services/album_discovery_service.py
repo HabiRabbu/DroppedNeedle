@@ -1,6 +1,7 @@
 import asyncio
+from types import SimpleNamespace
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from api.v1.schemas.discovery import (
     DiscoveryAlbum,
@@ -8,6 +9,7 @@ from api.v1.schemas.discovery import (
     MoreByArtistResponse,
 )
 from repositories.protocols import ListenBrainzRepositoryProtocol, MusicBrainzRepositoryProtocol, LibraryRepositoryProtocol
+from repositories.listenbrainz_repository import lb_popularity_degraded
 from infrastructure.persistence import LibraryDB
 from infrastructure.queue.priority_queue import RequestPriority
 from services.per_user_client_factory import PerUserClientFactory
@@ -23,12 +25,16 @@ class AlbumDiscoveryService:
         library_db: LibraryDB,
         library_repo: LibraryRepositoryProtocol,
         client_factory: Optional[PerUserClientFactory] = None,
+        lastfm_repo: Any = None,
+        mbid_svc: Any = None,
     ):
         self._lb_repo = listenbrainz_repo
         self._mb_repo = musicbrainz_repo
         self._library_db = library_db
         self._library_repo = library_repo
         self._client_factory = client_factory
+        self._lfm_repo = lastfm_repo
+        self._mbid = mbid_svc
 
     async def _resolve_listenbrainz(
         self, user_id: str | None
@@ -43,6 +49,12 @@ class AlbumDiscoveryService:
         if self._client_factory is not None and user_id:
             return await self._client_factory.resolve_listenbrainz(user_id)
         return self._lb_repo if self._lb_repo.is_configured() else None
+
+    async def _resolve_lastfm(self, user_id: str | None):
+        """Per-user Last.fm client, else the global one - for popularity fallback."""
+        if self._client_factory is not None and user_id:
+            return await self._client_factory.resolve_lastfm(user_id)
+        return self._lfm_repo
 
     async def get_similar_albums(
         self,
@@ -68,6 +80,19 @@ class AlbumDiscoveryService:
             except Exception:  # noqa: BLE001
                 library_album_mbids = set()
                 requested_album_mbids = set()
+
+            # LB popularity turns similar artists into albums; when it's DEFINITELY
+            # degraded (lb_popularity_degraded()), source those albums from Last.fm so
+            # "Similar Albums" (+ album radio) still fills. Otherwise ALWAYS prefer LB.
+            if lb_popularity_degraded() and self._mbid is not None:
+                lfm_repo = await self._resolve_lastfm(user_id)
+                if lfm_repo is not None:
+                    fb = await self._similar_albums_lastfm(
+                        similar_artists[:5], album_mbid, count,
+                        library_album_mbids, requested_album_mbids, lfm_repo,
+                    )
+                    if fb:
+                        return SimilarAlbumsResponse(albums=fb[:count])
 
             tasks = [
                 lb_repo.get_artist_top_release_groups(a.artist_mbid, count=3)
@@ -100,6 +125,43 @@ class AlbumDiscoveryService:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to get similar albums for {album_mbid}: {e}")
             return SimilarAlbumsResponse(albums=[])
+
+    async def _similar_albums_lastfm(
+        self, similar_artists: list, album_mbid: str, count: int,
+        library_album_mbids: set, requested_album_mbids: set, lfm_repo,
+    ) -> list:
+        """Build similar-album candidates from Last.fm top-albums per similar artist,
+        resolving release-group MBIDs via the shared resolver (used only when LB
+        popularity is degraded)."""
+        top = await asyncio.gather(
+            *(
+                lfm_repo.get_artist_top_albums(a.artist_name, mbid=a.artist_mbid, limit=3)
+                for a in similar_artists
+            ),
+            return_exceptions=True,
+        )
+        pairs = []
+        for artist, albums in zip(similar_artists, top):
+            if isinstance(albums, Exception) or not albums:
+                continue
+            pairs.append((SimpleNamespace(mbid=artist.artist_mbid, name=artist.artist_name), albums))
+        if not pairs:
+            return []
+        items = await self._mbid.lastfm_albums_to_queue_items(
+            pairs, exclude={album_mbid.lower()}, target=count, reason="similar_albums"
+        )
+        albums: list[DiscoveryAlbum] = []
+        for it in items:
+            mbid_lower = it.release_group_mbid.lower()
+            albums.append(DiscoveryAlbum(
+                musicbrainz_id=it.release_group_mbid,
+                title=it.album_name,
+                artist_name=it.artist_name,
+                artist_id=it.artist_mbid or None,
+                in_library=mbid_lower in library_album_mbids,
+                requested=mbid_lower in requested_album_mbids,
+            ))
+        return albums
 
     async def get_more_by_artist(
         self,

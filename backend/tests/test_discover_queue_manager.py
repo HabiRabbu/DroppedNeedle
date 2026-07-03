@@ -53,16 +53,15 @@ def _make_manager(
 async def test_initial_status_is_idle():
     expect_assertions = True
     mgr = _make_manager()
-    status = mgr.get_status(_UID, "listenbrainz")
+    status = mgr.get_status(_UID)
     assert status.status == "idle"
-    assert status.source == "listenbrainz"
 
 
 @pytest.mark.asyncio
 async def test_start_build_changes_status():
     expect_assertions = True
     mgr = _make_manager()
-    result = await mgr.start_build(_UID, "listenbrainz")
+    result = await mgr.start_build(_UID)
     assert result.action == "started"
     assert result.status in ("building", "ready")
 
@@ -72,13 +71,13 @@ async def test_build_produces_ready_queue():
     expect_assertions = True
     queue = _make_queue(5)
     mgr = _make_manager(queue=queue)
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    status = mgr.get_status(_UID, "listenbrainz")
+    status = mgr.get_status(_UID)
     assert status.status == "ready"
     assert status.item_count == 5
-    built_queue = mgr.get_queue(_UID, "listenbrainz")
+    built_queue = mgr.get_queue(_UID)
     assert built_queue is not None
     assert all(item.enrichment is not None for item in built_queue.items)
 
@@ -90,10 +89,10 @@ async def test_enrichment_failures_fall_back_to_empty_enrichment():
     mgr = _make_manager(queue=queue)
     mgr._discover.enrich_queue_item.side_effect = RuntimeError("enrichment failed")
 
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    built_queue = mgr.get_queue(_UID, "listenbrainz")
+    built_queue = mgr.get_queue(_UID)
     assert built_queue is not None
     assert all(item.enrichment is not None for item in built_queue.items)
 
@@ -103,10 +102,10 @@ async def test_get_queue_returns_cached():
     expect_assertions = True
     queue = _make_queue(3)
     mgr = _make_manager(queue=queue)
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    result = mgr.get_queue(_UID, "listenbrainz")
+    result = mgr.get_queue(_UID)
     assert result is not None
     assert len(result.items) == 3
 
@@ -115,25 +114,25 @@ async def test_get_queue_returns_cached():
 async def test_consume_queue_returns_and_clears():
     expect_assertions = True
     mgr = _make_manager()
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    consumed = await mgr.consume_queue(_UID, "listenbrainz")
+    consumed = await mgr.consume_queue(_UID)
     assert consumed is not None
     assert len(consumed.items) == 3
 
-    assert mgr.get_queue(_UID, "listenbrainz") is None
-    assert mgr.get_status(_UID, "listenbrainz").status == "idle"
+    assert mgr.get_queue(_UID) is None
+    assert mgr.get_status(_UID).status == "idle"
 
 
 @pytest.mark.asyncio
 async def test_build_error_sets_error_status():
     expect_assertions = True
     mgr = _make_manager(build_error=RuntimeError("test fail"))
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    status = mgr.get_status(_UID, "listenbrainz")
+    status = mgr.get_status(_UID)
     assert status.status == "error"
     assert "test fail" in (status.error or "")
 
@@ -155,21 +154,21 @@ async def test_already_building_is_no_op():
     prefs.get_advanced_settings.return_value = adv
 
     mgr = DiscoverQueueManager(slow_discover, prefs)
-    await mgr.start_build(_UID, "listenbrainz")
-    result = await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
+    result = await mgr.start_build(_UID)
     assert result.action == "already_building"
 
-    mgr.invalidate(_UID, "listenbrainz")
+    mgr.invalidate(_UID)
 
 
 @pytest.mark.asyncio
 async def test_force_rebuild_when_ready():
     expect_assertions = True
     mgr = _make_manager()
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    result = await mgr.start_build(_UID, "listenbrainz", force=True)
+    result = await mgr.start_build(_UID, force=True)
     assert result.action == "started"
 
 
@@ -177,70 +176,70 @@ async def test_force_rebuild_when_ready():
 async def test_invalidate_resets_state():
     expect_assertions = True
     mgr = _make_manager()
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    mgr.invalidate(_UID, "listenbrainz")
-    status = mgr.get_status(_UID, "listenbrainz")
+    mgr.invalidate(_UID)
+    status = mgr.get_status(_UID)
     assert status.status == "idle"
 
 
 @pytest.mark.asyncio
-async def test_separate_sources_are_independent():
+async def test_separate_users_are_independent():
     expect_assertions = True
     mgr = _make_manager()
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    lb_status = mgr.get_status(_UID, "listenbrainz")
-    lfm_status = mgr.get_status(_UID, "lastfm")
-    assert lb_status.status == "ready"
-    assert lfm_status.status == "idle"
+    built_status = mgr.get_status(_UID)
+    other_status = mgr.get_status("someone-else")
+    assert built_status.status == "ready"
+    assert other_status.status == "idle"
 
 
 @pytest.mark.asyncio
 async def test_consume_queue_rejects_stale():
     expect_assertions = True
     mgr = _make_manager(ttl=1)
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    assert mgr.get_status(_UID, "listenbrainz").status == "ready"
+    assert mgr.get_status(_UID).status == "ready"
 
-    mgr._get_state(_UID, "listenbrainz").built_at = time.time() - 10
+    mgr._get_state(_UID).built_at = time.time() - 10
 
-    consumed = await mgr.consume_queue(_UID, "listenbrainz")
+    consumed = await mgr.consume_queue(_UID)
     assert consumed is None
-    assert mgr.get_status(_UID, "listenbrainz").status == "idle"
+    assert mgr.get_status(_UID).status == "idle"
 
 
 @pytest.mark.asyncio
 async def test_get_queue_rejects_stale():
     expect_assertions = True
     mgr = _make_manager(ttl=1)
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    assert mgr.get_queue(_UID, "listenbrainz") is not None
+    assert mgr.get_queue(_UID) is not None
 
-    mgr._get_state(_UID, "listenbrainz").built_at = time.time() - 10
+    mgr._get_state(_UID).built_at = time.time() - 10
 
-    assert mgr.get_queue(_UID, "listenbrainz") is None
+    assert mgr.get_queue(_UID) is None
 
 
 @pytest.mark.asyncio
 async def test_stale_flag_in_status():
     expect_assertions = True
     mgr = _make_manager(ttl=1)
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    status = mgr.get_status(_UID, "listenbrainz")
+    status = mgr.get_status(_UID)
     assert status.stale is False
 
-    mgr._get_state(_UID, "listenbrainz").built_at = time.time() - 10
+    mgr._get_state(_UID).built_at = time.time() - 10
 
-    status = mgr.get_status(_UID, "listenbrainz")
+    status = mgr.get_status(_UID)
     assert status.stale is True
 
 
@@ -261,7 +260,7 @@ async def test_build_prewarms_covers():
     prefs.get_advanced_settings.return_value = adv
 
     mgr = DiscoverQueueManager(discover, prefs, cover_repo=cover_repo)
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.3)
 
     assert cover_repo.get_release_group_cover.call_count == 3
@@ -275,10 +274,10 @@ async def test_build_prewarms_covers():
 async def test_build_prewarm_skipped_without_cover_repo():
     expect_assertions = True
     mgr = _make_manager()
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.1)
 
-    assert mgr.get_status(_UID, "listenbrainz").status == "ready"
+    assert mgr.get_status(_UID).status == "ready"
 
 
 @pytest.mark.asyncio
@@ -298,8 +297,8 @@ async def test_build_prewarm_failure_does_not_break_queue():
     prefs.get_advanced_settings.return_value = adv
 
     mgr = DiscoverQueueManager(discover, prefs, cover_repo=cover_repo)
-    await mgr.start_build(_UID, "listenbrainz")
+    await mgr.start_build(_UID)
     await asyncio.sleep(0.3)
 
-    assert mgr.get_status(_UID, "listenbrainz").status == "ready"
-    assert mgr.get_queue(_UID, "listenbrainz") is not None
+    assert mgr.get_status(_UID).status == "ready"
+    assert mgr.get_queue(_UID) is not None

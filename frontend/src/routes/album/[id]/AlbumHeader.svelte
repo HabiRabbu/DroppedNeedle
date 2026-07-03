@@ -14,6 +14,7 @@
 		RefreshCw,
 		ScanSearch,
 		Disc3,
+		Square,
 		TrendingUp,
 		ChevronDown,
 		Pin
@@ -29,6 +30,7 @@
 	import type { AlbumEditionItem } from '$lib/types';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { toastStore } from '$lib/stores/toast';
+	import { deckSampler } from '$lib/stores/deckSampler.svelte';
 
 	interface Props {
 		album: AlbumBasicInfo;
@@ -72,6 +74,22 @@
 		onrefresh,
 		onartistclick
 	}: Props = $props();
+
+	const headerSampling = $derived(
+		deckSampler.activeKey === album?.musicbrainz_id && deckSampler.status !== 'idle'
+	);
+
+	function toggleHeaderSample() {
+		if (headerSampling) {
+			deckSampler.stop();
+			return;
+		}
+		deckSampler.start(album.musicbrainz_id, album.artist_name, album.title, {
+			albumMbid: album.musicbrainz_id,
+			artistMbid: album.artist_id,
+			coverUrl: album.cover_url
+		});
+	}
 
 	const rescan = rescanAlbum();
 	const libraryComplete = $derived(
@@ -472,6 +490,23 @@
 									<Plus class="h-5 w-5" />
 									Add to Library
 								{/if}
+							</button>
+						{/if}
+						{#if !inLibrary}
+							<button
+								class="btn btn-lg btn-ghost gap-2 border border-base-content/15"
+								class:btn-active={headerSampling}
+								onclick={toggleHeaderSample}
+								title="Hear 30-second samples of this album before you grab it"
+							>
+								{#if headerSampling && deckSampler.status === 'loading'}
+									<span class="loading loading-spinner loading-sm"></span>
+								{:else if headerSampling}
+									<Square class="h-4 w-4" fill="currentColor" />
+								{:else}
+									<Disc3 class="h-5 w-5" />
+								{/if}
+								{headerSampling ? 'Stop sample' : 'Sample'}
 							</button>
 						{/if}
 					</div>

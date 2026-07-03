@@ -42,109 +42,74 @@ beforeEach(() => {
 	vi.clearAllMocks();
 });
 
-describe('getPlaylistSuggestionsQuery source propagation', () => {
-	it('passes listenbrainz source in request body', async () => {
+function lastQueryOpts(): Record<string, unknown> {
+	const factory = mockCreateQuery.mock.calls[
+		mockCreateQuery.mock.calls.length - 1
+	][0] as unknown as () => Record<string, unknown>;
+	return factory();
+}
+
+describe('getPlaylistSuggestionsQuery', () => {
+	it('posts the playlist id and count (no source: backend resolves the primary)', async () => {
 		mockPost.mockResolvedValue({ playlist_id: 'pl-1', suggestions: { items: [] } });
 
 		const { getPlaylistSuggestionsQuery } = await import('./DiscoverQuery.svelte');
 
-		const getter = () => ({
+		getPlaylistSuggestionsQuery(() => ({
 			playlistId: 'pl-1',
 			count: 10,
-			source: 'listenbrainz' as const,
 			enabled: true
-		});
+		}));
 
-		getPlaylistSuggestionsQuery(getter);
-
-		expect(mockCreateQuery).toHaveBeenCalled();
-		const factory = mockCreateQuery.mock.calls[
-			mockCreateQuery.mock.calls.length - 1
-		][0] as unknown as () => Record<string, unknown>;
-		const opts = factory();
+		const opts = lastQueryOpts();
 		const queryFn = opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>;
 		await queryFn({ signal: new AbortController().signal });
 
 		expect(mockPost).toHaveBeenCalledTimes(1);
 		const [, body] = mockPost.mock.calls[0];
-		expect((body as Record<string, unknown>).source).toBe('listenbrainz');
+		expect(body).toEqual({ playlist_id: 'pl-1', count: 10 });
 	});
 
-	it('passes lastfm source in request body', async () => {
-		mockPost.mockResolvedValue({ playlist_id: 'pl-1', suggestions: { items: [] } });
-
+	it('is disabled without a playlist id', async () => {
 		const { getPlaylistSuggestionsQuery } = await import('./DiscoverQuery.svelte');
 
-		const getter = () => ({
-			playlistId: 'pl-1',
-			count: 10,
-			source: 'lastfm' as const,
-			enabled: true
-		});
+		getPlaylistSuggestionsQuery(() => ({ playlistId: '', enabled: true }));
 
-		getPlaylistSuggestionsQuery(getter);
-
-		const factory = mockCreateQuery.mock.calls[
-			mockCreateQuery.mock.calls.length - 1
-		][0] as unknown as () => Record<string, unknown>;
-		const opts = factory();
-		const queryFn = opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>;
-		await queryFn({ signal: new AbortController().signal });
-
-		expect(mockPost).toHaveBeenCalledTimes(1);
-		const [, body] = mockPost.mock.calls[0];
-		expect((body as Record<string, unknown>).source).toBe('lastfm');
+		const opts = lastQueryOpts();
+		expect(opts.enabled).toBe(false);
 	});
 });
 
-describe('getRadioQuery source propagation', () => {
-	it('passes source in request body', async () => {
+describe('getRadioQuery', () => {
+	it('posts the seed (no source: backend resolves the primary)', async () => {
 		mockPost.mockResolvedValue({ items: [] });
 
 		const { getRadioQuery } = await import('./DiscoverQuery.svelte');
 
-		const getter = () => ({
+		getRadioQuery(() => ({
 			seedType: 'artist',
-			seedId: 'mbid-123',
-			source: 'listenbrainz' as const
-		});
+			seedId: 'mbid-123'
+		}));
 
-		getRadioQuery(getter);
-
-		const factory = mockCreateQuery.mock.calls[
-			mockCreateQuery.mock.calls.length - 1
-		][0] as unknown as () => Record<string, unknown>;
-		const opts = factory();
+		const opts = lastQueryOpts();
 		const queryFn = opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>;
 		await queryFn({ signal: new AbortController().signal });
 
 		expect(mockPost).toHaveBeenCalledTimes(1);
 		const [, body] = mockPost.mock.calls[0];
-		expect((body as Record<string, unknown>).source).toBe('listenbrainz');
+		expect(body).toEqual({ seed_type: 'artist', seed_id: 'mbid-123' });
 	});
 
-	it('passes lastfm source in request body', async () => {
+	it('carries the seed in the query key', async () => {
 		mockPost.mockResolvedValue({ items: [] });
 
 		const { getRadioQuery } = await import('./DiscoverQuery.svelte');
 
-		const getter = () => ({
-			seedType: 'artist',
-			seedId: 'mbid-456',
-			source: 'lastfm' as const
-		});
+		getRadioQuery(() => ({ seedType: 'genre', seedId: 'shoegaze' }));
 
-		getRadioQuery(getter);
-
-		const factory = mockCreateQuery.mock.calls[
-			mockCreateQuery.mock.calls.length - 1
-		][0] as unknown as () => Record<string, unknown>;
-		const opts = factory();
-		const queryFn = opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>;
-		await queryFn({ signal: new AbortController().signal });
-
-		expect(mockPost).toHaveBeenCalledTimes(1);
-		const [, body] = mockPost.mock.calls[0];
-		expect((body as Record<string, unknown>).source).toBe('lastfm');
+		const opts = lastQueryOpts();
+		expect(opts.queryKey).toContain('radio');
+		expect(opts.queryKey).toContain('genre');
+		expect(opts.queryKey).toContain('shoegaze');
 	});
 });

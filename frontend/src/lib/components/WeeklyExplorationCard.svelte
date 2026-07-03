@@ -1,29 +1,17 @@
 <script lang="ts">
-	import type { WeeklyExplorationTrack, YouTubeQuotaStatus } from '$lib/types';
+	import type { WeeklyExplorationTrack } from '$lib/types';
 	import { Music2, Disc3 } from 'lucide-svelte';
 	import { albumHrefOrNull, artistHrefOrNull } from '$lib/utils/entityRoutes';
 	import { integrationStore } from '$lib/stores/integration';
 	import { libraryStore } from '$lib/stores/library';
 	import AlbumRequestButton from './AlbumRequestButton.svelte';
-	import TrackPreviewButton from './TrackPreviewButton.svelte';
+	import SampleButton from './discover/SampleButton.svelte';
 
 	interface Props {
 		track: WeeklyExplorationTrack;
-		index: number;
-		ytConfigured?: boolean;
-		initialCached?: boolean | null;
-		showQuota?: boolean;
-		quotaInfo?: YouTubeQuotaStatus | null;
 	}
 
-	let {
-		track,
-		index,
-		ytConfigured = false,
-		initialCached = null,
-		showQuota = false,
-		quotaInfo = null
-	}: Props = $props();
+	let { track }: Props = $props();
 
 	const albumHref = $derived(albumHrefOrNull(track.release_group_mbid));
 	const artistHref = $derived(artistHrefOrNull(track.artist_mbid));
@@ -146,25 +134,17 @@
 				artistMbid={track.artist_mbid ?? undefined}
 			/>
 		{/if}
-		<TrackPreviewButton
+		<SampleButton
+			sampleKey={`track:${track.artist_name}|${track.title}`}
 			artist={track.artist_name}
-			track={track.title}
-			{ytConfigured}
-			{initialCached}
+			title={track.title}
+			kind="track"
 			size="md"
-			albumId={track.release_group_mbid || track.recording_mbid || `rec-${index}`}
+			albumMbid={track.release_group_mbid}
+			artistMbid={track.artist_mbid}
 			coverUrl={track.cover_url}
-			artistId={track.artist_mbid ?? undefined}
 		/>
 	</div>
 
-	{#if showQuota && quotaInfo}
-		<div class="px-2 pb-2 text-center">
-			<span class="text-[10px] text-base-content/35">
-				{quotaInfo.used}/{quotaInfo.limit} used today
-			</span>
-		</div>
-	{:else}
-		<div class="pb-1.5"></div>
-	{/if}
+	<div class="pb-1.5"></div>
 </div>

@@ -155,7 +155,6 @@
 						trackLinks={state.trackLinks}
 						youtubeEnabled={$integrationStore.youtube}
 						youtubeApiConfigured={$integrationStore.youtube_api}
-						previewCacheMap={state.previewCacheMap}
 						jellyfinEnabled={$integrationStore.jellyfin}
 						localfilesEnabled={$integrationStore.localfiles}
 						navidromeEnabled={$integrationStore.navidrome}

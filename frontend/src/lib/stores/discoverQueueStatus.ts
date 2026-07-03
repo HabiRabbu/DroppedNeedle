@@ -1,7 +1,6 @@
 import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
 import { API } from '$lib/constants';
-import { musicSourceStore, type MusicSource } from '$lib/stores/musicSource';
 import { getCacheTTLs } from '$lib/stores/cacheTtl';
 import { api, ApiError } from '$lib/api/client';
 
@@ -9,7 +8,6 @@ export type QueueBuildStatus = 'idle' | 'building' | 'ready' | 'error' | 'unknow
 
 interface DiscoverQueueStatusState {
 	status: QueueBuildStatus;
-	source: string;
 	queueId?: string;
 	itemCount?: number;
 	error?: string;
@@ -18,7 +16,6 @@ interface DiscoverQueueStatusState {
 
 type QueueStatusPayload = {
 	status: QueueBuildStatus;
-	source: string;
 	queue_id?: string;
 	item_count?: number;
 	error?: string;
@@ -26,7 +23,6 @@ type QueueStatusPayload = {
 
 const INITIAL: DiscoverQueueStatusState = {
 	status: 'unknown',
-	source: 'listenbrainz',
 	lastChecked: 0
 };
 
@@ -47,7 +43,6 @@ function createDiscoverQueueStatusStore() {
 	function applyStatusData(data: QueueStatusPayload): void {
 		set({
 			status: data.status,
-			source: data.source,
 			queueId: data.queue_id,
 			itemCount: data.item_count,
 			error: data.error,
@@ -55,15 +50,10 @@ function createDiscoverQueueStatusStore() {
 		});
 	}
 
-	function resolveSource(source?: MusicSource): MusicSource {
-		return source ?? musicSourceStore.getPageSource('discover');
-	}
-
-	async function fetchStatus(source?: MusicSource): Promise<QueueStatusPayload | null> {
+	async function fetchStatus(): Promise<QueueStatusPayload | null> {
 		if (!browser) return null;
 		try {
-			const activeSource = resolveSource(source);
-			const data = await api.global.get<QueueStatusPayload>(API.discoverQueueStatus(activeSource));
+			const data = await api.global.get<QueueStatusPayload>(API.discoverQueueStatus());
 			applyStatusData(data);
 			return data;
 		} catch {
@@ -71,18 +61,16 @@ function createDiscoverQueueStatusStore() {
 		}
 	}
 
-	async function triggerGenerate(force = false, source?: MusicSource): Promise<void> {
+	async function triggerGenerate(force = false): Promise<void> {
 		if (!browser) return;
 		try {
-			const activeSource = resolveSource(source);
-			update((s) => ({ ...s, status: 'building', source: activeSource }));
+			update((s) => ({ ...s, status: 'building' }));
 			const data = await api.global.post<QueueStatusPayload>(API.discoverQueueGenerate(), {
-				source: activeSource,
 				force
 			});
 			applyStatusData(data);
 			if (data.status === 'building') {
-				startPolling(activeSource);
+				startPolling();
 			}
 		} catch (e) {
 			if (e instanceof ApiError) {
@@ -97,12 +85,12 @@ function createDiscoverQueueStatusStore() {
 		}
 	}
 
-	function startPolling(source?: MusicSource): void {
+	function startPolling(): void {
 		if (pollTimer || !browser) return;
 		isPolling = true;
 		const interval = getPollingInterval();
 		pollTimer = setInterval(async () => {
-			const result = await fetchStatus(source);
+			const result = await fetchStatus();
 			if (result && result.status !== 'building') {
 				stopPolling();
 			}
@@ -117,16 +105,15 @@ function createDiscoverQueueStatusStore() {
 		isPolling = false;
 	}
 
-	async function init(source?: MusicSource): Promise<void> {
+	async function init(): Promise<void> {
 		if (!browser) return;
-		const activeSource = resolveSource(source);
-		const result = await fetchStatus(activeSource);
+		const result = await fetchStatus();
 		if (!result) return;
 
 		if (result.status === 'building') {
-			startPolling(activeSource);
+			startPolling();
 		} else if (result.status === 'idle' && isAutoGenerateEnabled()) {
-			await triggerGenerate(false, activeSource);
+			await triggerGenerate(false);
 		}
 	}
 

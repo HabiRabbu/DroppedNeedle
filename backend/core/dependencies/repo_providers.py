@@ -75,11 +75,24 @@ def get_listenbrainz_repository() -> "ListenBrainzRepository":
     )
     preferences = get_preferences_service()
     lb_settings = preferences.get_listenbrainz_connection()
+    has_global_token = bool(lb_settings.enabled and lb_settings.user_token)
+    # This global/enrichment repo has no token of its own unless a global LB
+    # connection is configured. LB now anti-scraper-gates anonymous popularity
+    # calls, so borrow a connected user's token (any account - popularity is public
+    # data) for reads. Resolved lazily on first tokenless read; never for writes.
+    fallback_token_provider = None
+    if not has_global_token:
+        connections_store = get_user_connections_store()
+
+        async def fallback_token_provider() -> str | None:
+            return await connections_store.get_service_token("listenbrainz")
+
     return ListenBrainzRepository(
         http_client=http_client,
         cache=cache,
         username=lb_settings.username if lb_settings.enabled else "",
         user_token=lb_settings.user_token if lb_settings.enabled else "",
+        fallback_token_provider=fallback_token_provider,
     )
 
 
@@ -267,6 +280,35 @@ def get_user_listening_prefs_store() -> "UserListeningPrefsStore":
 
     settings = get_settings()
     return UserListeningPrefsStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
+
+
+@singleton
+def get_discovery_batch_store() -> "DiscoveryBatchStore":
+    from infrastructure.persistence.discovery_batch_store import DiscoveryBatchStore
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return DiscoveryBatchStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
+
+
+@singleton
+def get_preview_repository() -> "PreviewRepository":
+    from repositories.preview_repository import PreviewRepository
+
+    return PreviewRepository(http_client=_get_configured_http_client())
+
+
+@singleton
+def get_user_section_prefs_store() -> "UserSectionPrefsStore":
+    from infrastructure.persistence.user_section_prefs_store import UserSectionPrefsStore
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return UserSectionPrefsStore(
         db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
     )
 

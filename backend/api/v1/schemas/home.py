@@ -93,6 +93,8 @@ class HomeResponse(AppStruct):
     genre_artist_images: GenreArtistMap = {}
     discover_preview: DiscoverPreview | None = None
     service_status: dict[str, str] | None = None
+    # true while a fuller build is running in the background (frontend polls)
+    refreshing: bool = False
 
 
 class GenreLibrarySection(AppStruct):

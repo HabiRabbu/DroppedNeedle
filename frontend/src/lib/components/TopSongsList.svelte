@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { TopSong, TrackCacheCheckItem, ResolvedTrack } from '$lib/types';
+	import type { TopSong, ResolvedTrack } from '$lib/types';
 	import type { QueueItem, SourceType } from '$lib/player/types';
 	import { API } from '$lib/constants';
 	import { api } from '$lib/api/client';
@@ -12,32 +12,15 @@
 		loading?: boolean;
 		configured?: boolean;
 		source?: string;
-		ytConfigured?: boolean;
 	}
 
-	let {
-		songs,
-		loading = false,
-		configured = true,
-		source = '',
-		ytConfigured = false
-	}: Props = $props();
+	let { songs, loading = false, configured = true, source = '' }: Props = $props();
 
-	let cacheMap = new SvelteMap<string, boolean>();
 	let resolveMap = new SvelteMap<string, ResolvedTrack>();
-	let lastFetchedKey = $state('');
 	let lastResolveKey = $state('');
-
-	function cacheKey(artist: string, track: string): string {
-		return `${artist.toLowerCase()}|${track.toLowerCase()}`;
-	}
 
 	function resolveKey(rgMbid: string, disc: number, track: number): string {
 		return `${rgMbid}|${disc}|${track}`;
-	}
-
-	function songsFingerprint(s: TopSong[]): string {
-		return s.map((t) => `${t.artist_name}|${t.title}`).join(';');
 	}
 
 	function resolvableFingerprint(s: TopSong[]): string {
@@ -46,31 +29,6 @@
 			.map((t) => `${t.release_group_mbid}|${t.disc_number ?? 1}|${t.track_number}`)
 			.join(';');
 	}
-
-	$effect(() => {
-		if (!ytConfigured || songs.length === 0) return;
-		const key = songsFingerprint(songs);
-		if (key === lastFetchedKey) return;
-		lastFetchedKey = key;
-
-		(async () => {
-			try {
-				const data = await api.global.post<{ items: TrackCacheCheckItem[] }>(
-					API.discoverQueueYoutubeCacheCheck(),
-					{
-						items: songs.map((s) => ({ artist: s.artist_name, track: s.title }))
-					}
-				);
-				if (lastFetchedKey === key) {
-					for (const item of data.items) {
-						cacheMap.set(cacheKey(item.artist, item.track), item.cached);
-					}
-				}
-			} catch {
-				// cache check is best-effort
-			}
-		})();
-	});
 
 	$effect(() => {
 		const resolvable = songs.filter((s) => s.release_group_mbid && s.track_number != null);
@@ -191,9 +149,7 @@
 					{song}
 					position={i + 1}
 					{source}
-					showPreview={ytConfigured}
-					{ytConfigured}
-					initialCached={cacheMap.get(cacheKey(song.artist_name, song.title)) ?? null}
+					showPreview={true}
 					resolvedTrack={getResolvedTrack(song)}
 					onPlay={() => handlePlay(song)}
 				/>

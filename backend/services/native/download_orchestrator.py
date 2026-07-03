@@ -764,7 +764,7 @@ class DownloadOrchestrator:
         await self._cancel_transfers(task)
         await self._finalize(task, DownloadStatus.COMPLETED if result.succeeded else DownloadStatus.FAILED)
 
-    async def _import_files(self, task, _manifest_override=None, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201
+    async def _import_files(self, task, manifest_override=None, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201
         """Import a subset of the manifest into the library via the source strategy (per-file
         for slskd, unpacked-folder for Usenet), quarantining only files that arrived but
         failed verification. Does not set the task's terminal status (the failover loop owns
@@ -774,20 +774,20 @@ class DownloadOrchestrator:
 
         ``completed`` = SABnzbd reported the job finished (vs an interrupted/failed poll);
         only then can a still-empty folder mean a mount fault rather than a slow unpack.
-        ``_manifest_override`` skips the on-disk read (used by reimport_task, which builds
+        ``manifest_override`` skips the on-disk read (used by reimport_task, which builds
         the manifest from DB data because _finalize already deleted the staging copy)."""
-        manifest = _manifest_override if _manifest_override is not None else self._read_manifest(task.id)
+        manifest = manifest_override if manifest_override is not None else self._read_manifest(task.id)
         return await self._strategies[task.source].import_files(
             task, manifest, only_filenames=only_filenames, completed=completed
         )
 
-    async def _cancel_transfers(self, task, _manifest_override=None) -> None:  # noqa: ANN001 - DownloadTask
+    async def _cancel_transfers(self, task, manifest_override=None) -> None:  # noqa: ANN001 - DownloadTask
         """Clear this task's download records (post-import, per DEC-1) and stop any still
         running. For Usenet this also deletes the unpacked data (del_files) - the post-
         import cleanup that discards the album's other tracks on a per-track grab (D4).
         Best-effort; imported audio has already been MOVED out.
-        ``_manifest_override`` skips the on-disk read (used by reimport_task)."""
-        manifest = _manifest_override if _manifest_override is not None else self._read_manifest(task.id)
+        ``manifest_override`` skips the on-disk read (used by reimport_task)."""
+        manifest = manifest_override if manifest_override is not None else self._read_manifest(task.id)
         strategy = self._strategy(task.source)
         if not strategy.is_cancelable(task, manifest):
             return
@@ -1163,16 +1163,15 @@ class DownloadOrchestrator:
 
         return await self._create_retry_task(task)
 
-    async def reimport_task(self, task_id: str, user_id: str, user_role: str):  # noqa: ANN201
+    async def reimport_task(self, task_id: str):  # noqa: ANN201
         """Re-run only the import half of the pipeline for a ``failed``/``partial``
         task whose download the user finished by hand in slskd (e.g. resumed a
         stalled/errored transfer in slskd's own UI after DroppedNeedle had already
-        given up). This re-resolves the SAME candidate slskd already picked."""
+        given up). This re-resolves the SAME candidate slskd already picked.
+        Admin-gated at the route (``CurrentAdminDep``)."""
         task = await self._store.get_task(task_id)
         if task is None:
             raise ResourceNotFoundError("Download task not found")
-        if user_role != "admin":
-            raise PermissionDeniedError("Only admins can reimport downloads")
         if task.status not in ("failed", "partial"):
             raise ValidationError("Only failed or partial downloads can be reimported")
         if (
@@ -1209,25 +1208,31 @@ class DownloadOrchestrator:
             ],
         )
 
-        await self._store.update_status(task.id, "processing")
-        await self._bus.publish(f"download:{task.id}", "status", {"status": "processing"})
+        await self._store.update_status(task.id, DownloadStatus.PROCESSING)
+        await self._bus.publish(
+            f"download:{task.id}", "status", {"status": DownloadStatus.PROCESSING}
+        )
 
         try:
             result, _ = await self._import_files(task, manifest, completed=True)
-            await self._cancel_transfers(task, manifest)
 
+            # A mount fault stops the task WITHOUT cleanup: cancel(del_files) would tell
+            # the client to delete data we couldn't read (the mount may recover), so bail
+            # BEFORE _cancel_transfers - the failover loop does the same (review H1).
             if not result.succeeded and any(
                 f.reason == DOWNLOADS_MOUNT_UNAVAILABLE for f in result.failed
             ):
                 await self._finalize(
-                    task, "failed", error_message=DOWNLOADS_MOUNT_UNAVAILABLE
+                    task, DownloadStatus.FAILED, error_message=DOWNLOADS_MOUNT_UNAVAILABLE
                 )
                 return await self._store.get_task(task.id)
 
+            await self._cancel_transfers(task, manifest)
+
             if await self._download_is_complete(task, bool(result.succeeded), result):
-                await self._finalize(task, "completed")
+                await self._finalize(task, DownloadStatus.COMPLETED)
             elif result.succeeded:
-                await self._finalize(task, "partial")
+                await self._finalize(task, DownloadStatus.PARTIAL)
             else:
                 if any(f.reason == SOURCE_FILE_MISSING for f in result.failed):
                     fail_msg = _FILES_NOT_FOUND_MSG
@@ -1235,10 +1240,12 @@ class DownloadOrchestrator:
                     fail_msg = _IMPORT_FAILED_MSG
                 else:
                     fail_msg = _NO_SOURCE_MSG
-                await self._finalize(task, "failed", error_message=fail_msg)
+                await self._finalize(task, DownloadStatus.FAILED, error_message=fail_msg)
         except Exception:
             logger.exception("Unexpected error during reimport of task %s", task.id)
-            await self._finalize(task, "failed", error_message="Reimport failed unexpectedly")
+            await self._finalize(
+                task, DownloadStatus.FAILED, error_message="Reimport failed unexpectedly"
+            )
 
         return await self._store.get_task(task.id)
 

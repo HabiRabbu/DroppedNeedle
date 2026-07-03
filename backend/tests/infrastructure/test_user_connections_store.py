@@ -155,3 +155,26 @@ async def test_cascade_on_user_delete(store: UserConnectionsStore, tmp_path: Pat
     finally:
         conn.close()
     assert await store.list_for_user("user-a") == []
+
+
+@pytest.mark.asyncio
+async def test_get_service_token_returns_earliest_connected_token(store: UserConnectionsStore):
+    # two users connect ListenBrainz; the earliest (admin/owner) token is borrowed
+    # for app-wide public reads
+    await store.upsert("user-a", "listenbrainz", {"user_token": "owner-tok", "username": "alice"})
+    await store.upsert("user-b", "listenbrainz", {"user_token": "other-tok", "username": "bob"})
+
+    token = await store.get_service_token("listenbrainz")
+    assert token == "owner-tok"
+
+
+@pytest.mark.asyncio
+async def test_get_service_token_none_when_unconnected(store: UserConnectionsStore):
+    assert await store.get_service_token("listenbrainz") is None
+
+
+@pytest.mark.asyncio
+async def test_get_service_token_skips_disabled(store: UserConnectionsStore):
+    await store.upsert("user-a", "listenbrainz", {"user_token": "tok-1", "username": "alice"})
+    await store.set_enabled("user-a", "listenbrainz", False)
+    assert await store.get_service_token("listenbrainz") is None

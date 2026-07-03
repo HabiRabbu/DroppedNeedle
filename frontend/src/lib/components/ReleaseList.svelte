@@ -4,6 +4,7 @@
 	import { colors } from '$lib/colors';
 	import { libraryStore } from '$lib/stores/library';
 	import AlbumImage from './AlbumImage.svelte';
+	import SampleButton from './discover/SampleButton.svelte';
 	import LibraryBadge from './LibraryBadge.svelte';
 
 	interface Release {
@@ -131,7 +132,16 @@
 								</div>
 							</div>
 						</a>
-						<div class="flex items-center shrink-0 ml-auto mr-3 sm:mr-4">
+						<div class="flex items-center gap-1 shrink-0 ml-auto mr-3 sm:mr-4">
+							{#if !libraryStore.isInLibrary(rg.id) && artistName}
+								<SampleButton
+									sampleKey={rg.id}
+									artist={artistName}
+									title={rg.title}
+									kind="album"
+									size="sm"
+								/>
+							{/if}
 							{#if libraryStore.isInLibrary(rg.id) || (!$libraryStore.initialized && rg.in_library)}
 								<LibraryBadge
 									status="library"
