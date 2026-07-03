@@ -27,7 +27,11 @@
 	);
 	let redactedPlaylists = $derived(items.filter(isRedactedPlaylist) as RedactedPlaylist[]);
 	let errorMessage = $derived(
-		query.isError ? (query.error instanceof Error ? query.error.message : "Couldn't load playlists") : null
+		query.isError
+			? query.error instanceof Error
+				? query.error.message
+				: "Couldn't load playlists"
+			: null
 	);
 
 	let showNewInput = $state(false);

@@ -83,17 +83,26 @@ _SOURCE_TYPE_ALIASES = {
 }
 
 
-def _normalize_source_map(by_num: dict) -> dict[int, tuple[str, str]]:
-    """Ensure source map keys are ints (guards against cached string keys)."""
+def _normalize_source_map(by_num: dict) -> dict[tuple[int, int], tuple[str, str]]:
+    """Ensure source map keys are (disc_number, track_number) tuples.
+
+    Handles old cached entries that used bare int track_number keys (assumes disc 1),
+    and list keys that JSON round-trips produce from tuples.
+    """
     if not by_num:
         return by_num
     first_key = next(iter(by_num))
-    if isinstance(first_key, int):
+    if isinstance(first_key, tuple):
         return by_num
-    normalized: dict[int, tuple[str, str]] = {}
+    normalized: dict[tuple[int, int], tuple[str, str]] = {}
     for k, v in by_num.items():
         try:
-            normalized[int(k)] = v
+            if isinstance(k, (list, tuple)) and len(k) == 2:
+                normalized[(int(k[0]), int(k[1]))] = v
+            elif isinstance(k, int):
+                normalized[(1, k)] = v
+            else:
+                normalized[(1, int(k))] = v
         except (TypeError, ValueError):
             continue
     return normalized
@@ -517,10 +526,10 @@ class PlaylistService:
         async def _resolve_group(
             album_tracks: list[PlaylistTrackRecord],
         ) -> tuple[
-            dict[int, tuple[str, str]],
-            dict[int, tuple[str, str]],
-            dict[int, tuple[str, str]],
-            dict[int, tuple[str, str, str]],
+            dict[tuple[int, int], tuple[str, str]],
+            dict[tuple[int, int], tuple[str, str]],
+            dict[tuple[int, int], tuple[str, str]],
+            dict[tuple[int, int], tuple[str, str, str]],
         ]:
             representative = album_tracks[0]
             async with sem:
@@ -557,19 +566,20 @@ class PlaylistService:
                 if t.source_type:
                     sources.add(t.source_type)
 
-                jf_track = jf_by_num.get(t.track_number)
+                disc_key = (t.disc_number or 1, t.track_number)
+                jf_track = jf_by_num.get(disc_key)
                 if jf_track and _fuzzy_name_match(t.track_name, jf_track[0]):
                     sources.add("jellyfin")
 
-                local_track = local_by_num.get(t.track_number)
+                local_track = local_by_num.get(disc_key)
                 if local_track and _fuzzy_name_match(t.track_name, local_track[0]):
                     sources.add("local")
 
-                nd_track = nd_by_num.get(t.track_number)
+                nd_track = nd_by_num.get(disc_key)
                 if nd_track and _fuzzy_name_match(t.track_name, nd_track[0]):
                     sources.add("navidrome")
 
-                plex_track = plex_by_num.get(t.track_number)
+                plex_track = plex_by_num.get(disc_key)
                 if plex_track and _fuzzy_name_match(t.track_name, plex_track[0]):
                     sources.add("plex")
 
@@ -600,7 +610,7 @@ class PlaylistService:
         plex_service: object = None,
         album_name: str = "",
         artist_name: str = "",
-    ) -> tuple[dict[int, tuple[str, str]], dict[int, tuple[str, str]], dict[int, tuple[str, str]], dict[int, tuple[str, str, str]]]:
+    ) -> tuple[dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str, str]]]:
         cache_key = f"{SOURCE_RESOLUTION_PREFIX}:{album_id}"
         if self._cache:
             cached = await self._cache.get(cache_key)
@@ -621,10 +631,10 @@ class PlaylistService:
                     _normalize_source_map(cached[3]),
                 )
 
-        jf_by_num: dict[int, tuple[str, str]] = {}
-        local_by_num: dict[int, tuple[str, str]] = {}
-        nd_by_num: dict[int, tuple[str, str]] = {}
-        plex_by_num: dict[int, tuple[str, str, str]] = {}
+        jf_by_num: dict[tuple[int, int], tuple[str, str]] = {}
+        local_by_num: dict[tuple[int, int], tuple[str, str]] = {}
+        nd_by_num: dict[tuple[int, int], tuple[str, str]] = {}
+        plex_by_num: dict[tuple[int, int], tuple[str, str, str]] = {}
 
         if jf_service is not None:
             try:
@@ -633,7 +643,7 @@ class PlaylistService:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            jf_by_num[key] = (t.title, t.jellyfin_id)
+                            jf_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (t.title, t.jellyfin_id)
             except Exception:  # noqa: BLE001
                 logger.debug("Jellyfin source resolution failed for album %s", album_id, exc_info=True)
 
@@ -644,7 +654,7 @@ class PlaylistService:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            local_by_num[key] = (t.title, str(t.track_file_id))
+                            local_by_num[(getattr(t, "disc_number", None) or 1, key)] = (t.title, str(t.track_file_id))
             except Exception:  # noqa: BLE001
                 logger.debug("Local source resolution failed for album %s", album_id, exc_info=True)
 
@@ -657,7 +667,7 @@ class PlaylistService:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            nd_by_num[key] = (t.title, t.navidrome_id)
+                            nd_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (t.title, t.navidrome_id)
             except Exception:  # noqa: BLE001
                 logger.debug("Navidrome source resolution failed for album %s", album_id, exc_info=True)
 
@@ -670,7 +680,7 @@ class PlaylistService:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            plex_by_num[key] = (t.title, t.part_key or t.plex_id, t.plex_id)
+                            plex_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (t.title, t.part_key or t.plex_id, t.plex_id)
             except Exception:  # noqa: BLE001
                 logger.debug("Plex source resolution failed for album %s", album_id, exc_info=True)
 
@@ -700,8 +710,10 @@ class PlaylistService:
             artist_name=track.artist_name or "",
         )
 
+        disc_key = (track.disc_number or 1, track.track_number)
+
         if new_source_type == "jellyfin":
-            match_info = jf_by_num.get(track.track_number)
+            match_info = jf_by_num.get(disc_key)
             if match_info and _fuzzy_name_match(track.track_name, match_info[0]):
                 return (match_info[1], None)
             raise SourceResolutionError(
@@ -709,7 +721,7 @@ class PlaylistService:
             )
 
         if new_source_type == "local":
-            match_info = local_by_num.get(track.track_number)
+            match_info = local_by_num.get(disc_key)
             if match_info and _fuzzy_name_match(track.track_name, match_info[0]):
                 return (match_info[1], None)
             raise SourceResolutionError(
@@ -717,7 +729,7 @@ class PlaylistService:
             )
 
         if new_source_type == "navidrome":
-            match_info = nd_by_num.get(track.track_number)
+            match_info = nd_by_num.get(disc_key)
             if match_info and _fuzzy_name_match(track.track_name, match_info[0]):
                 return (match_info[1], None)
             raise SourceResolutionError(
@@ -725,7 +737,7 @@ class PlaylistService:
             )
 
         if new_source_type == "plex":
-            match_info = plex_by_num.get(track.track_number)
+            match_info = plex_by_num.get(disc_key)
             if match_info and _fuzzy_name_match(track.track_name, match_info[0]):
                 return (match_info[1], match_info[2])
             raise SourceResolutionError(

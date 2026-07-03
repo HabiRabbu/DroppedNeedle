@@ -245,6 +245,14 @@ class RetryAllResponse(AppStruct):
     retried: int
 
 
+class ReimportDownloadResponse(AppStruct):
+    success: bool
+    status: str
+    files_imported: int
+    files_failed: int
+    error_message: str | None = None
+
+
 class TrackRequestBody(AppStruct):
     artist_name: str
     track_title: str

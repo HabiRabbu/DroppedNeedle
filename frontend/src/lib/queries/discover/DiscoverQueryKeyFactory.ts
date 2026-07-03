@@ -6,8 +6,20 @@ export const DiscoverQueryKeyFactory = {
 	prefix: ['discover'] as const,
 	discover: (userId: string | null | undefined, source: MusicSource) =>
 		[...DiscoverQueryKeyFactory.prefix, userId ?? null, source] as const,
-	radio: (userId: string | null | undefined, seedType: string, seedId: string, source: MusicSource) =>
-		[...DiscoverQueryKeyFactory.prefix, userId ?? null, 'radio', seedType, seedId, { source }] as const,
+	radio: (
+		userId: string | null | undefined,
+		seedType: string,
+		seedId: string,
+		source: MusicSource
+	) =>
+		[
+			...DiscoverQueryKeyFactory.prefix,
+			userId ?? null,
+			'radio',
+			seedType,
+			seedId,
+			{ source }
+		] as const,
 	playlistSuggestions: (
 		userId: string | null | undefined,
 		playlistId: string,

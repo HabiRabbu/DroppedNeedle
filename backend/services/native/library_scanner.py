@@ -19,6 +19,7 @@ instance and its ``_cancel`` event.
 import asyncio
 import logging
 import os
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -1033,6 +1034,11 @@ class LibraryScanner:
         if tag.artist and tag.album and tag.title and tag.track_number:
             return tag
         parsed = parse_names_from_path(path)
+        disc_number = tag.disc_number
+        if disc_number == 1:
+            m = re.match(r'^(?:cd|dis[ck])\s*0*(\d+)$', path.parent.name, re.IGNORECASE)
+            if m:
+                disc_number = int(m.group(1))
         return msgspec.structs.replace(
             tag,
             artist=tag.artist or parsed.artist or "",
@@ -1040,6 +1046,7 @@ class LibraryScanner:
             title=tag.title or parsed.title or "",
             track_number=tag.track_number or parsed.track_number or 0,
             year=tag.year if tag.year is not None else parsed.year,
+            disc_number=disc_number,
         )
 
     async def _identify_tiered(

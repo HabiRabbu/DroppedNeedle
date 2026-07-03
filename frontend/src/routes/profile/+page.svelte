@@ -164,7 +164,9 @@
 		}
 	}
 
-	const passwordPending = $derived(changePasswordMutation.isPending || setPasswordMutation.isPending);
+	const passwordPending = $derived(
+		changePasswordMutation.isPending || setPasswordMutation.isPending
+	);
 
 	function handleAvatarFile(file: File) {
 		if (!file.type.startsWith('image/')) return;
@@ -399,7 +401,10 @@
 					<div class="flex flex-col items-center gap-4 py-12 text-center">
 						<CircleAlert class="h-10 w-10 text-base-content/50" />
 						<p class="text-base-content/70">Failed to load profile</p>
-						<button class="btn btn-primary btn-sm gap-2" onclick={() => void profileQuery.refetch()}>
+						<button
+							class="btn btn-primary btn-sm gap-2"
+							onclick={() => void profileQuery.refetch()}
+						>
 							<RefreshCw class="h-4 w-4" />
 							Try Again
 						</button>
@@ -601,14 +606,17 @@
 										<button
 											onclick={() => void submitPassword()}
 											class="btn btn-primary btn-sm glow-primary-soft gap-1.5 rounded-full"
-											disabled={passwordPending || !newPassword || (hasLocalPassword && !currentPassword)}
+											disabled={passwordPending ||
+												!newPassword ||
+												(hasLocalPassword && !currentPassword)}
 										>
 											{#if passwordPending}
 												<span class="loading loading-spinner loading-xs"></span>
 											{/if}
 											{hasLocalPassword ? 'Update password' : 'Set password'}
 										</button>
-										<button onclick={togglePasswordForm} class="btn btn-ghost btn-sm">Cancel</button>
+										<button onclick={togglePasswordForm} class="btn btn-ghost btn-sm">Cancel</button
+										>
 									</div>
 								</div>
 							{/if}
@@ -724,7 +732,9 @@
 										<div class="flex flex-col items-center gap-1">
 											<div class="flex items-center gap-1.5 text-base-content/50">
 												<Users class="h-3.5 w-3.5" />
-												<span class="text-[10px] font-medium uppercase tracking-wider"> Artists </span>
+												<span class="text-[10px] font-medium uppercase tracking-wider">
+													Artists
+												</span>
 											</div>
 											<span class="text-xl font-bold tabular-nums">
 												{formatNumber(stats.total_artists)}

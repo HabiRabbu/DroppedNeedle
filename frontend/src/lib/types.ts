@@ -611,6 +611,8 @@ export type RequestHistoryItem = {
 	requested_by_name?: string | null;
 	reviewed_by_name?: string | null;
 	reviewed_at?: string | null;
+	download_task_id?: string | null;
+	can_reimport?: boolean;
 };
 
 export type ActiveRequestsResponse = {
@@ -1881,6 +1883,14 @@ export interface CancelDownloadResponse {
 export interface RetryDownloadResponse {
 	success: boolean;
 	task_id: string;
+}
+
+export interface ReimportDownloadResponse {
+	success: boolean;
+	status: string;
+	files_imported: number;
+	files_failed: number;
+	error_message?: string | null;
 }
 
 export interface QuarantineEntry {

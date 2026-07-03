@@ -1,15 +1,17 @@
 <script lang="ts">
-	import { ExternalLink, RotateCcw, TimerOff, X } from 'lucide-svelte';
+	import { ExternalLink, FileDown, RotateCcw, TimerOff, X } from 'lucide-svelte';
 
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import {
 		cancelDownload,
+		reimportDownload,
 		retryDownload,
 		stopAutoRetry
 	} from '$lib/queries/downloads/DownloadMutations.svelte';
 	import { createDownloadStream } from '$lib/queries/downloads/DownloadSSE.svelte';
 	import {
 		canCancel,
+		canReimport,
 		canRetry,
 		derivedDownloadStatus,
 		retryDisplay
@@ -28,6 +30,7 @@
 	const cancel = cancelDownload();
 	const retry = retryDownload();
 	const stopRetry = stopAutoRetry();
+	const reimport = reimportDownload();
 	const stream = createDownloadStream();
 
 	// A failed/partial task waiting on its next auto-retry: offer an off-switch so the
@@ -167,6 +170,18 @@
 					aria-label="Cancel unavailable while processing files"
 				>
 					<X class="h-3.5 w-3.5" /> Cancel
+				</button>
+			{/if}
+			{#if authStore.isAdmin && canReimport(task)}
+				<button
+					class="btn btn-ghost btn-xs"
+					onclick={() => reimport.mutate(task.id)}
+					disabled={reimport.isPending}
+					title="Already fixed this in slskd? Check the downloads mount again without re-searching."
+					aria-label="Retry import from slskd"
+				>
+					<FileDown class="h-3.5 w-3.5" />
+					{reimport.isPending ? 'Checking...' : 'Retry import'}
 				</button>
 			{/if}
 			{#if canRetry(task)}

@@ -33,6 +33,7 @@ from api.v1.schemas.download import (
     HeldActionResponse,
     HeldImportResponse,
     HeldListResponse,
+    ReimportDownloadResponse,
     RetryAllResponse,
     RetryDownloadResponse,
     StopRetriesResponse,
@@ -372,6 +373,20 @@ async def stream_held_audio(
     if not path.exists():
         raise ResourceNotFoundError("The held file is no longer available")
     return FileResponse(path, media_type=_audio_media_type(path), filename=path.name)
+
+
+@router.post("/{task_id}/reimport", response_model=ReimportDownloadResponse)
+async def reimport_download(
+    task_id: str, current_user: CurrentUserDep, service=Depends(get_download_service)
+):
+    task = await service.reimport_task(task_id, current_user.id, current_user.role)
+    return ReimportDownloadResponse(
+        success=task.status in ("completed", "partial"),
+        status=task.status,
+        files_imported=task.files_completed,
+        files_failed=task.files_failed,
+        error_message=task.error_message,
+    )
 
 
 @router.get("/{task_id}", response_model=DownloadTaskResponse)

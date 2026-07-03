@@ -36,8 +36,8 @@
 	<div class="card-body">
 		<h2 class="card-title text-2xl">Primary Music Source</h2>
 		<p class="text-base-content/70 mb-4">
-			Choose which listening service powers your Home and Discover by default. You can also set
-			this from your profile, and switch it on each page.
+			Choose which listening service powers your Home and Discover by default. You can also set this
+			from your profile, and switch it on each page.
 		</p>
 
 		<fieldset class="fieldset">

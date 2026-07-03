@@ -125,9 +125,7 @@ export const getLibraryScanStatusQuery = () =>
 	createQuery(() => ({
 		staleTime: CACHE_TTL.SCAN_STATUS,
 		refetchInterval: (query: { state: { data?: LibraryScanStatus | undefined } }) =>
-			query.state.data?.status === 'scanning'
-				? CACHE_TTL.SCAN_STATUS
-				: CACHE_TTL.SCAN_STATUS_IDLE,
+			query.state.data?.status === 'scanning' ? CACHE_TTL.SCAN_STATUS : CACHE_TTL.SCAN_STATUS_IDLE,
 		queryKey: LibraryQueryKeyFactory.scanStatus(),
 		queryFn: ({ signal }) => api.global.get<LibraryScanStatus>(API.library.scanStatus(), { signal })
 	}));

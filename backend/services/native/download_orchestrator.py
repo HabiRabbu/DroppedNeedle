@@ -29,6 +29,7 @@ from infrastructure.persistence.download_store import DownloadStore
 from infrastructure.sse_publisher import SSEPublisher
 from models.download_manifest import (
     DownloadManifest,
+    ExpectedFile,
     ManifestCodec,
 )
 from repositories.protocols.download_client import (
@@ -43,7 +44,12 @@ from services.native.acquisition.strategy import (
     UsenetStrategy,
 )
 from services.native.album_preflight_scorer import AlbumPreflightScorer
-from services.native.file_processor import FileProcessor
+from services.native.file_processor import (
+    DOWNLOADS_MOUNT_UNAVAILABLE,
+    IMPORT_FAILED,
+    SOURCE_FILE_MISSING,
+    FileProcessor,
+)
 from services.native.library_manager import LibraryManager
 from services.native.track_matcher import TrackMatcher
 
@@ -166,6 +172,7 @@ class DownloadOrchestrator:
         usenet_import_settle_seconds: float = 2.0,
     ) -> None:
         self._client = client
+        self._naming_template = naming_template
         # Search/enqueue/import + the per-source policy all live on the strategies now; the
         # orchestrator keeps only the shared state below + the live enable toggles.
         self._usenet_enabled = usenet_enabled and usenet_indexer is not None and usenet_client is not None
@@ -757,7 +764,7 @@ class DownloadOrchestrator:
         await self._cancel_transfers(task)
         await self._finalize(task, DownloadStatus.COMPLETED if result.succeeded else DownloadStatus.FAILED)
 
-    async def _import_files(self, task, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201
+    async def _import_files(self, task, _manifest_override=None, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201
         """Import a subset of the manifest into the library via the source strategy (per-file
         for slskd, unpacked-folder for Usenet), quarantining only files that arrived but
         failed verification. Does not set the task's terminal status (the failover loop owns
@@ -766,18 +773,21 @@ class DownloadOrchestrator:
         ambiguous empty folder.
 
         ``completed`` = SABnzbd reported the job finished (vs an interrupted/failed poll);
-        only then can a still-empty folder mean a mount fault rather than a slow unpack."""
-        manifest = self._read_manifest(task.id)
+        only then can a still-empty folder mean a mount fault rather than a slow unpack.
+        ``_manifest_override`` skips the on-disk read (used by reimport_task, which builds
+        the manifest from DB data because _finalize already deleted the staging copy)."""
+        manifest = _manifest_override if _manifest_override is not None else self._read_manifest(task.id)
         return await self._strategies[task.source].import_files(
             task, manifest, only_filenames=only_filenames, completed=completed
         )
 
-    async def _cancel_transfers(self, task) -> None:  # noqa: ANN001 - DownloadTask
+    async def _cancel_transfers(self, task, _manifest_override=None) -> None:  # noqa: ANN001 - DownloadTask
         """Clear this task's download records (post-import, per DEC-1) and stop any still
         running. For Usenet this also deletes the unpacked data (del_files) - the post-
         import cleanup that discards the album's other tracks on a per-track grab (D4).
-        Best-effort; imported audio has already been MOVED out."""
-        manifest = self._read_manifest(task.id)
+        Best-effort; imported audio has already been MOVED out.
+        ``_manifest_override`` skips the on-disk read (used by reimport_task)."""
+        manifest = _manifest_override if _manifest_override is not None else self._read_manifest(task.id)
         strategy = self._strategy(task.source)
         if not strategy.is_cancelable(task, manifest):
             return
@@ -1152,6 +1162,85 @@ class DownloadOrchestrator:
                 )
 
         return await self._create_retry_task(task)
+
+    async def reimport_task(self, task_id: str, user_id: str, user_role: str):  # noqa: ANN201
+        """Re-run only the import half of the pipeline for a ``failed``/``partial``
+        task whose download the user finished by hand in slskd (e.g. resumed a
+        stalled/errored transfer in slskd's own UI after DroppedNeedle had already
+        given up). This re-resolves the SAME candidate slskd already picked."""
+        task = await self._store.get_task(task_id)
+        if task is None:
+            raise ResourceNotFoundError("Download task not found")
+        if user_role != "admin":
+            raise PermissionDeniedError("Only admins can reimport downloads")
+        if task.status not in ("failed", "partial"):
+            raise ValidationError("Only failed or partial downloads can be reimported")
+        if (
+            task.search_job_id is None
+            or task.candidate_index is None
+            or not task.source_username
+        ):
+            raise ValidationError("This download never selected a source to reimport from")
+
+        candidates = await self._store.get_search_job_candidates(task.search_job_id)
+        if task.candidate_index >= len(candidates):
+            raise ValidationError("Original source is no longer available")
+        candidate = candidates[task.candidate_index]
+
+        use_canonical = task.download_type == "track" and bool(task.track_duration_seconds)
+        manifest = DownloadManifest(
+            task_id=task.id,
+            source_username=candidate.username,
+            release_group_mbid=task.release_group_mbid,
+            release_mbid=task.release_mbid,
+            artist_mbid=task.artist_mbid,
+            artist_name=task.artist_name,
+            album_title=task.album_title,
+            year=task.year,
+            naming_template=self._naming_template,
+            is_track=use_canonical,
+            target_files=[
+                ExpectedFile(
+                    filename=f.filename,
+                    size=f.size,
+                    duration=task.track_duration_seconds if use_canonical else f.duration,
+                )
+                for f in candidate.files
+            ],
+        )
+
+        await self._store.update_status(task.id, "processing")
+        await self._bus.publish(f"download:{task.id}", "status", {"status": "processing"})
+
+        try:
+            result, _ = await self._import_files(task, manifest, completed=True)
+            await self._cancel_transfers(task, manifest)
+
+            if not result.succeeded and any(
+                f.reason == DOWNLOADS_MOUNT_UNAVAILABLE for f in result.failed
+            ):
+                await self._finalize(
+                    task, "failed", error_message=DOWNLOADS_MOUNT_UNAVAILABLE
+                )
+                return await self._store.get_task(task.id)
+
+            if await self._download_is_complete(task, bool(result.succeeded), result):
+                await self._finalize(task, "completed")
+            elif result.succeeded:
+                await self._finalize(task, "partial")
+            else:
+                if any(f.reason == SOURCE_FILE_MISSING for f in result.failed):
+                    fail_msg = _FILES_NOT_FOUND_MSG
+                elif any(f.reason == IMPORT_FAILED for f in result.failed):
+                    fail_msg = _IMPORT_FAILED_MSG
+                else:
+                    fail_msg = _NO_SOURCE_MSG
+                await self._finalize(task, "failed", error_message=fail_msg)
+        except Exception:
+            logger.exception("Unexpected error during reimport of task %s", task.id)
+            await self._finalize(task, "failed", error_message="Reimport failed unexpectedly")
+
+        return await self._store.get_task(task.id)
 
     async def _create_retry_task(self, task) -> str:  # noqa: ANN001 - DownloadTask
         """Create a fresh queued task carrying ``retry_count + 1`` and dispatch it.

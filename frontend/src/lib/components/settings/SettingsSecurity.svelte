@@ -267,8 +267,8 @@
 				<div class="alert alert-warning alert-soft text-sm">
 					<CircleAlert class="h-4 w-4 shrink-0" />
 					<span>
-						<strong>Only enable if you are serving DroppedNeedle over HTTPS.</strong> Enabling HSTS on a
-						plain HTTP install will lock users out until the HSTS header expires in their browser.
+						<strong>Only enable if you are serving DroppedNeedle over HTTPS.</strong> Enabling HSTS on
+						a plain HTTP install will lock users out until the HSTS header expires in their browser.
 					</span>
 				</div>
 

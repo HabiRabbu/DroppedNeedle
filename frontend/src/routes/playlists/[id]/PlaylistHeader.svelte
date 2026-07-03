@@ -292,7 +292,9 @@
 				class="group/name flex items-center gap-2 text-left"
 				aria-label="Edit playlist name"
 			>
-				<h1 class="hero-title text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold leading-tight truncate">
+				<h1
+					class="hero-title text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold leading-tight truncate"
+				>
 					{playlist.name}
 				</h1>
 				<Pencil
@@ -300,7 +302,9 @@
 				/>
 			</button>
 		{:else}
-			<h1 class="hero-title text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold leading-tight truncate">
+			<h1
+				class="hero-title text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-bold leading-tight truncate"
+			>
 				{playlist.name}
 			</h1>
 		{/if}
@@ -361,13 +365,18 @@
 			</button>
 
 			{#if canEdit}
-				<label class="ml-1 flex cursor-pointer items-center gap-2" title="Toggle who can see this playlist">
+				<label
+					class="ml-1 flex cursor-pointer items-center gap-2"
+					title="Toggle who can see this playlist"
+				>
 					{#if playlist.is_public}
 						<Globe class="h-4 w-4 text-success" />
 					{:else}
 						<Lock class="h-4 w-4 text-base-content/50" />
 					{/if}
-					<span class="text-sm text-base-content/70">{playlist.is_public ? 'Public' : 'Private'}</span>
+					<span class="text-sm text-base-content/70"
+						>{playlist.is_public ? 'Public' : 'Private'}</span
+					>
 					<input
 						type="checkbox"
 						class="toggle toggle-sm toggle-success"

@@ -7,6 +7,7 @@ import { LibraryQueryKeyFactory } from '$lib/queries/library/LibraryQueryKeyFact
 import { toastStore } from '$lib/stores/toast';
 import type {
 	CancelDownloadResponse,
+	ReimportDownloadResponse,
 	RequestAccepted,
 	RetryDownloadResponse,
 	TrackRequestResponse
@@ -229,5 +230,30 @@ export function discardHeldTrack() {
 		},
 		onError: (err: unknown) =>
 			toastStore.show({ message: errorMessage(err, 'Failed to discard track'), type: 'error' })
+	}));
+}
+
+export function reimportDownload() {
+	return createMutation(() => ({
+		mutationFn: (id: string) =>
+			api.global.post<ReimportDownloadResponse>(API.downloads.reimport(id), {}),
+		onSuccess: (data: ReimportDownloadResponse) => {
+			if (data.status === 'completed') {
+				toastStore.show({ message: 'Import complete', type: 'success' });
+			} else if (data.status === 'partial') {
+				toastStore.show({
+					message: 'Imported what was found, some files still missing',
+					type: 'info'
+				});
+			} else {
+				toastStore.show({
+					message: data.error_message ?? "Couldn't find the files on the downloads mount yet",
+					type: 'error'
+				});
+			}
+			void invalidateTasks();
+		},
+		onError: (err: unknown) =>
+			toastStore.show({ message: errorMessage(err, 'Failed to reimport download'), type: 'error' })
 	}));
 }
