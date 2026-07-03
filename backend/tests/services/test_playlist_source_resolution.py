@@ -277,9 +277,9 @@ class TestStringTrackNumberRegression:
             "mbid-abc", None, None, None,
         )
 
-        assert isinstance(next(iter(local)), int)
-        assert local[6] == ("Speed Kills", "2608")
-        assert local[1] == ("Johnny", "2601")
+        assert isinstance(next(iter(local)), tuple)
+        assert local[(1, 6)] == ("Speed Kills", "2608")
+        assert local[(1, 1)] == ("Johnny", "2601")
 
 
 class TestResolveTrackSourcesConcurrency:
@@ -340,7 +340,7 @@ class TestResolveTrackSourcesConcurrency:
             if album_id == "mbid-a":
                 raise RuntimeError("boom")
             # (jf_by_num, local_by_num, nd_by_num, plex_by_num)
-            return ({}, {1: ("Song B", "789")}, {}, {})
+            return ({}, {(1, 1): ("Song B", "789")}, {}, {})
 
         service._resolve_album_sources = AsyncMock(side_effect=_flaky)
 

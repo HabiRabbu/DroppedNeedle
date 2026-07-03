@@ -654,7 +654,7 @@ class PlaylistService:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            local_by_num[(t.disc_number or 1, key)] = (t.title, str(t.track_file_id))
+                            local_by_num[(getattr(t, "disc_number", None) or 1, key)] = (t.title, str(t.track_file_id))
             except Exception:  # noqa: BLE001
                 logger.debug("Local source resolution failed for album %s", album_id, exc_info=True)
 
