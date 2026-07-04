@@ -1621,11 +1621,11 @@ async def test_reimport_task_rejects_wrong_status(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_reimport_task_not_found(tmp_path: Path):
+async def test_reimport_task_rejects_missing_task(tmp_path: Path):
     store, orch, *_ = _build(tmp_path)
 
     with pytest.raises(ResourceNotFoundError):
-        await orch.reimport_task("missing-id")
+        await orch.reimport_task("missing")
 
 
 @pytest.mark.asyncio
@@ -1660,7 +1660,7 @@ async def test_reimport_task_mount_fault_does_not_cancel_transfers(tmp_path: Pat
     task = await _new_task(store, status="failed", track_count=1)
     await _link_candidate(store, task.id, _candidate(0.9, files=1))
 
-    result = await orch.reimport_task(task.id, "user-a", "user")
+    result = await orch.reimport_task(task.id)
 
     assert result.status == "failed"
     assert result.error_message == DOWNLOADS_MOUNT_UNAVAILABLE
