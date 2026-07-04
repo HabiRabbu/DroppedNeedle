@@ -27,6 +27,7 @@ from api.v1.schemas.settings import (
     LibrarySettings,
     LibraryPathRequest,
     SpotifySettings,
+    HomeSettings,
     ACOUSTID_KEY_MASK,
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo

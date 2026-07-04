@@ -60,6 +60,21 @@
 			<a href="/profile" class="link link-primary">profile</a> to import their personal playlists.
 		</div>
 
+		<div class="rounded-xl border border-warning/20 bg-warning/5 p-3 text-sm text-base-content/70">
+			<p class="font-medium text-warning/80">Development mode restriction</p>
+			<p class="mt-1">
+				Spotify apps in development mode only allow up to 5 explicitly allowlisted users. Each user
+				who wants to import playlists must be added by email in your
+				<a
+					href="https://developer.spotify.com/dashboard"
+					target="_blank"
+					rel="noopener noreferrer"
+					class="link link-primary">Spotify app dashboard</a
+				>
+				under <span class="font-medium">User Management</span>.
+			</p>
+		</div>
+
 		{#if form.loading}
 			<div class="flex justify-center py-10">
 				<span class="loading loading-spinner loading-lg"></span>
