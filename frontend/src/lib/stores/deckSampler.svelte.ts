@@ -357,7 +357,9 @@ function createDeckSampler() {
 			if (activeEl) activeEl.volume = volume;
 			try {
 				localStorage.setItem(VOLUME_KEY, String(volume));
-			} catch { /* ignore */ }
+			} catch {
+				/* ignore */
+			}
 		},
 
 		/** Single album: play its clips back-to-back with crossfades. */
