@@ -20,8 +20,11 @@
 		if (importing || importingAll) return;
 		importing = playlist.id;
 		try {
-			const result = await importMutation.mutateAsync(playlist.id);
-			toastStore.show({ message: `Imported "${playlist.name}"`, type: 'success' });
+			const result = await importMutation.mutateAsync({ id: playlist.id, name: playlist.name });
+			toastStore.show({
+				message: `"${playlist.name}" is importing in the background`,
+				type: 'success'
+			});
 			await goto(`/playlists/${result.playlist_id}`);
 		} catch {
 			toastStore.show({ message: `Failed to import "${playlist.name}"`, type: 'error' });
@@ -43,7 +46,7 @@
 
 		for (const playlist of unimported) {
 			try {
-				await importMutation.mutateAsync(playlist.id);
+				await importMutation.mutateAsync({ id: playlist.id, name: playlist.name });
 			} catch {
 				failed++;
 			}
@@ -53,12 +56,12 @@
 		importingAll = false;
 		if (failed === 0) {
 			toastStore.show({
-				message: `Imported all ${unimported.length} playlists`,
+				message: `All ${unimported.length} playlists are importing in the background`,
 				type: 'success'
 			});
 		} else {
 			toastStore.show({
-				message: `Imported ${unimported.length - failed} of ${unimported.length} playlists (${failed} failed)`,
+				message: `Started ${unimported.length - failed} of ${unimported.length} imports (${failed} failed)`,
 				type: 'info'
 			});
 		}

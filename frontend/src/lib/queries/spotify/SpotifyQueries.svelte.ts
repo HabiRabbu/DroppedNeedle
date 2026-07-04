@@ -21,10 +21,17 @@ export const getSpotifyPlaylistsQuery = () =>
 		retry: false
 	}));
 
+interface ImportSpotifyPlaylistInput {
+	id: string;
+	name: string;
+}
+
 export const createImportSpotifyPlaylistMutation = () =>
 	createMutation(() => ({
-		mutationFn: (spotifyPlaylistId: string) =>
-			api.global.post<{ playlist_id: string }>(API.me.spotifyImport(spotifyPlaylistId)),
+		mutationFn: (input: ImportSpotifyPlaylistInput) =>
+			api.global.post<{ playlist_id: string }>(API.me.spotifyImport(input.id), {
+				name: input.name
+			}),
 		onSuccess: () => {
 			invalidateQueriesWithPersister({
 				queryKey: PlaylistQueryKeyFactory.list(authStore.user?.id)

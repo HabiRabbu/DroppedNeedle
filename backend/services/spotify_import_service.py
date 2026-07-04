@@ -97,31 +97,35 @@ class SpotifyImportService:
             )
         return result
 
-    async def import_playlist(self, user_id: str, spotify_playlist_id: str) -> str:
-        client = await self._get_client(user_id)
-
-        pl_info, raw_tracks = await asyncio.gather(
-            client.get_playlist(spotify_playlist_id),
-            client.get_playlist_tracks(spotify_playlist_id),
-        )
-        name = (pl_info.get("name") or "").strip() or "Spotify Playlist"
-
-        album_to_mbid = await self._resolve_album_mbids(raw_tracks)
-
+    async def ensure_playlist_record(
+        self, user_id: str, spotify_playlist_id: str, name: str
+    ) -> str:
         source_ref = f"spotify:{spotify_playlist_id}"
         existing = await self._playlist_service.get_by_source_ref(source_ref, user_id)
         if existing:
-            playlist_id = existing.id
-            existing_tracks = await self._async_repo.get_tracks(playlist_id)
-            if existing_tracks:
-                await self._async_repo.remove_tracks(
-                    playlist_id, [t.id for t in existing_tracks]
-                )
-        else:
-            record = await self._playlist_service.create_playlist(
-                name, source_ref=source_ref, user_id=user_id
+            return existing.id
+        record = await self._playlist_service.create_playlist(
+            name or "Spotify Playlist", source_ref=source_ref, user_id=user_id
+        )
+        return record.id
+
+    async def populate_playlist(
+        self, user_id: str, spotify_playlist_id: str, playlist_id: str
+    ) -> None:
+        client = await self._get_client(user_id)
+
+        _pl_info, raw_tracks = await asyncio.gather(
+            client.get_playlist(spotify_playlist_id),
+            client.get_playlist_tracks(spotify_playlist_id),
+        )
+
+        album_to_mbid = await self._resolve_album_mbids(raw_tracks)
+
+        existing_tracks = await self._async_repo.get_tracks(playlist_id)
+        if existing_tracks:
+            await self._async_repo.remove_tracks(
+                playlist_id, [t.id for t in existing_tracks]
             )
-            playlist_id = record.id
 
         track_dicts = []
         for track in raw_tracks:
@@ -152,8 +156,15 @@ class SpotifyImportService:
 
         await self._async_repo.add_tracks(playlist_id, track_dicts)
         logger.info(
-            f"Imported Spotify playlist {spotify_playlist_id} - internal {playlist_id} ({len(track_dicts)} tracks)",
+            f"Imported Spotify playlist {spotify_playlist_id} - internal {playlist_id} ({len(track_dicts)} tracks)"
         )
+
+    async def import_playlist(self, user_id: str, spotify_playlist_id: str) -> str:
+        client = await self._get_client(user_id)
+        pl_info = await client.get_playlist(spotify_playlist_id)
+        name = (pl_info.get("name") or "").strip() or "Spotify Playlist"
+        playlist_id = await self.ensure_playlist_record(user_id, spotify_playlist_id, name)
+        await self.populate_playlist(user_id, spotify_playlist_id, playlist_id)
         return playlist_id
 
     async def _resolve_album_mbids(
