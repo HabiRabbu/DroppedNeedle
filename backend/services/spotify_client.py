@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from datetime import datetime, timedelta, timezone
@@ -111,6 +112,17 @@ class SpotifyClient:
                     headers={"Authorization": f"Bearer {self._access_token}"},
                     timeout=15,
                 )
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 2))
+            if retry_after <= 10:
+                await asyncio.sleep(retry_after)
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        f"{_API_BASE}{path}",
+                        params=params,
+                        headers={"Authorization": f"Bearer {self._access_token}"},
+                        timeout=15,
+                    )
         resp.raise_for_status()
         return resp.json()
 
