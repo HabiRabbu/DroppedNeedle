@@ -1,12 +1,14 @@
 """Top Picks: pure scoring (services/discover/top_picks.py) and the section
 builders added alongside it (listeners-like-you, anniversaries, new-from-followed)."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from api.v1.schemas.discover import TopPicksSection
+from infrastructure.service_health import service_health
 from services.discover.homepage_service import DiscoverHomepageService
 from services.discover.top_picks import TopPickCandidate, score_candidates
 
@@ -61,7 +63,32 @@ class TestScoreCandidates:
         ]
         assert [p.score for p in day1a] != [p.score for p in day2]
 
-    def test_max_one_album_per_artist(self):
+    def test_personalised_picks_rank_ahead_of_trending(self):
+        # a high-popularity trending album (no similarity) must NOT outrank a personalised
+        # similar-artist pick, even one with a modest match and no listen-count (the LB-outage
+        # shape) - trending only fills the tail
+        personalised = [
+            make_candidate(
+                release_group_mbid=f"p-{i}", artist_mbid=f"pa-{i}",
+                sim=0.2, seed_artist="Seed", listen_count=0,
+            )
+            for i in range(3)
+        ]
+        trending = [
+            make_candidate(
+                release_group_mbid=f"t-{i}", artist_mbid=f"ta-{i}",
+                sim=0.0, from_trending=True, listen_count=50_000_000,
+            )
+            for i in range(3)
+        ]
+        picks = score_candidates(
+            trending + personalised,  # trending first in the input on purpose
+            user_id=_UID, date_iso=_DATE, user_genres=set(), genres_by_artist={}, count=4,
+        )
+        # all three personalised come before any trending
+        assert [p.candidate.from_trending for p in picks] == [False, False, False, True]
+
+    def test_max_two_albums_per_artist(self):
         candidates = [
             make_candidate(release_group_mbid=f"rg-{i}", artist_mbid="same-artist", sim=0.9)
             for i in range(4)
@@ -70,7 +97,7 @@ class TestScoreCandidates:
             candidates, user_id=_UID, date_iso=_DATE, user_genres=set(), genres_by_artist={}
         )
         artists = [p.candidate.artist_mbid for p in picks]
-        assert artists.count("same-artist") == 1
+        assert artists.count("same-artist") == 2  # at most two per artist
         assert "other" in artists
 
     def test_reasons_reflect_signals(self):
@@ -157,6 +184,7 @@ class TestBuildTopPicks:
 
         assert isinstance(section, TopPicksSection)
         assert section.items
+        assert section.personalizing is False  # healthy LB path: real personalised picks
         item = section.items[0]
         assert item.album.mbid == "rg-1"
         assert item.seed_artist == "Radiohead"
@@ -189,6 +217,121 @@ class TestBuildTopPicks:
         assert section is None
 
     @pytest.mark.asyncio
+    async def test_thorough_build_ignores_cached_section(self):
+        # A cold on-visit build can cache a trending-only section; the warmer's thorough
+        # build must REBUILD rather than return that cache, or the warm is a no-op.
+        from services.discover.mbid_resolution_service import discover_build_thorough
+
+        svc = _svc()
+        stale = TopPicksSection(items=[], source="listenbrainz", personalizing=True)
+        svc._memory_cache = MagicMock()
+        svc._memory_cache.get = AsyncMock(return_value={"section": stale})
+        svc._memory_cache.set = AsyncMock()
+        svc._top_picks_cache_key = MagicMock(return_value="tp:u")
+        seed = SimpleNamespace(artist_name="Radiohead", artist_mbids=["seed-1"], listen_count=10)
+        results = {
+            "similar_0": [
+                SimpleNamespace(artist_mbid="sim-1", artist_name="The Verve", listen_count=5, score=100.0)
+            ]
+        }
+        svc._lb_repo.get_artist_top_release_groups = AsyncMock(
+            return_value=[_rg("rg-1", "Urban Hymns", "The Verve", ["sim-1"])]
+        )
+
+        # on-visit: short-circuits to the cached section
+        assert await svc._build_top_picks(_UID, "listenbrainz", True, "u", results, [seed]) is stale
+
+        # thorough: ignores the cache and rebuilds fresh
+        token = discover_build_thorough.set(True)
+        try:
+            rebuilt = await svc._build_top_picks(_UID, "listenbrainz", True, "u", results, [seed])
+        finally:
+            discover_build_thorough.reset(token)
+        assert rebuilt is not stale
+        assert rebuilt is not None and rebuilt.items  # actually built picks
+
+    @pytest.mark.asyncio
+    async def test_populates_from_trending_when_lastfm_similarity_starves(self, monkeypatch):
+        # LB popularity degraded -> Top Picks sources similarity from Last.fm, which
+        # resolves via MusicBrainz (1/s) and can be starved during the outage. The
+        # section must still populate from the MB-free trending pool rather than being
+        # cancelled empty at the task budget.
+        import services.discover.homepage_service as mod
+
+        service_health.mark_degraded(
+            "listenbrainz", "popularity", message="down", fallback="lastfm"
+        )
+        try:
+            svc = _svc()
+            svc._lfm_repo = MagicMock()  # non-None so the popularity gate uses Last.fm
+            monkeypatch.setattr(mod, "TOP_PICKS_SIMILARITY_BUDGET_SECONDS", 0.05)
+
+            async def _hang(*_a, **_k):
+                await asyncio.sleep(1)  # never completes within the tiny budget
+
+            svc._add_lastfm_top_pick_candidates = _hang
+            svc._lb_repo.get_sitewide_top_release_groups = AsyncMock(
+                return_value=[_rg("rg-trend", "Trend Album", "Trend Artist", ["a-trend"])]
+            )
+
+            seed = SimpleNamespace(artist_name="Radiohead", artist_mbids=["seed-1"], listen_count=10)
+            results = {
+                "similar_0": [
+                    SimpleNamespace(artist_mbid="sim-1", artist_name="X", listen_count=5, score=100.0)
+                ]
+            }
+            section = await svc._build_top_picks(_UID, "lastfm", True, "u", results, [seed], lfm_enabled=True)
+
+            assert section is not None
+            assert any(i.album.mbid == "rg-trend" for i in section.items)
+        finally:
+            service_health.clear()
+
+    @pytest.mark.asyncio
+    async def test_trending_only_result_cached_briefly_for_retry(self, monkeypatch):
+        # A degraded (trending-only) build must NOT be frozen for the full 4h - it should
+        # cache briefly so the next build retries as MusicBrainz warms and personalised
+        # picks converge (fixes "Top Picks stuck at 48%").
+        import services.discover.homepage_service as mod
+
+        service_health.mark_degraded(
+            "listenbrainz", "popularity", message="down", fallback="lastfm"
+        )
+        try:
+            svc = _svc()
+            svc._lfm_repo = MagicMock()
+
+            async def _adds_nothing(*_a, **_k):
+                return  # personalisation starved: no non-trending candidates
+
+            svc._add_lastfm_top_pick_candidates = _adds_nothing
+            svc._lb_repo.get_sitewide_top_release_groups = AsyncMock(
+                return_value=[_rg("rg-trend", "Trend Album", "Trend Artist", ["a-trend"])]
+            )
+
+            set_calls: list[tuple[str, int]] = []
+            cache = MagicMock()
+            cache.get = AsyncMock(return_value=None)
+            cache.set = AsyncMock(side_effect=lambda k, v, ttl=None: set_calls.append((k, ttl)))
+            svc._memory_cache = cache
+
+            seed = SimpleNamespace(artist_name="R", artist_mbids=["s-1"], listen_count=1)
+            results = {
+                "similar_0": [
+                    SimpleNamespace(artist_mbid="sim-1", artist_name="X", listen_count=1, score=100.0)
+                ]
+            }
+            section = await svc._build_top_picks(_UID, "lastfm", True, "u", results, [seed], lfm_enabled=True)
+
+            assert section is not None  # populated from trending
+            assert section.personalizing is True  # drives the "still personalising" UI hint
+            picks_ttls = [ttl for (k, ttl) in set_calls if k.startswith("top_picks:")]
+            assert picks_ttls
+            assert all(ttl == mod.DISCOVER_PICKS_DEGRADED_TTL for ttl in picks_ttls)
+        finally:
+            service_health.clear()
+
+    @pytest.mark.asyncio
     async def test_result_is_cached(self):
         svc = _svc()
         store: dict = {}
@@ -208,6 +351,27 @@ class TestBuildTopPicks:
 
         assert first is not None
         assert second == first
+
+
+class TestResolveReleaseMbids:
+    @pytest.mark.asyncio
+    async def test_degrades_to_empty_map_when_mb_starved(self, monkeypatch):
+        # under the outage the release->RG resolution competes on MB's 1/s limit; if it
+        # blows its budget it returns {} so callers fall back to raw release mbids instead
+        # of the whole section timing out at the 25s task budget and vanishing.
+        import services.discover.homepage_service as mod
+
+        svc = _svc()
+        svc._mb_repo = MagicMock()
+
+        async def _hang(_rid):
+            await asyncio.sleep(1)
+
+        svc._mb_repo.get_release_group_id_from_release = _hang
+        monkeypatch.setattr(mod, "DISCOVER_MB_RESOLVE_BUDGET_SECONDS", 0.05)
+
+        result = await svc._resolve_release_mbids(["rel-1", "rel-2"])
+        assert result == {}
 
 
 class TestListenersLikeYou:

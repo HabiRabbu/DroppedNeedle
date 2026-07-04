@@ -276,6 +276,12 @@ class MusicBrainzAlbumMixin:
                 priority=priority,
             )
             if not result:
+                # Definitive miss (mb_api_get returns {} only on HTTP 404 - 503/5xx
+                # raise instead and land in the except below). Negative-cache it briefly
+                # so a merged/deleted/passthrough-garbage RG mbid isn't re-fetched on every
+                # discover build. Short TTL bounds staleness and self-heals; the except
+                # (transient) path stays uncached on purpose.
+                await self._cache.set(cache_key, {}, ttl_seconds=600)
                 return None
             await self._cache.set(cache_key, result, ttl_seconds=3600)
             return result

@@ -84,19 +84,26 @@ def score_candidates(
             )
         )
 
-    scored.sort(key=lambda s: s.score, reverse=True)
+    # Personalised (similar-artist) picks always rank ahead of generic worldwide-trending
+    # ones: trending is only the fallback tail that fills the list when we're short on
+    # personalised candidates (during the LB-popularity outage these lack a listen-count
+    # popularity term, so a plain score sort would let high-play trending outrank them and
+    # dilute Top Picks). Relevance order (score) is preserved WITHIN each tier.
+    scored.sort(key=lambda s: (s.candidate.from_trending, -s.score))
 
-    # diversity: max one album per artist in the final list
+    # diversity: at most two albums per artist in the final list. One keeps variety; allowing
+    # a second (personalised) album beats padding the list with generic worldwide-trending when
+    # a heard-heavy library leaves few distinct similar artists with unheard albums.
     selected: list[ScoredPick] = []
-    seen_artists: set[str] = set()
+    artist_counts: dict[str, int] = {}
     seen_mbids: set[str] = set()
     for pick in scored:
         artist_key = pick.candidate.artist_mbid.lower() or pick.candidate.artist_name.lower()
         mbid_key = pick.candidate.release_group_mbid.lower()
-        if mbid_key in seen_mbids or artist_key in seen_artists:
+        if mbid_key in seen_mbids or artist_counts.get(artist_key, 0) >= 2:
             continue
         selected.append(pick)
-        seen_artists.add(artist_key)
+        artist_counts[artist_key] = artist_counts.get(artist_key, 0) + 1
         seen_mbids.add(mbid_key)
         if len(selected) >= count:
             break

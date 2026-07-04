@@ -17,6 +17,7 @@ vi.mock('$lib/stores/integration', async () => {
 const section: TopPicksSection = {
 	title: 'Top Picks for You',
 	source: 'listenbrainz',
+	personalizing: false,
 	items: [
 		{
 			album: {
@@ -92,5 +93,13 @@ describe('TopPicksDeck', () => {
 		} as Parameters<typeof render<typeof TopPicksDeck>>[1]);
 
 		expect(document.querySelector('section')).toBeNull();
+	});
+
+	it('shows the personalising hint only while still warming', async () => {
+		render(TopPicksDeck, {
+			props: { section: { ...section, personalizing: true } as TopPicksSection }
+		} as Parameters<typeof render<typeof TopPicksDeck>>[1]);
+
+		await expect.element(page.getByText('Personalising your picks')).toBeVisible();
 	});
 });

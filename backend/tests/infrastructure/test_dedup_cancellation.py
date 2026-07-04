@@ -179,3 +179,27 @@ async def test_key_cleanup_after_completion():
     result = await dedup.dedupe("key", simple_coro)
     assert result == 42
     assert "key" not in dedup._pending
+
+
+@pytest.mark.anyio
+async def test_cancelled_leader_cancels_shared_future_not_set_exception():
+    """A leader cancelled with no follower waiting must CANCEL the shared future rather than
+    set a CancelledError on it - otherwise asyncio logs 'Future exception was never retrieved'
+    at ERROR (routine when budgeted discover builds cancel in-flight MusicBrainz lookups)."""
+    dedup = RequestDeduplicator()
+    started = asyncio.Event()
+
+    async def hang():
+        started.set()
+        await asyncio.Event().wait()  # never completes
+
+    leader = asyncio.create_task(dedup.dedupe("k", hang))
+    await started.wait()
+    future = dedup._pending["k"]  # capture before the finally pops it
+
+    leader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await leader
+
+    assert future.cancelled()  # cancelled, NOT holding a set exception
+    assert "k" not in dedup._pending

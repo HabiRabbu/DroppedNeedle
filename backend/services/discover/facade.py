@@ -151,6 +151,12 @@ class DiscoverService:
     async def warm_cache(self, user_id: str) -> None:
         return await self._homepage.warm_cache(user_id)
 
+    async def peek_freshness(self, user_id: str) -> tuple[bool, bool]:
+        return await self._homepage.peek_freshness(user_id)
+
+    async def warm_cache_thorough(self, user_id: str) -> None:
+        return await self._homepage.warm_cache_thorough(user_id)
+
     async def build_discover_data(self, user_id: str):
         return await self._homepage.build_discover_data(user_id)
 

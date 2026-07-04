@@ -172,28 +172,14 @@
 		subtitle="Music recommendations based on what you listen to."
 		gradientClass="bg-gradient-to-br from-info/30 via-primary/20 to-secondary/10"
 		{loading}
-		{refreshing}
-		{isUpdating}
+		isUpdating={isUpdating || isUpdatingInBackground}
 		{lastUpdated}
-		refreshLabel="Refresh"
-		onRefresh={() => handleRefresh()}
 	>
 		{#snippet title()}
 			<Compass class="inline h-8 w-8 sm:h-10 sm:w-10 lg:h-12 lg:w-12 mr-2 align-text-bottom" />
 			Discover
 		{/snippet}
 	</PageHeader>
-
-	<div class="flex justify-end px-4 -mt-4 mb-4 sm:px-6 lg:px-8">
-		<a
-			href="/settings?tab=discover"
-			class="btn btn-ghost btn-sm gap-2 text-base-content/60 hover:text-base-content"
-			title="Choose which sections appear here"
-		>
-			<SlidersHorizontal class="h-4 w-4" />
-			<span class="hidden sm:inline">Customise</span>
-		</a>
-	</div>
 
 	{#if error && !discoverData}
 		<div class="mt-16 flex flex-col items-center justify-center px-4">
@@ -231,14 +217,19 @@
 					{/each}
 				</div>
 			{:else if discoverData}
-				<DiscoverZoneNav {zones} />
-				<div class="space-y-10 sm:space-y-12">
-					{#if isUpdatingInBackground}
-						<div class="flex items-center justify-center gap-2 pb-1 text-xs text-base-content/50">
-							<span class="loading loading-spinner loading-xs text-primary"></span>
-							Updating your recommendations…
-						</div>
-					{/if}
+				<DiscoverZoneNav {zones}>
+					{#snippet action()}
+						<a
+							href="/settings?tab=discover"
+							class="btn btn-ghost btn-xs gap-1.5 text-base-content/60 hover:text-primary"
+							title="Choose which sections appear here"
+						>
+							<SlidersHorizontal class="h-3.5 w-3.5" />
+							<span class="hidden sm:inline">Customise</span>
+						</a>
+					{/snippet}
+				</DiscoverZoneNav>
+				<div class="space-y-10 sm:space-y-12" class:is-refreshing={isUpdatingInBackground}>
 					{#if queueEnabled}
 						<div id="zone-queue" class="discover-section-enter scroll-mt-14">
 							<DiscoverQueueDeck />
@@ -310,7 +301,7 @@
 								{#if discoverData.daily_mixes?.length}
 									<div>
 										<h3
-											class="text-sm font-semibold text-base-content/70 mb-3 flex items-center gap-2"
+											class="section-title text-sm font-semibold text-base-content/70 mb-3 flex items-center gap-2"
 										>
 											<Music2 class="h-4 w-4" />
 											Daily Mixes
@@ -326,7 +317,7 @@
 								{#if discoverData.radio_sections?.length}
 									<div>
 										<h3
-											class="text-sm font-semibold text-base-content/70 mb-3 flex items-center gap-2"
+											class="section-title text-sm font-semibold text-base-content/70 mb-3 flex items-center gap-2"
 										>
 											<Radio class="h-4 w-4" />
 											Radio Stations

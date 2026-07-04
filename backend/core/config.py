@@ -26,6 +26,10 @@ class Settings(BaseSettings):
         default="contact@droppedneedle.com",
         description="Contact email for MusicBrainz API User-Agent. Override with your own if desired."
     )
+    discover_warmer_enabled: bool = Field(
+        default=True,
+        description="Proactively warm per-user Discover/Home in the background through the day (kill switch)."
+    )
 
     port: int = Field(default=8688)
     debug: bool = Field(default=False)

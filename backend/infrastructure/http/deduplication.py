@@ -53,7 +53,13 @@ class RequestDeduplicator:
                     if not future.done():
                         future.set_result(result)
                     return result
-                except ClientDisconnectedError:
+                except (ClientDisconnectedError, asyncio.CancelledError):
+                    # CANCEL the shared future (don't set_exception). Setting a CancelledError
+                    # leaves the future holding an exception nobody retrieves when the leader is
+                    # cancelled with no follower waiting -> asyncio logs "Future exception was
+                    # never retrieved" at ERROR (routine during the LB outage, when budgeted
+                    # discover builds cancel in-flight 1/s MusicBrainz lookups). A cancelled
+                    # future is quiet and still lets a follower retry as the new leader.
                     if not future.done():
                         future.cancel()
                     raise

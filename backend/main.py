@@ -13,7 +13,7 @@ from core.dependencies import (
     init_app_state, 
     cleanup_app_state
 )
-from core.tasks import start_cache_cleanup_task, start_library_auto_scan_task, start_disk_cache_cleanup_task, start_genre_cache_warming_task, start_artist_discovery_cache_warming_task, start_audiodb_sweep_task, start_request_status_sync_task, start_memory_maintenance_task, start_poll_new_releases_task
+from core.tasks import start_cache_cleanup_task, start_library_auto_scan_task, start_disk_cache_cleanup_task, start_genre_cache_warming_task, start_artist_discovery_cache_warming_task, start_audiodb_sweep_task, start_request_status_sync_task, start_memory_maintenance_task, start_poll_new_releases_task, start_discover_home_warmer_task
 from core.task_registry import TaskRegistry
 from core.config import get_settings
 from core.dependencies.auth_providers import get_auth_service, get_auth_store
@@ -447,12 +447,18 @@ async def lifespan(app: FastAPI):
         resume_task.add_done_callback(lambda t: logger.error("Resume sync failed: %s", t.exception()) if t.exception() else None)
         TaskRegistry.get_instance().register("library-sync-resume", resume_task)
 
-    # Phase 5: Home/Discover are per-user now - no boot-time prewarm (it would build
-    # for the retired global account and is unbounded across users). Warming is
-    # on-demand on the first per-user request; the existing skeleton covers the cold
-    # load (L2). Only the account-less genre warm remains.
+    # Phase 5: Home/Discover are per-user. Served on-demand (stale-while-revalidate) on the
+    # first request, AND kept warm/converged in the background through the day by the per-user
+    # warmer below (one user at a time, yields to active users) plus the account-less genre
+    # warm. This is what lets discovery "update as the day goes along" instead of only when a
+    # user opens the page - and gives the rate-limited personalisation time to converge.
     from core.dependencies import get_home_service
     start_genre_cache_warming_task(get_home_service())
+
+    from core.dependencies import get_discover_service, get_per_user_client_factory
+    start_discover_home_warmer_task(
+        get_discover_service, get_home_service, get_auth_store, get_per_user_client_factory,
+    )
 
     from core.dependencies import get_artist_discovery_service
     start_artist_discovery_cache_warming_task(

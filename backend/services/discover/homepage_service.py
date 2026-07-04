@@ -39,7 +39,7 @@ from services.home.integration_helpers import resolve_source_value
 from services.per_user_client_factory import PerUserClientFactory
 from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
 from services.discover.integration_helpers import IntegrationHelpers
-from services.discover.mbid_resolution_service import MbidResolutionService
+from services.discover.mbid_resolution_service import MbidResolutionService, discover_build_thorough
 from services.discover.queue_strategies import build_similar_artist_pools, build_similar_artist_pools_lastfm, discover_by_genres, queue_item_to_home_album, round_robin_dedup_select
 from repositories.listenbrainz_repository import lb_popularity_degraded
 from services.discover.top_picks import TopPickCandidate, score_candidates
@@ -63,6 +63,32 @@ DISCOVER_CACHE_TTL = 43200  # 12 hours
 STALE_REVALIDATE_SECONDS = 300  # 5 minutes
 # cap any single upstream call within a build so one slow service can't hang the update
 DISCOVER_TASK_TIMEOUT_SECONDS = 25
+# Inner budgets for the Last.fm->MusicBrainz release-group resolution that every section
+# falls back to during a ListenBrainz-popularity outage. MB is a hard 1 req/s, so with
+# every section resolving at once the sections mutually starve and hit the 25s task
+# timeout. Bounding each MB-heavy pool well under 25s lets the section degrade gracefully
+# (Top Picks -> MB-free trending; the Last.fm chart/scrobble sections -> raw release mbids)
+# instead of the whole task being cancelled mid-resolution and vanishing.
+TOP_PICKS_SIMILARITY_BUDGET_SECONDS = 12
+DISCOVER_MB_RESOLVE_BUDGET_SECONDS = 15
+# Per-build multiplier on every section budget below. Defaults to 1.0 (on-visit builds stay
+# tightly budgeted so the page paints fast). The background warmer sets it high via a
+# ContextVar so its build runs effectively unbudgeted - the Last.fm->MusicBrainz resolution
+# gets the TIME it needs to complete and (with the incremental persist) bank exactly the
+# albums each section uses, so the next on-visit build is cheap and fully personalised. It's
+# a ContextVar (per-task), so a concurrent on-visit build on the same @singleton is unaffected.
+PREWARM_BUDGET_SCALE = 40.0
+
+
+def _scaled(base: float) -> float:
+    """A section budget, relaxed PREWARM_BUDGET_SCALE-fold during a thorough (warmer) build so
+    the rate-limited MusicBrainz resolution can complete; unchanged for on-visit builds."""
+    return base * PREWARM_BUDGET_SCALE if discover_build_thorough.get() else base
+# Per-radio-station pool budget. MUST stay under DISCOVER_TASK_TIMEOUT_SECONDS or the
+# outer task timeout cancels the whole radio_sections task (a hard failure) before this
+# inner one can fire and degrade a slow station to empty. The stations run concurrently,
+# so wall-clock is ~this value, not N times it.
+RADIO_POOL_BUDGET_SECONDS = 18
 REDISCOVER_PLAY_THRESHOLD = 5
 REDISCOVER_MONTHS_AGO = 3
 MISSING_ESSENTIALS_MIN_ALBUMS = 3
@@ -70,6 +96,11 @@ MISSING_ESSENTIALS_MAX_PER_ARTIST = 3
 VARIOUS_ARTISTS_MBID = "89ad4ac3-39f7-470e-963a-56509c546377"
 DAILY_MIX_CACHE_TTL = 86400  # 24 hours
 DISCOVER_PICKS_CACHE_TTL = 14400  # 4 hours
+# When Top Picks had to fall back to trending-only (LB popularity degraded AND the
+# Last.fm->MusicBrainz personalisation timed out), cache it only briefly so the next
+# build retries: the MB resolutions warm across builds, so personalised picks converge
+# instead of a cold trending-only result being frozen for the full 4h.
+DISCOVER_PICKS_DEGRADED_TTL = 300  # 5 minutes
 UNEXPLORED_GENRES_THRESHOLD = 2
 UNEXPLORED_GENRES_MAX = 8
 
@@ -223,6 +254,60 @@ class DiscoverHomepageService:
             items=preview_items,
         )
 
+    async def peek_freshness(self, user_id: str) -> tuple[bool, bool]:
+        """Read-only warmer signal: (has_cache, still_converging). Never triggers a build.
+        still_converging is True when the cached discover is trending-only
+        (top_picks.personalizing) OR - while LB popularity is degraded - has no top_picks at
+        all yet (the both-pools-empty degraded case caches top_picks=None), so the warmer
+        keeps re-warming until real personalised picks land instead of giving up for 6h."""
+        if not self._memory_cache:
+            return (False, False)
+        _, _, _, _, lb_enabled, lfm_enabled, _ = await self._resolve_user_music(user_id, None)
+        cache_key = self._integration.get_discover_cache_key(user_id, lb_enabled, lfm_enabled)
+        cached = await self._memory_cache.get(cache_key)
+        if not cached or not isinstance(cached, DiscoverResponse):
+            return (False, False)
+        tp = cached.top_picks
+        still_converging = bool(tp and tp.personalizing) or (
+            tp is None and self._use_lastfm_for_popularity(lfm_enabled)
+        )
+        return (True, still_converging)
+
+    async def warm_cache_thorough(self, user_id: str) -> None:
+        """Background-warmer build. Runs the REAL discover build in THOROUGH mode: every section
+        budget relaxed AND all album->release-group lookups resolved (not capped at max_lookups),
+        so during a ListenBrainz-popularity outage the Last.fm->MusicBrainz resolution completes
+        and Top Picks FULLY personalises in one pass (banked durably via the incremental persist).
+        Harmless when LB is healthy (sections use LB directly and finish fast).
+
+        First it PROBES LB popularity, so the degraded gate reflects reality NOW before the section
+        builders choose their path. Without this, the first build after an idle gap (the gate's TTL
+        expired with no call to re-mark it) would take the stale LB path, 500, and cache a
+        trending-only result."""
+        (lb_client, _lfm, username, lfm_username, lb_enabled, lfm_enabled, primary) = (
+            await self._resolve_user_music(user_id, None)
+        )
+        try:
+            seeds = await self._get_seed_artists(
+                lb_enabled, username, self._integration.is_jellyfin_enabled(),
+                resolved_source=primary, lfm_enabled=lfm_enabled,
+                lfm_username=lfm_username, lb_client=lb_client,
+            )
+            seed_mbid = next(
+                (s.artist_mbids[0] for s in seeds if getattr(s, "artist_mbids", None)), None
+            )
+            if seed_mbid:
+                # side effect is the point: a 500 marks the gate degraded, a 200 heals it
+                await self._lb_repo.get_artist_top_release_groups(seed_mbid, count=1)
+        except Exception:  # noqa: BLE001 - probe is best-effort; its gate side effect already fired
+            pass
+
+        token = discover_build_thorough.set(True)
+        try:
+            await self.warm_cache(user_id)
+        finally:
+            discover_build_thorough.reset(token)
+
     async def refresh_discover_data(self, user_id: str) -> None:
         _, _, _, _, lb_enabled, lfm_enabled, _ = await self._resolve_user_music(user_id, None)
         if user_id in self._building_keys:
@@ -337,10 +422,20 @@ class DiscoverHomepageService:
 
         tasks: dict[str, Any] = {}
 
+        # Similar artists normally come from ListenBrainz (lb-radio/artist). But that endpoint
+        # is popularity-ranked (pop_begin/pop_end), so during the LB-popularity outage it
+        # returns empty/zero-score - leaving Top Picks with no personalised candidates. When
+        # popularity is degraded (or Last.fm is the primary), source similar artists from
+        # Last.fm's artist.getSimilar instead - it's independent of LB and carries mbids +
+        # match scores, so the whole personalisation chain (similar -> albums) stays alive.
+        use_lastfm_similar = bool(
+            self._lfm_repo and lfm_enabled
+            and (primary == "lastfm" or self._use_lastfm_for_popularity(lfm_enabled))
+        )
         for i, seed in enumerate(seed_artists[:3]):
             mbid = seed.artist_mbids[0] if hasattr(seed, 'artist_mbids') and seed.artist_mbids else getattr(seed, 'artist_mbid', None)
             if mbid:
-                if primary == "lastfm" and self._lfm_repo and lfm_enabled:
+                if use_lastfm_similar:
                     tasks[f"similar_{i}"] = self._lfm_repo.get_similar_artists(
                         seed.artist_name, mbid=mbid, limit=20
                     )
@@ -767,7 +862,7 @@ class DiscoverHomepageService:
             if self._genre_index is None:
                 return []
 
-            if self._memory_cache:
+            if self._memory_cache and not discover_build_thorough.get():
                 cache_key = self._daily_mix_cache_key(user_id, resolved_source)
                 cached = await self._memory_cache.get(cache_key)
                 if cached is not None:
@@ -983,7 +1078,7 @@ class DiscoverHomepageService:
             return
 
         items = await self._mbid.lastfm_albums_to_queue_items(
-            pairs, exclude=exclude, target=24, reason="top_picks"
+            pairs, exclude=exclude, target=40, reason="top_picks"
         )
         for it in items:
             if it.release_group_mbid in seen_rgs:
@@ -1059,7 +1154,11 @@ class DiscoverHomepageService:
         already-fetched similar-artist pools plus sitewide trending; scoring is pure
         (services.discover.top_picks) and deterministic within a day."""
         try:
-            if self._memory_cache is not None:
+            # A thorough (warmer) build must REBUILD - never short-circuit on the cached
+            # section. Otherwise a cold on-visit build that cached a trending-only result
+            # (short degraded TTL) makes the very warm meant to fix it a no-op, and it never
+            # converges. On-visit builds still read the cache for speed.
+            if self._memory_cache is not None and not discover_build_thorough.get():
                 cache_key = self._top_picks_cache_key(user_id, primary)
                 cached = await self._memory_cache.get(cache_key)
                 if isinstance(cached, dict) and "section" in cached:
@@ -1107,17 +1206,34 @@ class DiscoverHomepageService:
             candidates: list[TopPickCandidate] = []
             seen_rgs: set[str] = set()
 
+            # cast a wide net: with a big owned/heard library, many similar artists have all
+            # their top albums excluded, so 12 left too few distinct artists to personalise from
             sim_artist_list = sorted(
                 sim_by_artist.items(), key=lambda kv: kv[1][0], reverse=True
-            )[:12]
+            )[:20]
 
             if self._use_lastfm_for_popularity(lfm_enabled):
                 # LB popularity is DEFINITELY degraded: turn these (LB-derived) similar
                 # artists into albums via Last.fm's top-albums instead of LB's dead
                 # popularity endpoint. The similarity scores still come from LB.
-                await self._add_lastfm_top_pick_candidates(
-                    sim_artist_list, exclude, seen_rgs, candidates
-                )
+                # This path resolves Last.fm albums -> release-group mbids via MusicBrainz
+                # (1/s); under the outage it competes with every other section. Bound it
+                # so a starved resolution can't consume the whole task budget and cancel
+                # the build before the MB-free trending pool below runs (which would leave
+                # Top Picks empty). On timeout we keep whatever resolved and fall through
+                # to trending, so the section always populates.
+                try:
+                    await asyncio.wait_for(
+                        self._add_lastfm_top_pick_candidates(
+                            sim_artist_list, exclude, seen_rgs, candidates
+                        ),
+                        timeout=_scaled(TOP_PICKS_SIMILARITY_BUDGET_SECONDS),
+                    )
+                except Exception:  # noqa: BLE001 - starved similarity, use trending only
+                    logger.warning(
+                        "Top Picks Last.fm similarity pool exceeded its budget; "
+                        "building from the trending pool only"
+                    )
             else:
                 # ALWAYS-preferred path: ListenBrainz popularity
                 rg_results = await asyncio.gather(
@@ -1173,8 +1289,16 @@ class DiscoverHomepageService:
                     from_trending=True,
                 ))
 
+            # Degraded = we're leaning on the Last.fm->MB personalisation path but it
+            # produced no personalised (non-trending) picks this build. Cache such a
+            # result briefly so it retries as the MB cache warms, rather than freezing a
+            # trending-only ("48% match") Top Picks for the full 4h.
+            personalized = sum(1 for c in candidates if not c.from_trending)
+            degraded = self._use_lastfm_for_popularity(lfm_enabled) and personalized == 0
+            picks_ttl = DISCOVER_PICKS_DEGRADED_TTL if degraded else DISCOVER_PICKS_CACHE_TTL
+
             if not candidates:
-                await self._cache_top_picks_result(None, user_id, primary)
+                await self._cache_top_picks_result(None, user_id, primary, ttl=picks_ttl)
                 return None
 
             # genre signals
@@ -1206,7 +1330,7 @@ class DiscoverHomepageService:
                 count=count,
             )
             if not picks:
-                await self._cache_top_picks_result(None, user_id, primary)
+                await self._cache_top_picks_result(None, user_id, primary, ttl=picks_ttl)
                 return None
 
             section = TopPicksSection(
@@ -1227,8 +1351,15 @@ class DiscoverHomepageService:
                     for p_ in picks
                 ],
                 source=primary,
+                personalizing=degraded,
             )
-            await self._cache_top_picks_result(section, user_id, primary)
+            personalised_picks = sum(1 for p_ in picks if not p_.candidate.from_trending)
+            logger.info(
+                "Top Picks built for %s: %d picks (%d personalised, %d trending), degraded=%s",
+                user_id[:8], len(picks), personalised_picks,
+                len(picks) - personalised_picks, degraded,
+            )
+            await self._cache_top_picks_result(section, user_id, primary, ttl=picks_ttl)
             return section
 
         except Exception as e:  # noqa: BLE001
@@ -1237,11 +1368,12 @@ class DiscoverHomepageService:
 
     async def _cache_top_picks_result(
         self, result: TopPicksSection | None, user_id: str, source: str,
+        ttl: int = DISCOVER_PICKS_CACHE_TTL,
     ) -> None:
         if self._memory_cache:
             cache_key = self._top_picks_cache_key(user_id, source)
             await self._memory_cache.set(
-                cache_key, {"section": result}, DISCOVER_PICKS_CACHE_TTL,
+                cache_key, {"section": result}, ttl,
             )
 
     async def _build_listeners_like_you(
@@ -1959,6 +2091,10 @@ class DiscoverHomepageService:
             if home_album and home_album.mbid:
                 resolved = rg_map.get(home_album.mbid, home_album.mbid)
                 home_album.mbid = resolved
+                # library_mbids is keyed by release-GROUP mbid; the transformer set
+                # in_library against the raw Last.fm RELEASE mbid, so recompute against
+                # the resolved release-group mbid or owned albums show a download button.
+                home_album.in_library = resolved.lower() in library_mbids
                 if resolved.lower() not in seen_album_mbids:
                     items.append(home_album)
                     seen_album_mbids.add(resolved.lower())
@@ -1978,7 +2114,18 @@ class DiscoverHomepageService:
             return {}
         unique_ids = list(dict.fromkeys(release_ids))
         tasks = [self._mb_repo.get_release_group_id_from_release(rid) for rid in unique_ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Bound the MB resolution: during the LB-popularity outage this competes with
+        # every other section on MB's 1/s limit. On starvation return an empty map -
+        # callers fall back to the raw release mbid - instead of letting the whole
+        # section time out at the 25s task budget and vanish.
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=_scaled(DISCOVER_MB_RESOLVE_BUDGET_SECONDS),
+            )
+        except Exception:  # noqa: BLE001 - MB starved, degrade to raw release mbids
+            logger.warning("Release->release-group resolution exceeded its budget; using raw mbids")
+            return {}
         rg_map: dict[str, str] = {}
         for rid, rg_id in zip(unique_ids, results):
             if isinstance(rg_id, str) and rg_id:
@@ -2088,7 +2235,8 @@ class DiscoverHomepageService:
         keys = list(tasks.keys())
         # bound each upstream call so one slow/hanging service can't stall the whole
         # build (a timeout is caught below and that section is just dropped)
-        coros = [asyncio.wait_for(c, timeout=DISCOVER_TASK_TIMEOUT_SECONDS) for c in tasks.values()]
+        _task_timeout = _scaled(DISCOVER_TASK_TIMEOUT_SECONDS)
+        coros = [asyncio.wait_for(c, timeout=_task_timeout) for c in tasks.values()]
         raw_results = await asyncio.gather(*coros, return_exceptions=True)
         results = {}
         self._last_failed_task_keys = set()
@@ -2138,7 +2286,7 @@ class DiscoverHomepageService:
                         albums_per=3,
                         lfm_enabled=lfm_enabled,
                     ),
-                    timeout=30,
+                    timeout=_scaled(RADIO_POOL_BUDGET_SECONDS),
                 )
                 selected = round_robin_dedup_select(pools, count=10)
                 albums = [queue_item_to_home_album(item) for item in selected]

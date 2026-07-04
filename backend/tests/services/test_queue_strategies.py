@@ -543,6 +543,9 @@ class TestGetTrendingFiller:
         lb_repo = AsyncMock()
         lb_repo.get_sitewide_top_release_groups.return_value = []
         mb_repo = AsyncMock()
+        # The decade tag-search fallback now runs on every path when the primary tier is
+        # empty; with no tag results it must still degrade to [].
+        mb_repo.search_release_groups_by_tag.return_value = []
         mbid_svc = _make_mbid_svc()
 
         result = await get_trending_filler(
@@ -551,6 +554,29 @@ class TestGetTrendingFiller:
             lfm_repo=None, is_lastfm_enabled=False,
         )
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_decade_fallback_runs_without_lastfm(self) -> None:
+        """LB-degraded user with Last.fm NOT linked still gets decade-tag wildcards."""
+        lb_repo = AsyncMock()
+        lb_repo.get_sitewide_top_release_groups.return_value = []
+        mb_repo = AsyncMock()
+        mbid_svc = _make_mbid_svc()
+
+        decade_release = MagicMock()
+        decade_release.musicbrainz_id = "decade-rg-9"
+        decade_release.title = "Old Hit"
+        decade_release.artist = "Old Artist"
+        mb_repo.search_release_groups_by_tag.return_value = [decade_release]
+
+        result = await get_trending_filler(
+            3, set(), set(), None, "listenbrainz",
+            lb_repo=lb_repo, mb_repo=mb_repo, mbid_svc=mbid_svc,
+            lfm_repo=None, is_lastfm_enabled=False,
+        )
+        assert len(result) >= 1
+        assert result[0].release_group_mbid == "decade-rg-9"
+        mb_repo.search_release_groups_by_tag.assert_called()
 
 
 # ===================================================================

@@ -2,6 +2,7 @@
 	import { RefreshCw } from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 	import { formatLastUpdated } from '$lib/utils/formatting';
+	import LiveUpdatingBadge from './LiveUpdatingBadge.svelte';
 
 	interface Breadcrumb {
 		label: string;
@@ -74,24 +75,23 @@
 					{@render actions()}
 				{:else}
 					{#if isUpdating}
-						<span class="badge badge-ghost badge-sm gap-1">
-							<span class="loading loading-spinner loading-xs"></span>
-							Updating...
-						</span>
+						<LiveUpdatingBadge label="Refreshing" />
 					{:else if lastUpdated && !loading}
 						<span class="hidden text-xs text-base-content/50 sm:inline">
 							Updated {formatLastUpdated(lastUpdated)}
 						</span>
 					{/if}
-					<button
-						class="btn btn-sm btn-primary gap-1"
-						onclick={onRefresh}
-						disabled={refreshing || loading}
-						title={refreshLabel}
-					>
-						<RefreshCw class="h-4 w-4 {refreshing ? 'animate-spin' : ''}" />
-						<span class="hidden sm:inline">{refreshLabel}</span>
-					</button>
+					{#if onRefresh}
+						<button
+							class="btn btn-sm btn-primary gap-1"
+							onclick={onRefresh}
+							disabled={refreshing || loading}
+							title={refreshLabel}
+						>
+							<RefreshCw class="h-4 w-4 {refreshing ? 'animate-spin' : ''}" />
+							<span class="hidden sm:inline">{refreshLabel}</span>
+						</button>
+					{/if}
 				{/if}
 			</div>
 		</div>

@@ -155,10 +155,8 @@
 	<PageHeader
 		subtitle="Discover music, explore your library, and find new favorites."
 		{loading}
-		refreshing={isUpdating}
-		{isUpdating}
+		isUpdating={isUpdating || !!homeData?.refreshing}
 		{lastUpdated}
-		onRefresh={() => homeQuery.refetch()}
 	>
 		{#snippet title()}
 			<Music class="inline h-8 w-8 sm:h-10 sm:w-10 lg:h-12 lg:w-12 mr-2 align-text-bottom" />
@@ -188,13 +186,10 @@
 			<button class="btn btn-primary mt-4" onclick={() => homeQuery.refetch()}>Try Again</button>
 		</div>
 	{:else}
-		<div class="space-y-10 px-4 sm:space-y-12 sm:px-6 lg:px-8">
-			{#if homeData?.refreshing}
-				<div class="flex items-center justify-center gap-2 pb-1 text-xs text-base-content/50">
-					<span class="loading loading-spinner loading-xs text-primary"></span>
-					Loading your recommendations…
-				</div>
-			{/if}
+		<div
+			class="space-y-10 px-4 sm:space-y-12 sm:px-6 lg:px-8"
+			class:is-refreshing={homeData?.refreshing}
+		>
 			{#if !downloadClientConfigured && downloadClientPrompt}
 				<div
 					class="card bg-linear-to-br from-accent/20 via-accent/10 to-base-200 border-2 border-accent/40 shadow-xl relative overflow-hidden"

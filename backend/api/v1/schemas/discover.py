@@ -205,6 +205,10 @@ class TopPicksSection(AppStruct):
     title: str = "Top Picks for You"
     items: list[TopPickItem] = []
     source: str | None = None
+    # True while the picks are still trending-only because the personalisation
+    # (Last.fm -> MusicBrainz) hasn't resolved yet during a ListenBrainz outage; the UI
+    # shows a subtle "still personalising" hint. Clears once personalised picks land.
+    personalizing: bool = False
 
 
 class PreviewTrackItem(AppStruct):

@@ -308,6 +308,55 @@ class TestLastFmResolutionBehavior:
 
         assert service._mbid_resolution._mb_repo.get_release_group_id_from_release.await_count == 3
 
+    @pytest.mark.asyncio
+    async def test_release_to_rg_hits_persist_before_second_gather(self):
+        """The release->RG hits from the first gather must be banked to the mbid_store
+        BEFORE the second (RG-existence) gather runs. That gather is the one a discover
+        build's budget timeout routinely cancels, so persisting only at the very end
+        would drop every hit the build already earned and the cache would never warm."""
+        from services.discover.mbid_resolution_service import MbidResolutionService
+
+        events: list[tuple[str, object]] = []
+
+        mb_repo = AsyncMock()
+
+        async def _rel_to_rg(mbid: str):
+            return {"rel-hit": "rg-hit"}.get(mbid)
+
+        mb_repo.get_release_group_id_from_release = AsyncMock(side_effect=_rel_to_rg)
+
+        async def _rg_by_id(mbid: str, **_kwargs):
+            events.append(("rg_lookup", mbid))
+            return {"id": mbid}
+
+        mb_repo.get_release_group_by_id = AsyncMock(side_effect=_rg_by_id)
+
+        mbid_store = AsyncMock()
+        mbid_store.get_mbid_resolution_map = AsyncMock(return_value={})
+
+        async def _save(mapping):
+            events.append(("save", dict(mapping)))
+
+        mbid_store.save_mbid_resolution_map = AsyncMock(side_effect=_save)
+
+        svc = MbidResolutionService(
+            musicbrainz_repo=mb_repo,
+            library_repo=AsyncMock(),
+            listenbrainz_repo=AsyncMock(),
+            mbid_store=mbid_store,
+        )
+
+        # "rel-hit" resolves in the first gather; "rg-passthrough" falls through to the
+        # second gather - so both gathers run and ordering is observable.
+        await svc.resolve_lastfm_release_group_mbids(
+            ["rel-hit", "rg-passthrough"], max_lookups=10
+        )
+
+        first_save = next(i for i, e in enumerate(events) if e[0] == "save")
+        first_lookup = next(i for i, e in enumerate(events) if e[0] == "rg_lookup")
+        assert first_save < first_lookup
+        assert events[first_save][1] == {"rel-hit": "rg-hit"}
+
 
 class TestLastFmQueueResilience:
     @pytest.mark.asyncio

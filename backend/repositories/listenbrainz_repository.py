@@ -43,6 +43,12 @@ def _parse_retry_after(response: httpx.Response) -> float:
                 continue
     return 2.0
 
+# LB popularity outages last hours; a short TTL would expire during any idle gap (no calls
+# to re-mark it) and the NEXT build would wrongly take the dead LB path. Keep the flag alive
+# well past idle gaps, and heal it INSTANTLY the moment a popularity call succeeds again.
+_POPULARITY_DEGRADED_TTL = 1800.0  # 30 minutes
+
+
 def _mark_popularity_degraded() -> None:
     """Flag LB popularity as genuinely degraded (drives fallbacks + the UI status
     dot). Only ever called on LB's own explicit "disabled"/"auth-gate" replies."""
@@ -54,7 +60,15 @@ def _mark_popularity_degraded() -> None:
         message="ListenBrainz's popularity data is temporarily unavailable.",
         fallback="lastfm",
         severity="degraded",
+        ttl_seconds=_POPULARITY_DEGRADED_TTL,
     )
+
+
+def _heal_popularity() -> None:
+    """LB popularity answered successfully - clear the degraded flag immediately."""
+    from infrastructure.service_health import service_health
+
+    service_health.heal("listenbrainz", "popularity")
 
 
 def lb_popularity_degraded() -> bool:
@@ -227,6 +241,11 @@ class ListenBrainzRepository:
                         f"ListenBrainz {method} failed ({response.status_code})",
                         response.text
                     )
+
+                # a 200 from a popularity endpoint means LB popularity recovered - heal now
+                # so the degraded flag doesn't linger for the full TTL after LB comes back
+                if "/popularity/" in endpoint:
+                    _heal_popularity()
 
                 try:
                     return _decode_json_response(response)

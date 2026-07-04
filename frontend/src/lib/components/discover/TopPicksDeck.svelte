@@ -7,6 +7,7 @@
 	import RadioPlayButton from '$lib/components/discover/RadioPlayButton.svelte';
 	import SampleButton from '$lib/components/discover/SampleButton.svelte';
 	import SourceBadge from '$lib/components/SourceBadge.svelte';
+	import LiveUpdatingBadge from '$lib/components/LiveUpdatingBadge.svelte';
 	import HeroBackdrop from '$lib/components/HeroBackdrop.svelte';
 	import HorizontalCarousel from '$lib/components/HorizontalCarousel.svelte';
 	import { albumHrefOrNull, artistHrefOrNull } from '$lib/utils/entityRoutes';
@@ -76,7 +77,13 @@
 							<h2 class="text-lg font-bold sm:text-xl">{section.title}</h2>
 							<SourceBadge source={section.source ?? undefined} />
 						</div>
-						<p class="text-xs text-base-content/50">Scored against your taste</p>
+						{#if section.personalizing}
+							<div class="mt-0.5">
+								<LiveUpdatingBadge label="Personalising your picks" />
+							</div>
+						{:else}
+							<p class="text-xs text-base-content/50">Scored against your taste</p>
+						{/if}
 					</div>
 				</div>
 				{#if picks.length > 1}
@@ -234,7 +241,7 @@
 									: 'opacity-60 hover:opacity-100'}"
 								onclick={() => promote(i)}
 								aria-label="Feature {pick.album.name}"
-								title="{pick.album.name} — {pick.match_pct}% match"
+								title="{pick.album.name} - {pick.match_pct}% match"
 							>
 								<AlbumImage
 									mbid={pick.album.mbid || ''}

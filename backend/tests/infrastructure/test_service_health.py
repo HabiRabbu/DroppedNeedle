@@ -19,6 +19,19 @@ def test_mark_and_is_degraded():
     assert not reg.is_degraded("musicbrainz")
 
 
+def test_heal_clears_a_capability_instantly():
+    clock = _Clock()
+    reg = ServiceHealthRegistry(clock=clock)
+    reg.mark_degraded("listenbrainz", "popularity", message="down", fallback="lastfm", ttl_seconds=1800)
+    reg.mark_degraded("listenbrainz", "listens", message="down", ttl_seconds=1800)
+
+    reg.heal("listenbrainz", "popularity")  # upstream recovered
+
+    assert not reg.is_degraded("listenbrainz", "popularity")  # healed before its TTL
+    assert reg.is_degraded("listenbrainz", "listens")  # other capability untouched
+    reg.heal("listenbrainz", "does-not-exist")  # no-op, must not raise
+
+
 def test_current_reports_entry_details():
     clock = _Clock()
     reg = ServiceHealthRegistry(clock=clock)

@@ -15,6 +15,11 @@ from repositories.protocols import (
 
 logger = logging.getLogger(__name__)
 
+# Bound the release->release-group resolution: during a ListenBrainz-popularity outage
+# every discover section falls back to MusicBrainz (1/s) at once and they mutually starve.
+# On timeout the section still renders with the release-level cover fallback.
+_MB_RESOLVE_BUDGET_SECONDS = 15
+
 
 class WeeklyExplorationService:
     def __init__(
@@ -51,13 +56,20 @@ class WeeklyExplorationService:
             unique_release_ids = list({
                 track.caa_release_mbid for track in playlist.tracks if track.caa_release_mbid
             })
-            rg_results = await asyncio.gather(
-                *(
-                    self._mb_repo.get_release_group_id_from_release(release_id)
-                    for release_id in unique_release_ids
-                ),
-                return_exceptions=True,
-            )
+            try:
+                rg_results = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(
+                            self._mb_repo.get_release_group_id_from_release(release_id)
+                            for release_id in unique_release_ids
+                        ),
+                        return_exceptions=True,
+                    ),
+                    timeout=_MB_RESOLVE_BUDGET_SECONDS,
+                )
+            except Exception:  # noqa: BLE001 - MB starved, use release-level covers
+                logger.warning("Weekly exploration RG resolution exceeded its budget; using release covers")
+                rg_results = []
             release_to_rg = {
                 release_id: release_group_id
                 for release_id, release_group_id in zip(unique_release_ids, rg_results)

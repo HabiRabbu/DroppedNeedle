@@ -427,37 +427,42 @@ async def get_trending_filler(
         wildcards = []
 
     if not wildcards:
-        if use_lastfm:
-            decade_tags = ["2020s", "2010s", "2000s", "1990s", "1980s", "1970s"]
-            for decade in decade_tags:
+        # MusicBrainz decade tag-search fallback. Ungated (previously only ran on the
+        # use_lastfm path): during a ListenBrainz-popularity outage a user with Last.fm
+        # NOT linked gets an empty sitewide-top primary tier AND no fallback, so the queue
+        # renders only its personalised slots (~5). This tier needs no LB popularity
+        # endpoint and no per-album release->RG resolution - each tag is one direct RG
+        # query - so it fills wildcard/top-up slots whenever MusicBrainz is reachable.
+        decade_tags = ["2020s", "2010s", "2000s", "1990s", "1980s", "1970s"]
+        for decade in decade_tags:
+            if len(wildcards) >= target:
+                break
+            try:
+                decade_releases = await mb_repo.search_release_groups_by_tag(
+                    tag=decade,
+                    limit=25,
+                    offset=0,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to search release groups for decade tag %s", decade)
+                continue
+            for release in decade_releases:
                 if len(wildcards) >= target:
                     break
-                try:
-                    decade_releases = await mb_repo.search_release_groups_by_tag(
-                        tag=decade,
-                        limit=25,
-                        offset=0,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.warning("Failed to search release groups for decade tag %s", decade)
+                rg_mbid = mbid_svc.normalize_mbid(getattr(release, "musicbrainz_id", None))
+                if not rg_mbid or rg_mbid.lower() in exclude:
                     continue
-                for release in decade_releases:
-                    if len(wildcards) >= target:
-                        break
-                    rg_mbid = mbid_svc.normalize_mbid(getattr(release, "musicbrainz_id", None))
-                    if not rg_mbid or rg_mbid.lower() in exclude:
-                        continue
-                    wildcards.append(DiscoverQueueItemLight(
-                        release_group_mbid=rg_mbid,
-                        album_name=getattr(release, "title", "Unknown"),
-                        artist_name=getattr(release, "artist", "Unknown") or "Unknown",
-                        artist_mbid="",
-                        cover_url=f"/api/v1/covers/release-group/{rg_mbid}?size=500",
-                        recommendation_reason="Trending on Last.fm",
-                        is_wildcard=True,
-                        in_library=False,
-                    ))
-                    exclude.add(rg_mbid.lower())
+                wildcards.append(DiscoverQueueItemLight(
+                    release_group_mbid=rg_mbid,
+                    album_name=getattr(release, "title", "Unknown"),
+                    artist_name=getattr(release, "artist", "Unknown") or "Unknown",
+                    artist_mbid="",
+                    cover_url=f"/api/v1/covers/release-group/{rg_mbid}?size=500",
+                    recommendation_reason="Trending",
+                    is_wildcard=True,
+                    in_library=False,
+                ))
+                exclude.add(rg_mbid.lower())
 
     if not wildcards:
         logger.warning("Failed to populate any wildcard albums for discover queue")

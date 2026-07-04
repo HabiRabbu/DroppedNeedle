@@ -84,12 +84,12 @@
 				{#if headerLink}
 					<a
 						href={headerLink}
-						class="text-lg sm:text-xl font-bold hover:text-primary transition-colors"
+						class="section-title text-lg sm:text-xl font-bold hover:text-primary transition-colors"
 					>
 						{section.title}
 					</a>
 				{:else}
-					<h2 class="text-lg sm:text-xl font-bold">{section.title}</h2>
+					<h2 class="section-title text-lg sm:text-xl font-bold">{section.title}</h2>
 				{/if}
 				<SourceBadge source={section.source ?? undefined} />
 			</div>

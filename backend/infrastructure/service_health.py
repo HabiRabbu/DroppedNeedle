@@ -82,6 +82,11 @@ class ServiceHealthRegistry:
         out.sort(key=lambda e: (e.service, e.capability))
         return out
 
+    def heal(self, service: str, capability: str) -> None:
+        """Clear one capability's degraded flag - call when the upstream succeeds again,
+        for an instant recovery instead of waiting out the TTL."""
+        self._entries.pop((service, capability), None)
+
     def clear(self) -> None:
         self._entries.clear()
 

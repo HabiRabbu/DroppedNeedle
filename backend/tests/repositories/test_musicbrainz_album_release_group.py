@@ -56,3 +56,22 @@ async def test_get_release_group_tolerates_sparse_dict():
     assert info.year is None
     assert info.artist_name == "Unknown Artist"
     assert info.artist_id == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_rg_negative_caches_404_but_not_transient(monkeypatch):
+    """A definitive 404 (mb_api_get -> {}) is negative-cached briefly so a merged/garbage
+    mbid isn't re-fetched every discover build; a transient error stays uncached to retry."""
+    import repositories.musicbrainz_album as mod
+
+    repo = _Repo()
+    repo._cache = AsyncMock()
+
+    monkeypatch.setattr(mod, "mb_api_get", AsyncMock(return_value={}))
+    assert await repo._fetch_release_group_by_id("rg-404", ["artist-credits"], "ck-404") is None
+    repo._cache.set.assert_awaited_once_with("ck-404", {}, ttl_seconds=600)
+
+    repo._cache.set.reset_mock()
+    monkeypatch.setattr(mod, "mb_api_get", AsyncMock(side_effect=RuntimeError("503")))
+    assert await repo._fetch_release_group_by_id("rg-503", ["artist-credits"], "ck-503") is None
+    repo._cache.set.assert_not_called()

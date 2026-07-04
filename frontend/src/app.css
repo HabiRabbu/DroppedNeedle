@@ -746,6 +746,38 @@ textarea {
 	.match-ring-arc {
 		transition: none !important;
 	}
+	/* background-refresh: the live dot settles to a steady faint state */
+	.is-refreshing .section-title::after {
+		animation: none !important;
+		opacity: 0.4 !important;
+	}
+}
+
+/* Background-refresh signal: while a page's data is revalidating, each section
+   title carries a small breathing dot so the refresh never happens invisibly.
+   Driven by a single `.is-refreshing` class on the sections container - no
+   per-section wiring. */
+.is-refreshing .section-title::after {
+	content: '';
+	display: inline-block;
+	width: 0.4rem;
+	height: 0.4rem;
+	margin-left: 0.5rem;
+	border-radius: 9999px;
+	background: var(--color-primary);
+	vertical-align: middle;
+	animation: section-refresh-pulse 1.5s ease-in-out infinite;
+}
+@keyframes section-refresh-pulse {
+	0%,
+	100% {
+		opacity: 0.3;
+		transform: scale(0.75);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1);
+	}
 }
 
 :root {

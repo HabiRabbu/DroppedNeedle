@@ -1,9 +1,11 @@
 import asyncio
 import logging
+from contextvars import ContextVar
 from typing import Any
 
 from api.v1.schemas.discover import DiscoverQueueItemLight
 from infrastructure.persistence import LibraryDB, MBIDStore
+from infrastructure.queue.priority_queue import RequestPriority
 from repositories.protocols import (
     LibraryRepositoryProtocol,
     ListenBrainzRepositoryProtocol,
@@ -11,6 +13,13 @@ from repositories.protocols import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Set (per-task) by the background warmer's thorough build. When true, a build runs with its
+# section budgets relaxed AND resolves ALL pending album->release-group lookups instead of
+# capping at max_lookups - so a section like Top Picks fully personalises in one pass rather
+# than banking only ~10 albums per build and being frozen partially-personalised by the cache.
+# On-visit builds leave it False (stay fast + tightly budgeted).
+discover_build_thorough: ContextVar[bool] = ContextVar("discover_build_thorough", default=False)
 
 
 class MbidResolutionService:
@@ -92,8 +101,10 @@ class MbidResolutionService:
 
         new_resolutions: dict[str, str | None] = {}
 
-        lookup_mbids = pending[:max_lookups]
-        skipped_mbids = pending[max_lookups:]
+        # thorough (warmer) builds resolve everything; on-visit builds cap for speed
+        lookup_limit = len(pending) if discover_build_thorough.get() else max_lookups
+        lookup_mbids = pending[:lookup_limit]
+        skipped_mbids = pending[lookup_limit:]
         for mbid in skipped_mbids:
             if allow_passthrough:
                 resolved[mbid] = mbid
@@ -101,35 +112,47 @@ class MbidResolutionService:
             else:
                 cache[mbid] = None
 
-        release_results = await asyncio.gather(
-            *[self._mb_repo.get_release_group_id_from_release(mbid) for mbid in lookup_mbids],
-            return_exceptions=True,
-        )
         unresolved: list[str] = []
 
-        for mbid, result in zip(lookup_mbids, release_results):
-            if isinstance(result, Exception):
+        # Resolve release->RG and bank EACH hit the instant it lands (shielded), NOT after
+        # the whole gather. MusicBrainz is a hard 1 req/s, so during the ListenBrainz-
+        # popularity outage this gather drains slowly and is routinely cancelled mid-flight
+        # by a build budget. asyncio.gather is all-or-nothing: a cancellation at the await
+        # discards EVERY already-completed result, so persisting post-gather banked nothing
+        # and the store never warmed. Per-completion persistence means a cancelled build
+        # still keeps every resolution it earned, so on-visit reloads (and the prewarm)
+        # accumulate durably and personalisation converges.
+        async def _resolve_and_bank(mbid: str) -> None:
+            try:
+                result = await self._mb_repo.get_release_group_id_from_release(mbid)
+            except Exception:  # noqa: BLE001
                 unresolved.append(mbid)
-                continue
+                return
             rg_mbid = self.normalize_mbid(result)
             if rg_mbid:
                 resolved[mbid] = rg_mbid
                 cache[mbid] = rg_mbid
-                new_resolutions[mbid] = rg_mbid
+                await self._persist_resolutions({mbid: rg_mbid})
             else:
                 unresolved.append(mbid)
 
+        await asyncio.gather(
+            *[_resolve_and_bank(mbid) for mbid in lookup_mbids],
+            return_exceptions=True,
+        )
+
         if not unresolved:
-            if new_resolutions and self._mbid_store:
-                try:
-                    await self._mbid_store.save_mbid_resolution_map(new_resolutions)
-                except Exception:  # noqa: BLE001
-                    logger.warning("Failed to persist MBID resolutions")
             return resolved
 
+        # BACKGROUND_SYNC: these run inside background discover builds. At the default
+        # USER_INITIATED they'd compete with real user page loads AND re-arm the priority
+        # queue's user-activity timer, starving the build's own background lookups. The
+        # primary release->RG lookup on this path is already BACKGROUND_SYNC.
         rg_checks = await asyncio.gather(
             *[
-                self._mb_repo.get_release_group_by_id(mbid, includes=["artist-credits"])
+                self._mb_repo.get_release_group_by_id(
+                    mbid, includes=["artist-credits"], priority=RequestPriority.BACKGROUND_SYNC
+                )
                 for mbid in unresolved
             ],
             return_exceptions=True,
@@ -154,13 +177,24 @@ class MbidResolutionService:
                 cache[mbid] = None
                 new_resolutions[mbid] = None
 
-        if new_resolutions and self._mbid_store:
-            try:
-                await self._mbid_store.save_mbid_resolution_map(new_resolutions)
-            except Exception:  # noqa: BLE001
-                logger.warning("Failed to persist MBID resolutions")
+        await self._persist_resolutions(new_resolutions)
 
         return resolved
+
+    async def _persist_resolutions(self, new_resolutions: dict[str, str | None]) -> None:
+        """Durably bank resolved LB->RG mappings so the cache warms across builds.
+
+        Shielded: the discover build that drives this resolver may cancel it on a
+        budget timeout (Top Picks / radio / queue) while MB lookups are still draining
+        at 1 req/s. The SQLite write that records the lookups already completed must
+        finish regardless, or a starved build banks nothing and the next build re-does
+        the same 1/s resolutions from scratch."""
+        if not new_resolutions or not self._mbid_store:
+            return
+        try:
+            await asyncio.shield(self._mbid_store.save_mbid_resolution_map(dict(new_resolutions)))
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist MBID resolutions")
 
     async def lastfm_albums_to_queue_items(
         self,

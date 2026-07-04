@@ -345,6 +345,8 @@ export interface TopPicksSection {
 	title: string;
 	items: TopPickItem[];
 	source: string | null;
+	// still trending-only while personalisation resolves during a ListenBrainz outage
+	personalizing: boolean;
 }
 
 export type DiscoverResponse = {

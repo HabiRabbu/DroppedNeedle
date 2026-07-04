@@ -215,6 +215,25 @@ class TestUpstreamPolicyBlocks:
         assert not _listenbrainz_circuit_breaker.is_open()
 
     @pytest.mark.asyncio
+    async def test_successful_popularity_call_heals_the_degraded_flag(self):
+        from repositories.listenbrainz_repository import (
+            _mark_popularity_degraded,
+            lb_popularity_degraded,
+        )
+        from infrastructure.service_health import service_health
+
+        service_health.clear()
+        _mark_popularity_degraded()
+        assert lb_popularity_degraded()  # flagged down
+
+        repo, http_client = _make_repo()
+        http_client.request = AsyncMock(return_value=self._resp(200, "[]"))
+        await repo.get_artist_top_recordings("artist-1")  # a /popularity/ 200
+
+        assert not lb_popularity_degraded()  # healed instantly, not left to expire
+        service_health.clear()
+
+    @pytest.mark.asyncio
     async def test_genuine_500_still_breaks(self):
         # a non-policy 500 remains a real error (retried, counts toward the breaker)
         _make_repo()

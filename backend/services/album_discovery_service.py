@@ -121,6 +121,19 @@ class AlbumDiscoveryService:
                 if len(albums) >= count:
                     break
 
+            # Defensive: if the LB path yielded nothing (e.g. the popularity gate read healthy
+            # but LB is still 500ing in a flapping recovery window), fall back to Last.fm rather
+            # than returning an empty section.
+            if not albums and self._mbid is not None:
+                lfm_repo = await self._resolve_lastfm(user_id)
+                if lfm_repo is not None:
+                    fb = await self._similar_albums_lastfm(
+                        similar_artists[:5], album_mbid, count,
+                        library_album_mbids, requested_album_mbids, lfm_repo,
+                    )
+                    if fb:
+                        return SimilarAlbumsResponse(albums=fb[:count])
+
             return SimilarAlbumsResponse(albums=albums[:count])
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to get similar albums for {album_mbid}: {e}")
