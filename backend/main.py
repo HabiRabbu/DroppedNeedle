@@ -721,6 +721,6 @@ app.add_middleware(
 # Must be outermost (added last) so it rewrites the scope before any other
 # middleware or route handler sees the request.
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # noqa: E402
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=get_settings().trusted_proxy_ips)
 
 mount_frontend(app)

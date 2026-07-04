@@ -455,14 +455,14 @@ async def get_spotify_redirect_uri(request: Request) -> SpotifyRedirectUriRespon
     return SpotifyRedirectUriResponse(redirect_uri=redirect_uri)
 
 
-@router.get("/home", response_model=HomeSettings)
+@router.get("/home", response_model=HomeSettings, dependencies=[Depends(_admin_guard)])
 async def get_home_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
     return preferences_service.get_home_settings()
 
 
-@router.put("/home", response_model=HomeSettings)
+@router.put("/home", response_model=HomeSettings, dependencies=[Depends(_admin_guard)])
 async def update_home_settings(
     settings: HomeSettings = MsgSpecBody(HomeSettings),
     preferences_service: PreferencesService = Depends(get_preferences_service),

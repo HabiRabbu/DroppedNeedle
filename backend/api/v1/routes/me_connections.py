@@ -252,7 +252,7 @@ async def spotify_auth_callback(
                 headers={"Authorization": f"Basic {basic}"},
             )
             if token_resp.status_code != 200:
-                logger.warning("Spotify token exchange failed: %s", token_resp.text)
+                logger.warning(f"Spotify token exchange failed: status={token_resp.status_code}")
                 return fastapi_responses.RedirectResponse("/profile?spotify=error&reason=token")
             token_data = token_resp.json()
 
