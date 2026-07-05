@@ -143,7 +143,7 @@ class PersonalMixService:
             try:
                 result = await self.build_for_user(user_id)
             except Exception:  # noqa: BLE001 - one user must never kill the run
-                logger.error(f"Personal mix build failed for user {user_id}", exc_info=True)
+                logger.error("Personal mix build failed for user %s", user_id, exc_info=True)
                 errors += 1
                 continue
             if result.skipped:
@@ -153,7 +153,7 @@ class PersonalMixService:
         summary = PersonalMixSummary(
             users_considered=len(user_ids), built=built, skipped=skipped, errors=errors,
         )
-        logger.info(f"Personal mix refresh complete: {summary}")
+        logger.info("Personal mix refresh complete: %s", summary)
         return summary
 
     @staticmethod
@@ -195,7 +195,7 @@ class PersonalMixService:
                 playlist = await lb_repo.get_playlist_tracks(entry["playlist_id"])
             except Exception:  # noqa: BLE001
                 logger.debug(
-                    f"Personal mix: failed to fetch playlist {entry.get('playlist_id')}", exc_info=True,
+                    "Personal mix: failed to fetch playlist %s", entry.get("playlist_id"), exc_info=True,
                 )
                 continue
             if not playlist or not playlist.tracks:
@@ -248,7 +248,7 @@ class PersonalMixService:
         by_rg_recording: dict[tuple[str, str], Any] = {}
         for rg, album_tracks in zip(rg_mbids, results):
             if isinstance(album_tracks, BaseException):
-                logger.debug(f"Personal mix: library lookup failed for {rg}", exc_info=album_tracks)
+                logger.debug("Personal mix: library lookup failed for %s", rg, exc_info=album_tracks)
                 continue
             for lt in album_tracks:
                 if lt.recording_mbid:
@@ -378,12 +378,12 @@ class PersonalMixService:
                 )
             except ConfigurationError:
                 logger.info(
-                    f"Personal mix: download client disabled; not auto-requesting for {user_id}",
+                    "Personal mix: download client disabled; not auto-requesting for %s", user_id,
                 )
                 break  # disabled globally - further attempts this run would fail identically
             except Exception:  # noqa: BLE001 - one failed request must not abort the rest
                 logger.error(
-                    f"Personal mix: failed to auto-request {t.release_group_mbid}", exc_info=True,
+                    "Personal mix: failed to auto-request %s", t.release_group_mbid, exc_info=True,
                 )
                 continue
             if task_id and task_id != ALREADY_IN_LIBRARY:

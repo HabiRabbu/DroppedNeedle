@@ -941,7 +941,7 @@ async def refresh_personal_mixes_periodically(
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Personal mix refresh failed: {e}", exc_info=True)
+            logger.error("Personal mix refresh failed: %s", e, exc_info=True)
 
         await asyncio.sleep(interval)
 
