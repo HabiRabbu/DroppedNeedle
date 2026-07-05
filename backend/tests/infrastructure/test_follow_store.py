@@ -324,6 +324,82 @@ async def test_wanted_pagination_newest_first(store: FollowStore, tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_unseen_count_no_marker_counts_all(store: FollowStore, tmp_path: Path):
+    _seed_library_files(tmp_path / "library.db", owned_rg_mbids=[])
+    await store.follow_artist("user-a", "MBID-A", "Radiohead")
+    await store.seed_baseline("mbid-a", [])
+    await store.record_new_releases(
+        "mbid-a",
+        [
+            _ri("RG-1", "mbid-a", "One", first_release_date="2026-01-01"),
+            _ri("RG-2", "mbid-a", "Two", first_release_date="2026-02-01"),
+        ],
+        ["rg-1", "rg-2"],
+    )
+    assert await store.count_unseen_new_releases_for_user("user-a") == 2
+
+
+@pytest.mark.asyncio
+async def test_mark_seen_zeroes_then_later_discovery_counts(store: FollowStore, tmp_path: Path):
+    _seed_library_files(tmp_path / "library.db", owned_rg_mbids=[])
+    await store.follow_artist("user-a", "MBID-A", "Radiohead")
+    await store.seed_baseline("mbid-a", [])
+    await store.record_new_releases(
+        "mbid-a", [_ri("RG-1", "mbid-a", "One", first_release_date="2026-01-01")], ["rg-1"]
+    )
+    await store.mark_new_releases_seen("user-a")
+    assert await store.count_unseen_new_releases_for_user("user-a") == 0
+
+    await store.record_new_releases(
+        "mbid-a", [_ri("RG-2", "mbid-a", "Two", first_release_date="2026-02-01")], ["rg-2"]
+    )
+    # RG-2 discovered after the marker counts; RG-1 stays seen
+    assert await store.count_unseen_new_releases_for_user("user-a") == 1
+
+    await store.mark_new_releases_seen("user-a")  # upsert refreshes the marker
+    assert await store.count_unseen_new_releases_for_user("user-a") == 0
+
+
+@pytest.mark.asyncio
+async def test_unseen_count_excludes_owned_and_other_users(store: FollowStore, tmp_path: Path):
+    _seed_library_files(tmp_path / "library.db", owned_rg_mbids=["RG-OWNED"])
+    await store.follow_artist("user-a", "MBID-A", "Radiohead")
+    await store.seed_baseline("mbid-a", [])
+    await store.seed_baseline("mbid-b", [])
+    await store.record_new_releases(
+        "mbid-a",
+        [
+            _ri("RG-NEW", "mbid-a", "Wanted", first_release_date="2026-02-01"),
+            _ri("RG-OWNED", "mbid-a", "Already Owned", first_release_date="2026-01-01"),
+        ],
+        ["rg-new", "rg-owned"],
+    )
+    await store.record_new_releases(
+        "mbid-b",
+        [_ri("RG-OTHER", "mbid-b", "Not Followed", first_release_date="2026-03-01")],
+        ["rg-other"],
+    )
+    assert await store.count_unseen_new_releases_for_user("user-a") == 1
+    assert await store.count_unseen_new_releases_for_user("user-b") == 0
+
+
+@pytest.mark.asyncio
+async def test_seen_marker_cascades_on_user_delete(store: FollowStore, tmp_path: Path):
+    await store.mark_new_releases_seen("user-a")
+    conn = sqlite3.connect(tmp_path / "library.db")
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("DELETE FROM auth_users WHERE id = ?", ("user-a",))
+        conn.commit()
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM user_new_release_seen WHERE user_id = ?", ("user-a",)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert remaining == 0
+
+
+@pytest.mark.asyncio
 async def test_cascade_on_user_delete(store: FollowStore, tmp_path: Path):
     await store.follow_artist("user-a", "MBID-A", "Radiohead")
     await store.upsert_approval("user-a", "MBID-A", "Radiohead", "pending")

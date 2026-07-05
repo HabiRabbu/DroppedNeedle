@@ -154,6 +154,11 @@ class FollowStore:
                     rg_mbid_lower     TEXT NOT NULL,
                     PRIMARY KEY (artist_mbid_lower, rg_mbid_lower)
                 );
+
+                CREATE TABLE IF NOT EXISTS user_new_release_seen (
+                    user_id TEXT PRIMARY KEY REFERENCES auth_users(id) ON DELETE CASCADE,
+                    seen_at REAL NOT NULL
+                );
                 """
             )
             conn.commit()
@@ -621,3 +626,41 @@ class FollowStore:
             for row in rows
         ]
         return items, total
+
+    async def count_unseen_new_releases_for_user(self, user_id: str) -> int:
+        # same visibility filters as list_new_releases_for_user, narrowed to
+        # rows discovered after the seen marker; no marker row counts everything
+
+        def operation(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM new_release_feed nrf
+                JOIN user_followed_artists ufa
+                    ON ufa.artist_mbid_lower = nrf.artist_mbid_lower AND ufa.user_id = ?
+                WHERE nrf.release_group_mbid_lower NOT IN (
+                    SELECT lower(release_group_mbid) FROM library_files
+                    WHERE release_group_mbid IS NOT NULL AND deleted_at IS NULL
+                )
+                AND nrf.discovered_at > COALESCE(
+                    (SELECT seen_at FROM user_new_release_seen WHERE user_id = ?), 0
+                )
+                """,
+                (user_id, user_id),
+            ).fetchone()["c"]
+
+        return await self._read(operation)
+
+    async def mark_new_releases_seen(self, user_id: str) -> None:
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO user_new_release_seen (user_id, seen_at) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET seen_at = excluded.seen_at
+                """,
+                (user_id, now),
+            )
+
+        await self._write(operation)

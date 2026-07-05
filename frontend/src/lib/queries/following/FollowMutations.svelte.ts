@@ -9,7 +9,7 @@ import {
 } from '../QueryClient';
 import { FollowQueryKeyFactory } from './FollowQueryKeyFactory';
 import { FOLLOW_ENDPOINTS } from './endpoints';
-import type { AutoDownloadState, FollowStatus } from './types';
+import type { AutoDownloadState, FollowStatus, UnseenCountResponse } from './types';
 
 const NOT_FOLLOWING: FollowStatus = {
 	followed: false,
@@ -50,6 +50,19 @@ export const createSetFollowMutation = (getMbid: () => string) =>
 		},
 		onSettled: () => {
 			void invalidateFollowedArtists();
+		}
+	}));
+
+// fired on New Releases page mount; writes count 0 into the persisted cache
+// so the badge clears without waiting for a refetch
+export const createMarkNewReleasesSeenMutation = () =>
+	createMutation(() => ({
+		mutationFn: () => api.global.post<UnseenCountResponse>(FOLLOW_ENDPOINTS.markNewReleasesSeen()),
+		onSuccess: (data) => {
+			void setQueryDataWithPersister<UnseenCountResponse>(
+				FollowQueryKeyFactory.newReleasesUnseen(authStore.user?.id),
+				data
+			);
 		}
 	}));
 

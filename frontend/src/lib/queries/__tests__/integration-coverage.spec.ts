@@ -81,7 +81,25 @@ const COVERAGE: Array<[string, string, string]> = [
 		'batch remove',
 		API.discoverBatchRemove('B1', true),
 		'/api/v1/discover/batches/B1?remove_albums=true'
-	]
+	],
+	// following hub (user-scoped)
+	['followed artists', API.following.artists(), '/api/v1/following/artists'],
+	[
+		'new releases',
+		API.following.newReleases(50, 0),
+		'/api/v1/following/new-releases?limit=50&offset=0'
+	],
+	[
+		'new releases unseen count',
+		API.following.newReleasesUnseenCount(),
+		'/api/v1/following/new-releases/unseen-count'
+	],
+	[
+		'mark new releases seen',
+		API.following.markNewReleasesSeen(),
+		'/api/v1/following/new-releases/seen'
+	],
+	['following events', API.following.events(), '/api/v1/following/events']
 ];
 
 // Routes whose builder takes query params - assert the path prefix only.

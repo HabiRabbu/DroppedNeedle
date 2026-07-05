@@ -3,6 +3,7 @@ import { toastStore } from '$lib/stores/toast';
 import { authStore } from '$lib/stores/authStore.svelte';
 import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 import { PlaylistQueryKeyFactory } from '$lib/queries/playlists/PlaylistQueryKeyFactory';
+import { FollowQueryKeyFactory } from '$lib/queries/following/FollowQueryKeyFactory';
 
 // SSEPublisher replays its last payload to every new subscriber, so
 // auto_download_enqueued arrives again on each reconnect. De-dupe by task id
@@ -67,6 +68,10 @@ export function createFollowingEvents() {
 		persistSeen(seen);
 		const title = typeof data.title === 'string' && data.title ? data.title : 'a new release';
 		toastStore.show({ message: `Auto-downloading new release: ${title}`, type: 'info' });
+		// an enqueue means the poller just found something - refresh the sidebar badge
+		void invalidateQueriesWithPersister({
+			queryKey: FollowQueryKeyFactory.newReleasesUnseen(authStore.user?.id)
+		});
 	}
 
 	function start(): void {

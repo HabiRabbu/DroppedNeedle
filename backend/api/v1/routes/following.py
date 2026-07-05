@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from api.v1.schemas.following import (
     FollowedArtistResponse,
     NewReleaseResponse,
+    UnseenCountResponse,
     WantedResponse,
 )
 from core.dependencies import get_follow_service, get_sse_publisher
@@ -88,3 +89,22 @@ async def list_new_releases(
         ],
         total=total,
     )
+
+
+@router.get("/new-releases/unseen-count", response_model=UnseenCountResponse)
+async def get_unseen_new_release_count(
+    current_user: CurrentUserDep,
+    follow_service: FollowService = Depends(get_follow_service),
+):
+    count = await follow_service.count_unseen_new_releases(current_user.id)
+    return UnseenCountResponse(count=count)
+
+
+@router.post("/new-releases/seen", response_model=UnseenCountResponse)
+async def mark_new_releases_seen(
+    current_user: CurrentUserDep,
+    follow_service: FollowService = Depends(get_follow_service),
+):
+    """Stamp the user's seen marker; the unseen count is 0 by definition after."""
+    await follow_service.mark_new_releases_seen(current_user.id)
+    return UnseenCountResponse(count=0)

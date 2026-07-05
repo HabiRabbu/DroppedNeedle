@@ -19,11 +19,18 @@ class FakeEventSource {
 
 vi.stubGlobal('EventSource', FakeEventSource);
 vi.mock('$lib/stores/toast', () => ({ toastStore: { show: vi.fn() } }));
+vi.mock('$lib/queries/QueryClient', () => ({ invalidateQueriesWithPersister: vi.fn() }));
+vi.mock('$lib/stores/authStore.svelte', () => ({
+	authStore: { user: { id: 'userA' } }
+}));
 
 import { toastStore } from '$lib/stores/toast';
+import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
+import { FollowQueryKeyFactory } from './FollowQueryKeyFactory';
 import { createFollowingEvents } from './FollowingEvents';
 
 const mockShow = vi.mocked(toastStore.show);
+const mockInvalidate = vi.mocked(invalidateQueriesWithPersister);
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -54,5 +61,22 @@ describe('FollowingEvents', () => {
 		fe.start();
 		FakeEventSource.instances[0].emit('auto_download_enqueued', { title: 'No id' });
 		expect(mockShow).not.toHaveBeenCalled();
+		expect(mockInvalidate).not.toHaveBeenCalled();
+	});
+
+	it('refreshes the sidebar badge count once per real enqueue', () => {
+		const fe = createFollowingEvents();
+		fe.start();
+		const es = FakeEventSource.instances[0];
+
+		es.emit('auto_download_enqueued', { task_id: 'X', title: 'Album X' });
+		expect(mockInvalidate).toHaveBeenCalledTimes(1);
+		expect(mockInvalidate).toHaveBeenCalledWith({
+			queryKey: FollowQueryKeyFactory.newReleasesUnseen('userA')
+		});
+
+		// replayed snapshot is de-duped - no second invalidation
+		es.emit('auto_download_enqueued', { task_id: 'X', title: 'Album X' });
+		expect(mockInvalidate).toHaveBeenCalledTimes(1);
 	});
 });

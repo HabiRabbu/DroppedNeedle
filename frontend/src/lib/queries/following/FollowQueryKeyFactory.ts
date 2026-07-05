@@ -15,6 +15,8 @@ export const FollowQueryKeyFactory = {
 			limit,
 			offset
 		] as const,
+	newReleasesUnseen: (userId: string | undefined) =>
+		[...FollowQueryKeyFactory.followingPrefix, 'new-releases-unseen', userId ?? 'anon'] as const,
 	// admin queue is global (not per-user) - admins review every pending grant
 	adminApprovals: () => [...FollowQueryKeyFactory.followingPrefix, 'admin-approvals'] as const
 };

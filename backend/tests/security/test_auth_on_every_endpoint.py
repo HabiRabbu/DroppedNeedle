@@ -22,6 +22,7 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from api.v1.routes import download_client as download_client_routes
 from api.v1.routes import downloads as downloads_routes
 from api.v1.routes import downloads_search as downloads_search_routes
+from api.v1.routes import following as following_routes
 from api.v1.routes import library as library_routes
 from api.v1.routes import discovery_batches as discovery_batches_routes
 from api.v1.routes import library_scan as library_scan_routes
@@ -39,6 +40,7 @@ from core.dependencies import (
     get_download_client_repository,
     get_download_service,
     get_download_store,
+    get_follow_service,
     get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
@@ -66,6 +68,7 @@ _SERVICE_PROVIDERS = (
     get_download_client_repository,
     get_download_service,
     get_download_store,
+    get_follow_service,
     get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
@@ -144,6 +147,12 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/me/connections/spotify/auth/url", None),
     ("GET", "/api/v1/me/spotify/playlists", None),
     ("POST", "/api/v1/playlists/pl-1/request-missing", None),
+    # Following hub. GET /following/events is omitted: it's an SSE stream whose
+    # infinite generator can't be driven through TestClient for the admitted case.
+    ("GET", "/api/v1/following/artists", None),
+    ("GET", "/api/v1/following/new-releases", None),
+    ("GET", "/api/v1/following/new-releases/unseen-count", None),
+    ("POST", "/api/v1/following/new-releases/seen", None),
 ]
 
 _ALL_ENDPOINTS = _ADMIN_ENDPOINTS + _USER_ENDPOINTS
@@ -165,6 +174,7 @@ def _client(scenario: str):
         quarantine_routes.router,
         downloads_search_routes.router,
         downloads_routes.router,
+        following_routes.router,
         tracks_routes.router,
         library_routes.router,
         me_routes.router,

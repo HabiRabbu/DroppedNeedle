@@ -22,3 +22,7 @@ class NewReleaseResponse(AppStruct):
 class WantedResponse(AppStruct):
     items: list[NewReleaseResponse]
     total: int
+
+
+class UnseenCountResponse(AppStruct):
+    count: int

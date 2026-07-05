@@ -39,12 +39,18 @@ import { FOLLOW_ENDPOINTS } from './endpoints';
 import {
 	getFollowStatusQuery,
 	getFollowedArtistsQuery,
-	getNewReleasesQuery
+	getNewReleasesQuery,
+	getUnseenNewReleasesCountQuery
 } from './FollowQueries.svelte';
-import { createSetAutoDownloadMutation, createSetFollowMutation } from './FollowMutations.svelte';
-import type { FollowStatus } from './types';
+import {
+	createMarkNewReleasesSeenMutation,
+	createSetAutoDownloadMutation,
+	createSetFollowMutation
+} from './FollowMutations.svelte';
+import type { FollowStatus, UnseenCountResponse } from './types';
 
 const mockGet = vi.mocked(api.global.get);
+const mockPost = vi.mocked(api.global.post);
 const mockPut = vi.mocked(api.global.put);
 const mockShow = vi.mocked(toastStore.show);
 
@@ -90,6 +96,16 @@ describe('FollowQueryKeyFactory (AMU-5)', () => {
 			50,
 			0
 		]);
+		expect(FollowQueryKeyFactory.newReleasesUnseen('userA')).toEqual([
+			'following',
+			'new-releases-unseen',
+			'userA'
+		]);
+		expect(FollowQueryKeyFactory.newReleasesUnseen(undefined)).toEqual([
+			'following',
+			'new-releases-unseen',
+			'anon'
+		]);
 		expect(FollowQueryKeyFactory.status(MBID, 'userB')).not.toEqual(
 			FollowQueryKeyFactory.status(MBID, 'userA')
 		);
@@ -119,6 +135,18 @@ describe('follow queries hit the right endpoints with user-scoped keys', () => {
 		expect(opts.queryKey).toEqual(['following', 'new-releases', 'userA', 24, 0]);
 		await opts.queryFn!({ signal: new AbortController().signal });
 		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.newReleases(24, 0));
+	});
+
+	it('getUnseenNewReleasesCountQuery is user-scoped and disabled when logged out', async () => {
+		const opts = getUnseenNewReleasesCountQuery() as unknown as Opts & { enabled?: boolean };
+		expect(opts.queryKey).toEqual(['following', 'new-releases-unseen', 'userA']);
+		expect(opts.enabled).toBe(true);
+		await opts.queryFn!({ signal: new AbortController().signal });
+		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.newReleasesUnseenCount());
+
+		auth.user = null;
+		const loggedOut = getUnseenNewReleasesCountQuery() as unknown as { enabled?: boolean };
+		expect(loggedOut.enabled).toBe(false);
 	});
 });
 
@@ -165,6 +193,18 @@ describe('follow mutations', () => {
 		expect(mockShow).toHaveBeenCalledWith(
 			expect.objectContaining({ type: 'info', message: expect.stringContaining('admin') })
 		);
+	});
+
+	it('markNewReleasesSeen POSTs and zeroes the cached badge count', async () => {
+		mockPost.mockResolvedValue({ count: 0 });
+		const m = createMarkNewReleasesSeenMutation() as unknown as Opts;
+		await m.mutationFn(undefined);
+		expect(mockPost).toHaveBeenCalledWith(FOLLOW_ENDPOINTS.markNewReleasesSeen());
+		await m.onSuccess!({ count: 0 }, undefined);
+		const cached = queryClient.getQueryData<UnseenCountResponse>(
+			FollowQueryKeyFactory.newReleasesUnseen('userA')
+		);
+		expect(cached).toEqual({ count: 0 });
 	});
 
 	it('does not toast when an admin is approved immediately', async () => {

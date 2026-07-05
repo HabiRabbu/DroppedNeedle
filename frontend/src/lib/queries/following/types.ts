@@ -31,6 +31,11 @@ export interface NewReleasesResponse {
 	total: number;
 }
 
+// mirrors backend api/v1/schemas/following.py (UnseenCountResponse)
+export interface UnseenCountResponse {
+	count: number;
+}
+
 export interface AutoDownloadApproval {
 	user_id: string;
 	artist_mbid: string;

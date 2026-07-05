@@ -94,6 +94,12 @@ class FollowService:
     ) -> tuple[list[NewRelease], int]:
         return await self._store.list_new_releases_for_user(user_id, limit, offset)
 
+    async def count_unseen_new_releases(self, user_id: str) -> int:
+        return await self._store.count_unseen_new_releases_for_user(user_id)
+
+    async def mark_new_releases_seen(self, user_id: str) -> None:
+        await self._store.mark_new_releases_seen(user_id)
+
     async def list_pending_approvals(self) -> list[Approval]:
         return await self._store.list_pending_approvals()
 

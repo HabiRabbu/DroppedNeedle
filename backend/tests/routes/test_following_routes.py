@@ -114,3 +114,25 @@ def test_following_is_per_user(ctx):
     override_user_auth(app, role="user", user_id="user-b")
     assert ctx.client.get("/following/artists").json() == []
     assert ctx.client.get("/following/new-releases").json()["total"] == 0
+
+
+def test_unseen_count_then_mark_seen_clears(ctx):
+    resp = ctx.client.get("/following/new-releases/unseen-count")
+    assert resp.status_code == 200
+    assert resp.json() == {"count": 2}
+
+    resp = ctx.client.post("/following/new-releases/seen")
+    assert resp.status_code == 200
+    assert resp.json() == {"count": 0}
+
+    assert ctx.client.get("/following/new-releases/unseen-count").json() == {"count": 0}
+
+
+def test_unseen_count_is_per_user(ctx):
+    # user-a's marker doesn't exist yet and user-b follows nothing
+    app = ctx.client.app
+    override_user_auth(app, role="user", user_id="user-b")
+    assert ctx.client.get("/following/new-releases/unseen-count").json() == {"count": 0}
+    ctx.client.post("/following/new-releases/seen")  # user-b's marker
+    override_user_auth(app, role="user", user_id="user-a")
+    assert ctx.client.get("/following/new-releases/unseen-count").json() == {"count": 2}

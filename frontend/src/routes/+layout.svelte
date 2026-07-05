@@ -75,6 +75,7 @@
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 	import QueryProvider from '$lib/queries/QueryProvider.svelte';
+	import NewReleasesNavBadge from '$lib/components/NewReleasesNavBadge.svelte';
 	import { createFollowingEvents } from '$lib/queries/following/FollowingEvents';
 
 	migratePageSourceKeys();
@@ -454,7 +455,10 @@
 									aria-current={isNavActive('/following') ? 'page' : undefined}
 									data-tip="Following"
 								>
-									<Heart class="h-6 w-6" />
+									<div class="relative">
+										<Heart class="h-6 w-6" />
+										<NewReleasesNavBadge />
+									</div>
 									<span class="is-drawer-close:hidden">Following</span>
 								</a>
 							</li>

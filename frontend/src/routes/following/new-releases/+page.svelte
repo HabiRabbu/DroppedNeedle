@@ -1,8 +1,10 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { Disc3, Plus, Check, ArrowLeft } from 'lucide-svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { getNewReleasesQuery } from '$lib/queries/following/FollowQueries.svelte';
+	import { createMarkNewReleasesSeenMutation } from '$lib/queries/following/FollowMutations.svelte';
 	import { requestAlbum } from '$lib/queries/downloads/DownloadMutations.svelte';
 	import type { NewRelease } from '$lib/queries/following/types';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -18,6 +20,10 @@
 
 	const request = requestAlbum();
 	let requested = new SvelteSet<string>();
+
+	// visiting this page is what clears the sidebar new-releases badge
+	const markSeen = createMarkNewReleasesSeenMutation();
+	onMount(() => markSeen.mutate(undefined));
 
 	function onRequest(item: NewRelease) {
 		request.mutate({
