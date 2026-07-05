@@ -26,10 +26,14 @@ from api.v1.routes import library as library_routes
 from api.v1.routes import discovery_batches as discovery_batches_routes
 from api.v1.routes import library_scan as library_scan_routes
 from api.v1.routes import me_connections as me_routes
+from api.v1.routes import playlists as playlists_routes
 from api.v1.routes import quarantine as quarantine_routes
+from api.v1.routes import settings as settings_routes
+from api.v1.routes import spotify as spotify_routes
 from api.v1.routes import system as system_routes
 from api.v1.routes import tracks as tracks_routes
 from core.dependencies import (
+    get_auth_store,
     get_cache,
     get_discovery_batch_service,
     get_download_client_repository,
@@ -41,9 +45,12 @@ from core.dependencies import (
     get_library_service,
     get_now_playing_service,
     get_per_user_client_factory,
+    get_playlist_service,
     get_preferences_service,
+    get_request_service,
     get_scan_state_store,
     get_settings_service,
+    get_spotify_import_service,
     get_sse_publisher,
     get_user_connections_store,
     get_user_listening_prefs_store,
@@ -53,6 +60,7 @@ from middleware import _get_current_admin, _get_current_user
 from tests.helpers import build_test_client, mock_admin_user, mock_user
 
 _SERVICE_PROVIDERS = (
+    get_auth_store,
     get_cache,
     get_discovery_batch_service,
     get_download_client_repository,
@@ -64,9 +72,12 @@ _SERVICE_PROVIDERS = (
     get_library_service,
     get_now_playing_service,
     get_per_user_client_factory,
+    get_playlist_service,
     get_preferences_service,
+    get_request_service,
     get_scan_state_store,
     get_settings_service,
+    get_spotify_import_service,
     get_sse_publisher,
     get_user_connections_store,
     get_user_listening_prefs_store,
@@ -92,6 +103,11 @@ _ADMIN_ENDPOINTS = [
     ("POST", "/api/v1/library/tracks/file-1",
      {"title": "t", "artist": "a", "album": "al", "track_number": 1}),
     ("POST", "/api/v1/library/albums/rg-1/rescan", None),
+    # Spotify app credentials + home settings (admin-gated at the /settings router level).
+    ("GET", "/api/v1/settings/spotify", None),
+    ("PUT", "/api/v1/settings/spotify", {}),
+    ("GET", "/api/v1/settings/home", None),
+    ("PUT", "/api/v1/settings/home", {}),
 ]
 
 _USER_ENDPOINTS = [
@@ -121,6 +137,13 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/discover/batches/b-1", None),
     ("DELETE", "/api/v1/discover/batches/b-1", None),
     ("GET", "/api/v1/system/health", None),
+    # Spotify per-user linking + browsing, and request-missing on an owned playlist.
+    # (POST /me/spotify/playlists/{id}/import is intentionally omitted: it spawns a real
+    # background task through the DI getters that can't be driven by the mock harness; it
+    # shares the same CurrentUserDep gate as GET /me/spotify/playlists, covered here.)
+    ("GET", "/api/v1/me/connections/spotify/auth/url", None),
+    ("GET", "/api/v1/me/spotify/playlists", None),
+    ("POST", "/api/v1/playlists/pl-1/request-missing", None),
 ]
 
 _ALL_ENDPOINTS = _ADMIN_ENDPOINTS + _USER_ENDPOINTS
@@ -147,6 +170,9 @@ def _client(scenario: str):
         me_routes.router,
         discovery_batches_routes.router,
         system_routes.router,
+        playlists_routes.router,
+        settings_routes.router,
+        spotify_routes.router,
     ):
         v1.include_router(router)
     app.include_router(v1)

@@ -103,7 +103,7 @@
 			</p>
 		{:else}
 			<p class="px-1 text-xs text-base-content/40">
-				Connect your Spotify account to import your personal playlists into Musicseerr.
+				Connect your Spotify account to import your personal playlists into DroppedNeedle.
 			</p>
 		{/if}
 

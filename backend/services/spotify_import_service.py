@@ -159,14 +159,6 @@ class SpotifyImportService:
             f"Imported Spotify playlist {spotify_playlist_id} - internal {playlist_id} ({len(track_dicts)} tracks)"
         )
 
-    async def import_playlist(self, user_id: str, spotify_playlist_id: str) -> str:
-        client = await self._get_client(user_id)
-        pl_info = await client.get_playlist(spotify_playlist_id)
-        name = (pl_info.get("name") or "").strip() or "Spotify Playlist"
-        playlist_id = await self.ensure_playlist_record(user_id, spotify_playlist_id, name)
-        await self.populate_playlist(user_id, spotify_playlist_id, playlist_id)
-        return playlist_id
-
     async def _resolve_album_mbids(
         self, raw_tracks: list[dict]
     ) -> dict[str, str | None]:

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -12,6 +13,7 @@ from core.dependencies import (
     get_plex_library_service,
     get_playlist_service,
     get_spotify_import_service,
+    get_sse_publisher,
 )
 from core.task_registry import TaskRegistry
 from infrastructure.msgspec_fastapi import AppStruct, MsgSpecBody, MsgSpecRoute
@@ -54,11 +56,6 @@ async def _background_import(
     playlist_id: str,
     current_user: object,
 ) -> None:
-    playlist_service = get_playlist_service()
-    jf_service = get_jellyfin_library_service()
-    local_service = get_local_files_service()
-    nd_service = get_navidrome_library_service()
-    plex_service = get_plex_library_service()
     try:
         await svc.populate_playlist(user_id, spotify_playlist_id, playlist_id)
     except Exception as exc:  # noqa: BLE001
@@ -67,6 +64,13 @@ async def _background_import(
         )
         return
     try:
+        # Resolve the singleton services inside the try so a getter failure is logged
+        # by the auto-link handler below rather than silently killing the task.
+        playlist_service = get_playlist_service()
+        jf_service = get_jellyfin_library_service()
+        local_service = get_local_files_service()
+        nd_service = get_navidrome_library_service()
+        plex_service = get_plex_library_service()
         sources_map = await playlist_service.resolve_track_sources(
             playlist_id,
             requesting=None,
@@ -95,6 +99,18 @@ async def _background_import(
                     pass
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"Auto-link failed for playlist {playlist_id}: {exc}")
+
+    # Tell the detail/list UI the import finished so the tracks appear without a manual
+    # refresh. Fires whenever populate succeeded (auto-link above is best-effort). The
+    # event_id lets the client de-dupe the SSEPublisher's replay-to-new-subscribers.
+    try:
+        await get_sse_publisher().publish(
+            f"user:{user_id}",
+            "playlist_imported",
+            {"playlist_id": playlist_id, "event_id": uuid.uuid4().hex},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Failed to signal Spotify import completion for {playlist_id}: {exc}")
 
 
 @router.get("/playlists", response_model=SpotifyPlaylistListResponse)

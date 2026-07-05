@@ -37,6 +37,11 @@ _PUBLIC_PATHS: frozenset[str] = frozenset({
     "/api/v1/auth/oidc/authorize",
     "/api/v1/auth/oidc/callback",
     "/api/v1/auth/oidc/exchange",
+    # Spotify OAuth callback identifies the user from the single-use `state` token
+    # (like the OIDC callback), so it must work without a session cookie - an expired
+    # cookie or a bearer-token client then lands on the graceful /profile?spotify=error
+    # redirect instead of a raw 401.
+    "/api/v1/me/connections/spotify/auth/callback",
     # OpenAPI spec (single file)
     "/api/v1/openapi.json",
 })

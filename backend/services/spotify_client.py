@@ -152,6 +152,10 @@ class SpotifyClient:
         )
 
     async def get_playlist_tracks(self, playlist_id: str) -> list[dict]:
+        # /items is the current endpoint (Spotify Web API, verified 2026-07). The older
+        # /playlists/{id}/tracks is deprecated and 403s for development-mode apps after the
+        # March 2026 migration - do NOT "fix" this back to /tracks. Each entry carries the
+        # track object under `item` (new) or `track` (legacy alias); we read both below.
         tracks: list[dict] = []
         params: dict = {"limit": 100, "offset": 0}
         while True:

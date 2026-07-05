@@ -9,10 +9,15 @@
 	let copied = $state(false);
 
 	function copyRedirectUri() {
-		navigator.clipboard.writeText(redirectUri).then(() => {
-			copied = true;
-			setTimeout(() => (copied = false), 2000);
-		});
+		navigator.clipboard
+			.writeText(redirectUri)
+			.then(() => {
+				copied = true;
+				setTimeout(() => (copied = false), 2000);
+			})
+			.catch(() => {
+				/* clipboard unavailable (insecure context / permission denied) - ignore */
+			});
 	}
 
 	const form = createSettingsForm<SpotifySettings>({

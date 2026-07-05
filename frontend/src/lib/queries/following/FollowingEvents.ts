@@ -1,5 +1,8 @@
 import { API } from '$lib/constants';
 import { toastStore } from '$lib/stores/toast';
+import { authStore } from '$lib/stores/authStore.svelte';
+import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
+import { PlaylistQueryKeyFactory } from '$lib/queries/playlists/PlaylistQueryKeyFactory';
 
 // SSEPublisher replays its last payload to every new subscriber, so
 // auto_download_enqueued arrives again on each reconnect. De-dupe by task id
@@ -27,6 +30,29 @@ function persistSeen(seen: Set<string>): void {
 export function createFollowingEvents() {
 	let source: EventSource | null = null;
 	let seen = new Set<string>();
+	// Spotify import completions replay on reconnect too; de-dupe by event_id so the
+	// playlist queries are invalidated once per real import (in-memory is enough - a
+	// redundant invalidation is idempotent, unlike a repeated toast).
+	let importsSeen = new Set<string>();
+
+	function handlePlaylistImported(event: Event): void {
+		let data: Record<string, unknown>;
+		try {
+			data = JSON.parse((event as MessageEvent).data) as Record<string, unknown>;
+		} catch {
+			return;
+		}
+		const playlistId = typeof data.playlist_id === 'string' ? data.playlist_id : '';
+		const eventId = typeof data.event_id === 'string' ? data.event_id : '';
+		if (!playlistId || (eventId && importsSeen.has(eventId))) return;
+		if (eventId) importsSeen.add(eventId);
+		// import finished populating - refresh the open detail view and the list count
+		const userId = authStore.user?.id;
+		void invalidateQueriesWithPersister({
+			queryKey: PlaylistQueryKeyFactory.detail(userId, playlistId)
+		});
+		void invalidateQueriesWithPersister({ queryKey: PlaylistQueryKeyFactory.list(userId) });
+	}
 
 	function handleEnqueued(event: Event): void {
 		let data: Record<string, unknown>;
@@ -46,8 +72,10 @@ export function createFollowingEvents() {
 	function start(): void {
 		stop();
 		seen = loadSeen();
+		importsSeen = new Set();
 		source = new EventSource(API.following.events());
 		source.addEventListener('auto_download_enqueued', handleEnqueued);
+		source.addEventListener('playlist_imported', handlePlaylistImported);
 	}
 
 	function stop(): void {
