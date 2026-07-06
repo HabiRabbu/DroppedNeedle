@@ -37,13 +37,19 @@ import { queryClient } from '../QueryClient';
 import { FollowQueryKeyFactory } from './FollowQueryKeyFactory';
 import { FOLLOW_ENDPOINTS } from './endpoints';
 import {
+	getCitySearchQuery,
+	getConcertsQuery,
+	getEventCitiesQuery,
 	getFollowStatusQuery,
 	getFollowedArtistsQuery,
 	getNewReleasesQuery,
+	getUnseenConcertsCountQuery,
 	getUnseenNewReleasesCountQuery
 } from './FollowQueries.svelte';
 import {
+	createMarkConcertsSeenMutation,
 	createMarkNewReleasesSeenMutation,
+	createReplaceEventCitiesMutation,
 	createSetAutoDownloadMutation,
 	createSetFollowMutation
 } from './FollowMutations.svelte';
@@ -147,6 +153,79 @@ describe('follow queries hit the right endpoints with user-scoped keys', () => {
 		auth.user = null;
 		const loggedOut = getUnseenNewReleasesCountQuery() as unknown as { enabled?: boolean };
 		expect(loggedOut.enabled).toBe(false);
+	});
+});
+
+describe('concerts queries hit the right endpoints with user-scoped keys', () => {
+	it('getConcertsQuery', async () => {
+		const opts = getConcertsQuery() as unknown as Opts;
+		expect(opts.queryKey).toEqual(['following', 'concerts', 'userA']);
+		await opts.queryFn!({ signal: new AbortController().signal });
+		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.concerts());
+	});
+
+	it('getEventCitiesQuery', async () => {
+		const opts = getEventCitiesQuery() as unknown as Opts;
+		expect(opts.queryKey).toEqual(['following', 'concert-cities', 'userA']);
+		await opts.queryFn!({ signal: new AbortController().signal });
+		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.concertCities());
+	});
+
+	it('getCitySearchQuery is enabled only from 2 characters', async () => {
+		const short = getCitySearchQuery(() => 'l') as unknown as { enabled?: boolean };
+		expect(short.enabled).toBe(false);
+		const opts = getCitySearchQuery(() => 'liverpool') as unknown as Opts & {
+			enabled?: boolean;
+		};
+		expect(opts.enabled).toBe(true);
+		expect(opts.queryKey).toEqual(['following', 'city-search', 'userA', 'liverpool']);
+		await opts.queryFn!({ signal: new AbortController().signal });
+		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.concertCitySearch('liverpool'));
+	});
+
+	it('getUnseenConcertsCountQuery is user-scoped and disabled when logged out', async () => {
+		const opts = getUnseenConcertsCountQuery() as unknown as Opts & { enabled?: boolean };
+		expect(opts.queryKey).toEqual(['following', 'concerts-unseen', 'userA']);
+		expect(opts.enabled).toBe(true);
+		await opts.queryFn!({ signal: new AbortController().signal });
+		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.concertsUnseenCount());
+
+		auth.user = null;
+		const loggedOut = getUnseenConcertsCountQuery() as unknown as { enabled?: boolean };
+		expect(loggedOut.enabled).toBe(false);
+	});
+});
+
+describe('concerts mutations', () => {
+	it('replaceEventCities PUTs the full list and refreshes cities cache', async () => {
+		const cities = [{ city_name: 'Liverpool', latitude: 53.41, longitude: -2.98, radius_km: 32 }];
+		mockPut.mockResolvedValue({ items: cities });
+		const m = createReplaceEventCitiesMutation() as unknown as Opts;
+		await m.mutationFn(cities);
+		expect(mockPut).toHaveBeenCalledWith(FOLLOW_ENDPOINTS.concertCities(), { items: cities });
+		await m.onSuccess!({ items: cities }, cities);
+		const cached = queryClient.getQueryData(FollowQueryKeyFactory.concertCities('userA'));
+		expect(cached).toEqual({ items: cities });
+	});
+
+	it('replaceEventCities toasts on error', async () => {
+		const m = createReplaceEventCitiesMutation() as unknown as Opts & {
+			onError?: () => void;
+		};
+		m.onError!();
+		expect(mockShow).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+	});
+
+	it('markConcertsSeen POSTs and zeroes the cached badge count', async () => {
+		mockPost.mockResolvedValue({ count: 0 });
+		const m = createMarkConcertsSeenMutation() as unknown as Opts;
+		await m.mutationFn(undefined);
+		expect(mockPost).toHaveBeenCalledWith(FOLLOW_ENDPOINTS.markConcertsSeen());
+		await m.onSuccess!({ count: 0 }, undefined);
+		const cached = queryClient.getQueryData<UnseenCountResponse>(
+			FollowQueryKeyFactory.concertsUnseen('userA')
+		);
+		expect(cached).toEqual({ count: 0 });
 	});
 });
 

@@ -138,6 +138,18 @@ export function createFollowingEvents() {
 		invalidateWantedList();
 	}
 
+	// badge-only: the events sweep found concerts for an artist this user
+	// follows - refetch the badge count and the list (idempotent, no de-dupe)
+	function handleConcertsNew(): void {
+		const userId = authStore.user?.id;
+		void invalidateQueriesWithPersister({
+			queryKey: FollowQueryKeyFactory.concertsUnseen(userId)
+		});
+		void invalidateQueriesWithPersister({
+			queryKey: FollowQueryKeyFactory.concerts(userId)
+		});
+	}
+
 	function makeWantedToastHandler(message: (album: string) => string) {
 		return (event: Event): void => {
 			let data: Record<string, unknown>;
@@ -175,6 +187,7 @@ export function createFollowingEvents() {
 		source.addEventListener('playlist_imported', handlePlaylistImported);
 		source.addEventListener('personal_mix_refreshed', handlePersonalMixRefreshed);
 		source.addEventListener('wanted_new_candidates', handleWantedNewCandidates);
+		source.addEventListener('concerts_new', handleConcertsNew);
 		source.addEventListener('wanted_auto_dispatched', handleWantedAutoDispatched);
 		source.addEventListener('wanted_fulfilled', handleWantedFulfilled);
 	}

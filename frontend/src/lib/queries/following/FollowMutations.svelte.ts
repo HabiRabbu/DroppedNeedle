@@ -9,7 +9,13 @@ import {
 } from '../QueryClient';
 import { FollowQueryKeyFactory } from './FollowQueryKeyFactory';
 import { FOLLOW_ENDPOINTS } from './endpoints';
-import type { AutoDownloadState, FollowStatus, UnseenCountResponse } from './types';
+import type {
+	AutoDownloadState,
+	EventCitiesResponse,
+	EventCity,
+	FollowStatus,
+	UnseenCountResponse
+} from './types';
 
 const NOT_FOLLOWING: FollowStatus = {
 	followed: false,
@@ -61,6 +67,42 @@ export const createMarkNewReleasesSeenMutation = () =>
 		onSuccess: (data) => {
 			void setQueryDataWithPersister<UnseenCountResponse>(
 				FollowQueryKeyFactory.newReleasesUnseen(authStore.user?.id),
+				data
+			);
+		}
+	}));
+
+// replace-all semantics: the city manager submits its full list in order
+export const createReplaceEventCitiesMutation = () =>
+	createMutation(() => ({
+		mutationFn: (cities: EventCity[]) =>
+			api.global.put<EventCitiesResponse>(FOLLOW_ENDPOINTS.concertCities(), { items: cities }),
+		onSuccess: (data) => {
+			void setQueryDataWithPersister<EventCitiesResponse>(
+				FollowQueryKeyFactory.concertCities(authStore.user?.id),
+				data
+			);
+			// the city set changes what the concerts list and badge count contain
+			void invalidateQueriesWithPersister({
+				queryKey: FollowQueryKeyFactory.concerts(authStore.user?.id)
+			});
+			void invalidateQueriesWithPersister({
+				queryKey: FollowQueryKeyFactory.concertsUnseen(authStore.user?.id)
+			});
+		},
+		onError: () => {
+			toastStore.show({ message: "Couldn't save your cities.", type: 'error' });
+		}
+	}));
+
+// fired on Upcoming Events page mount; writes count 0 into the persisted
+// cache so the badge clears without waiting for a refetch
+export const createMarkConcertsSeenMutation = () =>
+	createMutation(() => ({
+		mutationFn: () => api.global.post<UnseenCountResponse>(FOLLOW_ENDPOINTS.markConcertsSeen()),
+		onSuccess: (data) => {
+			void setQueryDataWithPersister<UnseenCountResponse>(
+				FollowQueryKeyFactory.concertsUnseen(authStore.user?.id),
 				data
 			);
 		}

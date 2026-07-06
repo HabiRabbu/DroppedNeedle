@@ -36,6 +36,9 @@ from api.v1.schemas.settings import (
     SabnzbdConnectionSettings,
     SpotifySettings,
     SPOTIFY_SECRET_MASK,
+    EventsSettings,
+    TICKETMASTER_KEY_MASK,
+    SKIDDLE_KEY_MASK,
     DEFAULT_NAMING_TEMPLATE,
     WantedWatcherSettings,
 )
@@ -749,6 +752,78 @@ class PreferencesService:
     def is_spotify_enabled(self) -> bool:
         raw = self.get_spotify_settings_raw()
         return raw.enabled and bool(raw.client_id) and bool(raw.client_secret)
+
+    def _events_section_raw(self) -> EventsSettings:
+        config = self._load_config()
+        data = config.get("events", {})
+        return EventsSettings(
+            enabled=data.get("enabled", False),
+            ticketmaster_enabled=data.get("ticketmaster_enabled", False),
+            ticketmaster_api_key=self._read_secret(
+                ("events", "ticketmaster_api_key"), data.get("ticketmaster_api_key", "")
+            ),
+            skiddle_enabled=data.get("skiddle_enabled", False),
+            skiddle_api_key=self._read_secret(
+                ("events", "skiddle_api_key"), data.get("skiddle_api_key", "")
+            ),
+            poll_time=data.get("poll_time", "06:00"),
+            sweep_scope=(
+                data.get("sweep_scope")
+                if data.get("sweep_scope") in ("followed", "library")
+                else "followed"
+            ),
+        )
+
+    def get_events_settings(self) -> EventsSettings:
+        """Events settings with both API keys MASKED (safe for API responses)."""
+        raw = self._events_section_raw()
+        return EventsSettings(
+            enabled=raw.enabled,
+            ticketmaster_enabled=raw.ticketmaster_enabled,
+            ticketmaster_api_key=TICKETMASTER_KEY_MASK if raw.ticketmaster_api_key else "",
+            skiddle_enabled=raw.skiddle_enabled,
+            skiddle_api_key=SKIDDLE_KEY_MASK if raw.skiddle_api_key else "",
+            poll_time=raw.poll_time,
+            sweep_scope=raw.sweep_scope,
+        )
+
+    def get_events_settings_raw(self) -> EventsSettings:
+        """Events settings with both API keys DECRYPTED (server-side use only)."""
+        return self._events_section_raw()
+
+    def save_events_settings(self, settings: EventsSettings) -> None:
+        try:
+            current_raw = self._events_section_raw()
+            tm_key = settings.ticketmaster_api_key.strip()
+            if tm_key == TICKETMASTER_KEY_MASK:
+                tm_key = current_raw.ticketmaster_api_key
+            sk_key = settings.skiddle_api_key.strip()
+            if sk_key == SKIDDLE_KEY_MASK:
+                sk_key = current_raw.skiddle_api_key
+            config = self._load_config().copy()
+            config["events"] = {
+                "enabled": settings.enabled,
+                "ticketmaster_enabled": settings.ticketmaster_enabled,
+                "ticketmaster_api_key": encrypt(tm_key) if tm_key else "",
+                "skiddle_enabled": settings.skiddle_enabled,
+                "skiddle_api_key": encrypt(sk_key) if sk_key else "",
+                "poll_time": settings.poll_time,
+                "sweep_scope": settings.sweep_scope,
+            }
+            self._save_config(config)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save events settings: {e}")
+            raise ConfigurationError("Failed to save events settings")
+
+    def is_events_source_ready(self) -> bool:
+        """Single source of truth for 'can this instance fetch live events':
+        the feature is on AND at least one source is enabled with a key."""
+        raw = self._events_section_raw()
+        if not raw.enabled:
+            return False
+        return (raw.ticketmaster_enabled and bool(raw.ticketmaster_api_key)) or (
+            raw.skiddle_enabled and bool(raw.skiddle_api_key)
+        )
 
     def _library_settings_section(self) -> LibrarySettings:
         """Decoded library_settings section, seeding library_paths once from the

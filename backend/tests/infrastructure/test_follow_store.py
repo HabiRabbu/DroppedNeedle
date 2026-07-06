@@ -412,3 +412,52 @@ async def test_cascade_on_user_delete(store: FollowStore, tmp_path: Path):
         conn.close()
     assert (await store.get_follow_state("user-a", "MBID-A")).followed is False
     assert await store.get_approval("user-a", "MBID-A") is None
+
+
+@pytest.mark.asyncio
+async def test_list_followers_returns_every_follower(store: FollowStore):
+    await store.follow_artist("user-a", "MBID-A", "Radiohead")
+    await store.follow_artist("user-b", "MBID-A", "Radiohead")
+    await store.follow_artist("user-b", "MBID-X", "Other")
+    assert await store.list_followers("mbid-a") == ["user-a", "user-b"]
+    assert await store.list_followers("mbid-x") == ["user-b"]
+    assert await store.list_followers("mbid-none") == []
+
+
+@pytest.mark.asyncio
+async def test_recent_releases_log_includes_owned_with_flag(
+    store: FollowStore, tmp_path: Path
+):
+    """The LOG view (hub): windowed by release date, owned albums INCLUDED and
+    flagged - unlike the to-do view, which hides them."""
+    from datetime import date, timedelta
+
+    _seed_library_files(tmp_path / "library.db", ["rg-owned"])
+    await store.follow_artist("user-a", "MBID-A", "Radiohead")
+    recent = (date.today() - timedelta(days=3)).isoformat()
+    old = (date.today() - timedelta(days=90)).isoformat()
+    await store.record_new_releases(
+        "mbid-a",
+        [
+            _ri("RG-OWNED", "mbid-a", "Grabbed Album", first_release_date=recent),
+            _ri("RG-NEW", "mbid-a", "Fresh Album", first_release_date=recent),
+            _ri("RG-OLD", "mbid-a", "Ancient Album", first_release_date=old),
+            _ri("RG-DATELESS", "mbid-a", "Dateless Album"),  # falls back to discovered_at
+        ],
+        [],
+    )
+
+    items, total = await store.list_recent_releases_for_user("user-a", days=30, limit=10)
+    assert total == 3  # the 90-day-old release is outside the window
+    by_title = {i.title: i for i in items}
+    assert set(by_title) == {"Grabbed Album", "Fresh Album", "Dateless Album"}
+    assert by_title["Grabbed Album"].in_library is True  # owned but still listed
+    assert by_title["Fresh Album"].in_library is False
+    assert by_title["Dateless Album"].in_library is False
+
+    # the to-do view still hides the owned album
+    todo, _ = await store.list_new_releases_for_user("user-a", 10, 0)
+    assert "Grabbed Album" not in {i.title for i in todo}
+
+    # other users see nothing (join is per-user)
+    assert (await store.list_recent_releases_for_user("user-b", 30, 10))[1] == 0

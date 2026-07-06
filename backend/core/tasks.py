@@ -954,6 +954,94 @@ def start_poll_new_releases_task(
     return task
 
 
+_EVENTS_WATCHER_INITIAL_DELAY = 420
+_EVENTS_SCHEDULER_TICK = 60
+# the startup catch-up skips artists checked within this window so restarts
+# (every deploy on this host) don't re-spend the day's provider quota
+_EVENTS_CATCHUP_SKIP_RECENT_HOURS = 20.0
+
+
+def _next_daily_occurrence(hhmm: str, after: datetime) -> datetime:
+    """First server-local datetime with wall time ``hhmm`` strictly after
+    ``after``. Tolerates garbage (schema validates at the API boundary) by
+    falling back to 06:00."""
+    try:
+        hour, minute = (int(part) for part in hhmm.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(hhmm)
+    except (ValueError, AttributeError):
+        hour, minute = 6, 0
+    candidate = after.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= after:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+async def run_events_watcher_periodically(get_events_watcher, get_poll_time) -> None:
+    """Sweep live-event sources for every distinct followed artist
+    (.dev-notes/Events) daily at the admin-configured server-local time.
+
+    Scheduler-tick model (the auto-scan pattern): one catch-up sweep shortly
+    after startup, then a sweep whenever the next occurrence of ``poll_time``
+    after the previous sweep has passed. The watcher AND the time are
+    re-resolved every tick, so a settings save takes effect within a minute
+    without a restart. Exactly one sleep per iteration incl. the error path;
+    the loop only exits on shutdown."""
+    await asyncio.sleep(_EVENTS_WATCHER_INITIAL_DELAY)
+    last_sweep: datetime | None = None
+    while True:
+        try:
+            now = datetime.now()
+            if last_sweep is None:
+                # catch-up after restart: only artists not swept recently
+                await get_events_watcher().run_sweep(
+                    skip_recent_hours=_EVENTS_CATCHUP_SKIP_RECENT_HOURS
+                )
+                last_sweep = now
+            elif now >= _next_daily_occurrence(get_poll_time(), last_sweep):
+                await get_events_watcher().run_sweep()
+                last_sweep = now
+        except asyncio.CancelledError:
+            break
+        except Exception as e:  # noqa: BLE001
+            logger.error("Events watcher sweep failed: %s", e, exc_info=True)
+            last_sweep = datetime.now()  # a failing sweep still waits for the next slot
+        await asyncio.sleep(_EVENTS_SCHEDULER_TICK)
+
+
+def start_events_watcher_task(get_events_watcher, get_poll_time) -> asyncio.Task:
+    task = asyncio.create_task(
+        run_events_watcher_periodically(get_events_watcher, get_poll_time)
+    )
+    TaskRegistry.get_instance().register("events-watcher", task)
+    return task
+
+
+_events_kick_task: asyncio.Task | None = None
+
+
+def _log_events_kick_error(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Kicked events sweep failed: %s", task.exception(), exc_info=task.exception())
+
+
+def kick_events_sweep(get_events_watcher) -> asyncio.Task | None:
+    """One-off sweep right after an events settings save, so enabling the
+    feature takes effect immediately instead of waiting out the periodic
+    loop's sleep (which may be a day away). The sweep itself no-ops when no
+    source is ready, so kicking on every save is safe; a kick while a prior
+    kicked sweep is still running is skipped (returns None). A rare overlap
+    with the periodic loop is harmless - store writes are serialized and the
+    diff/upsert is idempotent."""
+    global _events_kick_task
+    if _events_kick_task is not None and not _events_kick_task.done():
+        return None
+    task = asyncio.create_task(get_events_watcher().run_sweep())
+    task.add_done_callback(_log_events_kick_error)
+    _events_kick_task = task
+    return task
+
+
 _PERSONAL_MIX_REFRESH_INTERVAL = 86400
 _PERSONAL_MIX_INITIAL_DELAY = 300
 

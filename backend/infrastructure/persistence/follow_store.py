@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import msgspec
@@ -63,6 +64,9 @@ class NewRelease(msgspec.Struct, frozen=True):
     secondary_types: str | None
     first_release_date: str | None
     discovered_at: float
+    # set by the recent-releases log view; the needs-requesting view leaves it
+    # False by construction (owned rows are filtered out there)
+    in_library: bool = False
 
 
 class NewReleaseInput(msgspec.Struct, frozen=True):
@@ -556,6 +560,20 @@ class FollowStore:
 
         await self._write(operation)
 
+    async def list_followers(self, artist_mbid_lower: str) -> list[str]:
+        """Every user following the artist (the events watcher's SSE fan-out
+        audience) - unlike list_auto_download_followers, no approval gating."""
+
+        def operation(conn: sqlite3.Connection) -> list[str]:
+            rows = conn.execute(
+                "SELECT user_id FROM user_followed_artists WHERE artist_mbid_lower = ?"
+                " ORDER BY user_id",
+                (artist_mbid_lower,),
+            ).fetchall()
+            return [row["user_id"] for row in rows]
+
+        return await self._read(operation)
+
     async def list_auto_download_followers(self, artist_mbid_lower: str) -> list[str]:
         # auto_download intent on AND (admin role OR approved standing grant).
         # admins are granted by role with no approval row (DD3) so a later
@@ -622,6 +640,63 @@ class FollowStore:
                 secondary_types=row["secondary_types"],
                 first_release_date=row["first_release_date"],
                 discovered_at=row["discovered_at"],
+            )
+            for row in rows
+        ]
+        return items, total
+
+    async def list_recent_releases_for_user(
+        self, user_id: str, days: int, limit: int
+    ) -> tuple[list[NewRelease], int]:
+        """The LOG view: everything the user's artists released in the last
+        ``days`` days, INCLUDING albums already in the library (flagged via
+        ``in_library``). Dateless rows fall back to their discovery time.
+        Unlike list_new_releases_for_user this is a record of what happened,
+        not a to-do list."""
+        safe_limit = max(1, limit)
+        cutoff_date = (date.today() - timedelta(days=max(1, days))).isoformat()
+        cutoff_ts = time.time() - max(1, days) * 86400
+
+        def operation(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], int]:
+            where = """
+                FROM new_release_feed nrf
+                JOIN user_followed_artists ufa
+                    ON ufa.artist_mbid_lower = nrf.artist_mbid_lower AND ufa.user_id = ?
+                WHERE (
+                    nrf.first_release_date >= ?
+                    OR (nrf.first_release_date IS NULL AND nrf.discovered_at >= ?)
+                )
+            """
+            params = (user_id, cutoff_date, cutoff_ts)
+            total = conn.execute("SELECT COUNT(*) AS c " + where, params).fetchone()["c"]
+            rows = conn.execute(
+                "SELECT nrf.release_group_mbid AS release_group_mbid, "
+                "ufa.artist_mbid AS artist_mbid, nrf.artist_name AS artist_name, "
+                "nrf.title AS title, nrf.primary_type AS primary_type, "
+                "nrf.secondary_types AS secondary_types, "
+                "nrf.first_release_date AS first_release_date, "
+                "nrf.discovered_at AS discovered_at, "
+                "EXISTS (SELECT 1 FROM library_files lf "
+                "        WHERE lower(lf.release_group_mbid) = nrf.release_group_mbid_lower "
+                "          AND lf.deleted_at IS NULL) AS in_library "
+                + where
+                + " ORDER BY nrf.first_release_date DESC, nrf.discovered_at DESC LIMIT ?",
+                (*params, safe_limit),
+            ).fetchall()
+            return rows, total
+
+        rows, total = await self._read(operation)
+        items = [
+            NewRelease(
+                release_group_mbid=row["release_group_mbid"],
+                artist_mbid=row["artist_mbid"],
+                artist_name=row["artist_name"],
+                title=row["title"],
+                primary_type=row["primary_type"],
+                secondary_types=row["secondary_types"],
+                first_release_date=row["first_release_date"],
+                discovered_at=row["discovered_at"],
+                in_library=bool(row["in_library"]),
             )
             for row in rows
         ]

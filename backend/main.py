@@ -100,6 +100,11 @@ _log_handler.setFormatter(
     _ExtraFieldFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 )
 logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
+# httpx logs every request URL at INFO, and several providers (Ticketmaster,
+# Skiddle, Last.fm, AudioDB) carry their API key as a query param - at INFO
+# those secrets land in the container logs on every call. WARNING keeps
+# transport errors visible without the URL lines.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 _ORPHAN_STAGING_MAX_AGE_SECONDS = 7 * 24 * 3600
@@ -575,6 +580,16 @@ async def lifespan(app: FastAPI):
     # provider, not an instance: each sweep resolves the current watcher (whose
     # DownloadService is itself resolved fresh - settings saves rebuild it)
     start_wanted_watcher_task(get_wanted_watcher_service)
+
+    from core.tasks import start_events_watcher_task
+    from core.dependencies import get_events_watcher_service
+
+    def _events_poll_time() -> str:
+        return preferences_service.get_events_settings().poll_time
+
+    # provider + time callable: settings saves rebuild the watcher chain and
+    # move the daily slot without a restart (re-read every scheduler tick)
+    start_events_watcher_task(get_events_watcher_service, _events_poll_time)
     
     logger.info("DroppedNeedle started successfully")
     

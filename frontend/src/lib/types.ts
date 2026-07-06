@@ -1100,6 +1100,17 @@ export type SpotifySettings = {
 	enabled: boolean;
 };
 
+// mirrors backend api/v1/schemas/settings.py (EventsSettings)
+export type EventsSettings = {
+	enabled: boolean;
+	ticketmaster_enabled: boolean;
+	ticketmaster_api_key: string;
+	skiddle_enabled: boolean;
+	skiddle_api_key: string;
+	poll_time: string; // server-local HH:MM, daily sweep slot
+	sweep_scope: 'followed' | 'library';
+};
+
 export type SpotifyPlaylistItem = {
 	id: string;
 	name: string;

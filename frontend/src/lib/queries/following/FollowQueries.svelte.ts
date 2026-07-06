@@ -4,6 +4,9 @@ import { authStore } from '$lib/stores/authStore.svelte';
 import { FollowQueryKeyFactory } from './FollowQueryKeyFactory';
 import { FOLLOW_ENDPOINTS } from './endpoints';
 import type {
+	CitySearchResponse,
+	ConcertsResponse,
+	EventCitiesResponse,
 	FollowStatus,
 	FollowedArtist,
 	NewReleasesResponse,
@@ -33,6 +36,51 @@ export const getNewReleasesQuery = (getLimit: Getter<number>, getOffset: Getter<
 			api.global.get<NewReleasesResponse>(FOLLOW_ENDPOINTS.newReleases(getLimit(), getOffset()), {
 				signal
 			})
+	}));
+
+// the hub's release LOG (owned albums included, flagged in_library) -
+// distinct from getNewReleasesQuery, the needs-requesting to-do view
+export const getRecentReleasesQuery = (getDays: Getter<number>, getLimit: Getter<number>) =>
+	createQuery(() => ({
+		queryKey: FollowQueryKeyFactory.recentReleases(authStore.user?.id, getDays(), getLimit()),
+		queryFn: ({ signal }) =>
+			api.global.get<NewReleasesResponse>(FOLLOW_ENDPOINTS.recentReleases(getDays(), getLimit()), {
+				signal
+			})
+	}));
+
+export const getConcertsQuery = () =>
+	createQuery(() => ({
+		queryKey: FollowQueryKeyFactory.concerts(authStore.user?.id),
+		queryFn: ({ signal }) =>
+			api.global.get<ConcertsResponse>(FOLLOW_ENDPOINTS.concerts(), { signal })
+	}));
+
+export const getEventCitiesQuery = () =>
+	createQuery(() => ({
+		queryKey: FollowQueryKeyFactory.concertCities(authStore.user?.id),
+		queryFn: ({ signal }) =>
+			api.global.get<EventCitiesResponse>(FOLLOW_ENDPOINTS.concertCities(), { signal })
+	}));
+
+// enabled only from 2 chars (the backend's min query length); callers debounce
+export const getCitySearchQuery = (getQ: Getter<string>) =>
+	createQuery(() => ({
+		queryKey: FollowQueryKeyFactory.citySearch(authStore.user?.id, getQ()),
+		queryFn: ({ signal }) =>
+			api.global.get<CitySearchResponse>(FOLLOW_ENDPOINTS.concertCitySearch(getQ()), { signal }),
+		enabled: getQ().trim().length >= 2
+	}));
+
+// drives the concerts half of the sidebar badge pair (same cadence rationale
+// as the new-releases badge below)
+export const getUnseenConcertsCountQuery = () =>
+	createQuery(() => ({
+		queryKey: FollowQueryKeyFactory.concertsUnseen(authStore.user?.id),
+		queryFn: ({ signal }) =>
+			api.global.get<UnseenCountResponse>(FOLLOW_ENDPOINTS.concertsUnseenCount(), { signal }),
+		enabled: !!authStore.user?.id,
+		refetchInterval: 60_000
 	}));
 
 // drives the sidebar badge; the feed only changes when the daily poller runs,

@@ -95,6 +95,11 @@ const COVERAGE: Array<[string, string, string]> = [
 		'/api/v1/following/new-releases?limit=50&offset=0'
 	],
 	[
+		'recent releases log',
+		API.following.recentReleases(30, 8),
+		'/api/v1/following/new-releases/recent?days=30&limit=8'
+	],
+	[
 		'new releases unseen count',
 		API.following.newReleasesUnseenCount(),
 		'/api/v1/following/new-releases/unseen-count'
@@ -105,6 +110,20 @@ const COVERAGE: Array<[string, string, string]> = [
 		'/api/v1/following/new-releases/seen'
 	],
 	['following events', API.following.events(), '/api/v1/following/events'],
+	// upcoming events / concerts (user-scoped)
+	['concerts', API.following.concerts(), '/api/v1/following/concerts'],
+	['concert cities', API.following.concertCities(), '/api/v1/following/concerts/cities'],
+	[
+		'concert city search',
+		API.following.concertCitySearch('liverpool'),
+		'/api/v1/following/concerts/city-search?q=liverpool'
+	],
+	[
+		'concerts unseen count',
+		API.following.concertsUnseenCount(),
+		'/api/v1/following/concerts/unseen-count'
+	],
+	['mark concerts seen', API.following.markConcertsSeen(), '/api/v1/following/concerts/seen'],
 	// Weekly Mix (user-scoped refresh + admin standing-grant queue)
 	['personal mix refresh', API.me.personalMixRefresh(), '/api/v1/me/personal-mix/refresh'],
 	[

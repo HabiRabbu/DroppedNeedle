@@ -2,6 +2,9 @@ import type { MusicSource } from './stores/musicSource';
 
 export const AUTH_FREE_PATHS = ['/login', '/setup', '/auth/callback'];
 
+// concert distances are stored in km but displayed in miles (owner decision U6)
+export const KM_PER_MILE = 1.609;
+
 const CACHE_KEY_GROUPS = {
 	core: {
 		LIBRARY_MBIDS: 'droppedneedle_library_mbids',
@@ -151,9 +154,17 @@ export const API = {
 		artists: () => '/api/v1/following/artists',
 		newReleases: (limit: number, offset: number) =>
 			`/api/v1/following/new-releases?limit=${limit}&offset=${offset}`,
+		recentReleases: (days: number, limit: number) =>
+			`/api/v1/following/new-releases/recent?days=${days}&limit=${limit}`,
 		newReleasesUnseenCount: () => '/api/v1/following/new-releases/unseen-count',
 		markNewReleasesSeen: () => '/api/v1/following/new-releases/seen',
-		events: () => '/api/v1/following/events'
+		events: () => '/api/v1/following/events',
+		concerts: () => '/api/v1/following/concerts',
+		concertCities: () => '/api/v1/following/concerts/cities',
+		concertCitySearch: (q: string) =>
+			`/api/v1/following/concerts/city-search?q=${encodeURIComponent(q)}`,
+		concertsUnseenCount: () => '/api/v1/following/concerts/unseen-count',
+		markConcertsSeen: () => '/api/v1/following/concerts/seen'
 	},
 	album: {
 		basic: (id: string) => `/api/v1/albums/${id}`,

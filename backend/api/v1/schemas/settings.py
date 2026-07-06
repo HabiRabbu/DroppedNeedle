@@ -326,6 +326,27 @@ class SpotifySettings(AppStruct):
     client_secret: str = ""
     enabled: bool = False
 
+
+TICKETMASTER_KEY_MASK = "ticketmaster****"
+SKIDDLE_KEY_MASK = "skiddle****"
+
+
+class EventsSettings(AppStruct):
+    """Upcoming Events sources (.dev-notes/Events). Both API keys are
+    Fernet-encrypted secrets, masked on read, preserved on save when the
+    masked sentinel comes back unchanged. The sweep runs daily at
+    ``poll_time`` (server-local HH:MM, the daily_scan_time pattern)."""
+
+    enabled: bool = False
+    ticketmaster_enabled: bool = False
+    ticketmaster_api_key: str = ""
+    skiddle_enabled: bool = False
+    skiddle_api_key: str = ""
+    poll_time: Annotated[str, msgspec.Meta(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")] = "06:00"
+    # 'followed' sweeps the distinct followed artists; 'library' additionally
+    # sweeps every artist in the library index (and shows those events to all)
+    sweep_scope: Literal["followed", "library"] = "followed"
+
 # keep in sync with NamingTemplateEngine.DEFAULT (services/native/naming.py)
 DEFAULT_NAMING_TEMPLATE = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"
 

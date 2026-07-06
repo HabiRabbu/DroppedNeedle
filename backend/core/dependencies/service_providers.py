@@ -240,6 +240,41 @@ def get_wanted_watcher_service() -> "WantedWatcherService":
 
 
 @singleton
+def get_events_service() -> "EventsService":
+    from services.events_service import EventsService
+
+    from .repo_providers import get_events_store
+
+    return EventsService(
+        events_store=get_events_store(),
+        preferences=get_preferences_service(),
+    )
+
+
+@singleton
+def get_events_watcher_service() -> "EventsWatcherService":
+    from services.native.events_watcher_service import EventsWatcherService
+
+    from .repo_providers import (
+        get_events_store,
+        get_skiddle_repository,
+        get_ticketmaster_repository,
+    )
+
+    # an events settings save cache_clears this provider together with both
+    # repo providers (see routes/settings.py:_clear_events_cache), so holding
+    # instances here is safe - the whole chain rebuilds at once
+    return EventsWatcherService(
+        events_store=get_events_store(),
+        follow_store=get_follow_store(),
+        ticketmaster_repo=get_ticketmaster_repository(),
+        skiddle_repo=get_skiddle_repository(),
+        preferences=get_preferences_service(),
+        sse_publisher=get_sse_publisher(),
+    )
+
+
+@singleton
 def get_personal_mix_service() -> "PersonalMixService":
     from services.personal_mix_service import PersonalMixService
     from core.dependencies.auth_providers import get_auth_store

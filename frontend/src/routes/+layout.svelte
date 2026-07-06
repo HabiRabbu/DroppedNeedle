@@ -77,6 +77,7 @@
 	import type { Snippet } from 'svelte';
 	import QueryProvider from '$lib/queries/QueryProvider.svelte';
 	import NewReleasesNavBadge from '$lib/components/NewReleasesNavBadge.svelte';
+	import ConcertsNavBadge from '$lib/components/ConcertsNavBadge.svelte';
 	import { createFollowingEvents } from '$lib/queries/following/FollowingEvents';
 
 	migratePageSourceKeys();
@@ -458,6 +459,8 @@
 								>
 									<div class="relative">
 										<Heart class="h-6 w-6" />
+										<!-- overlapping badge pair (U8): releases left, concerts right -->
+										<ConcertsNavBadge />
 										<NewReleasesNavBadge />
 									</div>
 									<span class="is-drawer-close:hidden">Following</span>

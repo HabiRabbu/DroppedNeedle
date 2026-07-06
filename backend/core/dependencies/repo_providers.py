@@ -273,6 +273,45 @@ def get_wanted_store() -> "WantedStore":
 
 
 @singleton
+def get_events_store() -> "EventsStore":
+    from infrastructure.persistence.events_store import EventsStore
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return EventsStore(db_path=settings.library_db_path, write_lock=get_persistence_write_lock())
+
+
+@singleton
+def get_ticketmaster_repository() -> "TicketmasterRepository":
+    """Keyed from the events settings; an events settings save must
+    cache_clear this (and the other events providers) so a new key takes
+    effect without a restart."""
+    from repositories.ticketmaster_repository import TicketmasterRepository
+
+    http = HttpClientFactory.get_client(name="ticketmaster", timeout=15.0)
+    raw = get_preferences_service().get_events_settings_raw()
+    return TicketmasterRepository(http, api_key=raw.ticketmaster_api_key)
+
+
+@singleton
+def get_skiddle_repository() -> "SkiddleRepository":
+    """Keyed from the events settings; cleared on events settings save."""
+    from repositories.skiddle_repository import SkiddleRepository
+
+    http = HttpClientFactory.get_client(name="skiddle", timeout=15.0)
+    raw = get_preferences_service().get_events_settings_raw()
+    return SkiddleRepository(http, api_key=raw.skiddle_api_key)
+
+
+@singleton
+def get_geocoding_repository() -> "GeocodingRepository":
+    from repositories.geocoding_repository import GeocodingRepository
+
+    http = HttpClientFactory.get_client(name="open-meteo-geocoding", timeout=10.0)
+    return GeocodingRepository(http)
+
+
+@singleton
 def get_user_connections_store() -> "UserConnectionsStore":
     from infrastructure.persistence.user_connections_store import UserConnectionsStore
     from .cache_providers import get_persistence_write_lock

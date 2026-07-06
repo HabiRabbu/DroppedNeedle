@@ -29,6 +29,7 @@
 	import SettingsConnectApps from '$lib/components/settings/SettingsConnectApps.svelte';
 	import SettingsOnboardingChecklist from '$lib/components/settings/SettingsOnboardingChecklist.svelte';
 	import SettingsSpotify from '$lib/components/settings/SettingsSpotify.svelte';
+	import SettingsEvents from '$lib/components/settings/SettingsEvents.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { getUpdateCheckQuery } from '$lib/queries/VersionQuery.svelte';
 	import {
@@ -48,7 +49,8 @@
 		Users,
 		ShieldCheck,
 		HardDriveDownload,
-		Waypoints
+		Waypoints,
+		CalendarClock
 	} from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
@@ -100,6 +102,9 @@
 		...(authStore.isAdmin ? [{ id: 'lastfm', label: 'Last.fm', tier: 'setup', icon: Radio }] : []),
 		...(authStore.isAdmin
 			? [{ id: 'spotify', label: 'Spotify', tier: 'setup', icon: SpotifyIcon }]
+			: []),
+		...(authStore.isAdmin
+			? [{ id: 'events', label: 'Live Events', tier: 'setup', icon: CalendarClock }]
 			: []),
 		{ id: 'settings', label: 'Release Types', tier: 'personalize', icon: Settings2 },
 		{ id: 'home', label: 'Home', tier: 'personalize', icon: Home },
@@ -284,6 +289,8 @@
 					<SettingsLastFmApp />
 				{:else if activeTab === 'spotify' && authStore.isAdmin}
 					<SettingsSpotify />
+				{:else if activeTab === 'events' && authStore.isAdmin}
+					<SettingsEvents />
 				{:else if activeTab === 'musicbrainz'}
 					<SettingsMusicBrainz />
 				{:else if activeTab === 'advanced'}

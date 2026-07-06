@@ -15,8 +15,24 @@ export const FollowQueryKeyFactory = {
 			limit,
 			offset
 		] as const,
+	recentReleases: (userId: string | undefined, days: number, limit: number) =>
+		[
+			...FollowQueryKeyFactory.followingPrefix,
+			'recent-releases',
+			userId ?? 'anon',
+			days,
+			limit
+		] as const,
 	newReleasesUnseen: (userId: string | undefined) =>
 		[...FollowQueryKeyFactory.followingPrefix, 'new-releases-unseen', userId ?? 'anon'] as const,
+	concerts: (userId: string | undefined) =>
+		[...FollowQueryKeyFactory.followingPrefix, 'concerts', userId ?? 'anon'] as const,
+	concertCities: (userId: string | undefined) =>
+		[...FollowQueryKeyFactory.followingPrefix, 'concert-cities', userId ?? 'anon'] as const,
+	concertsUnseen: (userId: string | undefined) =>
+		[...FollowQueryKeyFactory.followingPrefix, 'concerts-unseen', userId ?? 'anon'] as const,
+	citySearch: (userId: string | undefined, q: string) =>
+		[...FollowQueryKeyFactory.followingPrefix, 'city-search', userId ?? 'anon', q] as const,
 	// admin queue is global (not per-user) - admins review every pending grant
 	adminApprovals: () => [...FollowQueryKeyFactory.followingPrefix, 'admin-approvals'] as const
 };

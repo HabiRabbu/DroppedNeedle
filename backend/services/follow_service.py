@@ -94,6 +94,12 @@ class FollowService:
     ) -> tuple[list[NewRelease], int]:
         return await self._store.list_new_releases_for_user(user_id, limit, offset)
 
+    async def list_recent_releases(
+        self, user_id: str, days: int, limit: int
+    ) -> tuple[list[NewRelease], int]:
+        """The hub's log view: releases from the window incl. owned albums."""
+        return await self._store.list_recent_releases_for_user(user_id, days, limit)
+
     async def count_unseen_new_releases(self, user_id: str) -> int:
         return await self._store.count_unseen_new_releases_for_user(user_id)
 

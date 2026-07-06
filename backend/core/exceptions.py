@@ -169,6 +169,30 @@ class NewznabAuthError(NewznabApiError):
     pass
 
 
+class TicketmasterApiError(ExternalServiceError):
+    """Transport/HTTP/decode error talking to the Ticketmaster Discovery API.
+
+    Mapped to HTTP 503 by the registered ``ExternalServiceError`` handler.
+    """
+    pass
+
+
+class SkiddleApiError(ExternalServiceError):
+    """Transport/HTTP/decode/``error!=0`` failure talking to the Skiddle API.
+
+    Mapped to HTTP 503 by the registered ``ExternalServiceError`` handler.
+    """
+    pass
+
+
+class GeocodingApiError(ExternalServiceError):
+    """Transport/HTTP/decode error talking to the Open-Meteo geocoding API
+    (the events city picker). Mapped to HTTP 503 - a failed city search must
+    surface as 'geocoding unavailable', never as an empty result list.
+    """
+    pass
+
+
 class ClientDisconnectedError(DroppedNeedleException):
     pass
 

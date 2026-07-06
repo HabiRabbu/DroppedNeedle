@@ -42,7 +42,9 @@ from core.dependencies import (
     get_download_client_repository,
     get_download_service,
     get_download_store,
+    get_events_service,
     get_follow_service,
+    get_geocoding_repository,
     get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
@@ -73,7 +75,9 @@ _SERVICE_PROVIDERS = (
     get_download_client_repository,
     get_download_service,
     get_download_store,
+    get_events_service,
     get_follow_service,
+    get_geocoding_repository,
     get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
@@ -122,6 +126,11 @@ _ADMIN_ENDPOINTS = [
     # Wanted watcher settings (admin, download-clients router)
     ("GET", "/api/v1/download-clients/wanted", None),
     ("PUT", "/api/v1/download-clients/wanted", {}),
+    # Upcoming Events sources (admin, settings router)
+    ("GET", "/api/v1/settings/events", None),
+    ("PUT", "/api/v1/settings/events", {}),
+    ("POST", "/api/v1/settings/events/test-ticketmaster", {}),
+    ("POST", "/api/v1/settings/events/test-skiddle", {}),
 ]
 
 _USER_ENDPOINTS = [
@@ -164,8 +173,16 @@ _USER_ENDPOINTS = [
     # infinite generator can't be driven through TestClient for the admitted case.
     ("GET", "/api/v1/following/artists", None),
     ("GET", "/api/v1/following/new-releases", None),
+    ("GET", "/api/v1/following/new-releases/recent", None),
     ("GET", "/api/v1/following/new-releases/unseen-count", None),
     ("POST", "/api/v1/following/new-releases/seen", None),
+    # Upcoming Events (concerts) - per-user resources on the following router
+    ("GET", "/api/v1/following/concerts", None),
+    ("GET", "/api/v1/following/concerts/cities", None),
+    ("PUT", "/api/v1/following/concerts/cities", {"items": []}),
+    ("GET", "/api/v1/following/concerts/city-search?q=liverpool", None),
+    ("GET", "/api/v1/following/concerts/unseen-count", None),
+    ("POST", "/api/v1/following/concerts/seen", None),
     # Wanted watches (requests page). Ownership (403 non-owner) is covered by
     # tests/routes/test_wanted_routes.py; here: 401 unauth / user admitted.
     ("GET", "/api/v1/requests/wanted", None),

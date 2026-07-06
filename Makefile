@@ -32,6 +32,7 @@ NPM    ?= pnpm
 	backend-test-audiodb-settings \
 	backend-test-cache-cleanup \
 	backend-test-wanted \
+	test-events \
 	backend-test-config-validation \
 	backend-test-coverart-audiodb \
 	backend-test-dedup-cancellation \
@@ -187,6 +188,11 @@ backend-test-audiodb-settings: $(BACKEND_VENV_STAMP) ## Run AudioDB settings tes
 
 backend-test-wanted: $(BACKEND_VENV_STAMP) ## Wanted watcher: store, service, loop, prune + quota seams
 	$(PYTEST) tests/infrastructure/test_wanted_store.py tests/infrastructure/test_wanted_watcher_task.py tests/services/test_wanted_watcher_service.py tests/infrastructure/test_request_history_prune.py tests/services/test_quota_service.py -v
+
+test-events: $(BACKEND_VENV_STAMP) ## Upcoming Events: store, repos, watcher, loop, routes + frontend data layer & city manager
+	$(PYTEST) tests/infrastructure/test_events_store.py tests/infrastructure/test_events_watcher_task.py tests/services/test_events_watcher_service.py tests/repositories/test_ticketmaster_repository.py tests/repositories/test_skiddle_repository.py tests/repositories/test_geocoding_repository.py tests/routes/test_following_concerts_routes.py tests/routes/test_settings_events_routes.py -v
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/following
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/following/EventCityManager.svelte.spec.ts src/routes/following/page.svelte.spec.ts
 
 backend-test-cache-cleanup: $(BACKEND_VENV_STAMP) ## Run cache cleanup tests
 	$(PYTEST) tests/test_cache_cleanup.py -v

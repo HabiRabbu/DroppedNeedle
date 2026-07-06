@@ -29,6 +29,9 @@ from api.v1.schemas.settings import (
     SpotifySettings,
     HomeSettings,
     ACOUSTID_KEY_MASK,
+    EventsSettings,
+    TICKETMASTER_KEY_MASK,
+    SKIDDLE_KEY_MASK,
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo
 from api.v1.schemas.common import VerifyConnectionResponse
@@ -439,6 +442,105 @@ async def update_spotify_settings(
 ):
     preferences_service.save_spotify_settings(settings)
     return preferences_service.get_spotify_settings()
+
+
+def _clear_events_cache() -> None:
+    # a save changes the keys/toggles baked into the repo singletons and the
+    # watcher that composes them - clear the chain so it takes effect at once
+    from core.dependencies import (
+        get_events_watcher_service,
+        get_skiddle_repository,
+        get_ticketmaster_repository,
+    )
+
+    for provider in (
+        get_ticketmaster_repository,
+        get_skiddle_repository,
+        get_events_watcher_service,
+    ):
+        provider.cache_clear()
+
+
+@router.get("/events", response_model=EventsSettings, dependencies=[Depends(_admin_guard)])
+async def get_events_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    return preferences_service.get_events_settings()
+
+
+@router.put("/events", response_model=EventsSettings, dependencies=[Depends(_admin_guard)])
+async def update_events_settings(
+    settings: EventsSettings = MsgSpecBody(EventsSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    preferences_service.save_events_settings(settings)
+    _clear_events_cache()
+    # sweep now (no-ops when no source is ready) - the periodic loop may be
+    # mid-sleep for up to a day, and a freshly enabled feature must not wait
+    from core.dependencies import get_events_watcher_service
+    from core.tasks import kick_events_sweep
+
+    kick_events_sweep(get_events_watcher_service)
+    return preferences_service.get_events_settings()
+
+
+@router.post(
+    "/events/test-ticketmaster",
+    response_model=VerifyConnectionResponse,
+    dependencies=[Depends(_admin_guard)],
+)
+async def test_events_ticketmaster(
+    settings: EventsSettings = MsgSpecBody(EventsSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    """Tests the submitted key (not stored config); the masked sentinel
+    resolves to the stored key. Throwaway repo instance (sanctioned
+    test-unsaved-settings exception)."""
+    from infrastructure.http.client import HttpClientFactory
+    from repositories.ticketmaster_repository import TicketmasterRepository
+
+    api_key = settings.ticketmaster_api_key.strip()
+    if api_key == TICKETMASTER_KEY_MASK:
+        api_key = preferences_service.get_events_settings_raw().ticketmaster_api_key
+    if not api_key:
+        return VerifyConnectionResponse(valid=False, message="An API key is required.")
+    repo = TicketmasterRepository(
+        HttpClientFactory.get_client(name="ticketmaster", timeout=15.0), api_key=api_key
+    )
+    if await repo.test_connection():
+        return VerifyConnectionResponse(valid=True, message="Connected to Ticketmaster.")
+    return VerifyConnectionResponse(
+        valid=False, message="Ticketmaster rejected the key or is unreachable."
+    )
+
+
+@router.post(
+    "/events/test-skiddle",
+    response_model=VerifyConnectionResponse,
+    dependencies=[Depends(_admin_guard)],
+)
+async def test_events_skiddle(
+    settings: EventsSettings = MsgSpecBody(EventsSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    """Tests the submitted key (not stored config); the masked sentinel
+    resolves to the stored key."""
+    from infrastructure.http.client import HttpClientFactory
+    from repositories.skiddle_repository import SkiddleRepository
+
+    api_key = settings.skiddle_api_key.strip()
+    if api_key == SKIDDLE_KEY_MASK:
+        api_key = preferences_service.get_events_settings_raw().skiddle_api_key
+    if not api_key:
+        return VerifyConnectionResponse(valid=False, message="An API key is required.")
+    repo = SkiddleRepository(
+        HttpClientFactory.get_client(name="skiddle", timeout=15.0), api_key=api_key
+    )
+    if await repo.test_connection():
+        return VerifyConnectionResponse(valid=True, message="Connected to Skiddle.")
+    return VerifyConnectionResponse(
+        valid=False, message="Skiddle rejected the key or is unreachable."
+    )
 
 
 class SpotifyRedirectUriResponse(AppStruct):

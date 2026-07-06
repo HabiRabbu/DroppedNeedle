@@ -24,6 +24,7 @@ export interface NewRelease {
 	artist_mbid: string;
 	primary_type?: string | null;
 	first_release_date?: string | null;
+	in_library?: boolean; // meaningful on the recent-releases log view
 }
 
 export interface NewReleasesResponse {
@@ -52,4 +53,56 @@ export interface AutoDownloadApprovalsResponse {
 export interface ApprovalActionResponse {
 	success: boolean;
 	message: string;
+}
+
+// mirrors backend api/v1/schemas/following.py (ConcertResponse etc.)
+export type ConcertStatus = 'scheduled' | 'cancelled' | 'rescheduled';
+
+export interface Concert {
+	artist_mbid: string;
+	artist_name: string;
+	event_name: string;
+	local_date: string;
+	status: ConcertStatus;
+	source: 'ticketmaster' | 'skiddle';
+	source_event_id: string;
+	matched_city: string;
+	venue_name?: string | null;
+	city?: string | null;
+	region?: string | null;
+	country_code?: string | null;
+	starts_at?: string | null;
+	ticket_url?: string | null;
+	distance_km?: number | null;
+}
+
+export interface ConcertsResponse {
+	configured: boolean;
+	items: Concert[];
+	total: number;
+}
+
+export interface EventCity {
+	city_name: string;
+	latitude: number;
+	longitude: number;
+	radius_km: number;
+	country_code?: string | null;
+}
+
+export interface EventCitiesResponse {
+	items: EventCity[];
+}
+
+export interface CitySearchResult {
+	name: string;
+	latitude: number;
+	longitude: number;
+	country_code?: string | null;
+	country?: string | null;
+	region?: string | null;
+}
+
+export interface CitySearchResponse {
+	items: CitySearchResult[];
 }
