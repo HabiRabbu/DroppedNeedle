@@ -38,6 +38,12 @@ class WrappedGenre(AppStruct):
 
 
 class UserWrappedResponse(AppStruct):
+    """loved_tracks_count and total_listens_estimated are both approximations:
+    ListenBrainz caps the loved-recordings endpoint at 100 results per request,
+    so loved_tracks_count is min(true_total, 100), not a verified total; and
+    total_listens_estimated is the sum of listen counts across only the
+    returned top_artists (not the user's true all-time/yearly play count)."""
+
     user_id: str
     display_name: str
     year: int

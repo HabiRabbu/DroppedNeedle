@@ -513,7 +513,15 @@ async def verify_lastfm_connection(
     return LastFmVerifyResponse(valid=result.valid, message=result.message)
 
 
-@router.get("/wrapped", response_model=WrappedSettingsResponse)
+@router.get(
+    "/wrapped",
+    response_model=WrappedSettingsResponse,
+    description=(
+        "Get the shared secret required as X-Wrapped-Api-Key on /api/v1/wrapped/* "
+        "requests (service-to-service, e.g. a newsletterr integration). Masked "
+        "in the response."
+    ),
+)
 async def get_wrapped_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
@@ -521,7 +529,14 @@ async def get_wrapped_settings(
     return WrappedSettingsResponse.from_settings(settings)
 
 
-@router.put("/wrapped", response_model=WrappedSettingsResponse)
+@router.put(
+    "/wrapped",
+    response_model=WrappedSettingsResponse,
+    description=(
+        "Set (or rotate) the /api/v1/wrapped/* shared secret. Submitting the "
+        "masked value unchanged keeps the existing secret."
+    ),
+)
 async def update_wrapped_settings(
     settings: WrappedSettings = MsgSpecBody(WrappedSettings),
     preferences_service: PreferencesService = Depends(get_preferences_service),

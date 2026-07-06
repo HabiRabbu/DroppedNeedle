@@ -25,8 +25,23 @@ _TOP_N = 10
 _RANGE = "this_year"
 
 
+_LIST_USERS_PAGE_SIZE = 500
+
+
 def _current_year() -> int:
     return datetime.now(timezone.utc).year
+
+
+def _unwrap_gather_result(result: object, label: str, user_id: str) -> list:
+    """Log-and-discard helper for asyncio.gather(..., return_exceptions=True)
+    results: a per-field failure shouldn't abort the whole wrapped payload,
+    but silently swallowing it makes failures invisible, so log first."""
+    if isinstance(result, Exception):
+        logger.warning(
+            f"Wrapped {label} fetch failed for user {user_id}: {result}", exc_info=result
+        )
+        return []
+    return result if isinstance(result, list) else []
 
 
 class WrappedService:
@@ -46,11 +61,31 @@ class WrappedService:
         self._client_factory = client_factory
         self._charts_service = charts_service
 
+    async def _list_all_users(self) -> list:
+        """Paginates through AuthStore.list_users so instances with more than
+        one page of users don't silently lose accounts off the end of a
+        fixed limit."""
+        all_users = []
+        offset = 0
+        while True:
+            page = await self._auth_store.list_users(limit=_LIST_USERS_PAGE_SIZE, offset=offset)
+            all_users.extend(page)
+            if len(page) < _LIST_USERS_PAGE_SIZE:
+                break
+            offset += _LIST_USERS_PAGE_SIZE
+        return all_users
+
     async def list_eligible_users(self) -> WrappedUsersResponse:
-        users = await self._auth_store.list_users(limit=1000)
+        users = await self._list_all_users()
         summaries = []
         for user in users:
-            linked = await self._client_factory.is_listenbrainz_linked(user.id)
+            try:
+                linked = await self._client_factory.is_listenbrainz_linked(user.id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Failed to check ListenBrainz link for user {user.id}: {e}", exc_info=e
+                )
+                linked = False
             summaries.append(
                 WrappedUserSummary(
                     id=user.id,
@@ -66,35 +101,47 @@ class WrappedService:
         user = await self._auth_store.get_user_by_id(user_id)
         display_name = user.display_name if user else user_id
 
-        lb_client = await self._client_factory.resolve_listenbrainz(user_id)
-        lb_username = await self._client_factory.resolve_listenbrainz_username(user_id)
-        if not (lb_client and lb_username):
-            return UserWrappedResponse(
-                user_id=user_id,
-                display_name=display_name,
-                year=year,
-                has_data=False,
-                top_artists=[],
-                top_tracks=[],
-                top_albums=[],
-                top_genres=[],
-                loved_tracks_count=0,
-                total_listens_estimated=0,
+        empty_response = UserWrappedResponse(
+            user_id=user_id,
+            display_name=display_name,
+            year=year,
+            has_data=False,
+            top_artists=[],
+            top_tracks=[],
+            top_albums=[],
+            top_genres=[],
+            loved_tracks_count=0,
+            total_listens_estimated=0,
+        )
+
+        try:
+            lb_client = await self._client_factory.resolve_listenbrainz(user_id)
+            lb_username = await self._client_factory.resolve_listenbrainz_username(user_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Failed to resolve ListenBrainz client for user {user_id}: {e}", exc_info=e
             )
+            return empty_response
+
+        if not (lb_client and lb_username):
+            return empty_response
 
         artists, recordings, release_groups, genres, loved = await asyncio.gather(
             lb_client.get_user_top_artists(username=lb_username, range_=_RANGE, count=_TOP_N),
             lb_client.get_user_top_recordings(username=lb_username, range_=_RANGE, count=_TOP_N),
             lb_client.get_user_top_release_groups(username=lb_username, range_=_RANGE, count=_TOP_N),
             lb_client.get_user_genre_activity(username=lb_username),
+            # ListenBrainz caps this endpoint at 100 results per request, so
+            # loved_tracks_count below is a sample size, not a true total, see
+            # WrappedTrack/UserWrappedResponse.loved_tracks_count docstring.
             lb_client.get_user_loved_recordings(username=lb_username, count=100),
             return_exceptions=True,
         )
-        artists = artists if isinstance(artists, list) else []
-        recordings = recordings if isinstance(recordings, list) else []
-        release_groups = release_groups if isinstance(release_groups, list) else []
-        genres = genres if isinstance(genres, list) else []
-        loved = loved if isinstance(loved, list) else []
+        artists = _unwrap_gather_result(artists, "top_artists", user_id)
+        recordings = _unwrap_gather_result(recordings, "top_recordings", user_id)
+        release_groups = _unwrap_gather_result(release_groups, "top_release_groups", user_id)
+        genres = _unwrap_gather_result(genres, "genre_activity", user_id)
+        loved = _unwrap_gather_result(loved, "loved_recordings", user_id)
 
         top_artists = [
             WrappedArtist(
@@ -143,6 +190,11 @@ class WrappedService:
             *(self.get_user_wrapped(u.id) for u in eligible),
             return_exceptions=True,
         )
+        for u, result in zip(eligible, per_user_results):
+            if isinstance(result, Exception):
+                logger.warning(
+                    f"Failed to build wrapped stats for user {u.id}: {result}", exc_info=result
+                )
         wrapped_by_user = [
             w for w in per_user_results if isinstance(w, UserWrappedResponse) and w.has_data
         ]
@@ -163,6 +215,17 @@ class WrappedService:
             self._charts_service.get_popular_albums_by_range(range_key=_RANGE, limit=1),
             return_exceptions=True,
         )
+
+        if isinstance(top_artist_range, Exception):
+            logger.warning(
+                f"Failed to fetch sitewide top artist for wrapped: {top_artist_range}",
+                exc_info=top_artist_range,
+            )
+        if isinstance(top_album_range, Exception):
+            logger.warning(
+                f"Failed to fetch sitewide top album for wrapped: {top_album_range}",
+                exc_info=top_album_range,
+            )
 
         top_artist_sitewide = None
         if not isinstance(top_artist_range, Exception) and top_artist_range.items:

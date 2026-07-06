@@ -30,6 +30,11 @@ async def verify_wrapped_api_key(
     "/users",
     response_model=WrappedUsersResponse,
     dependencies=[Depends(verify_wrapped_api_key)],
+    description=(
+        "List every Musicseerr user with their ListenBrainz link status. "
+        "Callers should match users by email and only request /user/{user_id} "
+        "for those with has_listenbrainz=true."
+    ),
 )
 async def get_wrapped_users(
     wrapped_service: WrappedService = Depends(get_wrapped_service),
@@ -41,6 +46,12 @@ async def get_wrapped_users(
     "/user/{user_id}",
     response_model=UserWrappedResponse,
     dependencies=[Depends(verify_wrapped_api_key)],
+    description=(
+        "Per-user 'year in review' summary: top artists/tracks/albums/genres "
+        "for the current year, loved-track count, and an estimated total "
+        "listen count. has_data is false (with empty lists) when the user has "
+        "no linked ListenBrainz account or no listens for the year."
+    ),
 )
 async def get_wrapped_user(
     user_id: str,
@@ -53,6 +64,10 @@ async def get_wrapped_user(
     "/server",
     response_model=ServerWrappedResponse,
     dependencies=[Depends(verify_wrapped_api_key)],
+    description=(
+        "Server-wide 'year in review' summary: total tracked users/listens, "
+        "the sitewide top artist/album, and a per-user listener leaderboard."
+    ),
 )
 async def get_wrapped_server(
     wrapped_service: WrappedService = Depends(get_wrapped_service),
