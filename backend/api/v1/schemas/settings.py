@@ -522,3 +522,21 @@ class ConnectAppsSettings(AppStruct):
             )
 
 
+WRAPPED_API_KEY_MASK = "••••••••"
+
+
+class WrappedSettings(AppStruct):
+    """Shared secret for the /api/v1/wrapped/* endpoints (service-to-service,
+    e.g. a newsletterr integration pulling year-in-review stats). Secret;
+    persisted encrypted via PreferencesService like the Last.fm/Spotify
+    connection settings."""
+
+    api_key: str = ""
+
+
+class WrappedSettingsResponse(AppStruct):
+    api_key: str = ""
+
+    @classmethod
+    def from_settings(cls, settings: WrappedSettings) -> "WrappedSettingsResponse":
+        return cls(api_key=_mask_secret(settings.api_key))

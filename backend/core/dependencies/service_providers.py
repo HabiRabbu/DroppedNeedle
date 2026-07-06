@@ -505,6 +505,18 @@ def get_home_charts_service() -> "HomeChartsService":
 
 
 @singleton
+def get_wrapped_service() -> "WrappedService":
+    from services.wrapped_service import WrappedService
+    from core.dependencies.auth_providers import get_auth_store
+
+    return WrappedService(
+        auth_store=get_auth_store(),
+        client_factory=get_per_user_client_factory(),
+        charts_service=get_home_charts_service(),
+    )
+
+
+@singleton
 def get_settings_service() -> "SettingsService":
     from services.settings_service import SettingsService
 

@@ -93,6 +93,7 @@ from .service_providers import (  # noqa: F401
     get_home_service,
     get_genre_cover_prewarm_service,
     get_home_charts_service,
+    get_wrapped_service,
     get_settings_service,
     get_artist_discovery_service,
     get_artist_enrichment_service,

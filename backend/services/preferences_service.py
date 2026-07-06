@@ -37,6 +37,8 @@ from api.v1.schemas.settings import (
     SpotifySettings,
     SPOTIFY_SECRET_MASK,
     DEFAULT_NAMING_TEMPLATE,
+    WrappedSettings,
+    WRAPPED_API_KEY_MASK,
 )
 from api.v1.schemas.advanced_settings import AdvancedSettings
 from core.config import Settings
@@ -634,6 +636,26 @@ class PreferencesService:
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to save Connect Apps settings: {e}")
             raise ConfigurationError(f"Failed to save Connect Apps settings: {e}")
+
+    def get_wrapped_settings(self) -> WrappedSettings:
+        config = self._load_config()
+        data = config.get("wrapped_settings", {})
+        return WrappedSettings(
+            api_key=self._read_secret(("wrapped_settings", "api_key"), data.get("api_key", "")),
+        )
+
+    def save_wrapped_settings(self, settings: WrappedSettings) -> None:
+        try:
+            current = self.get_wrapped_settings()
+            api_key = settings.api_key
+            if api_key.startswith(WRAPPED_API_KEY_MASK):
+                api_key = current.api_key
+            else:
+                api_key = api_key.strip()
+            self._save_section("wrapped_settings", WrappedSettings(api_key=encrypt(api_key)))
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save Wrapped settings: {e}")
+            raise ConfigurationError(f"Failed to save Wrapped settings.")
 
     def get_local_files_connection(self) -> LocalFilesConnectionSettings:
         return self._get_section("local_files_settings", LocalFilesConnectionSettings)

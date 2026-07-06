@@ -1100,6 +1100,10 @@ export type SpotifySettings = {
 	enabled: boolean;
 };
 
+export type WrappedSettingsResponse = {
+	api_key: string;
+};
+
 export type SpotifyPlaylistItem = {
 	id: string;
 	name: string;

@@ -29,6 +29,8 @@ from api.v1.schemas.settings import (
     SpotifySettings,
     HomeSettings,
     ACOUSTID_KEY_MASK,
+    WrappedSettings,
+    WrappedSettingsResponse,
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo
 from api.v1.schemas.common import VerifyConnectionResponse
@@ -509,6 +511,28 @@ async def verify_lastfm_connection(
 ):
     result = await settings_service.verify_lastfm(settings)
     return LastFmVerifyResponse(valid=result.valid, message=result.message)
+
+
+@router.get("/wrapped", response_model=WrappedSettingsResponse)
+async def get_wrapped_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    settings = preferences_service.get_wrapped_settings()
+    return WrappedSettingsResponse.from_settings(settings)
+
+
+@router.put("/wrapped", response_model=WrappedSettingsResponse)
+async def update_wrapped_settings(
+    settings: WrappedSettings = MsgSpecBody(WrappedSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    try:
+        preferences_service.save_wrapped_settings(settings)
+        saved = preferences_service.get_wrapped_settings()
+        return WrappedSettingsResponse.from_settings(saved)
+    except ConfigurationError as e:
+        logger.warning(f"Configuration error updating Wrapped settings: {e}")
+        raise HTTPException(status_code=400, detail="Wrapped settings are invalid")
 
 
 @router.get("/scrobble", response_model=ScrobbleSettings)
