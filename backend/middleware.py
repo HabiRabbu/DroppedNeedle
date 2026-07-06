@@ -50,6 +50,7 @@ _PUBLIC_PATHS: frozenset[str] = frozenset({
 _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v1/docs",
     "/api/v1/redoc",
+    "/api/v1/wrapped",
 )
 
 

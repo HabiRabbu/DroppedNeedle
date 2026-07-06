@@ -30,6 +30,7 @@
 	import SettingsOnboardingChecklist from '$lib/components/settings/SettingsOnboardingChecklist.svelte';
 	import SettingsSpotify from '$lib/components/settings/SettingsSpotify.svelte';
 	import SettingsEvents from '$lib/components/settings/SettingsEvents.svelte';
+	import SettingsWrapped from '$lib/components/settings/SettingsWrapped.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { getUpdateCheckQuery } from '$lib/queries/VersionQuery.svelte';
 	import {
@@ -50,7 +51,8 @@
 		ShieldCheck,
 		HardDriveDownload,
 		Waypoints,
-		CalendarClock
+		CalendarClock,
+		Gift
 	} from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
@@ -115,7 +117,8 @@
 		...(authStore.isAdmin
 			? [
 					{ id: 'users', label: 'Users', tier: 'system', icon: Users },
-					{ id: 'security', label: 'Security', tier: 'system', icon: ShieldCheck }
+					{ id: 'security', label: 'Security', tier: 'system', icon: ShieldCheck },
+					{ id: 'wrapped', label: 'Wrapped API', tier: 'system', icon: Gift }
 				]
 			: []),
 		{ id: 'advanced', label: 'Advanced', tier: 'system', icon: Settings },
@@ -299,6 +302,8 @@
 					<SettingsAbout />
 				{:else if activeTab === 'security' && authStore.isAdmin}
 					<SettingsSecurity />
+				{:else if activeTab === 'wrapped' && authStore.isAdmin}
+					<SettingsWrapped />
 				{:else if activeTab === 'users' && authStore.isAdmin}
 					<SettingsUsers />
 				{/if}

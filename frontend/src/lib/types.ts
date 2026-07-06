@@ -1111,6 +1111,10 @@ export type EventsSettings = {
 	sweep_scope: 'followed' | 'library';
 };
 
+export type WrappedSettingsResponse = {
+	api_key: string;
+};
+
 export type SpotifyPlaylistItem = {
 	id: string;
 	name: string;
