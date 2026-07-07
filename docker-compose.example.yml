@@ -1,43 +1,35 @@
-# DroppedNeedle Native - example compose.
+# DroppedNeedle example compose.
 #
-# DroppedNeedle talks to your OWN slskd instance over its HTTP API. It does not join
-# the Soulseek network itself, and this file does not start slskd for you. Run slskd
-# yourself, then point DroppedNeedle at it in Settings > Download Client (URL + X-API-Key).
-#
-# A commented-out slskd service is at the bottom if you want to run one alongside.
-# See the README (Setup and slskd Setup sections) for the full walkthrough.
+# DroppedNeedle downloads through your OWN slskd (Soulseek) and/or SABnzbd (Usenet); it
+# doesn't run either for you. Start them yourself, then connect them under
+# Settings > Download Client. A commented-out slskd sidecar is at the bottom.
+# Full walkthrough: the Setup section of the README.
 
 services:
   droppedneedle:
     image: habirabbu/droppedneedle:latest
-    # dev tag is built from main on every push and may break: habirabbu/droppedneedle:dev
+    # :dev is built from main on every push and may break.
     container_name: droppedneedle
     environment:
-      - PUID=1000            # Run `id` on your host to find yours. Unraid: usually 99.
-      - PGID=1000            # Run `id` on your host to find yours. Unraid: usually 100.
-      #                        Ignored if you start the container with Docker --user.
-      - PORT=8688            # Must match the container-side port under "ports" below.
+      - PUID=1000            # your host user/group; run `id` to find them (Unraid: usually 99/100)
+      - PGID=1000            # ignored if you start the container with Docker --user
+      - PORT=8688            # must match the container port under "ports"
       - TZ=Etc/UTC           # e.g. America/New_York, Europe/London
-      - SLSKD_DOWNLOADS_PATH=/slskd-downloads  # container path of the slskd downloads mount below
-      # - TRUSTED_PROXY_IPS=172.17.0.1  # IP of your reverse proxy (nginx, Traefik, etc.). Defaults to * (trust all), which is fine for single-host Docker setups.
+      - SLSKD_DOWNLOADS_PATH=/slskd-downloads  # container path of the slskd mount below
+      # - TRUSTED_PROXY_IPS=172.17.0.1  # your reverse proxy's IP; defaults to * (fine for single-host)
     ports:
-      - "8688:8688"          # host:container. Change the left side to use a different host port.
+      - "8688:8688"          # host:container
     volumes:
-      - ./config:/app/config       # App configuration
-      - ./cache:/app/cache         # Cover art and metadata cache
-      - /path/to/music:/music:rw   # Your music library (read-write: imports land here)
-      # slskd's COMPLETED-downloads directory, read-write. Use the EXACT path from slskd's
-      # Options -> Directories -> "downloads" (often a .../complete folder) - NOT a parent
-      # like your media root. If you mount a parent, downloads finish in slskd but show as
-      # "failed" here, because the engine searches the whole tree and can't find them.
-      # Keep it on the SAME filesystem as /music so imports are an atomic rename.
-      - /path/to/slskd/complete:/slskd-downloads:rw   # == slskd's directories.downloads
-      # OPTIONAL (Usenet): SABnzbd's COMPLETED-downloads directory, read-write. Mount the
-      # same host path SABnzbd writes finished downloads to (its complete_dir). DroppedNeedle
-      # imports Usenet downloads from here; the mount path must match the "Downloads mount"
-      # set in Settings -> Download Client -> SABnzbd (default /sabnzbd-downloads). Keep it on
-      # the SAME filesystem as /music for atomic-rename imports. Omit if you don't use Usenet.
-      - /path/to/sabnzbd/complete:/sabnzbd-downloads:rw   # == SABnzbd's complete_dir
+      - ./config:/app/config       # config + database
+      - ./cache:/app/cache         # cover art and metadata cache
+      - /path/to/music:/music:rw   # your library; imports land here
+      # slskd's COMPLETED-downloads folder (its Options > Directories > "downloads", often a
+      # .../complete dir) - the exact folder, NOT a parent, or imports show as "failed". Keep
+      # it on the same filesystem as /music so imports are an atomic rename.
+      - /path/to/slskd/complete:/slskd-downloads:rw
+      # OPTIONAL (Usenet): SABnzbd's complete_dir. Must match the Downloads mount in
+      # Settings > Download Client > SABnzbd, and sit on the same filesystem as /music. Omit if unused.
+      - /path/to/sabnzbd/complete:/sabnzbd-downloads:rw
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
@@ -46,20 +38,18 @@ services:
       start_period: 15s
       retries: 3
 
-# Optional: run slskd alongside DroppedNeedle. You are responsible for slskd and its shares.
+# Optional: run slskd alongside DroppedNeedle (you manage slskd and its shares).
 #  slskd:
-#    image: slskd/slskd:0.25.1   # Pinned. Requires >= 0.25.0.
+#    image: slskd/slskd:0.25.1   # pinned; requires >= 0.25.0
 #    container_name: droppedneedle-slskd
 #    restart: unless-stopped
 #    ports:
 #      - "5030:5030"
 #    volumes:
 #      - ./slskd/config:/app   # slskd.yml lives here
-#      # slskd needs at least one shared folder (slskd.yml: shares.directories) or the
-#      # Soulseek network will ban it. With this bundled setup slskd's downloads dir is
-#      # /downloads, so set the droppedneedle service's downloads mount above to this SAME
-#      # host path (/path/to/slskd/downloads:/slskd-downloads) - the two must point at the
-#      # exact same folder, on the same filesystem as /music.
+#      # slskd needs at least one shared folder (slskd.yml: shares.directories) or Soulseek
+#      # bans it. Its downloads dir here is /downloads, so point the service's slskd mount
+#      # above at the SAME host path (/path/to/slskd/downloads:/slskd-downloads).
 #      - /path/to/slskd/downloads:/downloads:rw
 #    environment:
 #      - SLSKD_REMOTE_CONFIGURATION=true
