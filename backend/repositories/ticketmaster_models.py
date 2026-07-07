@@ -1,7 +1,6 @@
 """Ticketmaster Discovery v2 wire models.
 
-Shapes verified against the live API on 2026-07-06 (see
-``repositories/TICKETMASTER_API_NOTES.md``); decode fixtures live in
+Shapes verified against the live API on 2026-07-06; decode fixtures live in
 ``tests/fixtures/events/``. Everything is tolerant-by-default: attractions
 without ``externalLinks``, venues without ``location``, events without
 ``_embedded`` must all decode cleanly.

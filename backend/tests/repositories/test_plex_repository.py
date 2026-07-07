@@ -735,7 +735,7 @@ class TestEnumerateUsers:
     @pytest.mark.asyncio
     async def test_sends_client_identifier_and_merges_home_friends(self):
         # plex.tv /api/v2/home/users returns 400 without X-Plex-Client-Identifier
-        # (verified live; see plex_API_NOTES.md). enumerate_users must send it on
+        # (verified live). enumerate_users must send it on
         # both calls, or admin import comes back silently empty.
         repo, _, _ = _make_repo()  # configured with client-id-123
 

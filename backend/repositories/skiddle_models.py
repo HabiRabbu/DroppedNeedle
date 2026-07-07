@@ -1,7 +1,6 @@
 """Skiddle API wire models.
 
-Shapes verified against the live API on 2026-07-06 (see
-``repositories/SKIDDLE_API_NOTES.md``); decode fixtures live in
+Shapes verified against the live API on 2026-07-06; decode fixtures live in
 ``tests/fixtures/events/``. Wire quirks to preserve: ``cancelled`` is the
 STRING ``'0'``/``'1'``, ids are strings, venue coordinates are floats, empty
 strings stand in for absent values (``ticketUrl``, ``cancellationDate``),

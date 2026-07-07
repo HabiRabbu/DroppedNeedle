@@ -2,8 +2,7 @@
 
 Actionable-failure repository: non-2xx, decode failures and Skiddle's own
 ``error != 0`` envelope raise ``SkiddleApiError`` (handler-mapped to 503);
-HTTP 429 raises ``RateLimitedError``; raw httpx errors never escape. Live
-behavior notes: ``repositories/SKIDDLE_API_NOTES.md``.
+HTTP 429 raises ``RateLimitedError``; raw httpx errors never escape.
 """
 
 import logging
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 SKIDDLE_API_URL = "https://www.skiddle.com/api/v1"
 
 # Skiddle documents only that unspecified daily + hourly caps exist (verified
-# 2026-07-06, see SKIDDLE_API_NOTES.md) - stay conservative at 1 req/s.
+# 2026-07-06) - stay conservative at 1 req/s.
 _skiddle_rate_limiter = TokenBucketRateLimiter(rate=1.0)
 
 _skiddle_circuit_breaker = CircuitBreaker(

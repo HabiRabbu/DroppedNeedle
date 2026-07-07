@@ -1,6 +1,6 @@
 """msgspec structs mirroring slskd 0.25.1 JSON shapes.
 
-Shapes verified against a live slskd 0.25.1.0 instance (see ``API_NOTES.md``).
+Shapes verified against a live slskd 0.25.1.0 instance.
 PRIVATE to the slskd package; never cross into ``services/native`` (that
 boundary uses the protocol types). snake_case fields are mapped to slskd's
 camelCase wire keys via ``rename``; unknown fields are ignored (default).
@@ -14,7 +14,7 @@ class SlskdFile(msgspec.Struct, rename="camel", kw_only=True):
 
     ``bitRate`` is ABSENT for lossless files (left None, do not coerce to 0);
     ``extension`` can be empty even for a real file, so parse the extension
-    from ``filename`` instead (API_NOTES.md C6).
+    from ``filename`` instead.
     """
 
     filename: str

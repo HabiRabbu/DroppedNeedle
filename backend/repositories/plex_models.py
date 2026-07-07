@@ -132,8 +132,7 @@ def parse_plex_response(data: dict[str, Any]) -> dict[str, Any]:
 
 def parse_plex_account(entry: dict[str, Any], source: str) -> PlexAccount | None:
     # The account uuid is the join key (== account.uuid from get_token_details).
-    # Skip any entry without it rather than risk a wrong provider_uid. See
-    # plex_API_NOTES.md (AMU-7).
+    # Skip any entry without it rather than risk a wrong provider_uid.
     uuid = (entry.get("uuid") or "").strip()
     if not uuid:
         return None

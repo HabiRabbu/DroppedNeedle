@@ -942,7 +942,7 @@ class PlexRepository:
     async def enumerate_users(self) -> list[PlexAccount]:
         # Enumerate Plex Home/managed users + shared friends for admin import
         # (Phase 6, D5). Hits the plex.tv account API with the admin account
-        # token, NOT the server. Verified shapes: plex_API_NOTES.md (AMU-7).
+        # token, NOT the server.
         # Home + friends are two calls merged and de-duplicated by uuid.
         if not self._token:
             return []

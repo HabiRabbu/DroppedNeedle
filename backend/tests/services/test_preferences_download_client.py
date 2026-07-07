@@ -71,8 +71,8 @@ def test_api_key_never_logged(prefs, caplog):
 def test_url_scheme_normalised_for_bare_host():
     # A bare host gets https:// prepended (+ trailing slash stripped) so the saved
     # and Test-connection URLs are always full URLs - httpx rejects a schemeless one.
-    assert DownloadClientConnectionSettings(url="slskd.harveybragg.com/").url == (
-        "https://slskd.harveybragg.com"
+    assert DownloadClientConnectionSettings(url="slskd.example.com/").url == (
+        "https://slskd.example.com"
     )
 
 

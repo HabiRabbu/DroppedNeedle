@@ -8,8 +8,7 @@ the pre-seeded provider_uid, so no admin-set password is needed.
 
 The join key (provider_uid) MUST equal exactly what the live login produces:
 - Jellyfin: the user Id from GET /Users.
-- Plex: the account uuid (== account.uuid from get_token_details; see
-  plex_API_NOTES.md / AMU-7).
+- Plex: the account uuid (== account.uuid from get_token_details).
 """
 
 from __future__ import annotations

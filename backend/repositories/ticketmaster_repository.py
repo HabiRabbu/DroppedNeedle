@@ -3,7 +3,7 @@
 Actionable-failure repository: non-2xx and decode failures raise
 ``TicketmasterApiError`` (handler-mapped to 503), HTTP 429 raises
 ``RateLimitedError`` with the server's retry hint; raw httpx errors never
-escape. Live behavior notes: ``repositories/TICKETMASTER_API_NOTES.md``.
+escape.
 """
 
 import logging
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 TICKETMASTER_API_URL = "https://app.ticketmaster.com/discovery/v2"
 
 # TM's docs state 5 req/s in one place and 2 req/s in another (verified
-# 2026-07-06, see TICKETMASTER_API_NOTES.md) - encode the documented floor.
+# 2026-07-06) - encode the documented floor.
 # The 5,000/day quota is enforced by sweep sizing, not this limiter.
 _ticketmaster_rate_limiter = TokenBucketRateLimiter(rate=2.0)
 
