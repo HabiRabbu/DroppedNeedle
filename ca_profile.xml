@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommunityApplications>
+  <Profile>
+DroppedNeedle is a self-hosted, multi-user music request and discovery app. It has a native library engine (scan, tag, fingerprint, organise) and downloads music from Soulseek (via slskd) and Usenet (via SABnzbd with native Newznab indexers), per album or per track. It can also present a Subsonic- and Jellyfin-compatible server so your existing player apps stream straight from the library. No Lidarr required.
+
+This repository maintains the official DroppedNeedle Unraid template.
+
+**Support:** open an issue on [GitHub](https://github.com/HabiRabbu/DroppedNeedle/issues) or join the [Discord](https://discord.gg/B5suDg7gu2). Documentation is at [droppedneedle.com](https://www.droppedneedle.com/).
+  </Profile>
+  <Icon>https://raw.githubusercontent.com/HabiRabbu/DroppedNeedle/main/Images/logo_icon.png</Icon>
+  <WebPage>https://www.droppedneedle.com/</WebPage>
+  <Discord>https://discord.gg/B5suDg7gu2</Discord>
+</CommunityApplications>
