@@ -6,8 +6,8 @@ export const FOLLOW_ENDPOINTS = {
 	setFollow: (mbid: string) => API.artist.follow(mbid),
 	autoDownload: (mbid: string) => API.artist.autoDownload(mbid),
 	followedArtists: () => API.following.artists(),
-	newReleases: (limit: number, offset: number) => API.following.newReleases(limit, offset),
-	recentReleases: (days: number, limit: number) => API.following.recentReleases(days, limit),
+	recentReleases: (days: number, limit: number, includeOwned: boolean) =>
+		API.following.recentReleases(days, limit, includeOwned),
 	newReleasesUnseenCount: () => API.following.newReleasesUnseenCount(),
 	markNewReleasesSeen: () => API.following.markNewReleasesSeen(),
 	concerts: () => API.following.concerts(),

@@ -95,10 +95,13 @@ class FollowService:
         return await self._store.list_new_releases_for_user(user_id, limit, offset)
 
     async def list_recent_releases(
-        self, user_id: str, days: int, limit: int
+        self, user_id: str, days: int, limit: int, include_owned: bool = True
     ) -> tuple[list[NewRelease], int]:
-        """The hub's log view: releases from the window incl. owned albums."""
-        return await self._store.list_recent_releases_for_user(user_id, days, limit)
+        """The release-log view (hub + New Releases page): everything from the
+        window, owned albums flagged - or filtered out when include_owned=False."""
+        return await self._store.list_recent_releases_for_user(
+            user_id, days, limit, include_owned
+        )
 
     async def count_unseen_new_releases(self, user_id: str) -> int:
         return await self._store.count_unseen_new_releases_for_user(user_id)

@@ -29,24 +29,25 @@ export const getFollowedArtistsQuery = () =>
 			api.global.get<FollowedArtist[]>(FOLLOW_ENDPOINTS.followedArtists(), { signal })
 	}));
 
-export const getNewReleasesQuery = (getLimit: Getter<number>, getOffset: Getter<number>) =>
+// the release LOG (owned albums included, flagged in_library; include_owned=false
+// is the page's hide-owned filter, matching the GET /new-releases to-do view)
+export const getRecentReleasesQuery = (
+	getDays: Getter<number>,
+	getLimit: Getter<number>,
+	getIncludeOwned: Getter<boolean> = () => true
+) =>
 	createQuery(() => ({
-		queryKey: FollowQueryKeyFactory.newReleases(authStore.user?.id, getLimit(), getOffset()),
+		queryKey: FollowQueryKeyFactory.recentReleases(
+			authStore.user?.id,
+			getDays(),
+			getLimit(),
+			getIncludeOwned()
+		),
 		queryFn: ({ signal }) =>
-			api.global.get<NewReleasesResponse>(FOLLOW_ENDPOINTS.newReleases(getLimit(), getOffset()), {
-				signal
-			})
-	}));
-
-// the hub's release LOG (owned albums included, flagged in_library) -
-// distinct from getNewReleasesQuery, the needs-requesting to-do view
-export const getRecentReleasesQuery = (getDays: Getter<number>, getLimit: Getter<number>) =>
-	createQuery(() => ({
-		queryKey: FollowQueryKeyFactory.recentReleases(authStore.user?.id, getDays(), getLimit()),
-		queryFn: ({ signal }) =>
-			api.global.get<NewReleasesResponse>(FOLLOW_ENDPOINTS.recentReleases(getDays(), getLimit()), {
-				signal
-			})
+			api.global.get<NewReleasesResponse>(
+				FOLLOW_ENDPOINTS.recentReleases(getDays(), getLimit(), getIncludeOwned()),
+				{ signal }
+			)
 	}));
 
 export const getConcertsQuery = () =>

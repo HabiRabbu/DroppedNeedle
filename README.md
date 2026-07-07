@@ -13,7 +13,7 @@
 
 ---
 
-DroppedNeedle is a self-hosted music request and discovery app with a **built-in native library and download engine** (no Lidarr required). Search the full MusicBrainz catalogue, request whole albums or single tracks, and let the engine scan, tag, and organise your library while it drives downloads through your own slskd. Stream from Jellyfin, Navidrome, Plex, or your local files, get recommendations from your listening history, and scrobble to ListenBrainz and Last.fm. Play your library in third-party apps like Symfonium and Finamp over the OpenSubsonic and Jellyfin APIs. It all runs as a single Docker container, configured from the web UI.
+DroppedNeedle is a self-hosted music request and discovery app with a **built-in native library and download engine** (no Lidarr required). Search the full MusicBrainz catalogue, request whole albums or single tracks, and let the engine scan, tag, and organise your library while it drives downloads through your own slskd or Usenet/SABnzbd. Stream from Jellyfin, Navidrome, Plex, or your local files, get recommendations from your listening history, and scrobble to ListenBrainz and Last.fm. Play your library in third-party apps like Symfonium and Finamp over the OpenSubsonic and Jellyfin APIs. It all runs as a single Docker container, configured from the web UI.
 
 ---
 
@@ -30,9 +30,9 @@ DroppedNeedle is a self-hosted music request and discovery app with a **built-in
 
 ## Quick Start
 
-You need Docker, a music library, and your own running [slskd](https://github.com/slskd/slskd) instance (0.25.0+) with an API key and shared folders. DroppedNeedle does not ship or run slskd for you - see [slskd Setup](#slskd-setup).
+You need Docker, a music library, and a download client. The example below uses slskd; [SABnzbd](https://sabnzbd.org/) with Newznab indexers works too. DroppedNeedle does not ship or run either for you - see [slskd Setup](#slskd-setup) and [Usenet Setup](#usenet-setup).
 
-> **DroppedNeedle only orchestrates a user-provided slskd instance over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. The user supplies, runs, and is responsible for slskd and its shared folders.**
+> **DroppedNeedle only orchestrates a user-provided download client over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. You supply, run, and are responsible for your own download client and, for slskd, its shared folders.**
 
 ### 1. Create a docker-compose.yml
 
@@ -180,7 +180,7 @@ The template applies to downloaded imports only. v1 never renames files discover
 
 ### Pluggable download client
 
-The engine speaks a `DownloadClientProtocol`, never slskd directly: `client_name`, `is_configured`, `health_check`, `search_album`, `search_track`, `enqueue`, `get_status`, `cancel`, `get_file_path`. Everything client-specific (slskd's `X-API-Key`, search-GUID polling, plain-array enqueue, `(peer, filename)` transfer correlation, Soulseek state-string parsing) lives inside the slskd repository. Everything else (library layout, MusicBrainz identification, the atomic move, tag writing, persistence, ownership checks, quarantine, retry, scoring) lives outside it. Adding a second client requires zero changes to `services/native/`, and a protocol conformance test exercises this against the slskd mock plus a second mock client.
+The engine speaks a `DownloadClientProtocol`, never slskd directly: `client_name`, `is_configured`, `health_check`, `search_album`, `search_track`, `enqueue`, `get_status`, `cancel`, `get_file_path`. Everything client-specific (slskd's `X-API-Key`, search-GUID polling, plain-array enqueue, `(peer, filename)` transfer correlation, Soulseek state-string parsing) lives inside the slskd repository; SABnzbd's API key, NZB enqueue, and history polling live in its own repository. Everything else (library layout, MusicBrainz identification, the atomic move, tag writing, persistence, ownership checks, quarantine, retry, scoring) lives outside both. Adding a new client requires zero changes to `services/native/`, and a protocol conformance test exercises this against the slskd mock plus a second mock client.
 
 ### Cover art
 
@@ -235,6 +235,8 @@ Browse or search the MusicBrainz catalogue, open an album, and click **Request**
 > **Legality.** DroppedNeedle only orchestrates a user-provided slskd instance over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. You supply, run, and are responsible for slskd and its shared folders.
 >
 > **Share files in slskd.** Soulseek bans leechers. You must configure at least one shared directory in slskd (`slskd.yml` -> `shares.directories`) or you will be unable to download. This is a slskd requirement, not a DroppedNeedle one.
+
+slskd is one of two download sources DroppedNeedle supports. If you are using Usenet instead, skip this section and go to [Usenet Setup](#usenet-setup).
 
 DroppedNeedle does not download from Soulseek itself. It talks to your own running slskd instance over slskd's local HTTP API (`X-API-Key`), asks it to search and download, then imports the finished files into your library. You bring slskd; DroppedNeedle drives it.
 
@@ -295,6 +297,24 @@ web:
 
 ---
 
+## Usenet Setup
+
+DroppedNeedle's second download source is Usenet through SABnzbd with Newznab-compatible indexers. The engine searches indexers for albums and tracks, enqueues NZBs in SABnzbd, and imports the finished files using the same verification and import pipeline it uses for slskd.
+
+### Requirements
+
+- [SABnzbd](https://sabnzbd.org/) with an API key.
+- One or more Newznab-compatible indexers (NZBGeek, NZBPlanet, NZB.su, Slug, and others) with API keys.
+- SABnzbd's completed downloads directory and your music library must be on the same filesystem. The import uses an atomic rename, same as the slskd path.
+
+### Configuration
+
+Go to **Settings > Download Client** (admin), enable Usenet, and enter your SABnzbd URL and API key. Add your Newznab indexers (each one's URL plus your API key) under **Settings > Indexers**; the engine searches all of them and merges the results. Click **Test** on each connection, then **Save**.
+
+slskd and Usenet can be enabled side by side - the source priority control decides which is tried first. Every download goes through the same scoring, verification, quarantine, and import pipeline regardless of where it came from.
+
+---
+
 ## Troubleshooting
 
 - **Downloads complete in slskd but nothing imports.** The slskd-downloads bind-mount is missing or misconfigured. Confirm it is mounted read-write, on the same filesystem as the library, and that `SLSKD_DOWNLOADS_PATH` points at it. The Download Client settings page shows the mount status and the exact reason.
@@ -309,11 +329,12 @@ web:
 
 ## Recommended Stack
 
-DroppedNeedle brings its own library and download engine; you supply slskd. For playback, connect Jellyfin, Navidrome, Plex, or mount your music folder directly into the container.
+DroppedNeedle brings its own library and download engine; you supply the download client. For playback, connect Jellyfin, Navidrome, Plex, or mount your music folder directly into the container.
 
 | Service | Role |
 |-|-|
 | [slskd](https://github.com/slskd/slskd) (0.25.0+, operator-supplied) | Soulseek download client the native engine drives over its local HTTP API |
+| [SABnzbd](https://sabnzbd.org/) (4.x+, operator-supplied) | Usenet download client with Newznab indexer support |
 | [MusicBrainz](https://musicbrainz.org/) | Catalogue, identification, and matching |
 
 ---
@@ -354,7 +375,21 @@ A session lasts 30 days from login and is not extended by activity. Signing out 
 
 ### Search and Request
 
-Search the full MusicBrainz catalogue for any artist or album. Request a whole album or an individual track, and the native engine handles the download: it searches your slskd, preflight-scores the candidates, picks the best, verifies the files, and imports them into your library. Admin and trusted users' requests start immediately; requests from standard users are held in an approval queue until an admin approves or rejects them. A persistent queue tracks all requests, and you can browse pending and fulfilled requests on a dedicated page with retry and cancel support.
+Search the full MusicBrainz catalogue for any artist or album. Request a whole album or an individual track, and the native engine handles the download: it searches your download client, preflight-scores the candidates, picks the best, verifies the files, and imports them into your library. Admin and trusted users' requests start immediately; requests from standard users are held in an approval queue until an admin approves or rejects them. A persistent queue tracks all requests, and you can browse pending and fulfilled requests on a dedicated page with retry and cancel support.
+
+Downloads the engine cannot confidently auto-accept land in a held-import review queue. An admin can preview the audio, accept or reject the import, and supply a MusicBrainz ID before the file is moved into the library.
+
+When a download completes in your download client but DroppedNeedle cannot locate the file, you can trigger a manual reimport from the downloads page to finish the job.
+
+### Wanted
+
+Failed and incomplete download requests are re-searched automatically by a background watcher on an age-based cadence. When it finds a verified match, the download is imported silently. The Wanted tab shows everything the watcher is tracking. You can stop or resume individual watches and mark new finds as seen.
+
+### Quality and Storage
+
+Set a quality floor per format (FLAC, MP3, AAC, and others) under Settings > Download Client. Downloads below the cutoff are rejected. When a better copy of an album you already own turns up, the engine replaces the old files and moves the originals to a recycle bin.
+
+A global storage cap and per-user quotas keep the library from filling the disk. Album edition pinning locks a request to a particular release: the engine fills missing tracks from that edition and upgrades individual files as better copies surface. An optional background scan re-checks your library against available sources and imports improvements.
 
 ### Built-in Player
 
@@ -368,6 +403,8 @@ DroppedNeedle has a full audio player that supports multiple playback sources pe
 
 The player supports queue management, shuffle, seek, volume control, and a 10-band equalizer with presets.
 
+What you are playing is broadcast live over SSE. Other signed-in users see the current track in real time.
+
 ### Connect Apps
 
 Third-party music apps can play your library straight from DroppedNeedle, which speaks both the OpenSubsonic and Jellyfin APIs. It is the inbound counterpart to the Jellyfin, Navidrome, and Plex sources: those let DroppedNeedle play from another server, while this lets other apps play from DroppedNeedle.
@@ -380,15 +417,25 @@ Tested with Symfonium, Feishin, and Amperfy over Subsonic, and Finamp, Jellify, 
 
 The home page shows trending artists, popular albums, recently added items, genre quick-links, weekly exploration playlists from ListenBrainz, and "Because You Listened To" carousels personalized to your history.
 
-The discover page goes further with a recommendation queue drawn from similar artists, library gaps, fresh releases, global charts, and your listening patterns across ListenBrainz and Last.fm. Each album can be expanded to show the full tracklist and artwork before you decide to request or skip it.
+The discover page goes further with a recommendation queue drawn from similar artists, library gaps, fresh releases, global charts, and your listening patterns across ListenBrainz and Last.fm. Each album can be expanded to show the full tracklist and artwork before you decide to request or skip it. Every album has floating preview buttons that stream a short clip from Deezer and iTunes without leaving the page.
 
 You can also browse by genre, view trending and popular charts over different time ranges, and see your own top albums.
 
 Until you link Last.fm or ListenBrainz, the rows that need your listening history stay hidden. You see the shared trending and library sections, plus a prompt to connect an account; link one and your own recommendations fill in.
 
+A per-user weekly mix playlist is built from your listening history and refreshed in the background. When auto-request is enabled (requires an admin standing grant), up to five missing albums from the mix are queued for download automatically.
+
+### Upcoming Events
+
+Connect Ticketmaster and Skiddle (free API keys) and DroppedNeedle shows concerts near you. Each user picks as many cities as they like from a geocoded search, each with its own radius. A daily sweep pulls upcoming shows for the artists people follow - or, optionally, for every artist in the library - and a sidebar badge counts the gigs you have not seen yet.
+
+### Following Artists
+
+Follow an artist to watch for new releases, and optionally auto-download them the moment they appear (standard users need a one-time admin grant per artist). Sidebar badges show how many releases and gigs you have not seen, backed by per-user seen markers that update via SSE; visiting the page clears them. The Following hub is a glanceable digest: a 30-day release log with in-library ticks, your next gigs, and your artist roster, each section one click from its full page.
+
 ### Library
 
-Browse your native library by artist or album with search, filtering, sorting, and pagination. View recently added albums and library statistics. Resolve unmatched files from the manual-review queue, edit tags, rescan albums, and remove albums directly from the UI.
+Browse your native library by artist or album with search, filtering, sorting, and pagination. View recently added albums and library statistics. Resolve unmatched files from the manual-review queue, edit tags, rescan albums, and remove albums directly from the UI. DroppedNeedle deletes the files, cleans up the database rows, and updates album and artist statistics.
 
 Jellyfin, Navidrome, Plex, and local file sources each get their own library view with play, shuffle, and queue actions.
 
@@ -398,7 +445,9 @@ Every track you play can be scrobbled to your own ListenBrainz and Last.fm accou
 
 ### Playlists
 
-Create playlists from any mix of Jellyfin, Navidrome, Plex, local, and YouTube tracks. Reorder by dragging, set custom cover art, and play everything through the same player.
+Create playlists from any mix of Jellyfin, Navidrome, Plex, local, YouTube, and imported Spotify tracks. Reorder by dragging, set custom cover art, and play everything through the same player.
+
+Import playlists from Spotify. Track metadata and album art are pulled on import, and the playlist stays live with periodic SSE refreshes so new tracks you add on Spotify appear automatically.
 
 Playlists are private to you by default. Toggle one to public and it appears read-only for every other signed-in user under "Shared with you", with your name attached; switch it back to private whenever you like. Admins can see that a private playlist exists, along with its track count and owner, but not its name or its tracks.
 
@@ -413,6 +462,7 @@ Set a display name and avatar, change your username/email/password, link your ow
 | Service | What it does |
 |-|-|
 | [slskd](https://github.com/slskd/slskd) (operator-supplied) | Soulseek download client the native engine drives over its local HTTP API |
+| [SABnzbd](https://sabnzbd.org/) (operator-supplied) | Usenet download client with Newznab indexer support |
 | [MusicBrainz](https://musicbrainz.org/) | Artist and album metadata, release search, scan identification |
 | [AcoustID](https://acoustid.org/) | Audio fingerprinting for Tier-3 scan identification (optional API key) |
 | [Cover Art Archive](https://coverartarchive.org/) | Album artwork |
@@ -425,6 +475,11 @@ Set a display name and avatar, change your username/email/password, link your ow
 | [Last.fm](https://www.last.fm/) | Scrobbling and listen tracking |
 | YouTube | Album playback when no local copy exists |
 | Local files | Direct playback from a mounted music directory |
+| [Spotify](https://www.spotify.com/) | Playlist import with live sync |
+| [Ticketmaster](https://www.ticketmaster.com/) | Upcoming concert discovery |
+| [Skiddle](https://www.skiddle.com/) | Upcoming concert discovery |
+| [Deezer](https://www.deezer.com/) | Short audio previews on the discover page |
+| iTunes | Short audio previews on the discover page |
 
 All integrations are configured through the web UI. No config files or environment variables needed beyond the basics listed below.
 
@@ -453,7 +508,7 @@ Run `id` on your host to find your PUID and PGID values.
 | Setting | Location |
 |-|-|
 | Library paths, naming template, scan schedule, AcoustID key | Settings > Library |
-| slskd URL and API key, quality tiers, verification | Settings > Download Client |
+| slskd URL and API key, SABnzbd/Usenet URL and API key, Newznab indexers, quality tiers, verification, wanted watcher | Settings > Download Client |
 | OpenSubsonic and Jellyfin APIs that let apps stream your library, app-passwords, transcoding | Settings > Connect Apps |
 | Jellyfin URL and API key | Settings > Jellyfin |
 | Navidrome URL and credentials | Settings > Navidrome |
@@ -461,6 +516,8 @@ Run `id` on your host to find your PUID and PGID values.
 | Local files directory path | Settings > Local Files |
 | Last.fm app key + shared secret (admin; one app for the whole instance) | Settings > Last.fm |
 | YouTube API key | Settings > YouTube |
+| Spotify client ID and secret, playlist import | Settings > Spotify |
+| Ticketmaster and Skiddle API keys, sweep scope and daily check time | Settings > Live Events |
 | Link your own Last.fm + ListenBrainz, per-user scrobble toggles, default discovery source | Profile > Scrobbling & Discovery |
 | Home page layout preferences | Settings > Preferences |
 | AudioDB settings and cache TTLs | Settings > Advanced |

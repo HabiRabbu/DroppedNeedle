@@ -646,11 +646,12 @@ class FollowStore:
         return items, total
 
     async def list_recent_releases_for_user(
-        self, user_id: str, days: int, limit: int
+        self, user_id: str, days: int, limit: int, include_owned: bool = True
     ) -> tuple[list[NewRelease], int]:
         """The LOG view: everything the user's artists released in the last
         ``days`` days, INCLUDING albums already in the library (flagged via
-        ``in_library``). Dateless rows fall back to their discovery time.
+        ``in_library``) unless ``include_owned`` is False (the page's
+        'hide owned' filter). Dateless rows fall back to their discovery time.
         Unlike list_new_releases_for_user this is a record of what happened,
         not a to-do list."""
         safe_limit = max(1, limit)
@@ -667,6 +668,13 @@ class FollowStore:
                     OR (nrf.first_release_date IS NULL AND nrf.discovered_at >= ?)
                 )
             """
+            if not include_owned:
+                where += """
+                AND nrf.release_group_mbid_lower NOT IN (
+                    SELECT lower(release_group_mbid) FROM library_files
+                    WHERE release_group_mbid IS NOT NULL AND deleted_at IS NULL
+                )
+                """
             params = (user_id, cutoff_date, cutoff_ts)
             total = conn.execute("SELECT COUNT(*) AS c " + where, params).fetchone()["c"]
             rows = conn.execute(

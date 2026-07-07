@@ -42,7 +42,7 @@ import {
 	getEventCitiesQuery,
 	getFollowStatusQuery,
 	getFollowedArtistsQuery,
-	getNewReleasesQuery,
+	getRecentReleasesQuery,
 	getUnseenConcertsCountQuery,
 	getUnseenNewReleasesCountQuery
 } from './FollowQueries.svelte';
@@ -95,12 +95,13 @@ describe('FollowQueryKeyFactory (AMU-5)', () => {
 			'anon'
 		]);
 		expect(FollowQueryKeyFactory.artists('userA')).toEqual(['following', 'artists', 'userA']);
-		expect(FollowQueryKeyFactory.newReleases('userA', 50, 0)).toEqual([
+		expect(FollowQueryKeyFactory.recentReleases('userA', 30, 48, true)).toEqual([
 			'following',
-			'new-releases',
+			'recent-releases',
 			'userA',
-			50,
-			0
+			30,
+			48,
+			true
 		]);
 		expect(FollowQueryKeyFactory.newReleasesUnseen('userA')).toEqual([
 			'following',
@@ -133,14 +134,15 @@ describe('follow queries hit the right endpoints with user-scoped keys', () => {
 		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.followedArtists());
 	});
 
-	it('getNewReleasesQuery', async () => {
-		const opts = getNewReleasesQuery(
-			() => 24,
-			() => 0
+	it('getRecentReleasesQuery threads window/limit/owned into key and URL', async () => {
+		const opts = getRecentReleasesQuery(
+			() => 30,
+			() => 48,
+			() => false
 		) as unknown as Opts;
-		expect(opts.queryKey).toEqual(['following', 'new-releases', 'userA', 24, 0]);
+		expect(opts.queryKey).toEqual(['following', 'recent-releases', 'userA', 30, 48, false]);
 		await opts.queryFn!({ signal: new AbortController().signal });
-		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.newReleases(24, 0));
+		expect(mockGet.mock.calls[0][0]).toBe(FOLLOW_ENDPOINTS.recentReleases(30, 48, false));
 	});
 
 	it('getUnseenNewReleasesCountQuery is user-scoped and disabled when logged out', async () => {

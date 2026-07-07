@@ -154,8 +154,8 @@ export const API = {
 		artists: () => '/api/v1/following/artists',
 		newReleases: (limit: number, offset: number) =>
 			`/api/v1/following/new-releases?limit=${limit}&offset=${offset}`,
-		recentReleases: (days: number, limit: number) =>
-			`/api/v1/following/new-releases/recent?days=${days}&limit=${limit}`,
+		recentReleases: (days: number, limit: number, includeOwned = true) =>
+			`/api/v1/following/new-releases/recent?days=${days}&limit=${limit}&include_owned=${includeOwned}`,
 		newReleasesUnseenCount: () => '/api/v1/following/new-releases/unseen-count',
 		markNewReleasesSeen: () => '/api/v1/following/new-releases/seen',
 		events: () => '/api/v1/following/events',

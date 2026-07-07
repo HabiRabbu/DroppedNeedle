@@ -96,8 +96,8 @@ const COVERAGE: Array<[string, string, string]> = [
 	],
 	[
 		'recent releases log',
-		API.following.recentReleases(30, 8),
-		'/api/v1/following/new-releases/recent?days=30&limit=8'
+		API.following.recentReleases(30, 8, false),
+		'/api/v1/following/new-releases/recent?days=30&limit=8&include_owned=false'
 	],
 	[
 		'new releases unseen count',

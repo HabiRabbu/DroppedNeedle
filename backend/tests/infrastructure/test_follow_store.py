@@ -461,3 +461,10 @@ async def test_recent_releases_log_includes_owned_with_flag(
 
     # other users see nothing (join is per-user)
     assert (await store.list_recent_releases_for_user("user-b", 30, 10))[1] == 0
+
+    # include_owned=False is the page's hide-owned filter: same window, owned gone
+    hidden, hidden_total = await store.list_recent_releases_for_user(
+        "user-a", days=30, limit=10, include_owned=False
+    )
+    assert hidden_total == 2
+    assert {i.title for i in hidden} == {"Fresh Album", "Dateless Album"}

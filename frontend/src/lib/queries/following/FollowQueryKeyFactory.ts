@@ -7,21 +7,19 @@ export const FollowQueryKeyFactory = {
 		[...FollowQueryKeyFactory.statusPrefix, mbid, userId ?? 'anon'] as const,
 	artists: (userId: string | undefined) =>
 		[...FollowQueryKeyFactory.followingPrefix, 'artists', userId ?? 'anon'] as const,
-	newReleases: (userId: string | undefined, limit: number, offset: number) =>
-		[
-			...FollowQueryKeyFactory.followingPrefix,
-			'new-releases',
-			userId ?? 'anon',
-			limit,
-			offset
-		] as const,
-	recentReleases: (userId: string | undefined, days: number, limit: number) =>
+	recentReleases: (
+		userId: string | undefined,
+		days: number,
+		limit: number,
+		includeOwned: boolean
+	) =>
 		[
 			...FollowQueryKeyFactory.followingPrefix,
 			'recent-releases',
 			userId ?? 'anon',
 			days,
-			limit
+			limit,
+			includeOwned
 		] as const,
 	newReleasesUnseen: (userId: string | undefined) =>
 		[...FollowQueryKeyFactory.followingPrefix, 'new-releases-unseen', userId ?? 'anon'] as const,

@@ -110,13 +110,18 @@ async def list_new_releases(
 async def list_recent_releases(
     current_user: CurrentUserDep,
     days: int = Query(30, ge=1, le=365),
-    limit: int = Query(8, ge=1, le=100),
+    # headroom for the page's load-more growth (48 per click, client caps at 480)
+    limit: int = Query(8, ge=1, le=500),
+    include_owned: bool = Query(True),
     follow_service: FollowService = Depends(get_follow_service),
 ):
-    """The hub's release LOG: everything the user's artists put out in the
-    window, including albums already in the library (in_library=True) -
-    unlike GET /new-releases, which is the needs-requesting to-do view."""
-    items, total = await follow_service.list_recent_releases(current_user.id, days, limit)
+    """The release LOG (hub + New Releases page): everything the user's artists
+    put out in the window, albums already in the library flagged in_library=True.
+    include_owned=false is the page's 'hide owned' filter - that variant matches
+    the plain GET /new-releases to-do view, windowed."""
+    items, total = await follow_service.list_recent_releases(
+        current_user.id, days, limit, include_owned
+    )
     return WantedResponse(
         items=[
             NewReleaseResponse(
