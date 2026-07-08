@@ -6,7 +6,12 @@ import pytest
 from cryptography.fernet import Fernet
 
 import infrastructure.crypto as crypto
-from core.exceptions import ConflictError, PermissionDeniedError, SubsonicError
+from core.exceptions import (
+    ConflictError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+    SubsonicError,
+)
 from infrastructure.crypto import encrypt
 from infrastructure.persistence.app_password_store import (
     AppPasswordRow,
@@ -235,3 +240,87 @@ async def test_decrypt_failure_returns_normal_auth_error(
             )
     assert e.value.code == 40  # not a 500
     assert any("unrecoverable" in r.message.lower() for r in caplog.records)
+
+
+# ----- admin oversight (roster + admin revoke) -----
+
+async def test_list_all_active_with_owners_enriches_and_hides_secrets(
+    app_password_service,
+):
+    import msgspec
+
+    await app_password_service.create("user-alice", "Alice phone")
+    await app_password_service.create("user-bob", "Bob tablet")
+    views = await app_password_service.list_all_active_with_owners()
+    by_user = {v.user_id: v for v in views}
+    assert set(by_user) == {"user-alice", "user-bob"}
+    assert by_user["user-alice"].owner_username == "alice"
+    assert by_user["user-alice"].owner_display_name == "Alice"
+    keys = set(msgspec.to_builtins(views[0]).keys())
+    assert "secret_sha256" not in keys and "secret_encrypted" not in keys
+
+
+async def test_list_all_active_excludes_revoked(app_password_service):
+    gone, _ = await app_password_service.create("user-alice", "gone")
+    await app_password_service.revoke("user-alice", gone.id)
+    await app_password_service.create("user-alice", "kept")
+    views = await app_password_service.list_all_active_with_owners()
+    assert [v.name for v in views] == ["kept"]
+
+
+async def test_admin_roster_owner_lookup_not_truncated_beyond_100_users(
+    app_password_service, auth_store
+):
+    # Create well past list_users' default 100-row window; the LAST-created user
+    # (outside that window) gets an app-password. A truncating owner lookup would
+    # silently drop it - this asserts the bulk get_users_by_ids path resolves it.
+    for i in range(130):
+        await auth_store.create_user(
+            id=f"bulk-{i:03d}", display_name=f"User {i}", role="user",
+            username=f"bulk{i}",
+        )
+    await app_password_service.create("bulk-129", "late joiner")
+    views = await app_password_service.list_all_active_with_owners()
+    late = [v for v in views if v.user_id == "bulk-129"]
+    assert len(late) == 1
+    assert late[0].owner_username == "bulk129"  # owner resolved, not dropped
+
+
+async def test_admin_revoke_kills_any_users_credential(app_password_service):
+    record, secret = await app_password_service.create("user-alice", "Alice phone")
+    # a different admin id revokes alice's password (no ownership relationship)
+    await app_password_service.admin_revoke("user-admin", record.id)
+    assert await app_password_service.verify_token(secret) is None
+
+
+async def test_admin_revoke_unknown_id_raises_not_found(app_password_service):
+    with pytest.raises(ResourceNotFoundError):
+        await app_password_service.admin_revoke("user-admin", "does-not-exist")
+
+
+async def test_admin_revoke_already_revoked_raises_not_found(app_password_service):
+    record, _ = await app_password_service.create("user-alice", "x")
+    await app_password_service.admin_revoke("user-admin", record.id)
+    with pytest.raises(ResourceNotFoundError):
+        await app_password_service.admin_revoke("user-admin", record.id)
+
+
+async def test_owner_username_uses_display_casing_then_falls_back(
+    app_password_service, auth_store
+):
+    # username_display (preferred casing) wins over the lowercased username
+    await auth_store.create_user(
+        id="user-cased", display_name="Cased User", role="user",
+        username="casey", username_display="CaseY",
+    )
+    # no username at all (e.g. an SSO-provisioned account) -> fall back to display_name,
+    # never None (owner_username is a non-optional field)
+    await auth_store.create_user(
+        id="user-nouname", display_name="No Username", role="user",
+    )
+    await app_password_service.create("user-cased", "c")
+    await app_password_service.create("user-nouname", "n")
+    views = {v.user_id: v for v in await app_password_service.list_all_active_with_owners()}
+    assert views["user-cased"].owner_username == "CaseY"
+    assert views["user-nouname"].owner_username == "No Username"
+    assert views["user-nouname"].owner_display_name == "No Username"

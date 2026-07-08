@@ -2035,6 +2035,23 @@ export interface AppPasswordCreateResponse {
 	app_password: AppPasswordView;
 }
 
+// Admin oversight roster: every user's active app-passwords (never a secret).
+export interface AdminAppPasswordView {
+	id: string;
+	user_id: string;
+	owner_username: string;
+	owner_display_name: string;
+	name: string;
+	created_at: string;
+	last_used_at: string | null;
+	last_client: string | null;
+}
+
+export interface AdminAppPasswordListResponse {
+	items: AdminAppPasswordView[];
+	active_count: number;
+}
+
 export interface SectionPrefItem {
 	key: string;
 	title: string;

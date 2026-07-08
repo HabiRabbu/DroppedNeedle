@@ -166,6 +166,17 @@ class AppPasswordStore:
 
         return await self._read(operation)
 
+    async def list_all_active(self) -> list[AppPasswordRow]:
+        """Every active app-password across all users (admin oversight)."""
+        def operation(conn: sqlite3.Connection) -> list[AppPasswordRow]:
+            rows = conn.execute(
+                "SELECT * FROM connect_app_passwords "
+                "WHERE revoked = 0 ORDER BY user_id ASC, created_at ASC"
+            ).fetchall()
+            return [r for r in (self._to_row(row) for row in rows) if r is not None]
+
+        return await self._read(operation)
+
     async def revoke(self, app_password_id: str) -> bool:
         def operation(conn: sqlite3.Connection) -> bool:
             cur = conn.execute(

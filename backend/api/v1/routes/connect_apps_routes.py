@@ -11,6 +11,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.v1.schemas.connect_apps import (
+    AdminAppPasswordListResponse,
     AppPasswordCreateRequest,
     AppPasswordCreateResponse,
     AppPasswordListResponse,
@@ -101,3 +102,25 @@ async def revoke_app_password(
     except PermissionDeniedError:
         # 404 (not 403) avoids leaking the id
         raise HTTPException(status_code=404, detail="App-password not found")
+
+
+# admin oversight: every user's app-passwords, metadata only (no secrets)
+
+
+@router.get("/admin/app-passwords", response_model=AdminAppPasswordListResponse)
+async def admin_list_app_passwords(
+    _: CurrentAdminDep,  # only an admin may see everyone's connected apps
+    service=Depends(get_app_password_service),
+) -> AdminAppPasswordListResponse:
+    items = await service.list_all_active_with_owners()
+    return AdminAppPasswordListResponse(active_count=len(items), items=items)
+
+
+@router.delete("/admin/app-passwords/{app_password_id}", status_code=204)
+async def admin_revoke_app_password(
+    current_admin: CurrentAdminDep,
+    app_password_id: str,
+    service=Depends(get_app_password_service),
+) -> None:
+    # ResourceNotFoundError (unknown/already-revoked id) is handler-mapped to 404
+    await service.admin_revoke(current_admin.id, app_password_id)

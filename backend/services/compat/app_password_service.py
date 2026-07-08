@@ -16,7 +16,12 @@ from uuid import uuid4
 
 import msgspec
 
-from core.exceptions import ConflictError, PermissionDeniedError, SubsonicError
+from core.exceptions import (
+    ConflictError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+    SubsonicError,
+)
 from infrastructure.crypto import decrypt, encrypt
 from infrastructure.persistence.app_password_store import (
     AppPasswordRow,
@@ -44,6 +49,19 @@ class AppPasswordRecord(msgspec.Struct):
 
     id: str
     user_id: str
+    name: str
+    created_at: str
+    last_used_at: str | None = None
+    last_client: str | None = None
+
+
+class AdminAppPasswordView(msgspec.Struct):
+    """Admin-oversight DTO: one active app-password plus its owner. No secrets."""
+
+    id: str
+    user_id: str
+    owner_username: str
+    owner_display_name: str
     name: str
     created_at: str
     last_used_at: str | None = None
@@ -109,6 +127,48 @@ class AppPasswordService:
         logger.info(
             "Connect Apps audit: app-password revoked user=%s id=%s name=%r",
             user_id, row.id, row.name,
+        )
+
+    async def list_all_active_with_owners(self) -> list[AdminAppPasswordView]:
+        """Admin oversight: every active app-password across all users, each
+        enriched with its owner. Never returns a secret."""
+        rows = await self._store.list_all_active()
+        owners = await self._auth_store.get_users_by_ids(
+            list({row.user_id for row in rows})
+        )
+        views: list[AdminAppPasswordView] = []
+        for row in rows:
+            owner = owners.get(row.user_id)
+            if owner is None:
+                # owner vanished mid-flight (FK cascade); skip rather than show a ghost
+                continue
+            views.append(
+                AdminAppPasswordView(
+                    id=row.id,
+                    user_id=row.user_id,
+                    owner_username=(
+                        owner.username_display or owner.username or owner.display_name
+                    ),
+                    owner_display_name=owner.display_name,
+                    name=row.name,
+                    created_at=row.created_at,
+                    last_used_at=row.last_used_at,
+                    last_client=row.last_client,
+                )
+            )
+        return views
+
+    async def admin_revoke(self, admin_user_id: str, app_password_id: str) -> None:
+        """Admin revokes ANY user's app-password (no ownership check). Missing or
+        already-revoked id raises ResourceNotFoundError (route -> 404). Distinct
+        from the owner-scoped revoke, which cannot act on another user's row."""
+        row = await self._store.get_by_id(app_password_id)
+        if row is None or row.revoked:
+            raise ResourceNotFoundError("App-password not found")
+        await self._store.revoke(app_password_id)
+        logger.info(
+            "Connect Apps audit: app-password admin-revoked admin=%s owner=%s id=%s name=%r",
+            admin_user_id, row.user_id, row.id, row.name,
         )
 
     async def verify_token(self, token: str) -> UserRecord | None:

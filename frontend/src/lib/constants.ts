@@ -376,7 +376,9 @@ export const API = {
 	connectApps: {
 		settings: () => '/api/v1/connect-apps/settings',
 		appPasswords: () => '/api/v1/connect-apps/app-passwords',
-		appPassword: (id: string) => `/api/v1/connect-apps/app-passwords/${id}`
+		appPassword: (id: string) => `/api/v1/connect-apps/app-passwords/${id}`,
+		adminAppPasswords: () => '/api/v1/connect-apps/admin/app-passwords',
+		adminAppPassword: (id: string) => `/api/v1/connect-apps/admin/app-passwords/${id}`
 	},
 	downloads: {
 		searchAlbum: () => '/api/v1/downloads/search/album',

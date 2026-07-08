@@ -173,6 +173,17 @@ const COVERAGE: Array<[string, string, string]> = [
 		'reject approval batch',
 		API.requests.rejectAutoDownloadBatch('B1'),
 		'/api/v1/requests/auto-download-approval-batches/B1/reject'
+	],
+	// Connect Apps admin oversight (see/revoke every user's app-passwords)
+	[
+		'admin app-password roster',
+		API.connectApps.adminAppPasswords(),
+		'/api/v1/connect-apps/admin/app-passwords'
+	],
+	[
+		'admin app-password revoke',
+		API.connectApps.adminAppPassword('ap-1'),
+		'/api/v1/connect-apps/admin/app-passwords/ap-1'
 	]
 ];
 

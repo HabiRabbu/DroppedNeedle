@@ -144,3 +144,63 @@ async def test_create_at_cap_409(app_password_service, tmp_path):
         assert client.post("/connect-apps/app-passwords", json={"name": f"c{i}"}).status_code == 200
     r = client.post("/connect-apps/app-passwords", json={"name": "too-many"})
     assert r.status_code == 409
+
+
+# ----- admin oversight roster -----
+
+async def test_admin_roster_lists_all_users_with_owner_no_secret(
+    app_password_service, tmp_path
+):
+    await app_password_service.create("user-alice", "Alice phone")
+    await app_password_service.create("user-bob", "Bob tablet")
+    app = _app(app_password_service, _prefs(tmp_path))
+    _as_admin(app)
+    r = build_test_client(app).get("/connect-apps/admin/app-passwords")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["active_count"] == 2
+    by_user = {row["user_id"]: row for row in body["items"]}
+    assert set(by_user) == {"user-alice", "user-bob"}
+    assert by_user["user-alice"]["owner_username"] == "alice"
+    assert by_user["user-alice"]["owner_display_name"] == "Alice"
+    # never a secret, and only the expected metadata columns
+    assert "secret" not in json.dumps(body)
+    for row in body["items"]:
+        assert set(row.keys()) == {
+            "id", "user_id", "owner_username", "owner_display_name",
+            "name", "created_at", "last_used_at", "last_client",
+        }
+
+
+async def test_admin_roster_forbidden_to_non_admin(app_password_service, tmp_path):
+    app = _app(app_password_service, _prefs(tmp_path))
+    app.dependency_overrides[_get_current_admin] = _deny_admin
+    r = build_test_client(app).get("/connect-apps/admin/app-passwords")
+    assert r.status_code == 403
+
+
+async def test_admin_revoke_any_users_password_204_then_gone(
+    app_password_service, tmp_path
+):
+    record, _ = await app_password_service.create("user-alice", "Alice phone")
+    app = _app(app_password_service, _prefs(tmp_path))
+    _as_admin(app)
+    client = build_test_client(app)
+    r = client.delete(f"/connect-apps/admin/app-passwords/{record.id}")
+    assert r.status_code == 204
+    assert client.get("/connect-apps/admin/app-passwords").json()["active_count"] == 0
+
+
+async def test_admin_revoke_unknown_id_404(app_password_service, tmp_path):
+    app = _app(app_password_service, _prefs(tmp_path))
+    _as_admin(app)
+    r = build_test_client(app).delete("/connect-apps/admin/app-passwords/nope")
+    assert r.status_code == 404
+
+
+async def test_admin_revoke_forbidden_to_non_admin(app_password_service, tmp_path):
+    record, _ = await app_password_service.create("user-alice", "Alice phone")
+    app = _app(app_password_service, _prefs(tmp_path))
+    app.dependency_overrides[_get_current_admin] = _deny_admin
+    r = build_test_client(app).delete(f"/connect-apps/admin/app-passwords/{record.id}")
+    assert r.status_code == 403

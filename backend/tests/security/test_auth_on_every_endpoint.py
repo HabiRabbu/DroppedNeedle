@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 from fastapi import APIRouter, FastAPI, HTTPException
 
+from api.v1.routes import connect_apps_routes
 from api.v1.routes import download_client as download_client_routes
 from api.v1.routes import download_clients as download_clients_routes
 from api.v1.routes import downloads as downloads_routes
@@ -37,6 +38,7 @@ from api.v1.routes import spotify as spotify_routes
 from api.v1.routes import system as system_routes
 from api.v1.routes import tracks as tracks_routes
 from core.dependencies import (
+    get_app_password_service,
     get_auth_store,
     get_cache,
     get_discovery_batch_service,
@@ -72,6 +74,7 @@ from middleware import _get_current_admin, _get_current_user
 from tests.helpers import build_test_client, mock_admin_user, mock_user
 
 _SERVICE_PROVIDERS = (
+    get_app_password_service,
     get_auth_store,
     get_cache,
     get_discovery_batch_service,
@@ -107,6 +110,9 @@ _SERVICE_PROVIDERS = (
 # (method, path, body-or-None). Path params use dummy values; bodies are valid so
 # body-validation never preempts the auth check with a 422.
 _ADMIN_ENDPOINTS = [
+    # Connect Apps admin oversight: see/revoke every user's app-passwords.
+    ("GET", "/api/v1/connect-apps/admin/app-passwords", None),
+    ("DELETE", "/api/v1/connect-apps/admin/app-passwords/ap-1", None),
     ("POST", "/api/v1/library/scan/start", None),
     ("POST", "/api/v1/library/scan/cancel", None),
     ("GET", "/api/v1/library/scan/unmatched", None),
@@ -233,6 +239,7 @@ def _client(scenario: str):
         tracks_routes.router,
         library_routes.router,
         me_routes.router,
+        connect_apps_routes.router,
         discovery_batches_routes.router,
         system_routes.router,
         playlists_routes.router,

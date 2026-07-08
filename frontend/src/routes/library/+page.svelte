@@ -4,7 +4,10 @@
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { Headphones, SlidersHorizontal, Waypoints, X } from 'lucide-svelte';
 
-	const CONNECT_APPS_HREF = '/settings?tab=connect-apps';
+	// admins land on the server-setup toggles; everyone else on their self-service Profile
+	const CONNECT_APPS_HREF = $derived(
+		authStore.isAdmin ? '/settings?tab=connect-apps' : '/profile#connect-apps'
+	);
 	const BANNER_KEY = 'droppedneedle_connect_apps_banner_dismissed';
 
 	let bannerDismissed = $state(true); // assume dismissed until we read storage (no SSR flash)

@@ -113,3 +113,14 @@ async def test_create_and_revoke_audit_logged(app_password_service, caplog):
     assert "app-password created" in text and "app-password revoked" in text
     # the secret/hash never appears in the audit line
     assert _secret not in text
+
+
+@pytest.mark.asyncio
+async def test_admin_revoke_audit_names_actor_and_owner(app_password_service, caplog):
+    record, secret = await app_password_service.create("user-alice", "Phone")
+    with caplog.at_level("INFO"):
+        await app_password_service.admin_revoke("user-admin", record.id)
+    text = caplog.text
+    assert "admin-revoked" in text
+    assert "admin=user-admin" in text and "owner=user-alice" in text
+    assert secret not in text  # never the secret

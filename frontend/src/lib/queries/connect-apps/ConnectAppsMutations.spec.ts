@@ -14,6 +14,10 @@ vi.mock('$lib/queries/QueryClient', () => ({
 	invalidateQueriesWithPersister: vi.fn()
 }));
 
+vi.mock('$lib/stores/authStore.svelte', () => ({
+	authStore: { user: { id: 'user-1' } }
+}));
+
 import { api } from '$lib/api/client';
 import { createMutation } from '@tanstack/svelte-query';
 import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
@@ -32,9 +36,18 @@ function lastMutationOpts(): Record<string, unknown> {
 }
 
 describe('ConnectAppsQueryKeyFactory', () => {
-	it('keys settings + app-passwords under the connect-apps prefix', () => {
+	it('scopes the app-passwords key by userId and namespaces the admin roster', () => {
 		expect(ConnectAppsQueryKeyFactory.settings()).toEqual(['connect-apps', 'settings']);
-		expect(ConnectAppsQueryKeyFactory.appPasswords()).toEqual(['connect-apps', 'app-passwords']);
+		expect(ConnectAppsQueryKeyFactory.appPasswords('user-1')).toEqual([
+			'connect-apps',
+			'user-1',
+			'app-passwords'
+		]);
+		expect(ConnectAppsQueryKeyFactory.adminAppPasswords()).toEqual([
+			'connect-apps',
+			'admin',
+			'app-passwords'
+		]);
 	});
 });
 
@@ -56,7 +69,7 @@ describe('saveConnectAppsSettings', () => {
 });
 
 describe('createAppPassword', () => {
-	it('POSTs {name} and invalidates the app-passwords list', async () => {
+	it("POSTs {name} and invalidates the caller's app-passwords list", async () => {
 		mockPost.mockResolvedValue({ secret: 's', app_password: {} });
 		const { createAppPassword } = await import('./ConnectAppsMutations.svelte');
 		createAppPassword();
@@ -67,13 +80,13 @@ describe('createAppPassword', () => {
 		});
 		await (opts.onSuccess as () => Promise<unknown>)();
 		expect(mockInvalidate).toHaveBeenCalledWith({
-			queryKey: ConnectAppsQueryKeyFactory.appPasswords()
+			queryKey: ConnectAppsQueryKeyFactory.appPasswords('user-1')
 		});
 	});
 });
 
 describe('revokeAppPassword', () => {
-	it('DELETEs by id and invalidates the app-passwords list', async () => {
+	it("DELETEs by id and invalidates the caller's app-passwords list", async () => {
 		mockDelete.mockResolvedValue(undefined);
 		const { revokeAppPassword } = await import('./ConnectAppsMutations.svelte');
 		revokeAppPassword();
@@ -82,7 +95,49 @@ describe('revokeAppPassword', () => {
 		expect(mockDelete).toHaveBeenCalledWith('/api/v1/connect-apps/app-passwords/ap-1');
 		await (opts.onSuccess as () => Promise<unknown>)();
 		expect(mockInvalidate).toHaveBeenCalledWith({
-			queryKey: ConnectAppsQueryKeyFactory.appPasswords()
+			queryKey: ConnectAppsQueryKeyFactory.appPasswords('user-1')
+		});
+	});
+});
+
+describe('adminRevokeAppPassword', () => {
+	it('DELETEs the admin endpoint and invalidates the roster only (other user)', async () => {
+		mockDelete.mockResolvedValue(undefined);
+		const { adminRevokeAppPassword } = await import('./ConnectAppsMutations.svelte');
+		adminRevokeAppPassword();
+		const opts = lastMutationOpts();
+		await (opts.mutationFn as (v: { id: string; userId: string }) => Promise<unknown>)({
+			id: 'ap-9',
+			userId: 'user-bob'
+		});
+		expect(mockDelete).toHaveBeenCalledWith('/api/v1/connect-apps/admin/app-passwords/ap-9');
+		(opts.onSuccess as (d: unknown, v: { id: string; userId: string }) => void)(undefined, {
+			id: 'ap-9',
+			userId: 'user-bob'
+		});
+		expect(mockInvalidate).toHaveBeenCalledWith({
+			queryKey: ConnectAppsQueryKeyFactory.adminAppPasswords()
+		});
+		// another user's revoke must NOT touch the admin's own per-user key
+		expect(mockInvalidate).not.toHaveBeenCalledWith({
+			queryKey: ConnectAppsQueryKeyFactory.appPasswords('user-1')
+		});
+	});
+
+	it("also refreshes the admin's own list when they revoke their own password", async () => {
+		mockDelete.mockResolvedValue(undefined);
+		const { adminRevokeAppPassword } = await import('./ConnectAppsMutations.svelte');
+		adminRevokeAppPassword();
+		const opts = lastMutationOpts();
+		(opts.onSuccess as (d: unknown, v: { id: string; userId: string }) => void)(undefined, {
+			id: 'ap-self',
+			userId: 'user-1'
+		});
+		expect(mockInvalidate).toHaveBeenCalledWith({
+			queryKey: ConnectAppsQueryKeyFactory.adminAppPasswords()
+		});
+		expect(mockInvalidate).toHaveBeenCalledWith({
+			queryKey: ConnectAppsQueryKeyFactory.appPasswords('user-1')
 		});
 	});
 });

@@ -526,6 +526,26 @@ class AuthStore:
             return result
         return await self._read(operation)
 
+    async def get_users_by_ids(self, user_ids: list[str]) -> dict[str, UserRecord]:
+        """Bulk id -> UserRecord lookup for owner enrichment. One IN-clause query
+        (no LIMIT, unlike list_users) so callers never silently truncate."""
+        if not user_ids:
+            return {}
+
+        def operation(conn: sqlite3.Connection) -> dict[str, UserRecord]:
+            placeholders = ",".join("?" for _ in user_ids)
+            rows = conn.execute(
+                f"SELECT * FROM auth_users WHERE id IN ({placeholders})",
+                user_ids,
+            ).fetchall()
+            result: dict[str, UserRecord] = {}
+            for row in rows:
+                user = self._to_user(row)
+                if user is not None:
+                    result[user.id] = user
+            return result
+        return await self._read(operation)
+
     async def delete_auth_provider(self, provider_id: str) -> bool:
         def operation(conn: sqlite3.Connection) -> bool:
             cursor = conn.execute(

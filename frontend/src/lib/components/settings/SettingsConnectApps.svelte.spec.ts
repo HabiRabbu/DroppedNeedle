@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 
 const h = vi.hoisted(() => ({
-	isAdmin: true,
+	rosterError: false,
 	settings: {
 		subsonic_enabled: true,
 		jellyfin_enabled: true,
@@ -14,51 +14,38 @@ const h = vi.hoisted(() => ({
 		advertise_server_version: '10.10.6',
 		discover_mode: 'local-only'
 	},
-	passwords: {
+	roster: {
 		items: [
 			{
 				id: 'ap-1',
+				user_id: 'user-alice',
+				owner_username: 'alice',
+				owner_display_name: 'Alice',
 				name: 'Symfonium (phone)',
 				created_at: '2026-06-01T00:00:00Z',
 				last_used_at: null,
 				last_client: null
 			}
 		],
-		cap: 25,
 		active_count: 1
 	},
-	createMutate: vi.fn().mockResolvedValue({
-		secret: 'super-secret-123',
-		app_password: {
-			id: 'ap-2',
-			name: 'Finamp (tablet)',
-			created_at: '',
-			last_used_at: null,
-			last_client: null
-		}
-	}),
-	revokeMutate: vi.fn().mockResolvedValue(undefined),
-	saveMutate: vi.fn().mockResolvedValue({})
+	saveMutate: vi.fn().mockResolvedValue({}),
+	adminRevokeMutate: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('$lib/queries/connect-apps/ConnectAppsQueries.svelte', () => ({
 	getConnectAppsSettingsQuery: () => ({ data: h.settings, isLoading: false, isError: false }),
-	getAppPasswordsQuery: () => ({ data: h.passwords })
+	getAdminAppPasswordsQuery: () => ({
+		data: h.roster,
+		isLoading: false,
+		isError: h.rosterError,
+		refetch: vi.fn()
+	})
 }));
 
 vi.mock('$lib/queries/connect-apps/ConnectAppsMutations.svelte', () => ({
 	saveConnectAppsSettings: () => ({ mutateAsync: h.saveMutate, isPending: false }),
-	createAppPassword: () => ({ mutateAsync: h.createMutate, isPending: false }),
-	revokeAppPassword: () => ({ mutateAsync: h.revokeMutate, isPending: false })
-}));
-
-vi.mock('$lib/stores/authStore.svelte', () => ({
-	authStore: {
-		get isAdmin() {
-			return h.isAdmin;
-		},
-		user: { username: 'alice' }
-	}
+	adminRevokeAppPassword: () => ({ mutateAsync: h.adminRevokeMutate, isPending: false })
 }));
 
 vi.mock('$lib/stores/toast', () => ({ toastStore: { show: vi.fn() } }));
@@ -66,7 +53,7 @@ vi.mock('$lib/stores/toast', () => ({ toastStore: { show: vi.fn() } }));
 import SettingsConnectApps from './SettingsConnectApps.svelte';
 
 beforeEach(() => {
-	h.isAdmin = true;
+	h.rosterError = false;
 	h.settings = {
 		subsonic_enabled: true,
 		jellyfin_enabled: true,
@@ -77,89 +64,76 @@ beforeEach(() => {
 		advertise_server_version: '10.10.6',
 		discover_mode: 'local-only'
 	};
-	h.passwords = {
+	h.roster = {
 		items: [
 			{
 				id: 'ap-1',
+				user_id: 'user-alice',
+				owner_username: 'alice',
+				owner_display_name: 'Alice',
 				name: 'Symfonium (phone)',
 				created_at: '2026-06-01T00:00:00Z',
 				last_used_at: null,
 				last_client: null
 			}
 		],
-		cap: 25,
 		active_count: 1
 	};
 	vi.clearAllMocks();
 });
 
-describe('SettingsConnectApps.svelte', () => {
-	it('renders the inbound hero and admin protocol toggles', async () => {
+describe('SettingsConnectApps.svelte (admin)', () => {
+	it('renders the server-setup header, protocol toggles, and the Profile pointer', async () => {
 		render(SettingsConnectApps);
 		await expect
 			.element(page.getByRole('heading', { name: 'Connect Apps', level: 2 }))
 			.toBeInTheDocument();
 		await expect.element(page.getByLabelText('Enable OpenSubsonic API')).toBeInTheDocument();
 		await expect.element(page.getByLabelText('Enable Jellyfin API')).toBeInTheDocument();
+		await expect.element(page.getByText(/Profile → Connect Apps/)).toBeInTheDocument();
 	});
 
-	it('lists app-passwords with a cap indicator and no secret', async () => {
+	it("lists every user's app-password with owner, count, and no secret", async () => {
 		render(SettingsConnectApps);
+		await expect.element(page.getByText('Alice', { exact: true })).toBeInTheDocument();
+		await expect.element(page.getByText('@alice')).toBeInTheDocument();
 		await expect.element(page.getByText('Symfonium (phone)')).toBeInTheDocument();
-		await expect.element(page.getByText('1 / 25')).toBeInTheDocument();
+		await expect.element(page.getByText('1 active')).toBeInTheDocument();
 	});
 
-	it('renders connection URLs for both protocols', async () => {
+	it('confirms before an admin revoke, then revokes with the owner id on confirm', async () => {
 		render(SettingsConnectApps);
-		await expect.element(page.getByLabelText('OpenSubsonic server URL')).toBeInTheDocument();
-		await expect.element(page.getByLabelText('Jellyfin server URL')).toBeInTheDocument();
+		// the row action only opens the dialog
+		await page.getByRole('button', { name: 'Revoke Symfonium (phone) for alice' }).click();
 		await expect
-			.element(page.getByText(/Tested clients: Symfonium, Feishin, Amperfy/))
+			.element(page.getByText(/Revoke "Symfonium \(phone\)" for Alice\?/))
+			.toBeInTheDocument();
+		expect(h.adminRevokeMutate).not.toHaveBeenCalled();
+		// confirm passes BOTH id and owner user_id (the self-revoke invalidation relies on it)
+		await page.getByRole('button', { name: 'Revoke', exact: true }).click();
+		expect(h.adminRevokeMutate).toHaveBeenCalledWith({ id: 'ap-1', userId: 'user-alice' });
+	});
+
+	it('shows an error with a working retry when the roster fails to load', async () => {
+		h.rosterError = true;
+		render(SettingsConnectApps);
+		await expect
+			.element(page.getByText('Could not load the app-password list.'))
+			.toBeInTheDocument();
+		await expect.element(page.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+	});
+
+	it('shows an empty state when no app-passwords exist', async () => {
+		h.roster = { items: [], active_count: 0 };
+		render(SettingsConnectApps);
+		await expect
+			.element(page.getByText('No app-passwords have been created yet.'))
 			.toBeInTheDocument();
 	});
 
-	it('reveals the created secret exactly once', async () => {
+	it('saves settings via the mutation', async () => {
 		render(SettingsConnectApps);
-		await page.getByLabelText('New app-password name').fill('Finamp (tablet)');
-		await page.getByRole('button', { name: 'Create' }).click();
-		// The reveal modal markup is always in the DOM (no CSS hides it in tests), so key the
-		// assertion off bound values that only populate after a successful create.
-		await expect
-			.element(page.getByLabelText('App-password secret'))
-			.toHaveValue('super-secret-123');
-		await expect
-			.element(page.getByText(/only time "Finamp \(tablet\)" will be shown/))
-			.toBeInTheDocument();
-		expect(h.createMutate).toHaveBeenCalledWith('Finamp (tablet)');
-	});
-
-	it('disables Create at the cap', async () => {
-		h.passwords = { items: [], cap: 25, active_count: 25 };
-		render(SettingsConnectApps);
-		await expect.element(page.getByRole('button', { name: 'Create' })).toBeDisabled();
-	});
-
-	it('confirms before revoking', async () => {
-		render(SettingsConnectApps);
-		await page.getByRole('button', { name: 'Revoke Symfonium (phone)' }).click();
-		await expect.element(page.getByText(/Revoke "Symfonium \(phone\)"\?/)).toBeInTheDocument();
-		expect(h.revokeMutate).not.toHaveBeenCalled();
-	});
-
-	it('non-admin sees a read-only note instead of editable controls', async () => {
-		h.isAdmin = false;
-		render(SettingsConnectApps);
-		await expect
-			.element(page.getByText(/Only an administrator can change these/))
-			.toBeInTheDocument();
-		await expect.element(page.getByLabelText('Enable OpenSubsonic API')).toBeDisabled();
-	});
-
-	it('non-admin with both protocols off and no passwords sees the disabled panel', async () => {
-		h.isAdmin = false;
-		h.settings = { ...h.settings, subsonic_enabled: false, jellyfin_enabled: false };
-		h.passwords = { items: [], cap: 25, active_count: 0 };
-		render(SettingsConnectApps);
-		await expect.element(page.getByText('Connect Apps is turned off')).toBeInTheDocument();
+		await page.getByRole('button', { name: 'Save' }).click();
+		expect(h.saveMutate).toHaveBeenCalledOnce();
 	});
 });

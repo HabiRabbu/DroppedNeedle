@@ -41,6 +41,7 @@
 	import type { ProfileServiceConnection } from '$lib/queries/profile/types';
 	import ScrobblingDiscoveryCard from '$lib/components/profile/ScrobblingDiscoveryCard.svelte';
 	import SpotifyConnectionCard from '$lib/components/profile/SpotifyConnectionCard.svelte';
+	import ProfileConnectApps from '$lib/components/profile/ProfileConnectApps.svelte';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
@@ -59,6 +60,23 @@
 	const visibleServices = $derived(
 		(profile?.services ?? []).filter((s) => !HIDDEN_SERVICES.has(s.name))
 	);
+
+	// Scroll to a deep-link anchor (e.g. /profile#connect-apps) once the async
+	// profile content has rendered. SvelteKit's built-in scroll fires before the
+	// {#if profile} body exists on a cold nav, so nothing scrolls without this.
+	let scrolledToHash: string | null = null;
+	$effect(() => {
+		if (!browser || !profile) return;
+		const id = page.url.hash.slice(1);
+		if (!id || scrolledToHash === id) return;
+		scrolledToHash = id;
+		const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		requestAnimationFrame(() =>
+			document
+				.getElementById(id)
+				?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
+		);
+	});
 
 	const displayNameMutation = createUpdateDisplayNameMutation(userId);
 	const usernameMutation = createUpdateUsernameMutation(userId);
@@ -702,6 +720,10 @@
 						{/each}
 					</div>
 				</section>
+
+				<div id="connect-apps" class="scroll-mt-20">
+					<ProfileConnectApps />
+				</div>
 
 				<div id="scrobbling" class="scroll-mt-20">
 					<ScrobblingDiscoveryCard />
