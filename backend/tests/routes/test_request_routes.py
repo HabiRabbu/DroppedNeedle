@@ -25,7 +25,7 @@ def _request_service(download_service: AsyncMock) -> tuple[RequestService, Async
     history.async_get_record.return_value = None
     service = RequestService(
         request_history=history,
-        download_service=download_service,
+        get_download_service=lambda: download_service,
     )
     return service, history
 

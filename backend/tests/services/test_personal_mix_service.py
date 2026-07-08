@@ -94,7 +94,7 @@ def svc():
         mb_repo=mb_repo,
         library_repo=library_repo,
         playlist_service=playlist_service,
-        download_service=download_service,
+        get_download_service=lambda: download_service,
         listening_prefs_store=listening_prefs_store,
         connections_store=connections_store,
         auth_store=auth_store,

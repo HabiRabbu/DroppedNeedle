@@ -259,7 +259,7 @@ async def test_request_links_download_task_id(tmp_path: Path):
         client, _StubIndexer(), AlbumPreflightScorer(store, quality_min="low", flac_mp3_only=False),
         manager, store, SSEPublisher(), no_op_orch,
     )
-    request_service = RequestService(history, download_service)
+    request_service = RequestService(history, get_download_service=lambda: download_service)
 
     resp = await request_service.request_album(
         "rg-okc", artist="Radiohead", album="OK Computer", year=1997,

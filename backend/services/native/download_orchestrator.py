@@ -47,6 +47,7 @@ from services.native.acquisition.strategy import (
 )
 from services.native.album_preflight_scorer import AlbumPreflightScorer
 from services.native.coverage import match_rows_to_tracks
+from services.native.quality_tiers import candidate_tier, in_range, is_audio, is_flac_or_mp3
 from services.native.file_processor import (
     DOWNLOADS_MOUNT_UNAVAILABLE,
     IMPORT_FAILED,
@@ -177,6 +178,10 @@ class DownloadOrchestrator:
         usenet_post_processing: int | None = None,
         usenet_min_release_age_minutes: float = 30.0,
         usenet_import_settle_seconds: float = 2.0,
+        # Fresh reader of the current download policy: re-check a stored candidate
+        # against the live quality range before an automatic re-dispatch (failover /
+        # track-repull). None = not wired (tests) -> re-gate skipped.
+        get_download_policy=None,  # Callable[[], DownloadPolicySettings] | None
     ) -> None:
         self._client = client
         self._naming_template = naming_template
@@ -215,6 +220,8 @@ class DownloadOrchestrator:
         self._auto_retry_base_interval = auto_retry_base_interval_minutes
         self._request_history = request_history
         self._on_import = on_import_callback
+        self._get_download_policy = get_download_policy
+        self._usenet_scorer = usenet_scorer  # for the Usenet re-gate tier (Phase 2)
         self._active_tasks: dict[str, asyncio.Task] = {}
 
         # Source strategies (step 4): all per-source behaviour (search, enqueue, import,
@@ -755,6 +762,10 @@ class DownloadOrchestrator:
             await self._settle_incomplete(task, False)
             return
         cand = candidates[0]
+        # Re-gate before re-pulling: don't fetch a candidate the live policy now rejects.
+        if not self._candidate_passes_quality(cand, task.track_count):
+            await self._settle_incomplete(task, False)
+            return
         await self._store.link_picked_candidate(
             task.id, task.search_job_id, 0,
             cand.username, cand.parent_directory, cand.final_score,
@@ -828,6 +839,9 @@ class DownloadOrchestrator:
                 continue
             if self._candidate_source_identity(cand) in tried_usernames:
                 continue
+            # re-gate: failover must not fall through to a now out-of-policy candidate (D2)
+            if not self._candidate_passes_quality(cand, task.track_count):
+                continue
             await self._store.link_picked_candidate(
                 task.id, task.search_job_id, idx,
                 cand.username, cand.parent_directory, cand.final_score,
@@ -838,6 +852,35 @@ class DownloadOrchestrator:
 
     def _candidate_source_identity(self, cand) -> str:  # noqa: ANN001 - ScoredCandidate
         return self._strategy(cand.source).candidate_identity(cand)
+
+    def _candidate_passes_quality(self, cand, track_count=None) -> bool:  # noqa: ANN001
+        """Re-check a STORED candidate against the CURRENT quality policy before an
+        AUTOMATIC re-dispatch (failover / track-repull). A policy tightened after the
+        candidate was scored must not be defeated by re-dispatching a now out-of-range
+        stored candidate. Explicit user picks (``pick_candidate``) and ``reimport_task``
+        (an admin re-import of files already fetched by hand) are intentionally NOT gated
+        (owner decision D2). Mirrors the score-time gates: the ``flac_mp3_only`` codec
+        gate + quality range for Soulseek, and the release tier for Usenet; an
+        ``unknown`` tier passes exactly as ``quality_range`` does. Returns True (pass)
+        when unwired or when the tier can't be determined, so behaviour is unchanged by
+        default."""
+        if self._get_download_policy is None:
+            return True
+        policy = self._get_download_policy()
+        if cand.source == "usenet":
+            if cand.usenet_release is None or self._usenet_scorer is None:
+                return True  # can't judge -> don't block
+            tier = self._usenet_scorer.release_tier(cand.usenet_release, track_count)
+        else:
+            audio = [f for f in cand.files if is_audio(f)]
+            if not audio:
+                return True  # no judgeable audio -> don't block
+            if getattr(policy, "flac_mp3_only", False) and not all(is_flac_or_mp3(f) for f in audio):
+                return False
+            tier = candidate_tier(audio)
+        if tier == "unknown":
+            return True
+        return in_range(tier, policy.quality_min, policy.quality_max)
 
     async def _mark_candidate_tried(self, task, tried: set) -> None:  # noqa: ANN001
         if task.search_job_id is None or task.candidate_index is None:
@@ -1257,6 +1300,9 @@ class DownloadOrchestrator:
         if task.candidate_index >= len(candidates):
             raise ValidationError("Original source is no longer available")
         candidate = candidates[task.candidate_index]
+        # NOTE: reimport is deliberately NOT quality-re-gated (owner D2). It re-imports
+        # files the admin already fetched by hand in slskd; blocking on a since-tightened
+        # policy would only strand already-downloaded bytes, so honour the explicit action.
 
         # A 1-track album (a single) reimports under the same canonical-duration
         # verification as a track download (2026-07-05 wrong-single incident).

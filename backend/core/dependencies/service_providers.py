@@ -221,7 +221,7 @@ def get_new_release_service() -> "NewReleaseService":
     return NewReleaseService(
         follow_store=get_follow_store(),
         mb_repo=get_musicbrainz_repository(),
-        download_service=get_download_service(),
+        get_download_service=get_download_service,
         download_store=get_download_store(),
         library_repo=get_library_repository(),
         sse_publisher=get_sse_publisher(),
@@ -298,7 +298,7 @@ def get_personal_mix_service() -> "PersonalMixService":
         mb_repo=get_musicbrainz_repository(),
         library_repo=get_library_repository(),
         playlist_service=get_playlist_service(),
-        download_service=get_download_service(),
+        get_download_service=get_download_service,
         listening_prefs_store=get_user_listening_prefs_store(),
         connections_store=get_user_connections_store(),
         auth_store=get_auth_store(),
@@ -350,7 +350,7 @@ def get_request_service() -> "RequestService":
 
     request_history = get_request_history_store()
     return RequestService(
-        request_history, get_download_service(), quota_service=get_quota_service()
+        request_history, get_download_service=get_download_service, quota_service=get_quota_service()
     )
 
 
@@ -454,7 +454,7 @@ def get_requests_page_service() -> "RequestsPageService":
         request_history=request_history,
         library_mbids_fn=merged_library_mbids,
         on_import_callback=on_import,
-        download_service=get_download_service(),
+        get_download_service=get_download_service,
         download_store=get_download_store(),
     )
 
@@ -814,7 +814,7 @@ def get_discovery_batch_service() -> "DiscoveryBatchService":
         request_history=get_request_history_store(),
         library_service=get_library_service(),
         library_db=get_library_db(),
-        download_service=get_download_service(),
+        get_download_service=get_download_service,
     )
 
 
@@ -1034,6 +1034,9 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
         usenet_priority=sab.priority,
         usenet_post_processing=sab.post_processing,
         usenet_min_release_age_minutes=policy.usenet_min_release_age_minutes,
+        # Fresh reader (not the snapshot above) so an automatic re-dispatch re-gates a
+        # stored candidate against the CURRENT quality range even mid-flight (Phase 2).
+        get_download_policy=lambda: get_preferences_service().get_download_policy(),
     )
 
 

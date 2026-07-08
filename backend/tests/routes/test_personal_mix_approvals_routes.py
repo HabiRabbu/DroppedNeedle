@@ -52,12 +52,13 @@ def ctx(tmp_path: Path):
     _run(store.upsert("user-a", auto_request_personal_mix=True))
     _run(store.upsert_approval("user-a", "pending"))
 
+    download_service = AsyncMock()
     service = PersonalMixService(
         client_factory=AsyncMock(),
         mb_repo=AsyncMock(),
         library_repo=AsyncMock(),
         playlist_service=AsyncMock(),
-        download_service=AsyncMock(),
+        get_download_service=lambda: download_service,
         listening_prefs_store=store,
         connections_store=AsyncMock(),
         auth_store=AsyncMock(),

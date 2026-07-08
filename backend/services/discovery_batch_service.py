@@ -38,14 +38,16 @@ class DiscoveryBatchService:
         request_history: RequestHistoryStore,
         library_service: Any,
         library_db: Any,
-        download_service: Any = None,
+        get_download_service: Any = None,
     ) -> None:
         self._batches = batch_store
         self._requests = request_service
         self._history = request_history
         self._library_service = library_service
         self._library_db = library_db
-        self._download_service = download_service
+        # Purge-only, policy-independent; kept as a getter for consistency with the
+        # other download-service holders (a settings save rebuilds the singleton).
+        self._get_download_service = get_download_service
 
     async def create(
         self, user_id: str, user_role: str, requested_by_name: str, body: DiscoveryBatchCreate
@@ -202,9 +204,12 @@ class DiscoveryBatchService:
                         logger.warning("Batch removal: album %s failed: %s", mbid[:8], e)
                         kept += 1
                         continue
-                    if self._download_service is not None:
+                    download_service = (
+                        self._get_download_service() if self._get_download_service is not None else None
+                    )
+                    if download_service is not None:
                         try:
-                            await self._download_service.purge_album_downloads(mbid)
+                            await download_service.purge_album_downloads(mbid)
                         except Exception as e:  # noqa: BLE001 - cleanup must not fail removal
                             logger.warning("Batch removal: purge failed for %s: %s", mbid[:8], e)
                 elif (status.request_status or "") in _PENDING_STATUSES:

@@ -65,12 +65,13 @@ def ctx(tmp_path: Path):
     prefs_service.get_lastfm_connection.return_value = SimpleNamespace(api_key="appkey", shared_secret="appsecret")
 
     # real grant logic against the real prefs store; everything else mocked
+    download_service = AsyncMock()
     personal_mix_service = PersonalMixService(
         client_factory=AsyncMock(),
         mb_repo=AsyncMock(),
         library_repo=AsyncMock(),
         playlist_service=AsyncMock(),
-        download_service=AsyncMock(),
+        get_download_service=lambda: download_service,
         listening_prefs_store=prefs_store,
         connections_store=conn_store,
         auth_store=AsyncMock(),

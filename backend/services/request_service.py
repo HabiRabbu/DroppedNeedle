@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from collections.abc import Callable
 from infrastructure.persistence.request_history import RequestHistoryStore
 from api.v1.schemas.request import (
     BatchCancelResponse,
@@ -25,11 +26,14 @@ class RequestService:
     def __init__(
         self,
         request_history: RequestHistoryStore,
-        download_service: "DownloadService",
+        get_download_service: "Callable[[], DownloadService]",
         quota_service: "QuotaService | None" = None,
     ):
         self._request_history = request_history
-        self._download_service = download_service
+        # A settings save rebuilds the DownloadService singleton, so resolve it fresh
+        # at every dispatch rather than capturing an instance (else a saved quality
+        # change is ignored until restart).
+        self._get_download_service = get_download_service
         self._quota = quota_service
 
     async def request_album(
@@ -111,7 +115,7 @@ class RequestService:
         # auto-approve (trusted/admin): dispatch the native pipeline and link the
         # request to its task; the 'already_in_library' sentinel is guarded
         try:
-            task_id = await self._download_service.request_album(
+            task_id = await self._get_download_service().request_album(
                 user_id=user_id or "",
                 release_group_mbid=musicbrainz_id,
                 artist_name=artist or "Unknown",
@@ -220,7 +224,7 @@ class RequestService:
             for item in new_items:
                 mbid = item["musicbrainz_id"]
                 try:
-                    task_id = await self._download_service.request_album(
+                    task_id = await self._get_download_service().request_album(
                         user_id=user_id or "",
                         release_group_mbid=mbid,
                         artist_name=item.get("artist_name") or "Unknown",
@@ -273,7 +277,7 @@ class RequestService:
                 # best-effort: a missing/non-cancellable task must not block marking
                 if record is not None and record.download_task_id:
                     try:
-                        await self._download_service.cancel_task(
+                        await self._get_download_service().cancel_task(
                             record.download_task_id,
                             record.user_id or user_id or "",
                             "admin" if is_admin else "user",

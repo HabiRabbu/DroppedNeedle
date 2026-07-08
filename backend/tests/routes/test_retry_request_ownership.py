@@ -36,7 +36,7 @@ def _make_service(tmp_path, status: str) -> RequestsPageService:
         library_repo=LibraryStub(),
         request_history=store,
         library_mbids_fn=_mbids,
-        download_service=download_service,
+        get_download_service=lambda: download_service,
     )
 
 

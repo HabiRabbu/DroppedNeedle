@@ -231,6 +231,11 @@ class NewznabReleaseScorer:
             return "mp3_320"
         return "unknown"
 
+    def release_tier(self, release: UsenetRelease, track_count: int | None = None) -> str:
+        """Public accessor for the scoring tier, so the orchestrator's Phase-2 re-gate
+        can re-judge a stored Usenet candidate the same way it was scored."""
+        return self._release_tier(release, track_count)
+
     def _release_tier(self, release: UsenetRelease, track_count: int | None) -> str:
         """Quality tier for SCORING: the declared tier, but a 'lossless' release far too
         small to be real lossless degrades to 'unknown' (don't trust the label)."""

@@ -84,7 +84,7 @@ class PersonalMixService:
         mb_repo,
         library_repo,
         playlist_service,
-        download_service,
+        get_download_service,
         listening_prefs_store,
         connections_store,
         auth_store,
@@ -93,7 +93,9 @@ class PersonalMixService:
         self._mb_repo = mb_repo
         self._library_repo = library_repo
         self._playlists = playlist_service
-        self._downloads = download_service
+        # Resolve fresh per dispatch (runs in a background loop that captures the
+        # service instance): a settings save rebuilds the DownloadService singleton.
+        self._get_download_service = get_download_service
         self._prefs = listening_prefs_store
         self._connections_store = connections_store
         self._auth_store = auth_store
@@ -393,7 +395,7 @@ class PersonalMixService:
                 continue
             seen_rgs.add(t.release_group_mbid)
             try:
-                task_id = await self._downloads.request_album(
+                task_id = await self._get_download_service().request_album(
                     user_id=user_id,
                     release_group_mbid=t.release_group_mbid,
                     artist_name=t.artist_name,

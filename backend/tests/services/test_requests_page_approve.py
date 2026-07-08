@@ -37,7 +37,7 @@ def _make(record_status="awaiting_approval", *, request_album_result="task-9", d
         library_repo=MagicMock(),
         request_history=request_history,
         library_mbids_fn=_mbids,
-        download_service=download_service,
+        get_download_service=lambda: download_service,
     )
     return service, request_history, download_service
 

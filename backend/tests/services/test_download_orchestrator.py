@@ -1908,3 +1908,124 @@ async def test_coverage_mb_failure_fails_open_to_count_check(tmp_path: Path):
     await orch.process_task(task.id)
 
     assert (await store.get_task(task.id)).status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: re-gate an AUTOMATIC re-dispatch against the CURRENT quality policy.
+# A policy tightened after a candidate was scored must not be defeated by a
+# failover / track-repull / reimport of a now out-of-range stored candidate.
+# Explicit user picks (pick_candidate) are intentionally NOT gated (owner D2).
+# ---------------------------------------------------------------------------
+
+def _mp3_candidate(score: float = 0.9, *, username: str = "mp3peer", bitrate: int = 320) -> ScoredCandidate:
+    files = [
+        DownloadSearchResult(
+            username=username, filename=f"{username}/01.mp3", parent_directory=username,
+            size=100, extension="mp3", bitrate=bitrate, duration=None,
+        )
+    ]
+    return ScoredCandidate(
+        username=username, parent_directory=username, files=files,
+        coherence=score, file_confidence=score, final_score=score, tier="auto",
+    )
+
+
+def _ogg_candidate(username: str = "oggpeer", bitrate: int = 320) -> ScoredCandidate:
+    files = [
+        DownloadSearchResult(
+            username=username, filename=f"{username}/01.ogg", parent_directory=username,
+            size=100, extension="ogg", bitrate=bitrate, duration=None,
+        )
+    ]
+    return ScoredCandidate(
+        username=username, parent_directory=username, files=files,
+        coherence=0.9, file_confidence=0.9, final_score=0.9, tier="auto",
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_passes_quality_regates_against_current_policy(tmp_path: Path):
+    from types import SimpleNamespace
+
+    _, orch, _, _ = _build(tmp_path)
+    flac = _candidate(0.9)  # .flac -> tier lossless
+
+    # Unwired (no policy reader, e.g. tests / default construction): pass -> unchanged.
+    assert orch._candidate_passes_quality(flac) is True
+
+    orch._get_download_policy = lambda: SimpleNamespace(
+        quality_min="mp3_256", quality_max="mp3_320", flac_mp3_only=False
+    )
+    assert orch._candidate_passes_quality(flac) is False             # lossless > mp3_320 -> rejected
+    assert orch._candidate_passes_quality(_mp3_candidate()) is True   # 320 within [256, 320]
+
+    # Usenet is re-judged via the release tier (not blanket-passed): a determinable
+    # lossless release is rejected under mp3_320; one we can't judge (no release) passes.
+    orch._usenet_scorer = SimpleNamespace(release_tier=lambda release, tc: "lossless")
+    usenet_flac = ScoredCandidate(
+        source="usenet", files=[], usenet_release=SimpleNamespace(), final_score=0.9, tier="auto"
+    )
+    assert orch._candidate_passes_quality(usenet_flac, track_count=10) is False
+    usenet_unknown = ScoredCandidate(source="usenet", files=[], usenet_release=None, final_score=0.9)
+    assert orch._candidate_passes_quality(usenet_unknown) is True
+
+
+@pytest.mark.asyncio
+async def test_candidate_passes_quality_enforces_flac_mp3_only(tmp_path: Path):
+    from types import SimpleNamespace
+
+    _, orch, _, _ = _build(tmp_path)
+    ogg = _ogg_candidate()  # .ogg @320 -> tier mp3_320, but not FLAC/MP3
+
+    orch._get_download_policy = lambda: SimpleNamespace(
+        quality_min="mp3_256", quality_max="mp3_320", flac_mp3_only=False
+    )
+    assert orch._candidate_passes_quality(ogg) is True   # in range, codec gate off
+    orch._get_download_policy = lambda: SimpleNamespace(
+        quality_min="mp3_256", quality_max="mp3_320", flac_mp3_only=True
+    )
+    assert orch._candidate_passes_quality(ogg) is False  # codec gate on -> non-flac/mp3 dropped
+
+
+@pytest.mark.asyncio
+async def test_advance_candidate_skips_out_of_policy(tmp_path: Path):
+    from types import SimpleNamespace
+
+    store, orch, _, _ = _build(tmp_path)
+    orch._get_download_policy = lambda: SimpleNamespace(quality_min="mp3_256", quality_max="mp3_320")
+    current = _candidate(0.9, username="tried")        # index 0 (the current pick)
+    stale_flac = _candidate(0.9, username="flacpeer")  # index 1 -> now out of policy
+    ok_mp3 = _mp3_candidate(username="mp3peer")         # index 2 -> in policy
+    job = await store.create_search_job(
+        user_id="user-a", artist_name="Artist", album_title="Album", year=2020,
+        track_count=1, release_group_mbid="rg-1", search_query="Artist - Album",
+    )
+    await store.set_search_job_candidates(job.id, [current, stale_flac, ok_mp3])
+    task = await store.create_task(
+        user_id="user-a", release_group_mbid="rg-1", track_count=1,
+        source="soulseek", search_job_id=job.id, candidate_index=0,
+        source_username="tried", status="downloading",
+    )
+
+    refreshed = await orch._advance_candidate(task, set())
+
+    # index 1 (FLAC) is skipped by the re-gate; failover lands on index 2 (the mp3).
+    assert refreshed is not None
+    assert refreshed.candidate_index == 2
+
+
+@pytest.mark.asyncio
+async def test_reimport_honors_already_downloaded_despite_tightened_policy(tmp_path: Path):
+    from types import SimpleNamespace
+
+    store, orch, fp, lib = _build(tmp_path)
+    _coupled_fp(fp, lib)
+    # A ceiling that would reject a FLAC must NOT block reimport (owner D2): the files
+    # are already on disk, so honour the explicit admin re-import rather than strand them.
+    orch._get_download_policy = lambda: SimpleNamespace(quality_min="mp3_256", quality_max="mp3_320")
+    task = await _new_task(store, status="failed", track_count=1)
+    await _link_candidate(store, task.id, _candidate(0.9, files=1))  # a FLAC candidate
+
+    result = await orch.reimport_task(task.id)
+
+    assert result.status == "completed"

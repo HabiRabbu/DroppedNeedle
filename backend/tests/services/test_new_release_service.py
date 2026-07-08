@@ -64,7 +64,7 @@ def svc(tmp_path: Path):
     service = NewReleaseService(
         follow_store=store,
         mb_repo=mb,
-        download_service=downloads,
+        get_download_service=lambda: downloads,
         download_store=download_store,
         library_repo=library,
         sse_publisher=sse,

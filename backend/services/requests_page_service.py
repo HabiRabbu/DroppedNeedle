@@ -37,14 +37,17 @@ class RequestsPageService:
         request_history: RequestHistoryStore,
         library_mbids_fn: Callable[..., Coroutine[Any, Any, set[str]]],
         on_import_callback: Callable[[RequestHistoryRecord], Coroutine[Any, Any, None]] | None = None,
-        download_service: Optional["DownloadService"] = None,
+        get_download_service: Optional[Callable[[], "DownloadService"]] = None,
         download_store=None,  # DownloadStore | None - native reconciler source of truth
     ):
         self._library_repo = library_repo
         self._request_history = request_history
         self._library_mbids_fn = library_mbids_fn
         self._on_import_callback = on_import_callback
-        self._download_service = download_service
+        # Resolve the DownloadService fresh at every dispatch: a settings save rebuilds
+        # its singleton, so capturing an instance would ignore a saved quality change
+        # until restart.
+        self._get_download_service = get_download_service
         self._download_store = download_store
         self._library_mbids_cache: set[str] | None = None
         self._library_mbids_cache_time: float = 0
@@ -160,9 +163,10 @@ class RequestsPageService:
         await self._request_history.async_record_review(musicbrainz_id, "pending", reviewer_id, reviewer_name)
         # approving dispatches the native pipeline directly; link the new task id
         # (the 'already_in_library' sentinel is guarded)
-        if self._download_service is not None:
+        download_service = self._get_download_service() if self._get_download_service is not None else None
+        if download_service is not None:
             try:
-                task_id = await self._download_service.request_album(
+                task_id = await download_service.request_album(
                     user_id=record.user_id or "",
                     release_group_mbid=musicbrainz_id,
                     artist_name=record.artist_name or "Unknown",
@@ -239,9 +243,10 @@ class RequestsPageService:
             )
 
         # best-effort: a missing/already-terminal task must not block marking cancelled
-        if record.download_task_id and self._download_service is not None:
+        download_service = self._get_download_service() if self._get_download_service is not None else None
+        if record.download_task_id and download_service is not None:
             try:
-                await self._download_service.cancel_task(
+                await download_service.cancel_task(
                     record.download_task_id, user_id, user_role
                 )
             except Exception as e:  # noqa: BLE001
@@ -278,13 +283,14 @@ class RequestsPageService:
 
         # re-dispatch through the native pipeline (mirrors approve_request); link the
         # new task id (sentinel-guarded)
-        if self._download_service is None:
+        download_service = self._get_download_service() if self._get_download_service is not None else None
+        if download_service is None:
             return RetryRequestResponse(success=False, message="Downloads unavailable")
         try:
             await self._request_history.async_update_status(musicbrainz_id, "pending")
             # A retry re-dispatches an already-recorded ask, so it is not a new
             # user request for quota purposes (CollectionManagement D20).
-            task_id = await self._download_service.request_album(
+            task_id = await download_service.request_album(
                 user_id=record.user_id or user_id or "",
                 release_group_mbid=musicbrainz_id,
                 artist_name=record.artist_name or "Unknown",

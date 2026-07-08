@@ -48,7 +48,7 @@ def _service(store, **overrides) -> DiscoveryBatchService:
         request_history=history,
         library_service=library_service,
         library_db=library_db,
-        download_service=download_service,
+        get_download_service=lambda: download_service,
     )
     deps.update(overrides)
     return DiscoveryBatchService(**deps)
@@ -146,7 +146,7 @@ class TestServiceRemove:
         assert removed_mbids == ["rg-1"]
         # removal is reversible: files go through the recycle bin
         assert svc._library_service.remove_album.await_args.kwargs == {"to_recycle": True}
-        svc._download_service.purge_album_downloads.assert_awaited_once_with("rg-1")
+        svc._get_download_service().purge_album_downloads.assert_awaited_once_with("rg-1")
         assert await store.get_batch(batch_id) is None
 
     @pytest.mark.asyncio
