@@ -63,6 +63,41 @@ def test_setup_accepts_username_with_optional_email_omitted(tmp_path):
     assert user["email"] is None
 
 
+def test_setup_surfaces_specific_username_error(tmp_path):
+    """First-admin setup returns the actionable RegistrationError, not a generic string."""
+    app, _ = _app(tmp_path)
+    client = build_test_client(app)
+
+    resp = client.post(
+        "/auth/setup",
+        json={"display_name": "Jane", "username": "no", "password": PASSWORD},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["message"] == "Invalid username"
+
+
+def test_setup_surfaces_breached_password_reason(tmp_path, monkeypatch):
+    """A password rejected by the breach check reaches the user verbatim (not swallowed)."""
+    from core.exceptions import RegistrationError
+
+    async def _breached(_password: str) -> None:
+        raise RegistrationError(
+            "This password has appeared in a known data breach. Please choose a different password."
+        )
+
+    monkeypatch.setattr("services.auth_service._check_hibp", _breached)
+
+    app, _ = _app(tmp_path)
+    client = build_test_client(app)
+
+    resp = client.post(
+        "/auth/setup",
+        json={"display_name": "Jane", "username": "jane", "password": PASSWORD},
+    )
+    assert resp.status_code == 400
+    assert "known data breach" in resp.json()["error"]["message"]
+
+
 def test_login_by_username_mixed_case_and_generic_401(tmp_path):
     app, _ = _app(tmp_path)
     client = build_test_client(app)

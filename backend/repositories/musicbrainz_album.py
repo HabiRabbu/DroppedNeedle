@@ -154,6 +154,7 @@ class MusicBrainzAlbumMixin:
         included_secondary_types: set[str] | None = None,
         include_all_types: bool = False,
         included_primary_types: set[str] | None = None,
+        priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> list[SearchResult]:
         cache_key = mb_album_search_key(query, limit, offset, included_secondary_types, included_primary_types)
         if include_all_types:
@@ -173,7 +174,7 @@ class MusicBrainzAlbumMixin:
                     "limit": internal_limit,
                     "offset": offset,
                 },
-                priority=RequestPriority.USER_INITIATED,
+                priority=priority,
                 decode_type=_ReleaseGroupSearchPayload,
             )
             release_groups = result.release_groups
@@ -409,6 +410,7 @@ class MusicBrainzAlbumMixin:
         artist: str,
         title: str,
         limit: int = 8,
+        priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> list["RecordingMatch"]:
         """Search MusicBrainz recordings by track title + artist, returning each candidate with its release groups."""
         artist = artist.replace('"', "").strip()
@@ -427,7 +429,7 @@ class MusicBrainzAlbumMixin:
                     "query": f'recording:"{title}" AND artist:"{artist}"',
                     "limit": limit,
                 },
-                priority=RequestPriority.USER_INITIATED,
+                priority=priority,
                 decode_type=_RecordingSearchPayload,
             )
             matches: list[RecordingMatch] = []

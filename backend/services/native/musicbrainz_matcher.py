@@ -20,6 +20,7 @@ from rapidfuzz.fuzz import token_set_ratio
 from unidecode import unidecode
 
 from infrastructure.msgspec_fastapi import AppStruct
+from infrastructure.queue.priority_queue import RequestPriority
 
 if TYPE_CHECKING:
     from repositories.musicbrainz_album import RecordingReleaseGroup
@@ -134,7 +135,12 @@ class MusicBrainzMatcher:
 
     async def _album_text_match(self, target: TargetAlbum) -> MatchResult:
         query = f"{target.artist} {target.album}".strip()
-        results = await self._mb_repo.search_albums(query, limit=10, include_all_types=True)
+        results = await self._mb_repo.search_albums(
+            query,
+            limit=10,
+            include_all_types=True,
+            priority=RequestPriority.BACKGROUND_SYNC,
+        )
         best_score = (0.0, 0.0)
         best_mbid: str | None = None
         for result in results:
@@ -186,7 +192,9 @@ class MusicBrainzMatcher:
     async def _recording_match(self, target: TargetAlbum) -> MatchResult:
         if not target.track_title:
             return MatchResult(confidence=0.0)
-        recordings = await self._mb_repo.search_recordings(target.artist, target.track_title)
+        recordings = await self._mb_repo.search_recordings(
+            target.artist, target.track_title, priority=RequestPriority.BACKGROUND_SYNC
+        )
         best_confidence = 0.0
         best: tuple["RecordingReleaseGroup", str] | None = None
         for rec in recordings:

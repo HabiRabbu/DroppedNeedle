@@ -6,6 +6,7 @@ The real fpcalc binary and the network are never touched.
 """
 
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,6 +14,7 @@ import httpx
 import pytest
 
 from infrastructure.audio.fingerprinter import (
+    _MAX_FPCALC_CONCURRENCY,
     AudioFingerprinter,
     FingerprintStatus,
     split_artist_credit,
@@ -260,11 +262,17 @@ async def test_rate_limiter_awaited_before_http(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_semaphore_gates_concurrent_fpcalc(monkeypatch):
+    # fpcalc concurrency is core-scaled (Tier 2a) but capped, so a scan uses more than one
+    # core for fingerprinting without fork-bombing the host. Launch more tasks than the cap
+    # and assert the semaphore never lets more than the cap run at once.
+    expected_cap = min(os.cpu_count() or 2, _MAX_FPCALC_CONCURRENCY)
     concurrency = {"now": 0, "max": 0}
     _patch_fpcalc(monkeypatch, delay=0.02, concurrency=concurrency)
     fp = _make(_http_client(_pass_payload()))
-    await asyncio.gather(*[fp.fingerprint(Path(f"/{i}.flac")) for i in range(5)])
-    assert concurrency["max"] == 2  # Semaphore(2): never more than 2 at once
+    await asyncio.gather(
+        *[fp.fingerprint(Path(f"/{i}.flac")) for i in range(expected_cap + 3)]
+    )
+    assert concurrency["max"] == expected_cap
 
 
 def test_split_artist_credit_semicolon():

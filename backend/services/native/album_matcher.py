@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from rapidfuzz.distance import Levenshtein
 
 from infrastructure.msgspec_fastapi import AppStruct
+from infrastructure.queue.priority_queue import RequestPriority
 from repositories.musicbrainz_base import extract_artist_name
 from services.native.musicbrainz_matcher import MusicBrainzMatcher
 
@@ -385,7 +386,9 @@ class AlbumIdentifier:
         if not release_group_mbid:
             return None, frozenset()
         try:
-            detail = await self._mb_repo.get_release_group_by_id(release_group_mbid)
+            detail = await self._mb_repo.get_release_group_by_id(
+                release_group_mbid, priority=RequestPriority.BACKGROUND_SYNC
+            )
         except Exception as exc:  # noqa: BLE001 - type is advisory; fail open
             logger.warning("RG type fetch failed for %s: %s", release_group_mbid, exc)
             return None, frozenset()
@@ -403,7 +406,9 @@ class AlbumIdentifier:
             return None, None
         try:
             detail = await self._mb_repo.get_release_group_by_id(
-                release_group_mbid, includes=["artist-credits"]
+                release_group_mbid,
+                includes=["artist-credits"],
+                priority=RequestPriority.BACKGROUND_SYNC,
             )
         except Exception as exc:  # noqa: BLE001 - leave the tag-derived artist untouched
             logger.warning("Artist resolve failed for %s: %s", release_group_mbid, exc)
@@ -443,6 +448,7 @@ class AlbumIdentifier:
                     f"{artist} {album}".strip(),
                     limit=_ALBUM_SEARCH_LIMIT,
                     include_all_types=True,
+                    priority=RequestPriority.BACKGROUND_SYNC,
                 ):
                     bump(result.musicbrainz_id)
             except Exception as exc:  # noqa: BLE001 - fail open to recording search
@@ -453,7 +459,10 @@ class AlbumIdentifier:
                 continue
             try:
                 recordings = await self._mb_repo.search_recordings(
-                    artist or local.artist, local.title, limit=5
+                    artist or local.artist,
+                    local.title,
+                    limit=5,
+                    priority=RequestPriority.BACKGROUND_SYNC,
                 )
             except Exception as exc:  # noqa: BLE001 - one bad track must not abort
                 logger.warning("Recording-candidate search failed: %s", exc)
@@ -471,7 +480,9 @@ class AlbumIdentifier:
         """Pick the release whose track count is closest to the folder's, then fetch its tracklist."""
         try:
             detail = await self._mb_repo.get_release_group_by_id(
-                rg_id, includes=["releases", "media"]
+                rg_id,
+                includes=["releases", "media"],
+                priority=RequestPriority.BACKGROUND_SYNC,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Release-group detail fetch failed for %s: %s", rg_id, exc)
@@ -510,7 +521,9 @@ class AlbumIdentifier:
             return None
 
         try:
-            release = await self._mb_repo.get_release_by_id(release_id, includes=["recordings"])
+            release = await self._mb_repo.get_release_by_id(
+                release_id, includes=["recordings"], priority=RequestPriority.BACKGROUND_SYNC
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Release fetch failed for %s: %s", release_id, exc)
             return None

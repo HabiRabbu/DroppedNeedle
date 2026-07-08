@@ -14,6 +14,7 @@ Tier 3, queue for manual review". Fingerprinting never raises into the scan.
 
 import asyncio
 import logging
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -30,6 +31,11 @@ logger = logging.getLogger(__name__)
 # so short files need no special handling and duration never has to be pre-read.
 _FPCALC_LENGTH = "120"
 _FPCALC_TIMEOUT = 30.0
+# Upper bound on concurrent fpcalc subprocesses, core-scaled below. fpcalc is an external
+# subprocess (escapes the GIL), so more cores => genuinely more parallel fingerprinting; the
+# cap keeps a many-core host from a wide subprocess fan-out, and the downstream AcoustID HTTP
+# limiter (3/s) bounds end-to-end throughput regardless. 4 matches the signed core-scaled default.
+_MAX_FPCALC_CONCURRENCY = 4
 # A best result below this AcoustID score is not a confident match.
 _ACOUSTID_MIN_SCORE = 0.70
 # Separators that delimit multiple artists in an AcoustID credit string.
@@ -73,8 +79,9 @@ class AudioFingerprinter:
         self._http = http
         self._api_key_provider = api_key_provider
         self._rate_limiter = rate_limiter
-        # Gate concurrent fpcalc subprocesses so a scan can't fork-bomb the host.
-        self._fpcalc_semaphore = asyncio.Semaphore(2)
+        # Gate concurrent fpcalc subprocesses so a scan can't fork-bomb the host; core-scaled
+        # (see _MAX_FPCALC_CONCURRENCY).
+        self._fpcalc_semaphore = asyncio.Semaphore(min(os.cpu_count() or 2, _MAX_FPCALC_CONCURRENCY))
 
     async def fingerprint(self, path: Path) -> FingerprintResult:
         api_key = self._api_key_provider()

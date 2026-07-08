@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from infrastructure.queue.priority_queue import RequestPriority
 from models.search import SearchResult
 from repositories.musicbrainz_album import RecordingMatch, RecordingReleaseGroup
 from services.native.album_matcher import (
@@ -219,14 +220,14 @@ def _santana_repo():
         ),
     ])
 
-    async def rg_detail(mbid, includes=None):
+    async def rg_detail(mbid, includes=None, priority=None):
         if mbid == "rg-debut":
             return _rg_detail("Santana", "Santana", [_release("rel-debut", [9])])
         return _rg_detail("The Woodstock Experience", "Santana",
                           [_release("rel-comp", [9, 8], date="2009")],
                           secondary_types=("Compilation",))
 
-    async def release(rel_id, includes=None):
+    async def release(rel_id, includes=None, priority=None):
         if rel_id == "rel-debut":
             return _release_tracks([_SANTANA])
         return _release_tracks([_SANTANA, [f"Live {i}" for i in range(8)]])
@@ -271,7 +272,9 @@ async def test_resolve_release_group_artist_returns_primary_credit():
     mbid, name = await AlbumIdentifier(repo).resolve_release_group_artist("rg-1")
     assert name == "XXXTENTACION"
     assert mbid == "a1"
-    repo.get_release_group_by_id.assert_awaited_once_with("rg-1", includes=["artist-credits"])
+    repo.get_release_group_by_id.assert_awaited_once_with(
+        "rg-1", includes=["artist-credits"], priority=RequestPriority.BACKGROUND_SYNC
+    )
 
 
 @pytest.mark.asyncio
@@ -339,13 +342,13 @@ def _seed_repo():
     ])
     repo.search_recordings = AsyncMock(return_value=[])
 
-    async def rg_detail(mbid, includes=None):
+    async def rg_detail(mbid, includes=None, priority=None):
         if mbid == "rg-debut":
             return _rg_detail("Santana", "Santana", [_release("rel-debut", [9])])
         return _rg_detail("Greatest Hits", "Santana", [_release("rel-comp", [30], date="2009")],
                           secondary_types=("Compilation",))
 
-    async def release(rel_id, includes=None):
+    async def release(rel_id, includes=None, priority=None):
         return _release_tracks([_SANTANA]) if rel_id == "rel-debut" else _comp_release(30)
 
     repo.get_release_group_by_id = AsyncMock(side_effect=rg_detail)
@@ -410,13 +413,13 @@ def _album_vs_ep_repo():
     ])
     repo.search_recordings = AsyncMock(return_value=[])
 
-    async def rg_detail(mbid, includes=None):
+    async def rg_detail(mbid, includes=None, priority=None):
         if mbid == "rg-album":
             return _rg_detail("Santana", "Santana", [_release("rel-album", [9])],
                               primary_type="Album")
         return _rg_detail("Santana EP", "Santana", [_release("rel-ep", [5])], primary_type="EP")
 
-    async def release(rel_id, includes=None):
+    async def release(rel_id, includes=None, priority=None):
         return _release_tracks([_SANTANA]) if rel_id == "rel-album" else _release_tracks(
             [_SANTANA[:5]]
         )
@@ -446,3 +449,34 @@ async def test_identify_still_matches_a_genuine_compilation():
     )
     match = await identifier.identify(locals_)
     assert match is not None and match.release_group_mbid == "rg-comp"
+
+
+@pytest.mark.asyncio
+async def test_identify_issues_all_mb_calls_at_background_priority():
+    # A library refresh must not compete with live user searches on MusicBrainz's 1/s
+    # limiter: every MB call the identifier makes during a scan is BACKGROUND_SYNC.
+    repo = _santana_repo()
+    await AlbumIdentifier(repo).identify(_locals(_SANTANA))
+    awaited = [
+        repo.search_albums,
+        repo.search_recordings,
+        repo.get_release_group_by_id,
+        repo.get_release_by_id,
+    ]
+    assert all(m.await_count >= 1 for m in awaited)  # the path actually exercised each
+    for mock in awaited:
+        for call in mock.await_args_list:
+            assert call.kwargs.get("priority") == RequestPriority.BACKGROUND_SYNC
+
+
+@pytest.mark.asyncio
+async def test_release_group_type_uses_background_priority():
+    repo = AsyncMock()
+    repo.get_release_group_by_id = AsyncMock(
+        return_value={"primary-type": "Album", "secondary-types": []}
+    )
+    await AlbumIdentifier(repo).release_group_type("rg-1")
+    assert (
+        repo.get_release_group_by_id.await_args.kwargs["priority"]
+        == RequestPriority.BACKGROUND_SYNC
+    )

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from infrastructure.queue.priority_queue import RequestPriority
 from models.search import SearchResult
 from repositories.musicbrainz_album import RecordingMatch, RecordingReleaseGroup
 from services.native.musicbrainz_matcher import MusicBrainzMatcher, TargetAlbum
@@ -363,3 +364,28 @@ def test_select_release_group_prefers_title_then_rank():
         "", [_rg("Comp", "c", secondary=("Compilation",)), _rg("Studio", "d")]
     )
     assert by_rank.release_group_mbid == "d"
+
+
+@pytest.mark.asyncio
+async def test_album_text_match_issues_background_priority():
+    # Tier 2 identification runs during a scan, so its MB search must not compete with
+    # live user searches on the 1/s limiter.
+    repo = _repo([_result("OK Computer", "rg-ok")])
+    await MusicBrainzMatcher(repo).text_match(
+        TargetAlbum(artist="Radiohead", album="OK Computer")
+    )
+    assert repo.search_albums.await_args.kwargs["priority"] == RequestPriority.BACKGROUND_SYNC
+
+
+@pytest.mark.asyncio
+async def test_recording_fallback_issues_background_priority():
+    # Album search finds nothing -> falls back to recording search; that call is background too.
+    recordings = [_rec("SAD!", "rec-1", "XXXTENTACION", [_rg("?", "rg-q")])]
+    repo = _repo2([], recordings)
+    await MusicBrainzMatcher(repo).text_match(
+        TargetAlbum(artist="XXXTENTACION", album="?", track_title="SAD!")
+    )
+    assert (
+        repo.search_recordings.await_args.kwargs["priority"]
+        == RequestPriority.BACKGROUND_SYNC
+    )
