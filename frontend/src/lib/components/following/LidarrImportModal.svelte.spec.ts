@@ -98,8 +98,6 @@ describe('LidarrImportModal', () => {
 			.element(page.getByText('2 imported · 1 already following · 0 skipped'))
 			.toBeVisible();
 		// Non-admin: the auto-download note points to pending admin approval.
-		await expect
-			.element(page.getByText(/pending admin approval/))
-			.toBeVisible();
+		await expect.element(page.getByText(/pending admin approval/)).toBeVisible();
 	});
 });
