@@ -27,8 +27,10 @@ from models.audio import FingerprintResult
 
 logger = logging.getLogger(__name__)
 
-# AcoustID recommends >=120s of audio; ``-length`` caps fpcalc at min(120, dur),
-# so short files need no special handling and duration never has to be pre-read.
+# AcoustID recommends >=120s of audio, so ``-length`` caps the fingerprint window at
+# 120s. On files SHORTER than this, fpcalc reads to EOF and exits non-zero
+# ("Error decoding audio frame (End of file)") *after* emitting a valid FINGERPRINT=
+# line - see ``_run_fpcalc``, which tolerates that exit rather than pre-reading duration.
 _FPCALC_LENGTH = "120"
 _FPCALC_TIMEOUT = 30.0
 # Upper bound on concurrent fpcalc subprocesses, core-scaled below. fpcalc is an external
@@ -131,11 +133,16 @@ class AudioFingerprinter:
                 proc.kill()
                 await proc.wait()
                 raise
-            if proc.returncode != 0:
+            output = stdout.decode("utf-8", "ignore")
+            # fpcalc exits non-zero ("Error decoding audio frame (End of file)") on tracks
+            # shorter than ``-length`` seconds, but still writes a valid FINGERPRINT= line to
+            # stdout. Only treat a non-zero exit as a real failure when NO fingerprint was
+            # produced; otherwise use the fingerprint it emitted so sub-120s tracks still match.
+            if proc.returncode != 0 and "FINGERPRINT=" not in output:
                 raise subprocess.CalledProcessError(
                     proc.returncode or -1, "fpcalc", stderr=stderr.decode("utf-8", "ignore")
                 )
-            return self._parse_fpcalc_output(stdout.decode("utf-8", "ignore"))
+            return self._parse_fpcalc_output(output)
 
     @staticmethod
     def _parse_fpcalc_output(output: str) -> tuple[str, int]:
