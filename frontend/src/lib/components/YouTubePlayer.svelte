@@ -8,6 +8,15 @@
 	let { elementId = YOUTUBE_PLAYER_ELEMENT_ID }: Props = $props();
 </script>
 
-<div class="rounded-lg shadow-md overflow-hidden" style="width: 120px; height: 68px;">
-	<div id={elementId} class="w-full h-full"></div>
+<!--
+	YouTube's Developer Policies demand a player viewport of at least 200x200 and forbid hiding
+	or obscuring it: no `hidden` wrapper, no user-collapsible panel, nothing below the inline
+	floor. z-[60] keeps a transient toast (z-50) off it.
+-->
+<div
+	data-testid="youtube-player"
+	class="droppedneedle-yt-popout fixed right-3 z-[60] overflow-hidden rounded-lg shadow-lg ring-1 ring-base-content/10 sm:right-4"
+	style="min-width: 200px; min-height: 200px;"
+>
+	<div id={elementId} data-testid="youtube-player-mount" class="h-full w-full"></div>
 </div>

@@ -43,6 +43,9 @@ declare namespace YT {
 	}
 }
 
+// YT.PlayerState is ambient-only, so it has no runtime value to compare against.
+const YT_STATE_PLAYING = 1;
+
 let apiLoaded = false;
 let apiLoading = false;
 const apiReadyQueue: { resolve: () => void; reject: (err: Error) => void }[] = [];
@@ -111,9 +114,52 @@ export class YouTubePlaybackSource implements PlaybackSource {
 	private progressCallbacks: ((currentTime: number, duration: number) => void)[] = [];
 	private destroyed = false;
 	private pendingVolume = 75;
+	private pausedForVisibility = false;
+	private visibilityHandler: (() => void) | null = null;
 
 	constructor(elementId: string) {
 		this.elementId = elementId;
+	}
+
+	private isPageHidden(): boolean {
+		return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+	}
+
+	/**
+	 * YouTube's Developer Policies prohibit background play: the video must not keep playing
+	 * once the window is minimised or closed. `visibilitychange` is the only signal that covers
+	 * both, so we pause on hidden and resume only what we ourselves paused.
+	 *
+	 * This lives in the YouTube source rather than the shared engine on purpose. Local files,
+	 * Jellyfin, Navidrome and Plex all keep playing in the background as before.
+	 */
+	private attachVisibilityGuard(): void {
+		if (this.visibilityHandler || typeof document === 'undefined') return;
+
+		this.visibilityHandler = () => {
+			if (this.destroyed || !this.player) return;
+
+			if (this.isPageHidden()) {
+				if (this.player.getPlayerState() === YT_STATE_PLAYING) {
+					this.pausedForVisibility = true;
+					this.player.pauseVideo();
+				}
+				return;
+			}
+
+			if (this.pausedForVisibility) {
+				this.pausedForVisibility = false;
+				this.player.playVideo();
+			}
+		};
+
+		document.addEventListener('visibilitychange', this.visibilityHandler);
+	}
+
+	private detachVisibilityGuard(): void {
+		if (!this.visibilityHandler || typeof document === 'undefined') return;
+		document.removeEventListener('visibilitychange', this.visibilityHandler);
+		this.visibilityHandler = null;
 	}
 
 	async load(info: {
@@ -130,18 +176,22 @@ export class YouTubePlaybackSource implements PlaybackSource {
 			throw new Error(`YouTube player mount target not found: ${this.elementId}`);
 		}
 
+		this.attachVisibilityGuard();
+
 		return new Promise<void>((resolve, reject) => {
 			try {
+				// fill the mount box, which YouTube's policies require to be at least 200x200
 				this.player = new window.YT.Player(this.elementId, {
-					height: '68',
-					width: '120',
+					height: '100%',
+					width: '100%',
 					videoId: info.trackSourceId,
 					playerVars: {
 						controls: 0,
 						modestbranding: 1,
 						rel: 0,
 						playsinline: 1,
-						autoplay: 1
+						// never start in the background; the guard resumes it when the page returns
+						autoplay: this.isPageHidden() ? 0 : 1
 					},
 					events: {
 						onReady: () => {
@@ -149,6 +199,7 @@ export class YouTubePlaybackSource implements PlaybackSource {
 								resolve();
 								return;
 							}
+							if (this.isPageHidden()) this.pausedForVisibility = true;
 							this.player?.setVolume(this.pendingVolume);
 							this.readyCallbacks.forEach((cb) => cb());
 							this.startProgressPolling();
@@ -172,10 +223,17 @@ export class YouTubePlaybackSource implements PlaybackSource {
 	}
 
 	play(): void {
+		// a play request while hidden would be background play; defer it until the page returns
+		if (this.isPageHidden()) {
+			this.pausedForVisibility = true;
+			return;
+		}
 		this.player?.playVideo();
 	}
 
 	pause(): void {
+		// an explicit pause outranks the visibility guard, so returning must not resume
+		this.pausedForVisibility = false;
 		this.player?.pauseVideo();
 	}
 
@@ -198,6 +256,7 @@ export class YouTubePlaybackSource implements PlaybackSource {
 
 	destroy(): void {
 		this.destroyed = true;
+		this.detachVisibilityGuard();
 		this.stopProgressPolling();
 		this.player?.destroy();
 		this.player = null;

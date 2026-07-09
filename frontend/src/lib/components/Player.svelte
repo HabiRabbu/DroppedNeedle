@@ -350,9 +350,7 @@
 				{/if}
 
 				{#if playerStore.nowPlaying.sourceType === 'youtube'}
-					<div class="hidden md:block">
-						<YouTubePlayer />
-					</div>
+					<YouTubePlayer />
 
 					<div class="tooltip tooltip-left" data-tip="Open in YouTube">
 						<button
