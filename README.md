@@ -95,6 +95,10 @@ DroppedNeedle replaces Lidarr with a built-in library and download engine. It sc
 
 The engine talks only to a user-supplied slskd instance over its local HTTP API. It never joins or distributes on the Soulseek/P2P network itself; it issues searches and download requests to slskd and imports the results. The operator supplies, runs, and is responsible for slskd and its shared folders. This is built into the architecture, not just the UI: the engine has no Soulseek protocol code, only an HTTP client for slskd.
 
+DroppedNeedle ships no indexers, no tracker lists, and no sources of any kind. It searches MusicBrainz, an open metadata database that hosts no audio. Every source it can reach is one you configured yourself: your own slskd instance, or your own Newznab indexers and your own SABnzbd.
+
+The engine acquires whatever the operator directs it to acquire. Uses it is built for include public-domain and Creative Commons recordings, releases artists distribute themselves through Bandcamp or the Internet Archive's Live Music Archive, live-taping collections, and re-acquiring media you already own. Holding the rights to what you download, and to whatever your download client shares back, is your responsibility as the operator.
+
 ### Architecture
 
 The backend is layered, and layers are never skipped:
@@ -234,7 +238,7 @@ Browse or search the MusicBrainz catalogue, open an album, and click **Request**
 
 > **Legality.** DroppedNeedle only orchestrates a user-provided slskd instance over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. You supply, run, and are responsible for slskd and its shared folders.
 >
-> **Share files in slskd.** Soulseek bans leechers. You must configure at least one shared directory in slskd (`slskd.yml` -> `shares.directories`) or you will be unable to download. This is a slskd requirement, not a DroppedNeedle one.
+> **Sharing on Soulseek.** Soulseek is a reciprocal network and slskd will not run as a leech-only client: without at least one shared directory (`slskd.yml` -> `shares.directories`), searches and downloads fail. That is a property of Soulseek and slskd, not a DroppedNeedle requirement. Anything you place in a shared directory is distributed to other users of the network. What you share, and whether you hold the right to distribute it, is your decision and your responsibility.
 
 slskd is one of two download sources DroppedNeedle supports. If you are using Usenet instead, skip this section and go to [Usenet Setup](#usenet-setup).
 
