@@ -1,8 +1,9 @@
 <script lang="ts">
 	/*
-	 * Smart Mix — one seed in, a real saved playlist out. Pick an artist, a
-	 * genre from your library, or a mood; the backend builds the mix from your
-	 * own files via the radio-plan engine and persists it as a native playlist.
+	 * Smart Mix — blend seeds into a real saved playlist. Add any mix of
+	 * artists, genres, and moods to the basket; the backend builds the mix
+	 * from your own files via the radio-plan engine, giving each seed a
+	 * roughly equal share, and persists it as a native playlist.
 	 */
 	import { goto } from '$app/navigation';
 	import { createGenerateSmartMixMutation } from '$lib/queries/playlists/PlaylistMutations.svelte';
@@ -34,14 +35,20 @@
 	const COUNTS = [15, 25, 50];
 	const MIN_CUSTOM_COUNT = 1;
 	const MAX_CUSTOM_COUNT = 250;
+	const MAX_SEEDS = 10;
+	const NAME_SEED_LIMIT = 3;
+
+	interface BlendSeed {
+		type: SmartMixSeedType;
+		value: string;
+		label: string;
+	}
 
 	let dialogEl = $state<HTMLDialogElement | null>(null);
 	let seedType = $state<SmartMixSeedType>('artist');
 	let artistQuery = $state('');
-	let selectedArtist = $state<SuggestResult | null>(null);
-	let selectedGenre = $state<string | null>(null);
 	let customGenre = $state('');
-	let selectedMood = $state<string | null>(null);
+	let blend = $state<BlendSeed[]>([]);
 	let countChoice = $state<number | 'custom'>(25);
 	let customCount = $state('');
 	let customCountInputEl = $state<HTMLInputElement | null>(null);
@@ -55,11 +62,6 @@
 			.slice(0, 18)
 	);
 
-	const seed = $derived.by(() => {
-		if (seedType === 'artist') return selectedArtist?.musicbrainz_id ?? '';
-		if (seedType === 'genre') return selectedGenre ?? customGenre.trim();
-		return selectedMood ?? '';
-	});
 	// custom count: only digits parse; anything else (or out of 1-250) is invalid
 	const parsedCustomCount = $derived.by(() => {
 		const trimmed = customCount.trim();
@@ -71,21 +73,46 @@
 		countChoice === 'custom' && customCount.trim().length > 0 && parsedCustomCount === null
 	);
 	const count = $derived(countChoice === 'custom' ? parsedCustomCount : countChoice);
-	const canCreate = $derived(seed.length > 0 && count !== null && !generateMutation.isPending);
-
-	function pickCustomCount() {
-		countChoice = 'custom';
-		queueMicrotask(() => customCountInputEl?.focus());
-	}
+	const blendFull = $derived(blend.length >= MAX_SEEDS);
+	const canCreate = $derived(blend.length > 0 && count !== null && !generateMutation.isPending);
 
 	export function showModal() {
 		errorMessage = null;
 		dialogEl?.showModal();
 	}
 
-	function pickSeedType(type: SmartMixSeedType) {
-		seedType = type;
+	function pickCustomCount() {
+		countChoice = 'custom';
+		queueMicrotask(() => customCountInputEl?.focus());
+	}
+
+	function inBlend(type: SmartMixSeedType, value: string): boolean {
+		const v = value.trim().toLowerCase();
+		return blend.some((s) => s.type === type && s.value.trim().toLowerCase() === v);
+	}
+
+	function addSeed(type: SmartMixSeedType, value: string, label: string) {
+		const trimmed = value.trim();
+		if (!trimmed || inBlend(type, trimmed)) return;
+		if (blendFull) {
+			toastStore.show({ message: `A blend holds up to ${MAX_SEEDS} seeds`, type: 'info' });
+			return;
+		}
+		blend = [...blend, { type, value: trimmed, label }];
 		errorMessage = null;
+	}
+
+	function removeSeed(seed: BlendSeed) {
+		blend = blend.filter((s) => !(s.type === seed.type && s.value === seed.value));
+	}
+
+	function toggleSeed(type: SmartMixSeedType, value: string, label: string) {
+		if (inBlend(type, value)) {
+			const v = value.trim().toLowerCase();
+			blend = blend.filter((s) => !(s.type === type && s.value.trim().toLowerCase() === v));
+		} else {
+			addSeed(type, value, label);
+		}
 	}
 
 	function pickArtist(result: SuggestResult) {
@@ -93,23 +120,36 @@
 			toastStore.show({ message: 'Pick an artist result to seed the mix', type: 'info' });
 			return;
 		}
-		selectedArtist = result;
+		addSeed('artist', result.musicbrainz_id, result.title);
 		artistQuery = '';
 	}
+
+	function addCustomGenre() {
+		const trimmed = customGenre.trim();
+		if (!trimmed) return;
+		addSeed('genre', trimmed, trimmed);
+		customGenre = '';
+	}
+
+	// mirror the backend's default-name blend so the saved name uses the pretty
+	// labels we have on hand (artist chips would otherwise fall back to MBIDs)
+	const blendName = $derived.by(() => {
+		const shown = blend.slice(0, NAME_SEED_LIMIT).map((s) => s.label);
+		const rest = blend.length - shown.length;
+		return `${shown.join(' + ')}${rest > 0 ? ` + ${rest} more` : ''} — Smart Mix`;
+	});
 
 	async function handleCreate() {
 		if (!canCreate || count === null) return;
 		errorMessage = null;
 		try {
 			const created = await generateMutation.mutateAsync({
-				seed_type: seedType,
-				seed,
+				seeds: blend.map((s) => ({ type: s.type, value: s.value })),
 				count,
-				...(seedType === 'artist' && selectedArtist
-					? { name: `${selectedArtist.title} — Smart Mix` }
-					: {})
+				name: blendName
 			});
 			dialogEl?.close();
+			blend = [];
 			await goto(`/playlists/${created.id}`);
 		} catch (e) {
 			errorMessage = e instanceof Error ? e.message : "Couldn't create the Smart Mix";
@@ -127,7 +167,8 @@
 			Smart Mix
 		</h3>
 		<p class="mt-1 text-sm text-base-content/60">
-			Seed it with an artist, genre, or mood — we'll build a playlist from your library.
+			Blend artists, genres, and moods — we'll build a playlist from your library with every seed
+			pulling its weight.
 		</p>
 
 		<div class="mt-5 space-y-5">
@@ -135,7 +176,7 @@
 				<p
 					class="mb-2 font-mono text-[0.68rem] font-bold uppercase tracking-[0.2em] text-base-content/50"
 				>
-					Seed
+					Add seeds
 				</p>
 				<div class="join w-full" role="tablist" aria-label="Seed type">
 					{#each SEED_TYPES as t (t.key)}
@@ -146,7 +187,7 @@
 							class="join-item btn btn-sm flex-1 border-base-content/10"
 							class:btn-primary={seedType === t.key}
 							class:btn-ghost={seedType !== t.key}
-							onclick={() => pickSeedType(t.key)}
+							onclick={() => (seedType = t.key)}
 						>
 							{t.label}
 						</button>
@@ -156,75 +197,100 @@
 
 			{#if seedType === 'artist'}
 				<div>
-					{#if selectedArtist}
-						<div
-							class="flex items-center justify-between gap-2 rounded-2xl border border-base-content/8 bg-base-100/60 px-4 py-2.5"
-						>
-							<span class="truncate text-sm font-medium">{selectedArtist.title}</span>
-							<button
-								type="button"
-								class="btn btn-ghost btn-xs rounded-full"
-								aria-label="Clear selected artist"
-								onclick={() => (selectedArtist = null)}
-							>
-								<X class="h-3.5 w-3.5" />
-							</button>
-						</div>
-					{:else}
-						<SearchSuggestions
-							bind:query={artistQuery}
-							onSearch={() => {}}
-							onSelect={pickArtist}
-							placeholder="Search for an artist..."
-							id="smart-mix-artist"
-						/>
-					{/if}
+					<SearchSuggestions
+						bind:query={artistQuery}
+						onSearch={() => {}}
+						onSelect={pickArtist}
+						placeholder="Search for an artist to add..."
+						id="smart-mix-artist"
+					/>
 				</div>
 			{:else if seedType === 'genre'}
-				<div>
+				<div class="space-y-2.5">
 					{#if libraryGenres.length > 0}
 						<div class="flex flex-wrap gap-2">
 							{#each libraryGenres as genre (genre.name)}
+								{@const active = inBlend('genre', genre.name)}
 								<button
 									type="button"
-									class="rounded-full border px-3 py-1 text-xs font-medium capitalize transition-colors {selectedGenre ===
-									genre.name
+									class="rounded-full border px-3 py-1 text-xs font-medium capitalize transition-colors {active
 										? 'border-primary/50 bg-primary text-primary-content'
 										: 'border-base-content/10 bg-base-100/50 text-base-content/70 hover:border-primary/40 hover:text-base-content'}"
-									aria-pressed={selectedGenre === genre.name}
-									onclick={() => (selectedGenre = selectedGenre === genre.name ? null : genre.name)}
+									aria-pressed={active}
+									onclick={() => toggleSeed('genre', genre.name, genre.name)}
 								>
 									{genre.name}
 								</button>
 							{/each}
 						</div>
-					{:else}
-						<input
-							type="text"
-							class="input input-sm w-full rounded-full"
-							placeholder="Type a genre, e.g. neo soul..."
-							bind:value={customGenre}
-							onkeydown={(e) => e.key === 'Enter' && void handleCreate()}
-						/>
 					{/if}
+					<input
+						type="text"
+						class="input input-sm w-full rounded-full"
+						placeholder="Or type any genre and press Enter..."
+						aria-label="Add a genre by name"
+						bind:value={customGenre}
+						onkeydown={(e) => e.key === 'Enter' && addCustomGenre()}
+					/>
 				</div>
 			{:else}
 				<div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
 					{#each MOODS as mood (mood)}
+						{@const active = inBlend('mood', mood)}
 						<button
 							type="button"
-							class="rounded-2xl border px-2 py-2.5 text-xs font-medium capitalize transition-colors {selectedMood ===
-							mood
+							class="rounded-2xl border px-2 py-2.5 text-xs font-medium capitalize transition-colors {active
 								? 'border-primary/50 bg-primary text-primary-content'
 								: 'border-base-content/10 bg-base-100/50 text-base-content/70 hover:border-primary/40 hover:text-base-content'}"
-							aria-pressed={selectedMood === mood}
-							onclick={() => (selectedMood = selectedMood === mood ? null : mood)}
+							aria-pressed={active}
+							onclick={() => toggleSeed('mood', mood, mood)}
 						>
 							{mood}
 						</button>
 					{/each}
 				</div>
 			{/if}
+
+			<div>
+				<p
+					class="mb-2 font-mono text-[0.68rem] font-bold uppercase tracking-[0.2em] text-base-content/50"
+				>
+					Your blend
+					<span class="ml-1 font-mono tabular-nums text-base-content/35"
+						>{blend.length}/{MAX_SEEDS}</span
+					>
+				</p>
+				{#if blend.length === 0}
+					<p
+						class="rounded-2xl border border-dashed border-base-content/12 px-4 py-3 text-xs text-base-content/45"
+					>
+						Nothing yet — add at least one artist, genre, or mood above.
+					</p>
+				{:else}
+					<div class="flex flex-wrap gap-2" role="list" aria-label="Selected seeds">
+						{#each blend as seed (`${seed.type}:${seed.value}`)}
+							<span
+								role="listitem"
+								class="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 py-1 pl-3 pr-1 text-xs font-medium"
+							>
+								<span
+									class="font-mono text-[0.55rem] font-bold uppercase tracking-[0.14em] text-base-content/45"
+									>{seed.type}</span
+								>
+								<span class="capitalize">{seed.label}</span>
+								<button
+									type="button"
+									class="btn btn-ghost btn-xs h-5 min-h-0 w-5 rounded-full p-0"
+									aria-label="Remove {seed.label} from the blend"
+									onclick={() => removeSeed(seed)}
+								>
+									<X class="h-3 w-3" />
+								</button>
+							</span>
+						{/each}
+					</div>
+				{/if}
+			</div>
 
 			<div>
 				<p

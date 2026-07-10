@@ -1,10 +1,12 @@
-"""Smart Mix: turn a seed (artist / genre / mood) into a real, saved playlist.
+"""Smart Mix: turn seeds (artists / genres / moods, any blend) into a saved playlist.
 
 Thin orchestration over the radio-plan engine: ``RadioPlanService``'s
 library-first pool does the actual track selection (genre-index artists,
 file-tag genre matches, shared-genre adjacency, diversity caps). This service
-maps mood seeds onto curated genre/tag families, runs the plan(s) in library
-mode, and persists the result as a native playlist owned by the caller.
+gathers one candidate pool per seed (mood seeds expand to curated genre/tag
+families first), blends the pools so each seed gets a roughly equal share of
+the final list, and persists the result as a native playlist owned by the
+caller.
 """
 
 import asyncio
@@ -25,10 +27,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_TRACK_COUNT = 25
 MAX_TRACK_COUNT = 250
 MIN_TRACK_COUNT = 5
+MAX_SEEDS = 10
+# blend diversity: mirror the radio-plan engine's caps (strict pass), then a
+# relaxed fill that lifts the per-artist cap but keeps the consecutive rule
+_MAX_PER_ARTIST = 4
+_MAX_CONSECUTIVE_SAME_ARTIST = 2
+_NAME_SEED_LIMIT = 3
 
 # Curated mood -> genre/tag families, matched against the user's OWN library
 # (genre index + file tags). Only tags the library actually contains are used
-# as station seeds; a mood with zero matches is a 422, not an empty playlist.
+# as station seeds; a mood with zero matches contributes an empty pool (the
+# request only fails when EVERY seed comes back empty).
 MOOD_TAG_FAMILIES: dict[str, list[str]] = {
     "chill": ["lo-fi", "chillout", "ambient", "downtempo", "trip hop", "jazz", "bossa nova"],
     "energetic": ["dance", "edm", "electro", "rock", "punk", "hip hop", "drum and bass", "house"],
@@ -41,8 +50,16 @@ MOOD_TAG_FAMILIES: dict[str, list[str]] = {
 }
 
 
+def _track_key(track: RadioPlanTrack) -> str:
+    return f"{track.artist_name.lower()}|{track.track_name.lower()}"
+
+
+def _artist_key(track: RadioPlanTrack) -> str:
+    return track.artist_mbid.lower() or track.artist_name.lower()
+
+
 class SmartPlaylistService:
-    """Generate-and-save playlists from a single seed via the radio-plan engine."""
+    """Generate-and-save playlists from blended seeds via the radio-plan engine."""
 
     def __init__(
         self,
@@ -60,69 +77,113 @@ class SmartPlaylistService:
         self,
         user: UserRecord,
         *,
-        seed_type: str,
-        seed: str,
+        seeds: list[tuple[str, str]],
         count: int = DEFAULT_TRACK_COUNT,
         name: str | None = None,
     ) -> tuple[PlaylistRecord, list[PlaylistTrackRecord]]:
-        """Build a library Smart Mix and persist it as a playlist owned by ``user``."""
-        seed = (seed or "").strip()
-        if not seed:
-            raise ValidationError("seed must be non-empty")
+        """Blend a library Smart Mix from ``seeds`` ((type, value) pairs, any mix
+        of artist/genre/mood) and persist it as a playlist owned by ``user``."""
+        cleaned: list[tuple[str, str]] = []
+        seen_seeds: set[tuple[str, str]] = set()
+        for seed_type, value in seeds:
+            stripped = (value or "").strip()
+            if not stripped:
+                continue
+            key = (seed_type, stripped.lower())
+            if key in seen_seeds:
+                continue
+            seen_seeds.add(key)
+            cleaned.append((seed_type, stripped))
+        if not cleaned:
+            raise ValidationError("At least one non-empty seed is required")
+        cleaned = cleaned[:MAX_SEEDS]
         count = max(MIN_TRACK_COUNT, min(count or DEFAULT_TRACK_COUNT, MAX_TRACK_COUNT))
 
-        if seed_type == "mood":
-            tracks, default_name = await self._mood_tracks(user.id, seed, count)
-        else:  # artist | genre (schema-validated)
-            plan = await self._radio_plan.build_plan(
-                user.id,
-                RadioPlanRequest(seed_type=seed_type, seed_id=seed, mode="library", count=count),
-                max_count=MAX_TRACK_COUNT,
-            )
-            tracks = plan.tracks
-            base = plan.title.removeprefix("Radio:").strip() or seed
-            default_name = f"{base} — Smart Mix"
+        results = await asyncio.gather(
+            *(self._seed_pool(user.id, seed_type, value, count) for seed_type, value in cleaned),
+            return_exceptions=True,
+        )
+        pools: list[list[RadioPlanTrack]] = []
+        labels: list[str] = []
+        notes: list[str] = []
+        for (seed_type, value), result in zip(cleaned, results):
+            if isinstance(result, BaseException):
+                logger.debug("Smart Mix pool failed for %s '%s': %s", seed_type, value, result)
+                labels.append(value)
+                notes.append(f"{seed_type} '{value}' failed to expand")
+                continue
+            pool, label, note = result
+            labels.append(label)
+            if note:
+                notes.append(note)
+            if pool:
+                pools.append(pool)
 
-        if not tracks:
+        if not pools:
+            hints = f" ({'; '.join(notes)})" if notes else ""
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"No library tracks matched the {seed_type} seed '{seed}'. "
-                    "Smart Mix builds from your own library - try a seed you own music for."
+                    f"No library tracks matched any seed{hints}. "
+                    "Smart Mix builds from your own library - try seeds you own music for."
                 ),
             )
 
-        playlist_name = (name or "").strip() or default_name
+        tracks = self._blend(pools, count)
+        playlist_name = (name or "").strip() or self._default_name(labels)
         playlist = await self._playlist_service.create_playlist(
             playlist_name[:MAX_NAME_LENGTH], user_id=user.id,
         )
-        track_dicts = [self._plan_track_to_dict(t) for t in tracks[:count]]
+        track_dicts = [self._plan_track_to_dict(t) for t in tracks]
         created = await self._playlist_service.add_tracks(playlist.id, user, track_dicts)
         return playlist, created
 
-    async def _mood_tracks(
+    @staticmethod
+    def _default_name(labels: list[str]) -> str:
+        shown = labels[:_NAME_SEED_LIMIT]
+        rest = len(labels) - len(shown)
+        blend = " + ".join(shown)
+        if rest > 0:
+            blend += f" + {rest} more"
+        return f"{blend} — Smart Mix"
+
+    async def _seed_pool(
+        self, user_id: str, seed_type: str, value: str, count: int
+    ) -> tuple[list[RadioPlanTrack], str, str | None]:
+        """One candidate pool per seed: (tracks, display label, empty-pool note)."""
+        if seed_type == "mood":
+            return await self._mood_pool(user_id, value, count)
+
+        plan = await self._radio_plan.build_plan(
+            user_id,
+            RadioPlanRequest(seed_type=seed_type, seed_id=value, mode="library", count=count),
+            max_count=MAX_TRACK_COUNT,
+        )
+        label = plan.title.removeprefix("Radio:").strip() or value
+        if seed_type == "genre":
+            label = value.title()
+        note = None if plan.tracks else f"no library tracks for {seed_type} '{value}'"
+        return list(plan.tracks), label, note
+
+    async def _mood_pool(
         self, user_id: str, mood: str, count: int
-    ) -> tuple[list[RadioPlanTrack], str]:
+    ) -> tuple[list[RadioPlanTrack], str, str | None]:
         mood_key = mood.lower()
+        label = mood_key.title()
         tags = MOOD_TAG_FAMILIES.get(mood_key)
         if tags is None:
             known = ", ".join(sorted(MOOD_TAG_FAMILIES))
-            raise HTTPException(
-                status_code=422, detail=f"Unknown mood '{mood}'. Available moods: {known}",
-            )
+            return [], label, f"unknown mood '{mood}' (available moods: {known})"
 
         matched = await self._library_tags(tags)
         if not matched:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Nothing in your library matches the '{mood_key}' mood yet "
-                    f"(looked for: {', '.join(tags)}). Add some matching music and try again."
-                ),
+            return [], label, (
+                f"nothing in your library matches the '{mood_key}' mood "
+                f"(looked for: {', '.join(tags)})"
             )
 
         # one library-mode genre station per matched tag, then interleave so the
-        # mix spans the whole mood family instead of exhausting one tag first
+        # pool spans the whole mood family instead of exhausting one tag first
         per_tag = max(MIN_TRACK_COUNT, -(-count // len(matched)))
         plans = await asyncio.gather(
             *(
@@ -135,19 +196,19 @@ class SmartPlaylistService:
             ),
             return_exceptions=True,
         )
-        pools: list[list[RadioPlanTrack]] = []
+        tag_pools: list[list[RadioPlanTrack]] = []
         for tag, plan in zip(matched, plans):
             if isinstance(plan, BaseException):
                 logger.debug("Smart Mix mood pool failed for tag %s: %s", tag, plan)
                 continue
             if plan.tracks:
-                pools.append(list(plan.tracks))
+                tag_pools.append(list(plan.tracks))
 
         tracks: list[RadioPlanTrack] = []
         seen: set[str] = set()
-        indices = [0] * len(pools)
-        while len(tracks) < count and any(i < len(p) for i, p in zip(indices, pools)):
-            for pool_i, pool in enumerate(pools):
+        indices = [0] * len(tag_pools)
+        while len(tracks) < count and any(i < len(p) for i, p in zip(indices, tag_pools)):
+            for pool_i, pool in enumerate(tag_pools):
                 if len(tracks) >= count:
                     break
                 idx = indices[pool_i]
@@ -155,13 +216,80 @@ class SmartPlaylistService:
                     continue
                 indices[pool_i] = idx + 1
                 track = pool[idx]
-                key = f"{track.artist_name.lower()}|{track.track_name.lower()}"
+                key = _track_key(track)
                 if key in seen:
                     continue
                 seen.add(key)
                 tracks.append(track)
 
-        return tracks, f"{mood_key.title()} — Smart Mix"
+        note = None if tracks else f"no library tracks for mood '{mood_key}'"
+        return tracks, label, note
+
+    @staticmethod
+    def _blend(pools: list[list[RadioPlanTrack]], count: int) -> list[RadioPlanTrack]:
+        """Round-robin across seed pools so each seed gets ~equal share.
+
+        Strict pass keeps the engine's diversity caps (max 4 per artist, never
+        3 in a row); a track qualifying under several seeds is credited to
+        whichever pool reaches it first in rotation (later pools skip it
+        without losing their turn), which keeps shares level. A relaxed fill
+        then lifts the per-artist cap (small libraries must still fill big
+        requests) but KEEPS the consecutive-artist rule.
+        """
+        selected: list[RadioPlanTrack] = []
+        seen: set[str] = set()
+        per_artist: dict[str, int] = {}
+        indices = [0] * len(pools)
+
+        def _blocked_consecutive(a_key: str) -> bool:
+            recent = [_artist_key(t) for t in selected[-_MAX_CONSECUTIVE_SAME_ARTIST:]]
+            return (
+                len(recent) == _MAX_CONSECUTIVE_SAME_ARTIST
+                and all(r == a_key for r in recent)
+            )
+
+        progress = True
+        while len(selected) < count and progress:
+            progress = False
+            for pool_i, pool in enumerate(pools):
+                if len(selected) >= count:
+                    break
+                while indices[pool_i] < len(pool):
+                    track = pool[indices[pool_i]]
+                    indices[pool_i] += 1
+                    key = _track_key(track)
+                    if key in seen:
+                        continue
+                    a_key = _artist_key(track)
+                    if per_artist.get(a_key, 0) >= _MAX_PER_ARTIST:
+                        continue
+                    if _blocked_consecutive(a_key):
+                        continue
+                    seen.add(key)
+                    per_artist[a_key] = per_artist.get(a_key, 0) + 1
+                    selected.append(track)
+                    progress = True
+                    break
+
+        if len(selected) < count:
+            remaining = [t for pool in pools for t in pool if _track_key(t) not in seen]
+            progress = True
+            while len(selected) < count and remaining and progress:
+                progress = False
+                for i, track in enumerate(remaining):
+                    key = _track_key(track)
+                    if key in seen:
+                        remaining.pop(i)
+                        progress = True
+                        break
+                    if _blocked_consecutive(_artist_key(track)):
+                        continue
+                    seen.add(key)
+                    selected.append(track)
+                    remaining.pop(i)
+                    progress = True
+                    break
+        return selected
 
     async def _library_tags(self, tags: list[str]) -> list[str]:
         """The subset of ``tags`` the user's library can actually seed from."""

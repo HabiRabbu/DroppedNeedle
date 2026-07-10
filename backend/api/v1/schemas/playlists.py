@@ -85,10 +85,15 @@ class UpdatePlaylistRequest(AppStruct):
     name: str | None = None
 
 
+class SmartMixSeed(AppStruct):
+    type: Literal["artist", "genre", "mood"]
+    value: str
+
+
 class GeneratePlaylistRequest(AppStruct):
-    """Smart Mix: generate and persist a playlist from a single seed."""
-    seed_type: Literal["artist", "genre", "mood"]
-    seed: str
+    """Smart Mix: generate and persist a playlist from a blend of seeds
+    (1-10, any mix of artist/genre/mood)."""
+    seeds: Annotated[list[SmartMixSeed], msgspec.Meta(min_length=1, max_length=10)]
     count: Annotated[int, msgspec.Meta(ge=1, le=250)] = 25
     name: str | None = None
 

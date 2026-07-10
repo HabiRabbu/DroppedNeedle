@@ -248,8 +248,7 @@
 		if (!artist || smartMixMutation.isPending) return;
 		try {
 			const created = await smartMixMutation.mutateAsync({
-				seed_type: 'artist',
-				seed: data.artistId,
+				seeds: [{ type: 'artist', value: data.artistId }],
 				count: 25,
 				name: `${artist.name} — Smart Mix`
 			});

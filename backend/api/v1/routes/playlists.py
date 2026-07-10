@@ -170,12 +170,11 @@ async def generate_smart_mix(
     current_user: CurrentUserDep,
     body: GeneratePlaylistRequest = MsgSpecBody(GeneratePlaylistRequest),
 ) -> PlaylistDetailResponse:
-    """Smart Mix: build a playlist from an artist / genre / mood seed using the
-    user's own library (radio-plan engine) and persist it as a native playlist."""
+    """Smart Mix: build a playlist from a blend of artist / genre / mood seeds
+    using the user's own library (radio-plan engine) and persist it natively."""
     playlist, tracks = await service.generate(
         current_user,
-        seed_type=body.seed_type,
-        seed=body.seed,
+        seeds=[(s.type, s.value) for s in body.seeds],
         count=body.count,
         name=body.name,
     )

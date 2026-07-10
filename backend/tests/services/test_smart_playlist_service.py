@@ -1,4 +1,4 @@
-"""SmartPlaylistService: Smart Mix generation from artist / genre / mood seeds.
+"""SmartPlaylistService: blended Smart Mix generation from artist/genre/mood seeds.
 
 The radio-plan engine is exercised for real (with mocked repos/library_db, the
 same fakes test_radio_plan_service uses); the playlist side uses a mocked repo
@@ -125,16 +125,26 @@ def _make_service(tmp_path, radio_plan=None):
     return svc, radio_plan, repo, created_tracks
 
 
-class TestArtistSeed:
+def _seed_artist_rows(seed_to_rows: dict[str, list[dict]]):
+    """get_files_by_artist_mbids side effect keyed by the FIRST requested mbid."""
+    async def _files(mbids, limit=120):
+        out: list[dict] = []
+        for mbid in mbids:
+            out.extend(seed_to_rows.get(mbid, []))
+        return out
+    return _files
+
+
+class TestSingleSeed:
     @pytest.mark.asyncio
-    async def test_persists_playlist_with_library_tracks(self, tmp_path):
+    async def test_artist_seed_persists_playlist_with_library_tracks(self, tmp_path):
         radio = _make_radio_plan()
         radio._library_db.get_files_by_artist_mbids = AsyncMock(
             return_value=[_lib_row(f"T{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(12)]
         )
         svc, _, repo, created = _make_service(tmp_path, radio)
         playlist, tracks = await svc.generate(
-            _USER, seed_type="artist", seed="a-0", count=10,
+            _USER, seeds=[("artist", "a-0")], count=10,
         )
         assert playlist.id == "pl-1"
         assert playlist.name == "Erykah Badu — Smart Mix"
@@ -145,34 +155,7 @@ class TestArtistSeed:
         assert all(t["library_file_id"] for t in created)
 
     @pytest.mark.asyncio
-    async def test_explicit_name_wins(self, tmp_path):
-        radio = _make_radio_plan()
-        radio._library_db.get_files_by_artist_mbids = AsyncMock(
-            return_value=[_lib_row("T", "A", "a-0", "f-0")]
-        )
-        svc, _, _, _ = _make_service(tmp_path, radio)
-        playlist, _ = await svc.generate(
-            _USER, seed_type="artist", seed="a-0", count=10, name="My Custom Mix",
-        )
-        assert playlist.name == "My Custom Mix"
-
-    @pytest.mark.asyncio
-    async def test_empty_library_returns_422(self, tmp_path):
-        svc, _, _, _ = _make_service(tmp_path)  # library_db returns no rows
-        with pytest.raises(HTTPException) as exc:
-            await svc.generate(_USER, seed_type="artist", seed="a-0", count=10)
-        assert exc.value.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_empty_seed_rejected(self, tmp_path):
-        svc, _, _, _ = _make_service(tmp_path)
-        with pytest.raises(ValidationError):
-            await svc.generate(_USER, seed_type="artist", seed="   ", count=10)
-
-
-class TestGenreSeed:
-    @pytest.mark.asyncio
-    async def test_persists_playlist_from_genre_index_and_file_tags(self, tmp_path):
+    async def test_genre_seed_persists_playlist(self, tmp_path):
         radio = _make_radio_plan()
         radio._genre_index.get_artists_for_genres = AsyncMock(
             return_value={"neo soul": ["a-1", "a-2"]}
@@ -180,74 +163,16 @@ class TestGenreSeed:
         radio._library_db.get_files_by_artist_mbids = AsyncMock(
             return_value=[_lib_row(f"T{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(8)]
         )
-        radio._library_db.get_files_by_genre = AsyncMock(
-            return_value=[_lib_row(f"G{i}", f"TagArtist{i}", f"ta-{i}", f"g-{i}") for i in range(8)]
-        )
         svc, _, _, created = _make_service(tmp_path, radio)
         playlist, tracks = await svc.generate(
-            _USER, seed_type="genre", seed="neo soul", count=15,
+            _USER, seeds=[("genre", "neo soul")], count=15,
         )
         assert playlist.name == "Neo Soul — Smart Mix"
         assert 0 < len(tracks) <= 15
         assert all(t["source_type"] == "local" for t in created)
 
     @pytest.mark.asyncio
-    async def test_count_cap_respected(self, tmp_path):
-        radio = _make_radio_plan()
-        radio._genre_index.get_artists_for_genres = AsyncMock(
-            return_value={"rock": [f"a-{i}" for i in range(40)]}
-        )
-        radio._library_db.get_files_by_artist_mbids = AsyncMock(
-            return_value=[
-                _lib_row(f"T{i}", f"Artist{i % 60}", f"a-{i % 60}", f"f-{i}") for i in range(400)
-            ]
-        )
-        svc, _, _, _ = _make_service(tmp_path, radio)
-        _, tracks = await svc.generate(
-            _USER, seed_type="genre", seed="rock", count=5000,
-        )
-        assert len(tracks) <= MAX_TRACK_COUNT
-
-    @pytest.mark.asyncio
-    async def test_max_count_reachable_on_deep_library(self, tmp_path):
-        # 250 is the new cap; a deep enough pool should actually fill it
-        radio = _make_radio_plan()
-        radio._genre_index.get_artists_for_genres = AsyncMock(
-            return_value={"rock": [f"a-{i}" for i in range(120)]}
-        )
-        radio._library_db.get_files_by_artist_mbids = AsyncMock(
-            return_value=[
-                _lib_row(f"T{i}", f"Artist{i % 150}", f"a-{i % 150}", f"f-{i}")
-                for i in range(600)
-            ]
-        )
-        svc, _, _, _ = _make_service(tmp_path, radio)
-        _, tracks = await svc.generate(
-            _USER, seed_type="genre", seed="rock", count=250,
-        )
-        assert len(tracks) == MAX_TRACK_COUNT == 250
-
-    @pytest.mark.asyncio
-    async def test_short_pool_returns_available_instead_of_erroring(self, tmp_path):
-        # a 250 request on a small library returns what the library has
-        radio = _make_radio_plan()
-        radio._genre_index.get_artists_for_genres = AsyncMock(
-            return_value={"rock": ["a-0", "a-1"]}
-        )
-        radio._library_db.get_files_by_artist_mbids = AsyncMock(
-            return_value=[_lib_row(f"T{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(7)]
-        )
-        svc, _, _, _ = _make_service(tmp_path, radio)
-        playlist, tracks = await svc.generate(
-            _USER, seed_type="genre", seed="rock", count=250,
-        )
-        assert playlist.id == "pl-1"
-        assert len(tracks) == 7
-
-
-class TestMoodSeed:
-    @pytest.mark.asyncio
-    async def test_mood_maps_to_matched_library_tags(self, tmp_path):
+    async def test_mood_seed_maps_to_matched_library_tags(self, tmp_path):
         radio = _make_radio_plan()
 
         async def _artists_for(genres):
@@ -262,26 +187,221 @@ class TestMoodSeed:
         radio._library_db.get_files_by_genre = AsyncMock(return_value=[])
         svc, _, _, _ = _make_service(tmp_path, radio)
         playlist, tracks = await svc.generate(
-            _USER, seed_type="mood", seed="chill", count=10,
+            _USER, seeds=[("mood", "chill")], count=10,
         )
         assert playlist.name == "Chill — Smart Mix"
         assert len(tracks) > 0
 
     @pytest.mark.asyncio
-    async def test_unknown_mood_returns_422(self, tmp_path):
+    async def test_explicit_name_wins(self, tmp_path):
+        radio = _make_radio_plan()
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(
+            return_value=[_lib_row("T", "A", "a-0", "f-0")]
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        playlist, _ = await svc.generate(
+            _USER, seeds=[("artist", "a-0")], count=10, name="My Custom Mix",
+        )
+        assert playlist.name == "My Custom Mix"
+
+    @pytest.mark.asyncio
+    async def test_empty_seeds_rejected(self, tmp_path):
+        svc, _, _, _ = _make_service(tmp_path)
+        with pytest.raises(ValidationError):
+            await svc.generate(_USER, seeds=[("artist", "   ")], count=10)
+
+    @pytest.mark.asyncio
+    async def test_unknown_mood_alone_returns_422_with_hint(self, tmp_path):
         svc, _, _, _ = _make_service(tmp_path)
         with pytest.raises(HTTPException) as exc:
-            await svc.generate(_USER, seed_type="mood", seed="grumpy", count=10)
+            await svc.generate(_USER, seeds=[("mood", "grumpy")], count=10)
         assert exc.value.status_code == 422
-        assert "Unknown mood" in exc.value.detail
+        assert "unknown mood" in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_mood_with_no_library_matches_returns_422(self, tmp_path):
         svc, _, _, _ = _make_service(tmp_path)  # index + file tags both empty
         with pytest.raises(HTTPException) as exc:
-            await svc.generate(_USER, seed_type="mood", seed="workout", count=10)
+            await svc.generate(_USER, seeds=[("mood", "workout")], count=10)
         assert exc.value.status_code == 422
         assert "workout" in exc.value.detail
+
+
+class TestBlendedSeeds:
+    @pytest.mark.asyncio
+    async def test_mixed_types_get_roughly_equal_share(self, tmp_path):
+        radio = _make_radio_plan()
+        # artist seed pool: JazzCat tracks; genre seed pool: RockStar tracks
+        artist_rows = [_lib_row(f"A{i}", f"ArtistPool{i}", f"ap-{i}", f"af-{i}") for i in range(20)]
+        genre_rows = [_lib_row(f"G{i}", f"GenrePool{i}", f"gp-{i}", f"gf-{i}") for i in range(20)]
+
+        async def _files(mbids, limit=120):
+            if any(m.startswith("seed-a") for m in mbids):
+                return artist_rows
+            return genre_rows
+
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(side_effect=_files)
+        radio._genre_index.get_artists_for_genres = AsyncMock(
+            return_value={"rock": ["gp-0", "gp-1"]}
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        _, tracks = await svc.generate(
+            _USER, seeds=[("artist", "seed-a"), ("genre", "rock")], count=10,
+        )
+        assert len(tracks) == 10
+        from_artist = sum(1 for t in tracks if t.track_name.startswith("A"))
+        from_genre = sum(1 for t in tracks if t.track_name.startswith("G"))
+        assert from_artist == 5
+        assert from_genre == 5
+
+    @pytest.mark.asyncio
+    async def test_overlapping_pools_deduped(self, tmp_path):
+        radio = _make_radio_plan()
+        shared = [_lib_row(f"S{i}", f"Shared{i}", f"s-{i}", f"sf-{i}") for i in range(10)]
+        # both seeds resolve to the SAME library rows
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(return_value=shared)
+        radio._genre_index.get_artists_for_genres = AsyncMock(
+            return_value={"rock": ["s-0"], "pop": ["s-1"]}
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        _, tracks = await svc.generate(
+            _USER, seeds=[("genre", "rock"), ("genre", "pop")], count=20,
+        )
+        keys = [f"{t.artist_name}|{t.track_name}" for t in tracks]
+        assert len(keys) == len(set(keys))
+        assert len(tracks) == 10  # everything available once, nothing duplicated
+
+    @pytest.mark.asyncio
+    async def test_one_empty_seed_does_not_fail_the_blend(self, tmp_path):
+        radio = _make_radio_plan()
+
+        async def _files(mbids, limit=120):
+            if any(m.startswith("seed-a") for m in mbids):
+                return [_lib_row(f"A{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(6)]
+            return []
+
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(side_effect=_files)
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        _, tracks = await svc.generate(
+            _USER,
+            seeds=[("artist", "seed-a"), ("mood", "grumpy"), ("genre", "zydeco")],
+            count=10,
+        )
+        assert len(tracks) == 6  # short pool clamps, unknown mood + empty genre ignored
+
+    @pytest.mark.asyncio
+    async def test_all_seeds_empty_returns_422(self, tmp_path):
+        svc, _, _, _ = _make_service(tmp_path)  # everything empty
+        with pytest.raises(HTTPException) as exc:
+            await svc.generate(
+                _USER,
+                seeds=[("artist", "a-0"), ("genre", "zydeco"), ("mood", "grumpy")],
+                count=10,
+            )
+        assert exc.value.status_code == 422
+        assert "any seed" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_duplicate_seeds_collapse(self, tmp_path):
+        radio = _make_radio_plan()
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(
+            return_value=[_lib_row(f"T{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(6)]
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        playlist, tracks = await svc.generate(
+            _USER, seeds=[("artist", "a-0"), ("artist", "A-0 ")], count=10,
+        )
+        # collapsed to one seed -> single-label name, no duplicate tracks
+        assert playlist.name == "Erykah Badu — Smart Mix"
+        keys = [f"{t.artist_name}|{t.track_name}" for t in tracks]
+        assert len(keys) == len(set(keys))
+
+
+class TestNaming:
+    @pytest.mark.asyncio
+    async def test_blend_name_joins_labels(self, tmp_path):
+        radio = _make_radio_plan()
+        radio._genre_index.get_artists_for_genres = AsyncMock(
+            return_value={"jazz": ["a-1"], "rock": ["a-2"]}
+        )
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(
+            return_value=[_lib_row(f"T{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(8)]
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        playlist, _ = await svc.generate(
+            _USER, seeds=[("genre", "jazz"), ("genre", "rock")], count=10,
+        )
+        assert playlist.name == "Jazz + Rock — Smart Mix"
+
+    @pytest.mark.asyncio
+    async def test_blend_name_truncates_past_three_seeds(self, tmp_path):
+        radio = _make_radio_plan()
+        radio._genre_index.get_artists_for_genres = AsyncMock(
+            return_value={g: ["a-1"] for g in ("jazz", "rock", "pop", "soul", "funk")}
+        )
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(
+            return_value=[_lib_row(f"T{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(8)]
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        playlist, _ = await svc.generate(
+            _USER,
+            seeds=[("genre", g) for g in ("jazz", "rock", "pop", "soul", "funk")],
+            count=10,
+        )
+        assert playlist.name == "Jazz + Rock + Pop + 2 more — Smart Mix"
+
+
+class TestCounts:
+    @pytest.mark.asyncio
+    async def test_count_cap_respected(self, tmp_path):
+        radio = _make_radio_plan()
+        radio._genre_index.get_artists_for_genres = AsyncMock(
+            return_value={"rock": [f"a-{i}" for i in range(40)]}
+        )
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(
+            return_value=[
+                _lib_row(f"T{i}", f"Artist{i % 60}", f"a-{i % 60}", f"f-{i}") for i in range(400)
+            ]
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        _, tracks = await svc.generate(
+            _USER, seeds=[("genre", "rock")], count=5000,
+        )
+        assert len(tracks) <= MAX_TRACK_COUNT
+
+    @pytest.mark.asyncio
+    async def test_max_count_reachable_on_deep_library(self, tmp_path):
+        radio = _make_radio_plan()
+        radio._genre_index.get_artists_for_genres = AsyncMock(
+            return_value={"rock": [f"a-{i}" for i in range(120)]}
+        )
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(
+            return_value=[
+                _lib_row(f"T{i}", f"Artist{i % 150}", f"a-{i % 150}", f"f-{i}")
+                for i in range(600)
+            ]
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        _, tracks = await svc.generate(
+            _USER, seeds=[("genre", "rock")], count=250,
+        )
+        assert len(tracks) == MAX_TRACK_COUNT == 250
+
+    @pytest.mark.asyncio
+    async def test_short_pool_returns_available_instead_of_erroring(self, tmp_path):
+        radio = _make_radio_plan()
+        radio._genre_index.get_artists_for_genres = AsyncMock(
+            return_value={"rock": ["a-0", "a-1"]}
+        )
+        radio._library_db.get_files_by_artist_mbids = AsyncMock(
+            return_value=[_lib_row(f"T{i}", f"Artist{i}", f"a-{i}", f"f-{i}") for i in range(7)]
+        )
+        svc, _, _, _ = _make_service(tmp_path, radio)
+        playlist, tracks = await svc.generate(
+            _USER, seeds=[("genre", "rock")], count=250,
+        )
+        assert playlist.id == "pl-1"
+        assert len(tracks) == 7
 
     @pytest.mark.asyncio
     async def test_mood_matches_via_file_tags_when_index_empty(self, tmp_path):
@@ -295,6 +415,6 @@ class TestMoodSeed:
 
         radio._library_db.get_files_by_genre = AsyncMock(side_effect=_files_by_genre)
         svc, _, _, created = _make_service(tmp_path, radio)
-        _, tracks = await svc.generate(_USER, seed_type="mood", seed="chill", count=10)
+        _, tracks = await svc.generate(_USER, seeds=[("mood", "chill")], count=10)
         assert len(tracks) > 0
         assert all(t["source_type"] == "local" for t in created)
