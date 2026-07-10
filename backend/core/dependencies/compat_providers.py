@@ -51,6 +51,23 @@ def get_favorites_service() -> "FavoritesService":
 
 
 @singleton
+def get_compat_play_state_store() -> "CompatPlayStateStore":
+    from infrastructure.persistence.compat_play_state_store import CompatPlayStateStore
+
+    settings = get_settings()
+    return CompatPlayStateStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
+
+
+@singleton
+def get_compat_play_state_service() -> "CompatPlayStateService":
+    from services.compat.play_state_service import CompatPlayStateService
+
+    return CompatPlayStateService(get_compat_play_state_store())
+
+
+@singleton
 def get_compat_id_map_store() -> "CompatIdMapStore":
     from infrastructure.persistence.compat_id_map_store import CompatIdMapStore
 

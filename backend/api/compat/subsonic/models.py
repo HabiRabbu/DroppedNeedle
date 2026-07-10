@@ -73,6 +73,7 @@ class SAlbumID3(msgspec.Struct, kw_only=True):
     genre: str | None = None
     isCompilation: bool | None = None
     musicBrainzId: str | None = None
+    userRating: int | None = None
     song: list["SChild"] | None = None  # populated by getAlbum only
 
 
@@ -108,6 +109,7 @@ class SChild(msgspec.Struct, kw_only=True):
     samplingRate: int | None = None
     channelCount: int | None = None
     musicBrainzId: str | None = None
+    userRating: int | None = None
 
 
 class SGenre(msgspec.Struct, kw_only=True):

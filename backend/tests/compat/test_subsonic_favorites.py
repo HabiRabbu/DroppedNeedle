@@ -63,10 +63,31 @@ async def test_get_starred_file_structure(compat_env):
     assert starred["song"][0]["isDir"] is False
 
 
-async def test_set_rating_is_accepted_noop(compat_env):
+async def test_set_rating_persists_and_surfaces(compat_env):
     song_id, _, _ = _first_ids(compat_env)
     body = _sub(_get(compat_env, "setRating", id=song_id, rating="5"))
     assert body["status"] == "ok"
-    # nothing persisted - song still has no rating surfaced; just assert it didn't error
+    song = _sub(_get(compat_env, "getSong", id=song_id))["song"]
+    assert song["userRating"] == 5
+
+
+async def test_set_rating_zero_removes(compat_env):
+    song_id, _, _ = _first_ids(compat_env)
+    _sub(_get(compat_env, "setRating", id=song_id, rating="4"))
+    _sub(_get(compat_env, "setRating", id=song_id, rating="0"))
     song = _sub(_get(compat_env, "getSong", id=song_id))["song"]
     assert "userRating" not in song
+
+
+async def test_set_rating_album_surfaces_on_get_album(compat_env):
+    _, album_id, _ = _first_ids(compat_env)
+    _sub(_get(compat_env, "setRating", id=album_id, rating="3"))
+    album = _sub(_get(compat_env, "getAlbum", id=album_id))["album"]
+    assert album["userRating"] == 3
+
+
+async def test_set_rating_requires_rating_param(compat_env):
+    song_id, _, _ = _first_ids(compat_env)
+    body = _sub(_get(compat_env, "setRating", id=song_id))
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 10

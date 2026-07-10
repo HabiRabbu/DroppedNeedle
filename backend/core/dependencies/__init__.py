@@ -203,6 +203,8 @@ from .compat_providers import (  # noqa: F401
     get_app_password_service,
     get_favorites_store,
     get_favorites_service,
+    get_compat_play_state_store,
+    get_compat_play_state_service,
     get_compat_id_map_store,
     get_compat_id_map_service,
     get_library_view_service,

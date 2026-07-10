@@ -75,6 +75,39 @@ async def favorites_service(
 
 
 @pytest.fixture
+def play_state_service(
+    db_path: Path, write_lock: threading.Lock, auth_store: AuthStore
+) -> "CompatPlayStateService":
+    from infrastructure.persistence.compat_play_state_store import (
+        CompatPlayStateStore,
+    )
+    from services.compat.play_state_service import CompatPlayStateService
+
+    return CompatPlayStateService(
+        CompatPlayStateStore(db_path=db_path, write_lock=write_lock)
+    )
+
+
+class _FakeLyricsService:
+    """LocalLyricsService stand-in: fixed synced lyrics for every file id."""
+
+    def __init__(self) -> None:
+        from api.v1.schemas.library import LibraryLyricLine, LibraryLyricsResponse
+
+        self.response = LibraryLyricsResponse(
+            text="Line one\nLine two",
+            is_synced=True,
+            lines=[
+                LibraryLyricLine(text="Line one", start_seconds=0.0),
+                LibraryLyricLine(text="Line two", start_seconds=12.5),
+            ],
+        )
+
+    async def get_lyrics(self, file_id: str):
+        return self.response
+
+
+@pytest.fixture
 def compat_id_map_service(
     db_path: Path, write_lock: threading.Lock
 ) -> "CompatIdMapService":
@@ -160,6 +193,14 @@ async def streaming_env(tmp_path):
 
     cover = _Cover()
     favorites = FavoritesService(FavoritesStore(db_path=db_path, write_lock=lock))
+    from infrastructure.persistence.compat_play_state_store import (
+        CompatPlayStateStore,
+    )
+    from services.compat.play_state_service import CompatPlayStateService
+
+    play_state = CompatPlayStateService(
+        CompatPlayStateStore(db_path=db_path, write_lock=lock)
+    )
     view = LibraryViewService(lm, db, cover, favorites)
     id_map = CompatIdMapService(CompatIdMapStore(db_path=db_path, write_lock=lock))
     local_files = LocalFilesService(lm, prefs, Mock())
@@ -183,6 +224,8 @@ async def streaming_env(tmp_path):
         deps.get_compat_scrobble_adapter: lambda: Mock(),
         deps.get_compat_discover_service: lambda: Mock(),
         deps.get_coverart_repository: lambda: cover,
+        deps.get_compat_play_state_service: lambda: play_state,
+        deps.get_local_lyrics_service: lambda: _FakeLyricsService(),
     })
     client = build_test_client(app)
     jf_track_id = await id_map.to_jf("track", fid)
@@ -272,7 +315,7 @@ def subsonic_query(secret, username, *, fmt="json", scheme="apikey", client="pyt
 @pytest_asyncio.fixture
 async def compat_env(
     db_path, write_lock, auth_store, seeded_library, app_password_service,
-    favorites_service, compat_id_map_service, tmp_path,
+    favorites_service, compat_id_map_service, play_state_service, tmp_path,
 ):
     """A FastAPI test client with the compat shims mounted and the DI bundle
     overridden to temp services over the seeded (fake-path) library. Both
@@ -302,6 +345,7 @@ async def compat_env(
 
     db, _lm, ids = seeded_library
     cover = _JpegCoverArt()
+    lyrics = _FakeLyricsService()
 
     prefs_settings = Settings()
     prefs_settings.config_file_path = tmp_path / "compat-config.json"
@@ -351,6 +395,8 @@ async def compat_env(
         deps.get_local_files_service: lambda: Mock(),
         deps.get_coverart_repository: lambda: cover,
         deps.get_preferences_service: lambda: preferences,
+        deps.get_compat_play_state_service: lambda: play_state_service,
+        deps.get_local_lyrics_service: lambda: lyrics,
     }
     app.dependency_overrides.update(overrides)
     client = build_test_client(app)
@@ -359,4 +405,5 @@ async def compat_env(
         preferences=preferences, app=app, view=view, favorites=favorites_service,
         playlists=playlists, phs=phs, discover=discover,
         lm=_lm, db=db, id_map=compat_id_map_service,
+        play_state=play_state_service, lyrics=lyrics,
     )
