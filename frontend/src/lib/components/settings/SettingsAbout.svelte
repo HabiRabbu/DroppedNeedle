@@ -126,7 +126,7 @@
 							Check for Updates
 						</button>
 						<a
-							href="https://github.com/HabiRabbu/DroppedNeedle"
+							href="https://github.com/DroppedNeedle/DroppedNeedle"
 							target="_blank"
 							rel="noopener noreferrer"
 							class="btn btn-ghost btn-sm"

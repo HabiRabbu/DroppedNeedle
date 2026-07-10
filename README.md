@@ -3,7 +3,7 @@
 <img src="Images/logo_wide.png" alt="DroppedNeedle" width="400" />
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![Docker Hub](https://img.shields.io/badge/docker-hub-blue?logo=docker&logoColor=white)](https://hub.docker.com/r/habirabbu/droppedneedle)
+[![Docker Hub](https://img.shields.io/badge/docker-hub-blue?logo=docker&logoColor=white)](https://hub.docker.com/r/droppedneedle/droppedneedle)
 [![Discord](https://img.shields.io/discord/1356702267809808404?label=discord&logo=discord&logoColor=white)](https://discord.gg/B5suDg7gu2)
 [![Docs](https://img.shields.io/badge/docs-droppedneedle.com-blue)](https://www.droppedneedle.com/)
 
@@ -36,12 +36,12 @@ You need Docker, a music library, and a download client. The example below uses 
 
 ### 1. Create a docker-compose.yml
 
-Images are available on [Docker Hub](https://hub.docker.com/r/habirabbu/droppedneedle) (`habirabbu/droppedneedle:latest`).
+Images are available on [Docker Hub](https://hub.docker.com/r/droppedneedle/droppedneedle) (`droppedneedle/droppedneedle:latest`).
 
 ```yaml
 services:
   droppedneedle:
-    image: habirabbu/droppedneedle:latest
+    image: droppedneedle/droppedneedle:latest
     container_name: droppedneedle
     environment:
       - PUID=1000            # Run `id` on your host to find your user/group ID
@@ -73,7 +73,7 @@ services:
       retries: 3
 ```
 
-> A `:dev` tag (`habirabbu/droppedneedle:dev`) is also available. It's built automatically from `main` on every push and may be unstable. Pin to a specific commit with `:dev-<short-sha>` (e.g. `:dev-a1b2c3d`).
+> A `:dev` tag (`droppedneedle/droppedneedle:dev`) is also available. It's built automatically from `main` on every push and may be unstable. Pin to a specific commit with `:dev-<short-sha>` (e.g. `:dev-a1b2c3d`).
 
 ### 2. Start it
 
@@ -672,7 +672,7 @@ See the [CONTRIBUTING](CONTRIBUTING.md) guide for instructions on setting up a d
 
 Documentation is at [droppedneedle.com](https://www.droppedneedle.com/).
 
-For questions, help, or just to chat, join the [Discord](https://discord.gg/B5suDg7gu2). Bug reports and feature requests go on [GitHub Issues](https://github.com/HabiRabbu/DroppedNeedle/issues).
+For questions, help, or just to chat, join the [Discord](https://discord.gg/B5suDg7gu2). Bug reports and feature requests go on [GitHub Issues](https://github.com/DroppedNeedle/DroppedNeedle/issues).
 
 If you find DroppedNeedle useful, consider supporting development:
 

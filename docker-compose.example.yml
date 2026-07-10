@@ -7,7 +7,7 @@
 
 services:
   droppedneedle:
-    image: habirabbu/droppedneedle:latest
+    image: droppedneedle/droppedneedle:latest
     # :dev is built from main on every push and may break.
     container_name: droppedneedle
     environment:

@@ -53,13 +53,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          path-to-document: 'https://github.com/HabiRabbu/DroppedNeedle/blob/main/.github/CLA.md'
+          path-to-document: 'https://github.com/DroppedNeedle/DroppedNeedle/blob/main/.github/CLA.md'
           path-to-signatures: 'signatures/version1/cla.json'
           branch: 'cla-signatures'
           allowlist: HabiRabbu,dependabot[bot],github-actions[bot]
           custom-notsigned-prcomment: >-
             Thanks for the pull request. Before it can be merged, please read and sign the
-            [Contributor License Agreement](https://github.com/HabiRabbu/DroppedNeedle/blob/main/.github/CLA.md).
+            [Contributor License Agreement](https://github.com/DroppedNeedle/DroppedNeedle/blob/main/.github/CLA.md).
             You keep the copyright in your work; the CLA grants DroppedNeedle the right to
             distribute it, including under the project's commercial licence.
             To sign, reply to this pull request with:

@@ -5,9 +5,9 @@ DroppedNeedle is a self-hosted, multi-user music request and discovery app. It h
 
 This repository maintains the official DroppedNeedle Unraid template.
 
-**Support:** open an issue on [GitHub](https://github.com/HabiRabbu/DroppedNeedle/issues) or join the [Discord](https://discord.gg/B5suDg7gu2). Documentation is at [droppedneedle.com](https://www.droppedneedle.com/).
+**Support:** open an issue on [GitHub](https://github.com/DroppedNeedle/DroppedNeedle/issues) or join the [Discord](https://discord.gg/B5suDg7gu2). Documentation is at [droppedneedle.com](https://www.droppedneedle.com/).
   </Profile>
-  <Icon>https://raw.githubusercontent.com/HabiRabbu/DroppedNeedle/main/Images/logo_icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/Images/logo_icon.png</Icon>
   <WebPage>https://www.droppedneedle.com/</WebPage>
   <Discord>https://discord.gg/B5suDg7gu2</Discord>
 </CommunityApplications>
