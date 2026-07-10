@@ -31,6 +31,7 @@
 	import SettingsOnboardingChecklist from '$lib/components/settings/SettingsOnboardingChecklist.svelte';
 	import SettingsSpotify from '$lib/components/settings/SettingsSpotify.svelte';
 	import SettingsEvents from '$lib/components/settings/SettingsEvents.svelte';
+	import SettingsFreeMusic from '$lib/components/settings/SettingsFreeMusic.svelte';
 	import SettingsGetIt from '$lib/components/settings/SettingsGetIt.svelte';
 	import SettingsPlugins from '$lib/components/settings/SettingsPlugins.svelte';
 	import SettingsWrapped from '$lib/components/settings/SettingsWrapped.svelte';
@@ -58,6 +59,7 @@
 		DownloadCloud,
 		Gift,
 		ShoppingBag,
+		Landmark,
 		Blocks
 	} from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
@@ -93,6 +95,7 @@
 		{ id: 'library', label: 'Library', tier: 'setup', icon: Music },
 		...(authStore.isAdmin
 			? [
+					{ id: 'free-music', label: 'Free Music', tier: 'setup', icon: Landmark },
 					{
 						id: 'download-client',
 						label: 'Download Client',
@@ -311,6 +314,8 @@
 					<SettingsSpotify />
 				{:else if activeTab === 'events' && authStore.isAdmin}
 					<SettingsEvents />
+				{:else if activeTab === 'free-music' && authStore.isAdmin}
+					<SettingsFreeMusic />
 				{:else if activeTab === 'get-it' && authStore.isAdmin}
 					<SettingsGetIt />
 				{:else if activeTab === 'plugins' && authStore.isAdmin}

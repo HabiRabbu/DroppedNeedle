@@ -1100,6 +1100,12 @@ export type SpotifySettings = {
 	enabled: boolean;
 };
 
+// mirrors backend api/v1/schemas/settings.py (FreeMusicSettings)
+export type FreeMusicSettings = {
+	enabled: boolean;
+	preferred_format: 'flac' | 'mp3';
+};
+
 // mirrors backend api/v1/schemas/settings.py (GetItSettings)
 export type GetItSettings = {
 	store_region: string; // ISO 3166-1 alpha-2, feeds the iTunes storefront

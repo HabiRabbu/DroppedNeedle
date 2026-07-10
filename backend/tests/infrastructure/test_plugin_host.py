@@ -169,19 +169,30 @@ def test_one_crashing_scrobbler_does_not_stop_the_next(tmp_path):
     assert sys.modules[module].SEEN == ["Song"]
 
 
-def test_require_source_rejects_non_source_plugins(tmp_path):
-    from core.exceptions import ResourceNotFoundError
+def test_no_capability_acquires_content(tmp_path):
+    """D22: the host offers no way for a plugin to fetch audio. A manifest asking
+    for the old `audio_source` capability fails to load loudly rather than being
+    silently ignored, and the host exposes no dispatch method for it."""
+    from infrastructure.plugins.manifest import KNOWN_CAPABILITIES
+
+    assert "audio_source" not in KNOWN_CAPABILITIES
+    for gone in ("sources", "source_search", "source_fetch", "require_source"):
+        assert not hasattr(PluginHost, gone), f"PluginHost.{gone} came back"
+
+    manifest = VALID_MANIFEST.replace(
+        'capabilities = ["scrobbler"]', 'capabilities = ["audio_source"]'
+    )
+    assert 'capabilities = ["audio_source"]' in manifest  # the replace actually fired
 
     prefs = FakePrefs()
-    prefs.enable("test-plugin")
-    _write_plugin(tmp_path, "test-plugin", VALID_MANIFEST, SCROBBLER_CODE)
+    prefs.enable("grabby")
+    _write_plugin(tmp_path, "grabby", manifest, SCROBBLER_CODE)
     host = PluginHost(plugins_dir=tmp_path, preferences_service=prefs)
     host.load_all()
 
-    with pytest.raises(ResourceNotFoundError):
-        host.require_source("test-plugin")
-    with pytest.raises(ResourceNotFoundError):
-        host.require_source("does-not-exist")
+    plugin = host.get("grabby")
+    assert plugin is not None and plugin.instance is None
+    assert "unknown capabilities" in (plugin.error or "")
 
 
 # -- the shipped examples are executable fixtures --
@@ -190,15 +201,11 @@ def test_require_source_rejects_non_source_plugins(tmp_path):
 def test_example_plugins_load_with_their_capabilities():
     prefs = FakePrefs()
     prefs.enable("webhook-scrobbler")
-    prefs.enable("lma-source")
     host = PluginHost(plugins_dir=EXAMPLES, preferences_service=prefs)
     host.load_all()
 
     scrobbler = host.get("webhook-scrobbler")
     assert scrobbler is not None and scrobbler.active_capabilities == ["scrobbler"]
-    source = host.get("lma-source")
-    assert source is not None and source.active_capabilities == ["audio_source"]
-    assert [p.manifest.name for p in host.sources()] == ["lma-source"]
 
 
 @pytest.mark.asyncio

@@ -71,11 +71,11 @@ plugin, and never break the host flow that called you - but they also mean
 your plugin silently did nothing, so log generously.
 
 Your type hints and the objects you return come from
-`infrastructure.plugins.protocols` - `SourceItem`, `PluginPurchaseLink`,
-`ScrobbleEvent`. A plugin runs in-process, so you can import them directly:
+`infrastructure.plugins.protocols` - `PluginPurchaseLink` and `ScrobbleEvent`.
+A plugin runs in-process, so you can import them directly:
 
 ```python
-from infrastructure.plugins.protocols import SourceItem
+from infrastructure.plugins.protocols import PluginPurchaseLink
 ```
 
 That import couples your plugin to the host's internals, which is exactly what
@@ -106,29 +106,22 @@ Contribute links to the album page's "Where to buy" section. Return
 Links are deduplicated by URL and ordered by the app's store-fairness rules -
 plugins cannot influence ordering. You have a 10-second budget per album.
 
-### `audio_source`
+### There is no capability that downloads music
 
-```python
-async def search(self, query: str, limit: int) -> list[SourceItem]: ...
-async def fetch(self, item_id: str, dest_dir: Path) -> list[Path]: ...
-```
+DroppedNeedle offers no plugin capability that acquires content, and never calls
+plugin code to acquire. This is deliberate and it will not change. A capability
+that searched a source and fetched its files would mean DroppedNeedle's own
+interface presenting the results and DroppedNeedle's own process performing the
+download, which is not something a plugin boundary makes somebody else's problem.
+It would also route audio into your library with no licence attached, past the
+checks the built-in Free Music client applies to everything it downloads.
 
-A searchable source of audio the user is entitled to. `search` returns
-`SourceItem(id, title, artist, detail)`. `fetch` downloads one item's files
-into the host-provided `dest_dir` and returns the written paths - the host
-then runs them through the standard import pipeline (identify, tag, organise,
-notify), and progress appears in the Import tab. Your plugin never touches the
-library directly.
-
-Note that DroppedNeedle's library is MusicBrainz-keyed: fetched items are
-auto-imported only when they identify against a MusicBrainz release (by tags
-or fingerprint). Anything else waits in "Needs a match" for a manual pick, so
-sources whose catalogue rarely exists in MusicBrainz (one-off live tapes,
-unreleased material) will lean on that manual step.
-
-Reference: [`examples/plugins/lma-source`](examples/plugins/lma-source) - the
-Internet Archive's Live Music Archive, where artists explicitly permit free
-taping and trading.
+If you want DroppedNeedle to pull from a source of your own, you do not need a
+plugin. Use the REST API from your own program: `GET /api/v1/requests` tells you
+what people have asked for, and `POST /api/v1/import/uploads` hands files to the
+same import pipeline everything else uses. Both are authenticated, both exist for
+their own reasons, and DroppedNeedle never calls out to you. Or fork it; the
+licence says you may.
 
 ### Reserved capability ids
 

@@ -16,7 +16,11 @@ PLUGIN_API_VERSION = 0  # EXPERIMENTAL: surface may change until api_version 1
 # 'metadata_provider' and 'streaming_source' are accepted (reserved) but not
 # activated yet - the host logs and skips them until a future api_version wires
 # their consumers. Validating them now keeps early manifests forward-compatible.
-ACTIVE_CAPABILITIES = frozenset({"scrobbler", "purchase_links", "audio_source"})
+#
+# 'audio_source' is deliberately absent from both sets, so a manifest declaring it
+# fails to load with an unknown-capability error rather than being silently
+# ignored. No capability acquires content (D22); see protocols.py.
+ACTIVE_CAPABILITIES = frozenset({"scrobbler", "purchase_links"})
 RESERVED_CAPABILITIES = frozenset({"metadata_provider", "streaming_source"})
 KNOWN_CAPABILITIES = ACTIVE_CAPABILITIES | RESERVED_CAPABILITIES
 

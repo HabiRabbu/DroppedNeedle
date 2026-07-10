@@ -30,6 +30,7 @@ from api.v1.schemas.settings import (
     HomeSettings,
     ACOUSTID_KEY_MASK,
     EventsSettings,
+    FreeMusicSettings,
     GetItSettings,
     TICKETMASTER_KEY_MASK,
     SKIDDLE_KEY_MASK,
@@ -462,6 +463,24 @@ def _clear_events_cache() -> None:
         get_events_watcher_service,
     ):
         provider.cache_clear()
+
+
+@router.get("/free-music", response_model=FreeMusicSettings, dependencies=[Depends(_admin_guard)])
+async def get_free_music_settings(
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    return preferences_service.get_free_music_settings()
+
+
+@router.put("/free-music", response_model=FreeMusicSettings, dependencies=[Depends(_admin_guard)])
+async def update_free_music_settings(
+    settings: FreeMusicSettings = MsgSpecBody(FreeMusicSettings),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+):
+    # FreeMusicService reads these per call, so nothing to rebuild. Disabling it
+    # narrows is_download_source_ready(), which the frontend re-reads on load.
+    preferences_service.save_free_music_settings(settings)
+    return preferences_service.get_free_music_settings()
 
 
 @router.get("/get-it", response_model=GetItSettings, dependencies=[Depends(_admin_guard)])

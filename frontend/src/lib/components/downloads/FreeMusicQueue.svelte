@@ -1,0 +1,139 @@
+<script lang="ts">
+	import { CheckCircle2, CircleAlert, Loader2, RotateCw, Search, X } from 'lucide-svelte';
+	import {
+		cancelFreeMusicMutation,
+		retryFreeMusicMutation
+	} from '$lib/queries/free-music/FreeMusicMutations.svelte';
+	import { getFreeMusicTasksQuery } from '$lib/queries/free-music/FreeMusicQueries.svelte';
+	import type { FreeMusicStatus, FreeMusicTask } from '$lib/queries/free-music/types';
+	import { authStore } from '$lib/stores/authStore.svelte';
+
+	interface Props {
+		showAll?: boolean;
+	}
+	let { showAll = false }: Props = $props();
+
+	const tasksQuery = getFreeMusicTasksQuery(
+		() => true,
+		() => showAll && authStore.isAdmin
+	);
+	const cancel = cancelFreeMusicMutation();
+	const retry = retryFreeMusicMutation();
+	const tasks = $derived(tasksQuery.data?.tasks ?? []);
+
+	const labels: Record<FreeMusicStatus, string> = {
+		searching: 'Searching the Archive…',
+		downloading: 'Downloading',
+		importing: 'Importing',
+		completed: 'In your library',
+		failed: 'Failed',
+		cancelled: 'Cancelled'
+	};
+
+	const isActive = (status: FreeMusicStatus) =>
+		status === 'searching' || status === 'downloading' || status === 'importing';
+
+	function percent(task: FreeMusicTask): number {
+		if (task.bytes_total > 0) {
+			return Math.min(100, Math.round((task.bytes_downloaded / task.bytes_total) * 100));
+		}
+		if (task.files_total > 0) {
+			return Math.round((task.files_completed / task.files_total) * 100);
+		}
+		return 0;
+	}
+
+	// "CC BY-NC-SA 3.0" from the licence URL. Users should see what they're getting.
+	function licenceLabel(url: string): string {
+		const match = /creativecommons\.org\/(licenses|publicdomain)\/([^/]+)\/([^/]+)/.exec(url);
+		if (!match) return '';
+		if (match[1] === 'publicdomain') return `Public domain (${match[2].toUpperCase()})`;
+		return `CC ${match[2].toUpperCase()} ${match[3]}`;
+	}
+</script>
+
+{#if tasks.length}
+	<div class="mb-6 space-y-2">
+		<h2 class="text-sm font-semibold text-base-content/70">Free Music</h2>
+		{#each tasks as task (task.id)}
+			<div class="rounded-2xl border border-base-content/10 bg-base-200/40 px-4 py-3">
+				<div class="flex flex-wrap items-center justify-between gap-2">
+					<div class="min-w-0 flex-1">
+						<div class="flex min-w-0 items-center gap-2">
+							{#if task.status === 'completed'}
+								<CheckCircle2 class="h-4 w-4 shrink-0 text-success" aria-hidden="true" />
+							{:else if task.status === 'failed'}
+								<CircleAlert class="h-4 w-4 shrink-0 text-error" aria-hidden="true" />
+							{:else if task.status === 'searching'}
+								<Search class="h-4 w-4 shrink-0 animate-pulse text-info" aria-hidden="true" />
+							{:else if isActive(task.status)}
+								<Loader2 class="h-4 w-4 shrink-0 animate-spin text-info" aria-hidden="true" />
+							{:else}
+								<X class="h-4 w-4 shrink-0 text-base-content/40" aria-hidden="true" />
+							{/if}
+							<p class="truncate text-sm font-medium">
+								{task.artist ? `${task.artist} - ` : ''}{task.title}
+							</p>
+							{#if task.licence_url}
+								{@const licence = licenceLabel(task.licence_url)}
+								{#if licence}
+									<a
+										href={task.licence_url}
+										target="_blank"
+										rel="noopener noreferrer"
+										class="badge badge-ghost badge-sm shrink-0 hover:badge-outline"
+										title="This music is licensed for downloading"
+									>
+										{licence}
+									</a>
+								{/if}
+							{/if}
+						</div>
+						<p class="mt-0.5 text-xs text-base-content/50">
+							{labels[task.status]}
+							{#if task.status === 'downloading' && task.files_total}
+								· {task.files_completed}/{task.files_total} files
+							{/if}
+							{#if task.format}
+								· {task.format.toUpperCase()}
+							{/if}
+						</p>
+						{#if task.error}
+							<p class="mt-0.5 truncate text-xs text-error" title={task.error}>{task.error}</p>
+						{/if}
+					</div>
+
+					<div class="flex shrink-0 items-center gap-1">
+						{#if isActive(task.status)}
+							<button
+								class="btn btn-ghost btn-xs"
+								onclick={() => cancel.mutate(task.id)}
+								disabled={cancel.isPending}
+								aria-label="Cancel {task.title}"
+							>
+								<X class="h-3.5 w-3.5" aria-hidden="true" />
+							</button>
+						{:else if task.status === 'failed' || task.status === 'cancelled'}
+							<button
+								class="btn btn-ghost btn-xs gap-1"
+								onclick={() => retry.mutate(task.id)}
+								disabled={retry.isPending}
+							>
+								<RotateCw class="h-3.5 w-3.5" aria-hidden="true" />
+								Retry
+							</button>
+						{/if}
+					</div>
+				</div>
+
+				{#if isActive(task.status)}
+					<progress
+						class="progress progress-primary mt-2 h-1 w-full"
+						value={percent(task)}
+						max="100"
+					></progress>
+				{/if}
+			</div>
+		{/each}
+	</div>
+{/if}

@@ -367,6 +367,17 @@ class PluginConfig(AppStruct):
     settings: dict[str, str] = {}
 
 
+class FreeMusicSettings(AppStruct):
+    """Free Music (D24): DroppedNeedle's own lawful download client. Downloads
+    Creative Commons and public-domain music from the Internet Archive, filtered
+    to items carrying an explicit licence. Enabled by default - it costs nothing,
+    needs no signup, and the lawful use it demonstrates is what makes having a
+    download engine defensible at all."""
+
+    enabled: bool = True
+    preferred_format: Literal["flac", "mp3"] = "flac"
+
+
 class GetItSettings(AppStruct):
     """"Get it" purchase links (phase 01). ``store_region`` feeds the iTunes
     Search ``country`` storefront parameter. ``support_droppedneedle`` gates

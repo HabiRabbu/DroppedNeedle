@@ -11,7 +11,6 @@ from infrastructure.plugins.protocols import (
     PluginContext,
     PluginPurchaseLink,
     ScrobbleEvent,
-    SourceItem,
 )
 
 __all__ = [
@@ -22,5 +21,4 @@ __all__ = [
     "PluginContext",
     "PluginPurchaseLink",
     "ScrobbleEvent",
-    "SourceItem",
 ]

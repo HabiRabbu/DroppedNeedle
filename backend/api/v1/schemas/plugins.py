@@ -6,7 +6,6 @@ the stored value.
 """
 
 from infrastructure.msgspec_fastapi import AppStruct
-from infrastructure.plugins.protocols import SourceItem
 
 PLUGIN_SECRET_MASK = "plugin****"
 
@@ -44,29 +43,3 @@ class PluginUpdateRequest(AppStruct):
 
 class PluginInstallRequest(AppStruct):
     repository_url: str
-
-
-class SourcePluginInfo(AppStruct):
-    name: str
-    display_name: str
-    description: str = ""
-
-
-class SourceListResponse(AppStruct):
-    sources: list[SourcePluginInfo] = []
-
-
-class SourceSearchRequest(AppStruct):
-    query: str
-
-
-class SourceSearchResponse(AppStruct):
-    items: list[SourceItem] = []
-
-
-class SourceFetchRequest(AppStruct):
-    item_id: str
-
-
-class SourceFetchResponse(AppStruct):
-    started: bool = True

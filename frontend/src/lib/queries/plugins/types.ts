@@ -27,24 +27,3 @@ export interface PluginInfo {
 export interface PluginListResponse {
 	plugins: PluginInfo[];
 }
-
-export interface SourcePluginInfo {
-	name: string;
-	display_name: string;
-	description: string;
-}
-
-export interface SourceListResponse {
-	sources: SourcePluginInfo[];
-}
-
-export interface SourceItem {
-	id: string;
-	title: string;
-	artist: string;
-	detail: string;
-}
-
-export interface SourceSearchResponse {
-	items: SourceItem[];
-}

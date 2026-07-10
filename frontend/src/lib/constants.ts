@@ -282,6 +282,7 @@ export const API = {
 	settingsMusicbrainz: () => '/api/v1/settings/musicbrainz',
 	settingsMusicbrainzVerify: () => '/api/v1/settings/musicbrainz/verify',
 	settingsGetIt: () => '/api/v1/settings/get-it',
+	settingsFreeMusic: () => '/api/v1/settings/free-music',
 	profile: {
 		get: () => '/api/v1/profile',
 		update: () => '/api/v1/profile',
@@ -372,14 +373,17 @@ export const API = {
 		artists: () => '/api/v1/lidarr-import/artists',
 		import: () => '/api/v1/lidarr-import/import'
 	},
+	freeMusic: {
+		tasks: (all: boolean = false) => `/api/v1/free-music/tasks${all ? '?all=true' : ''}`,
+		task: (id: string) => `/api/v1/free-music/tasks/${id}`,
+		cancel: (id: string) => `/api/v1/free-music/tasks/${id}/cancel`,
+		retry: (id: string) => `/api/v1/free-music/tasks/${id}/retry`
+	},
 	plugins: {
 		list: () => '/api/v1/plugins',
 		install: () => '/api/v1/plugins/install',
 		update: (name: string) => `/api/v1/plugins/${name}`,
-		uninstall: (name: string) => `/api/v1/plugins/${name}`,
-		sources: () => '/api/v1/plugins/sources',
-		sourceSearch: (name: string) => `/api/v1/plugins/sources/${name}/search`,
-		sourceFetch: (name: string) => `/api/v1/plugins/sources/${name}/fetch`
+		uninstall: (name: string) => `/api/v1/plugins/${name}`
 	},
 	dropImport: {
 		uploads: () => '/api/v1/import/uploads',

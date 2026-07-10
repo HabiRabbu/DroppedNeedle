@@ -4,10 +4,10 @@
 	import { Download, PackageOpen } from 'lucide-svelte';
 
 	import DownloadQueue from '$lib/components/downloads/DownloadQueue.svelte';
+	import FreeMusicQueue from '$lib/components/downloads/FreeMusicQueue.svelte';
 	import DiscoveryBatchList from '$lib/components/discover/DiscoveryBatchList.svelte';
 	import DropImportJobList from '$lib/components/import/DropImportJobList.svelte';
 	import DropImportZone from '$lib/components/import/DropImportZone.svelte';
-	import PluginSourceSearch from '$lib/components/import/PluginSourceSearch.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { integrationStore } from '$lib/stores/integration';
@@ -67,7 +67,6 @@
 
 	{#if activeTab === 'import' && canImport}
 		<DropImportZone className="mb-6" />
-		<PluginSourceSearch />
 		{#if isAdmin}
 			<label class="mb-3 flex items-center justify-end gap-2 text-xs text-base-content/60">
 				<input type="checkbox" class="toggle toggle-xs" bind:checked={showAllImports} />
@@ -98,6 +97,7 @@
 			/>
 		{/if}
 	{:else}
+		<FreeMusicQueue showAll={isAdmin} />
 		<DownloadQueue />
 		<DiscoveryBatchList />
 	{/if}

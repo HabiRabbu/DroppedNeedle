@@ -273,6 +273,26 @@ def get_wanted_store() -> "WantedStore":
 
 
 @singleton
+def get_archive_repository() -> "ArchiveRepository":
+    from infrastructure.http.client import HttpClientFactory
+    from repositories.archive_repository import ArchiveRepository
+
+    # generous timeout: this client streams whole albums, not JSON
+    http = HttpClientFactory.get_client(name="internet-archive", timeout=120.0)
+    return ArchiveRepository(http)
+
+
+@singleton
+def get_free_music_store() -> "FreeMusicStore":
+    from infrastructure.persistence.free_music_store import FreeMusicStore
+
+    from .cache_providers import get_persistence_write_lock
+
+    settings = get_settings()
+    return FreeMusicStore(db_path=settings.library_db_path, write_lock=get_persistence_write_lock())
+
+
+@singleton
 def get_itunes_repository() -> "ITunesRepository":
     from infrastructure.http.client import HttpClientFactory
     from repositories.itunes_repository import ITunesRepository

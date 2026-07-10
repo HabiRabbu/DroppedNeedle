@@ -97,7 +97,9 @@ DroppedNeedle replaces Lidarr with a built-in library and download engine. It sc
 
 The engine talks only to a user-supplied slskd instance over its local HTTP API. It never joins or distributes on the Soulseek/P2P network itself; it issues searches and download requests to slskd and imports the results. The operator supplies, runs, and is responsible for slskd and its shared folders. This is built into the architecture, not just the UI: the engine has no Soulseek protocol code, only an HTTP client for slskd.
 
-DroppedNeedle ships no indexers, no tracker lists, and no sources of any kind. It searches MusicBrainz, an open metadata database that hosts no audio. Every source it can reach is one you configured yourself: your own slskd instance, or your own Newznab indexers and your own SABnzbd.
+DroppedNeedle ships no indexers and no tracker lists. It searches MusicBrainz, an open metadata database that hosts no audio. Every acquisition source it can reach is one you configured yourself: your own slskd instance, or your own Newznab indexers and your own SABnzbd.
+
+Free Music is the one source that ships with the app. It downloads from the Internet Archive, and it offers only items carrying an explicit Creative Commons or public-domain licence, which is shown to you before anything downloads. It needs no account and no API key, it is on by default, and Settings turns it off.
 
 The engine acquires whatever the operator directs it to acquire. It is built for public-domain and Creative Commons recordings, for releases artists distribute themselves through Bandcamp or the Internet Archive's Live Music Archive, for live-taping collections, and for re-acquiring media you already own. Holding the rights to what you download, and to whatever your download client shares back, is your responsibility as the operator.
 
@@ -445,6 +447,12 @@ Browse your native library by artist or album with search, filtering, sorting, a
 
 Jellyfin, Navidrome, Plex, and local file sources each get their own library view with play, shuffle, and queue actions.
 
+### Free Music
+
+Request an album and DroppedNeedle looks for it on the Internet Archive. If it is there under a Creative Commons or public-domain licence, it downloads, gets tagged and organised into your library, and the request is resolved, all without you configuring anything. There is no account to make and no API key to paste. The licence each download is taken under is shown on the task, and linked.
+
+Nothing else is offered. An item with no licence, or an all-rights-reserved one, is never a candidate, so this works for the artists who chose to give their music away and not for anyone else. It is on by default, and one toggle in Settings turns it off.
+
 ### Import Your Purchases
 
 Buy music wherever you like - Bandcamp, the Qobuz store, a label's own shop - then hand the zip or the loose files to DroppedNeedle. Drag them onto the card on your home page or the Import tab on the Downloads page, or click either one to browse. Archives are extracted, and every album is identified by the same pipeline the library scanner uses: MusicBrainz tags first, then AcoustID fingerprints. The files are tagged, organised into your library under your naming template, and if anyone had requested that album, their request is resolved and they get a notification.
@@ -483,9 +491,9 @@ Set a display name and avatar, change your username/email/password, link your ow
 
 Experimental: the plugin API may change until it stabilises.
 
-Third parties can extend DroppedNeedle with scrobblers, purchase-link providers, and audio sources. Install one by pasting a public GitHub repository URL in Settings, or by copying a folder into the plugins directory.
+Third parties can extend DroppedNeedle with scrobblers and purchase-link providers. Install one by pasting a public GitHub repository URL in Settings, or by copying a folder into the plugins directory. No plugin capability downloads music, and DroppedNeedle never calls plugin code to acquire anything.
 
-A plugin is Python running in-process with your server's full privileges, and there is no sandbox. Installing downloads the code and nothing more; the plugin does nothing until an admin enables it. Read the code before you do. DroppedNeedle bundles no plugins and endorses none - two worked examples ship in `examples/plugins`.
+A plugin is Python running in-process with your server's full privileges, and there is no sandbox. Installing downloads the code and nothing more; the plugin does nothing until an admin enables it. Read the code before you do. DroppedNeedle bundles no plugins and endorses none - a worked example ships in `examples/plugins`.
 
 The full API reference is in [PLUGINS.md](PLUGINS.md).
 

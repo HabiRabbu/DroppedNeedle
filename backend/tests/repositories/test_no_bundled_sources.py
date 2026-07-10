@@ -1,8 +1,16 @@
-"""Guardrail 1: DroppedNeedle ships no sources.
+"""Guardrail 1: DroppedNeedle ships no source that indexes infringing content.
 
-The user supplies every source the app can reach - their own slskd instance, or
-their own Newznab indexers and their own SABnzbd. Nothing is preset, bundled,
-recommended, or curated in-tree.
+The user supplies every *acquisition* source the app can reach - their own slskd
+instance, or their own Newznab indexers and their own SABnzbd. No indexer, tracker,
+or P2P server is preset, bundled, recommended, or curated in-tree.
+
+Free Music (D24) is the one deliberate exception, and it is the exception that
+proves the rule: it ships archive.org preset and enabled by default, and it offers
+only items carrying an explicit Creative Commons or public-domain licence. Bundling
+a lawful source is not the thing this guardrail exists to prevent. Bundling
+specialised means of *finding infringing content* is. The tests below pin both
+halves: no forbidden domain anywhere, and Free Music still filtered to open
+licences against archive.org.
 
 This is the load-bearing distinction between an automation tool and an index, and
 the README's "Legality boundary" section asserts it in prose. It held until now
@@ -19,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from api.v1.schemas.settings import NewznabIndexerSettings
+from repositories import archive_repository as archive
 
 _BACKEND = Path(__file__).resolve().parents[2]
 _REPO = _BACKEND.parent
@@ -115,6 +124,45 @@ def test_newznab_indexer_settings_ship_empty():
     assert indexer.name == ""
     assert indexer.url == ""
     assert indexer.api_key == ""
+
+
+def test_the_one_bundled_source_is_archive_org():
+    """Free Music is allowed to be preset because of what it points at. If it ever
+    points somewhere else, that is a legal decision, not a refactor."""
+    for url in (archive.SEARCH_URL, archive.METADATA_URL, archive.DOWNLOAD_URL):
+        assert url.startswith("https://archive.org/"), url
+
+
+def test_the_bundled_source_offers_only_open_licences():
+    """The licence filter is what keeps Free Music lawful. Widening it to accept an
+    all-rights-reserved item turns the one bundled source into a bundled infringement
+    tool, so it is pinned here rather than left to the repository's own tests."""
+    for allowed in (
+        "http://creativecommons.org/licenses/by-nc-sa/3.0/",
+        "https://creativecommons.org/licenses/by/4.0/",
+        "http://creativecommons.org/publicdomain/zero/1.0/",
+        "https://creativecommons.org/publicdomain/mark/1.0/",
+    ):
+        assert archive.is_open_licence(allowed), allowed
+
+    for refused in (
+        None,
+        "",
+        "   ",
+        "all rights reserved",
+        "http://example.com/licenses/by/4.0/",
+        # a lookalike host, and a licence named but not linked
+        "https://creativecommons.org.evil.test/licenses/by/4.0/",
+        "CC BY-NC-SA 3.0",
+    ):
+        assert not archive.is_open_licence(refused), refused
+
+
+def test_the_bundled_source_search_demands_a_licence():
+    """A search that did not require licenceurl would return all-rights-reserved
+    items for the ranker to pick from."""
+    source = (_BACKEND / "repositories" / "archive_repository.py").read_text(encoding="utf-8")
+    assert "licenseurl:[* TO *]" in source
 
 
 def test_no_indexers_are_preconfigured_in_the_example_config():

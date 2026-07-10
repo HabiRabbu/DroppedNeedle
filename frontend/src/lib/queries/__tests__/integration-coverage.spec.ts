@@ -166,14 +166,12 @@ const COVERAGE: Array<[string, string, string]> = [
 		'/api/v1/artists/A1/purchase-options?name=Band'
 	],
 	['get-it settings', API.settingsGetIt(), '/api/v1/settings/get-it'],
+	['free-music settings', API.settingsFreeMusic(), '/api/v1/settings/free-music'],
 	// Plugin API (phase 01b): admin roster + curator source surfaces
 	['plugins list', API.plugins.list(), '/api/v1/plugins'],
 	['plugin install', API.plugins.install(), '/api/v1/plugins/install'],
 	['plugin update', API.plugins.update('P1'), '/api/v1/plugins/P1'],
 	['plugin uninstall', API.plugins.uninstall('P1'), '/api/v1/plugins/P1'],
-	['plugin sources', API.plugins.sources(), '/api/v1/plugins/sources'],
-	['plugin source search', API.plugins.sourceSearch('P1'), '/api/v1/plugins/sources/P1/search'],
-	['plugin source fetch', API.plugins.sourceFetch('P1'), '/api/v1/plugins/sources/P1/fetch'],
 	// Drop importer (Store Sync 01c): curator-gated upload/jobs/match/discard
 	['drop-import uploads', API.dropImport.uploads(), '/api/v1/import/uploads'],
 	['drop-import jobs', API.dropImport.jobs(), '/api/v1/import/jobs'],
@@ -181,6 +179,12 @@ const COVERAGE: Array<[string, string, string]> = [
 	['drop-import job', API.dropImport.job('J1'), '/api/v1/import/jobs/J1'],
 	['drop-import match', API.dropImport.match(7), '/api/v1/import/items/7/match'],
 	['drop-import discard', API.dropImport.discard(7), '/api/v1/import/items/7/discard'],
+	// Free Music (D24): the native lawful download client
+	['free-music tasks', API.freeMusic.tasks(), '/api/v1/free-music/tasks'],
+	['free-music tasks (all)', API.freeMusic.tasks(true), '/api/v1/free-music/tasks?all=true'],
+	['free-music task', API.freeMusic.task('T1'), '/api/v1/free-music/tasks/T1'],
+	['free-music cancel', API.freeMusic.cancel('T1'), '/api/v1/free-music/tasks/T1/cancel'],
+	['free-music retry', API.freeMusic.retry('T1'), '/api/v1/free-music/tasks/T1/retry'],
 	// Bulk auto-download approval batches (admin, requests router)
 	[
 		'auto-download approval batches',

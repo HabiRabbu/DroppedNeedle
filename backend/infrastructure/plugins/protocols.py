@@ -4,10 +4,19 @@ A plugin's entrypoint class is instantiated once as ``Entry(context)`` and may
 implement any subset of the capability methods matching its manifest. All
 methods are async and best-effort: an exception is logged against the plugin
 and never propagates into the host flow that triggered it.
+
+**No capability here acquires content, and the host never calls plugin code to
+acquire** (D22). Do not add one. A capability that searches a source and fetches
+its files is a downloader-shaped socket, whatever it is named: DroppedNeedle's
+own UI would present the results and DroppedNeedle's own process would perform
+the fetch, and no plugin boundary launders that. It would also defeat Free
+Music's licence filter, since fetched bytes arrive with no licence attached. A
+third party who wants their own source uses the public REST API (``GET
+/requests`` as a wishlist, ``POST /import/uploads`` as an inbox), which DN never
+calls, or forks the AGPL project. See `.dev-notes/Legality/Roadmap.md`.
 """
 
 import logging
-from pathlib import Path
 from typing import Callable, Mapping, Protocol, runtime_checkable
 
 import httpx
@@ -32,15 +41,6 @@ class PluginPurchaseLink(AppStruct):
     label: str
     url: str
     kind: str = "digital"  # 'digital' | 'physical' | 'free'
-
-
-class SourceItem(AppStruct):
-    """One result from an audio source plugin's search."""
-
-    id: str
-    title: str
-    artist: str = ""
-    detail: str = ""  # free text shown under the title (date, venue, format...)
 
 
 class PluginContext:
@@ -80,15 +80,7 @@ class PurchaseLinksCapability(Protocol):
     ) -> list[PluginPurchaseLink]: ...
 
 
-@runtime_checkable
-class AudioSourceCapability(Protocol):
-    async def search(self, query: str, limit: int) -> list[SourceItem]: ...
-
-    async def fetch(self, item_id: str, dest_dir: Path) -> list[Path]: ...
-
-
 CAPABILITY_PROTOCOLS: dict[str, type] = {
     "scrobbler": ScrobblerCapability,
     "purchase_links": PurchaseLinksCapability,
-    "audio_source": AudioSourceCapability,
 }

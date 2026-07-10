@@ -28,8 +28,16 @@ def prefs(tmp_path: Path) -> PreferencesService:
 
 
 def test_no_source_ready_when_nothing_configured(prefs):
+    """No user-configured client. Free Music (D24) still makes the user able to
+    acquire, which is the point of it - so switch it off to test the old gate."""
+    from api.v1.schemas.settings import FreeMusicSettings
+
     assert prefs.is_soulseek_ready() is False
     assert prefs.is_usenet_ready() is False
+    assert prefs.is_builtin_download_ready() is False
+    assert prefs.is_download_source_ready() is True  # Free Music, on by default
+
+    prefs.save_free_music_settings(FreeMusicSettings(enabled=False))
     assert prefs.is_download_source_ready() is False
 
 
@@ -49,7 +57,7 @@ def test_usenet_ready_requires_sabnzbd_and_an_enabled_indexer(prefs):
         SabnzbdConnectionSettings(enabled=True, url="http://sab:8080", api_key="k")
     )
     assert prefs.is_usenet_ready() is False  # no indexer yet
-    assert prefs.is_download_source_ready() is False
+    assert prefs.is_builtin_download_ready() is False
 
     prefs.save_indexer(
         NewznabIndexerSettings(name="DS", url="https://idx.test/api", api_key="k", enabled=True)

@@ -39,6 +39,7 @@ from api.v1.schemas.settings import (
     SpotifySettings,
     SPOTIFY_SECRET_MASK,
     EventsSettings,
+    FreeMusicSettings,
     GetItSettings,
     PluginConfig,
     TICKETMASTER_KEY_MASK,
@@ -508,9 +509,36 @@ class PreferencesService:
         sab = self.get_sabnzbd_connection()
         return sab.enabled and bool(sab.url) and any(i.enabled for i in self.get_indexers())
 
-    def is_download_source_ready(self) -> bool:
-        """At least one acquisition source (Soulseek OR Usenet) is set up."""
+    def is_builtin_download_ready(self) -> bool:
+        """A user-configured download client (Soulseek OR Usenet) is set up.
+        Chooses the dispatcher; dies with those clients in 2.0."""
         return self.is_soulseek_ready() or self.is_usenet_ready()
+
+    def is_download_source_ready(self) -> bool:
+        """At least one acquisition source is set up: Soulseek, Usenet, or Free
+        Music (D24). The single source of truth for "can the user acquire" -
+        after 2.0 this reduces to Free Music alone."""
+        return self.is_builtin_download_ready() or self.get_free_music_settings().enabled
+
+    def get_free_music_settings(self) -> FreeMusicSettings:
+        data = self._load_config().get("free_music", {})
+        fmt = str(data.get("preferred_format") or "flac").lower()
+        return FreeMusicSettings(
+            enabled=bool(data.get("enabled", True)),
+            preferred_format="mp3" if fmt == "mp3" else "flac",
+        )
+
+    def save_free_music_settings(self, settings: FreeMusicSettings) -> None:
+        try:
+            config = self._load_config().copy()
+            config["free_music"] = {
+                "enabled": settings.enabled,
+                "preferred_format": settings.preferred_format,
+            }
+            self._save_config(config)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Failed to save Free Music settings: {e}")
+            raise ConfigurationError("Failed to save Free Music settings")
 
     def get_jellyfin_connection(self) -> JellyfinConnectionSettings:
         config = self._load_config()

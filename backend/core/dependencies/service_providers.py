@@ -167,12 +167,16 @@ def get_plugin_host() -> "PluginHost":
 
 
 @singleton
-def get_plugin_source_service() -> "PluginSourceService":
-    from services.plugin_source_service import PluginSourceService
+def get_free_music_service() -> "FreeMusicService":
+    from services.native.free_music_service import FreeMusicService
 
-    return PluginSourceService(
-        plugin_host=get_plugin_host(),
-        drop_import_service=get_drop_import_service(),
+    from .repo_providers import get_archive_repository, get_free_music_store
+
+    return FreeMusicService(
+        store=get_free_music_store(),
+        archive=get_archive_repository(),
+        drop_import=get_drop_import_service(),
+        preferences_service=get_preferences_service(),
         sse_publisher=get_sse_publisher(),
     )
 
@@ -431,7 +435,12 @@ def get_request_service() -> "RequestService":
 
     request_history = get_request_history_store()
     return RequestService(
-        request_history, get_download_service=get_download_service, quota_service=get_quota_service()
+        request_history,
+        get_download_service=get_download_service,
+        quota_service=get_quota_service(),
+        # pass the provider, not an instance: a settings save rebuilds the singleton
+        get_free_music_service=get_free_music_service,
+        preferences_service=get_preferences_service(),
     )
 
 

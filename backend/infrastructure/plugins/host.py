@@ -32,7 +32,6 @@ from infrastructure.plugins.protocols import (
     PluginContext,
     PluginPurchaseLink,
     ScrobbleEvent,
-    SourceItem,
 )
 
 if TYPE_CHECKING:
@@ -307,9 +306,6 @@ class PluginHost:
             if p.enabled and p.instance is not None and capability in p.active_capabilities
         ]
 
-    def sources(self) -> list[LoadedPlugin]:
-        return self._active("audio_source")
-
     def purchase_providers(self) -> list[LoadedPlugin]:
         return self._active("purchase_links")
 
@@ -341,25 +337,3 @@ class PluginHost:
                     "plugins.purchase_links_failed name=%s: %s", plugin.manifest.name, exc
                 )
         return links
-
-    async def source_search(self, plugin_name: str, query: str, limit: int = 20) -> list[SourceItem]:
-        plugin = self.require_source(plugin_name)
-        return await plugin.instance.search(query, limit)  # type: ignore[union-attr]
-
-    async def source_fetch(self, plugin_name: str, item_id: str, dest_dir: Path) -> list[Path]:
-        plugin = self.require_source(plugin_name)
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        return await plugin.instance.fetch(item_id, dest_dir)  # type: ignore[union-attr]
-
-    def require_source(self, plugin_name: str) -> LoadedPlugin:
-        from core.exceptions import ResourceNotFoundError
-
-        plugin = self._plugins.get(plugin_name)
-        if (
-            plugin is None
-            or not plugin.enabled
-            or plugin.instance is None
-            or "audio_source" not in plugin.active_capabilities
-        ):
-            raise ResourceNotFoundError(f"No enabled source plugin named {plugin_name}")
-        return plugin

@@ -60,18 +60,3 @@ export const uninstallPluginMutation = () =>
 			toastStore.show({ message: error.message || 'Removing the plugin failed.', type: 'error' });
 		}
 	}));
-
-export const fetchFromSourceMutation = () =>
-	createMutation(() => ({
-		mutationFn: ({ plugin, itemId }: { plugin: string; itemId: string }) =>
-			api.global.post(API.plugins.sourceFetch(plugin), { item_id: itemId }),
-		onSuccess: () => {
-			toastStore.show({
-				message: "Fetching. It'll appear in your imports when it lands.",
-				type: 'success'
-			});
-		},
-		onError: (error: Error) => {
-			toastStore.show({ message: error.message || 'The fetch failed to start.', type: 'error' });
-		}
-	}));

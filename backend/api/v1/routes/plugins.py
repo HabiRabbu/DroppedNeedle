@@ -1,9 +1,8 @@
 """Plugin API routes (phase 01b).
 
-Admin: list plugins, enable/disable, edit their settings (mask-sentinel for
-secret fields). Curator: search an enabled audio-source plugin and fetch an
-item - the fetch lands in the ordinary drop-import pipeline, so progress shows
-in the Import tab's job list.
+Admin-only: list plugins, install one from GitHub, enable/disable, edit their
+settings (mask-sentinel for secret fields), uninstall. There is deliberately no
+route that makes a plugin acquire content (D22).
 """
 
 import asyncio
@@ -18,30 +17,20 @@ from api.v1.schemas.plugins import (
     PluginListResponse,
     PluginSettingFieldInfo,
     PluginUpdateRequest,
-    SourceFetchRequest,
-    SourceFetchResponse,
-    SourceListResponse,
-    SourcePluginInfo,
-    SourceSearchRequest,
-    SourceSearchResponse,
 )
 from api.v1.schemas.settings import PluginConfig
-from core.dependencies import (
-    get_plugin_host,
-    get_plugin_source_service,
-    get_preferences_service,
-)
+from core.dependencies import get_plugin_host, get_preferences_service
 from api.v1.schemas.common import StatusMessageResponse
 from core.exceptions import ResourceNotFoundError, ValidationError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
-from middleware import CurrentAdminDep, CurrentCuratorDep
+from middleware import CurrentAdminDep
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=MsgSpecRoute, prefix="/plugins", tags=["plugins"])
 
-# Route order: the literal paths (/install, /sources/*) are declared before the
-# /{plugin_name} handlers, so a future GET /{plugin_name} can never swallow them.
+# Route order: the literal path (/install) is declared before the /{plugin_name}
+# handlers, so a future GET /{plugin_name} can never swallow it.
 
 
 def _to_info(plugin, prefs) -> PluginInfo:  # noqa: ANN001 - LoadedPlugin / PreferencesService
@@ -103,50 +92,6 @@ async def install_plugin(
     if plugin is None:
         raise ValidationError("The plugin installed but could not be read back")
     return _to_info(plugin, prefs)
-
-
-@router.get("/sources", response_model=SourceListResponse)
-async def list_sources(
-    _: CurrentCuratorDep,
-    host=Depends(get_plugin_host),
-):
-    return SourceListResponse(
-        sources=[
-            SourcePluginInfo(
-                name=p.manifest.name,
-                display_name=p.manifest.display_name,
-                description=p.manifest.description,
-            )
-            for p in host.sources()
-        ]
-    )
-
-
-@router.post("/sources/{plugin_name}/search", response_model=SourceSearchResponse)
-async def search_source(
-    plugin_name: str,
-    _: CurrentCuratorDep,
-    body: SourceSearchRequest = MsgSpecBody(SourceSearchRequest),
-    service=Depends(get_plugin_source_service),
-):
-    items = await service.search(plugin_name, body.query)
-    return SourceSearchResponse(items=items)
-
-
-@router.post("/sources/{plugin_name}/fetch", response_model=SourceFetchResponse)
-async def fetch_from_source(
-    plugin_name: str,
-    current_user: CurrentCuratorDep,
-    body: SourceFetchRequest = MsgSpecBody(SourceFetchRequest),
-    service=Depends(get_plugin_source_service),
-):
-    service.start_fetch(
-        plugin_name,
-        body.item_id,
-        user_id=current_user.id,
-        user_name=current_user.display_name,
-    )
-    return SourceFetchResponse(started=True)
 
 
 @router.put("/{plugin_name}", response_model=PluginInfo)

@@ -43,15 +43,6 @@ vi.mock('$lib/queries/import/DropImportMutations.svelte', () => ({
 	discardDropItemMutation: () => ({ mutate: vi.fn(), isPending: false })
 }));
 
-vi.mock('$lib/queries/plugins/PluginQueries.svelte', () => ({
-	getSourcePluginsQuery: () => ({ data: { sources: [] }, isLoading: false }),
-	getSourceSearchQuery: () => ({ data: { items: [] }, isFetching: false })
-}));
-
-vi.mock('$lib/queries/plugins/PluginMutations.svelte', () => ({
-	fetchFromSourceMutation: () => ({ mutate: vi.fn(), isPending: false })
-}));
-
 import DownloadsPage from './+page.svelte';
 
 describe('/downloads page', () => {
