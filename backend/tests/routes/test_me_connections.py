@@ -24,7 +24,7 @@ from infrastructure.crypto import init_crypto
 from infrastructure.persistence.user_connections_store import UserConnectionsStore
 from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
 from services.personal_mix_service import PersonalMixResult, PersonalMixService
-from tests.helpers import build_test_client, override_user_auth
+from tests.helpers import build_test_client, make_builtin_dispatcher, override_user_auth
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +71,7 @@ def ctx(tmp_path: Path):
         mb_repo=AsyncMock(),
         library_repo=AsyncMock(),
         playlist_service=AsyncMock(),
-        get_download_service=lambda: download_service,
+        acquisition=make_builtin_dispatcher(lambda: download_service),
         listening_prefs_store=prefs_store,
         connections_store=conn_store,
         auth_store=AsyncMock(),

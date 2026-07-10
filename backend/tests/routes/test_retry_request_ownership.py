@@ -10,7 +10,7 @@ from infrastructure.persistence.request_history import RequestHistoryStore
 from middleware import _get_current_user
 from services.native.stubs import LibraryStub
 from services.requests_page_service import RequestsPageService
-from tests.helpers import build_test_client, mock_user
+from tests.helpers import build_test_client, make_builtin_dispatcher, mock_user
 
 VALID_MBID = "22222222-2222-2222-2222-222222222222"
 OWNER_ID = "owner-user-id"
@@ -37,6 +37,7 @@ def _make_service(tmp_path, status: str) -> RequestsPageService:
         request_history=store,
         library_mbids_fn=_mbids,
         get_download_service=lambda: download_service,
+        acquisition=make_builtin_dispatcher(lambda: download_service),
     )
 
 

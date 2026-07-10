@@ -182,6 +182,20 @@ def get_free_music_service() -> "FreeMusicService":
 
 
 @singleton
+def get_acquisition_dispatcher() -> "AcquisitionDispatcher":
+    from services.acquisition_dispatcher import AcquisitionDispatcher
+
+    # holds the getters, not instances: a settings save rebuilds DownloadService,
+    # and Free Music reads its settings per request - so the dispatcher itself
+    # never needs rebuilding
+    return AcquisitionDispatcher(
+        get_download_service=get_download_service,
+        get_free_music_service=get_free_music_service,
+        preferences_service=get_preferences_service(),
+    )
+
+
+@singleton
 def get_get_it_service() -> "GetItService":
     from services.get_it_service import GetItService
 
@@ -306,7 +320,7 @@ def get_new_release_service() -> "NewReleaseService":
     return NewReleaseService(
         follow_store=get_follow_store(),
         mb_repo=get_musicbrainz_repository(),
-        get_download_service=get_download_service,
+        acquisition=get_acquisition_dispatcher(),
         download_store=get_download_store(),
         library_repo=get_library_repository(),
         sse_publisher=get_sse_publisher(),
@@ -383,7 +397,7 @@ def get_personal_mix_service() -> "PersonalMixService":
         mb_repo=get_musicbrainz_repository(),
         library_repo=get_library_repository(),
         playlist_service=get_playlist_service(),
-        get_download_service=get_download_service,
+        acquisition=get_acquisition_dispatcher(),
         listening_prefs_store=get_user_listening_prefs_store(),
         connections_store=get_user_connections_store(),
         auth_store=get_auth_store(),
@@ -438,9 +452,7 @@ def get_request_service() -> "RequestService":
         request_history,
         get_download_service=get_download_service,
         quota_service=get_quota_service(),
-        # pass the provider, not an instance: a settings save rebuilds the singleton
-        get_free_music_service=get_free_music_service,
-        preferences_service=get_preferences_service(),
+        acquisition=get_acquisition_dispatcher(),
     )
 
 
@@ -546,6 +558,7 @@ def get_requests_page_service() -> "RequestsPageService":
         on_import_callback=on_import,
         get_download_service=get_download_service,
         download_store=get_download_store(),
+        acquisition=get_acquisition_dispatcher(),
     )
 
 

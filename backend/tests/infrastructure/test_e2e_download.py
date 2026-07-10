@@ -35,6 +35,7 @@ from services.native.library_manager import LibraryManager
 from services.native.naming import NamingTemplateEngine
 from services.native.track_matcher import TrackMatcher
 from services.request_service import RequestService
+from tests.helpers import make_builtin_dispatcher
 
 FIXTURE_FLAC = Path(__file__).resolve().parent.parent / "fixtures" / "library" / "flac_full_01.flac"
 _TEMPLATE = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"
@@ -259,7 +260,10 @@ async def test_request_links_download_task_id(tmp_path: Path):
         client, _StubIndexer(), AlbumPreflightScorer(store, quality_min="low", flac_mp3_only=False),
         manager, store, SSEPublisher(), no_op_orch,
     )
-    request_service = RequestService(history, get_download_service=lambda: download_service)
+    get_ds = lambda: download_service  # noqa: E731
+    request_service = RequestService(
+        history, get_download_service=get_ds, acquisition=make_builtin_dispatcher(get_ds)
+    )
 
     resp = await request_service.request_album(
         "rg-okc", artist="Radiohead", album="OK Computer", year=1997,

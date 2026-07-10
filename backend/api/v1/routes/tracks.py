@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, Depends
 
 from api.v1.schemas.download import TrackRequestBody, TrackRequestResponse
-from core.dependencies import get_download_service, get_quota_service
+from core.dependencies import get_acquisition_dispatcher, get_quota_service
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentUserDep
 from services.native.download_service import ALREADY_IN_LIBRARY
@@ -25,7 +25,7 @@ async def request_track(
     recording_mbid: str,
     current_user: CurrentUserDep,
     body: TrackRequestBody = MsgSpecBody(TrackRequestBody),
-    service=Depends(get_download_service),
+    service=Depends(get_acquisition_dispatcher),
     quota=Depends(get_quota_service),
 ):
     # Track asks bypass the approval queue (existing behaviour) but still count

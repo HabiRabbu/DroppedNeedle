@@ -10,6 +10,7 @@ import pytest
 from core.exceptions import ConfigurationError
 from services.native.download_service import ALREADY_IN_LIBRARY
 from services.personal_mix_service import PersonalMixService
+from tests.helpers import make_builtin_dispatcher
 
 RG1 = "rg-1111-1111-1111-111111111111"
 RG2 = "rg-2222-2222-2222-222222222222"
@@ -94,7 +95,7 @@ def svc():
         mb_repo=mb_repo,
         library_repo=library_repo,
         playlist_service=playlist_service,
-        get_download_service=lambda: download_service,
+        acquisition=make_builtin_dispatcher(lambda: download_service),
         listening_prefs_store=listening_prefs_store,
         connections_store=connections_store,
         auth_store=auth_store,

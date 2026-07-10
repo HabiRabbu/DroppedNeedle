@@ -13,6 +13,7 @@ from core.exceptions import ConfigurationError, ExternalServiceError
 from infrastructure.persistence.follow_store import FollowStore
 from services.native.download_service import ALREADY_IN_LIBRARY
 from services.native.new_release_service import NewReleaseService
+from tests.helpers import make_builtin_dispatcher
 
 ARTIST = "AAAAAAAA-1111-2222-3333-444444444444"
 ARTIST_LOWER = ARTIST.lower()
@@ -64,7 +65,7 @@ def svc(tmp_path: Path):
     service = NewReleaseService(
         follow_store=store,
         mb_repo=mb,
-        get_download_service=lambda: downloads,
+        acquisition=make_builtin_dispatcher(lambda: downloads),
         download_store=download_store,
         library_repo=library,
         sse_publisher=sse,

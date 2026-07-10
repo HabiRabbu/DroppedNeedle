@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 
 from api.v1.routes import tracks
-from core.dependencies import get_download_service, get_quota_service
+from core.dependencies import get_acquisition_dispatcher, get_quota_service
 from middleware import _get_current_user
 from services.native.download_service import ALREADY_IN_LIBRARY
 from tests.helpers import build_test_client, mock_user
@@ -14,7 +14,7 @@ from tests.helpers import build_test_client, mock_user
 def _app(service, quota=None) -> FastAPI:
     app = FastAPI()
     app.include_router(tracks.router)
-    app.dependency_overrides[get_download_service] = lambda: service
+    app.dependency_overrides[get_acquisition_dispatcher] = lambda: service
     app.dependency_overrides[get_quota_service] = lambda: quota or AsyncMock()
     app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user", user_id="u1")
     return app
@@ -54,7 +54,7 @@ def test_request_track_unauthenticated_401():
     service = AsyncMock()
     app = FastAPI()
     app.include_router(tracks.router)
-    app.dependency_overrides[get_download_service] = lambda: service
+    app.dependency_overrides[get_acquisition_dispatcher] = lambda: service
     app.dependency_overrides[get_quota_service] = lambda: AsyncMock()
     response = build_test_client(app).post(
         "/tracks/rec-1/request",

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from services.requests_page_service import RequestsPageService
+from tests.helpers import make_builtin_dispatcher
 
 
 def _make(record_status="awaiting_approval", *, request_album_result="task-9", download_task_id=None):
@@ -38,6 +39,7 @@ def _make(record_status="awaiting_approval", *, request_album_result="task-9", d
         request_history=request_history,
         library_mbids_fn=_mbids,
         get_download_service=lambda: download_service,
+        acquisition=make_builtin_dispatcher(lambda: download_service),
     )
     return service, request_history, download_service
 

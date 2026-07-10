@@ -139,6 +139,7 @@ from .service_providers import (  # noqa: F401
     get_download_manifest_codec,
     get_download_orchestrator,
     get_download_service,
+    get_acquisition_dispatcher,
     get_quota_service,
 )
 

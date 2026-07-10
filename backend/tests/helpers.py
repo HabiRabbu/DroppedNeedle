@@ -69,7 +69,7 @@ def override_admin_auth(app: FastAPI) -> None:
 def override_user_auth(app: FastAPI, role: str = "user", user_id: str = "test-user-id") -> None:
     """Bypass the user-auth dependency (`_get_current_user`) with a chosen role/id.
 
-    Used by the request-ownership tests (403 vs 200) — the route resolves
+    Used by the request-ownership tests (403 vs 200) - the route resolves
     ``CurrentUserDep`` via ``_get_current_user``.
     """
     app.dependency_overrides[_get_current_user] = lambda: mock_user(role=role, user_id=user_id)
@@ -95,6 +95,24 @@ def add_production_exception_handlers(app: FastAPI) -> FastAPI:
 def build_test_client(app: FastAPI) -> TestClient:
     add_production_exception_handlers(app)
     return TestClient(app, raise_server_exceptions=False)
+
+
+def make_builtin_dispatcher(get_download_service):
+    """An AcquisitionDispatcher wired so a configured download client always wins:
+    it forwards request_album/request_track straight to get_download_service. Lets
+    tests that predate Free Music assert download dispatch unchanged."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from services.acquisition_dispatcher import AcquisitionDispatcher
+
+    free_music = MagicMock()
+    free_music.is_ready = MagicMock(return_value=False)
+    return AcquisitionDispatcher(
+        get_download_service=get_download_service,
+        get_free_music_service=lambda: free_music,
+        preferences_service=SimpleNamespace(is_builtin_download_ready=lambda: True),
+    )
 
 
 def assert_log_fields(

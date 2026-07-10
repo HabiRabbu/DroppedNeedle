@@ -5,6 +5,7 @@ import pytest
 
 from core.exceptions import ExternalServiceError
 from services.request_service import RequestService
+from tests.helpers import make_builtin_dispatcher
 
 
 def _make_service() -> tuple[RequestService, MagicMock, MagicMock]:
@@ -20,7 +21,12 @@ def _make_service() -> tuple[RequestService, MagicMock, MagicMock]:
     download_service.request_album = AsyncMock(return_value="task-1")
     download_service.cancel_task = AsyncMock()
 
-    service = RequestService(request_history, get_download_service=lambda: download_service)
+    get_ds = lambda: download_service  # noqa: E731
+    service = RequestService(
+        request_history,
+        get_download_service=get_ds,
+        acquisition=make_builtin_dispatcher(get_ds),
+    )
     return service, request_history, download_service
 
 
@@ -255,7 +261,12 @@ async def test_request_album_resolves_download_service_per_dispatch():
     ds_a.request_album = AsyncMock(return_value="task-a")
     ds_b.request_album = AsyncMock(return_value="task-b")
     current = {"ds": ds_a}
-    service = RequestService(request_history, get_download_service=lambda: current["ds"])
+    get_ds = lambda: current["ds"]  # noqa: E731
+    service = RequestService(
+        request_history,
+        get_download_service=get_ds,
+        acquisition=make_builtin_dispatcher(get_ds),
+    )
 
     await service.request_album("rg-A", user_role="admin")
     current["ds"] = ds_b  # a policy save rebuilt the DownloadService singleton

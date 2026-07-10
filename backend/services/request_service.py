@@ -27,27 +27,17 @@ class RequestService:
         self,
         request_history: RequestHistoryStore,
         get_download_service: "Callable[[], DownloadService]",
+        acquisition,  # noqa: ANN001 - AcquisitionDispatcher; every dispatch goes through it
         quota_service: "QuotaService | None" = None,
-        get_free_music_service=None,  # noqa: ANN001 - Callable[[], FreeMusicService] | None
-        preferences_service=None,  # noqa: ANN001 - PreferencesService | None
     ):
         self._request_history = request_history
-        # A settings save rebuilds the DownloadService singleton, so resolve it fresh
-        # at every dispatch rather than capturing an instance (else a saved quality
-        # change is ignored until restart).
+        # cancel_task still goes direct to DownloadService, resolved fresh so a settings
+        # save (which rebuilds the singleton) is picked up rather than ignored until restart.
         self._get_download_service = get_download_service
         self._quota = quota_service
-        self._get_free_music_service = get_free_music_service
-        self._prefs = preferences_service
-
-    def _use_free_music(self) -> bool:
-        """Free Music serves the request when no user-configured download client
-        is set up. After 2.0 deletes slskd and Usenet, this is the only path."""
-        if self._get_free_music_service is None or self._prefs is None:
-            return False
-        if self._prefs.is_builtin_download_ready():
-            return False
-        return self._get_free_music_service().is_ready()
+        # every request_album dispatch goes through here; it picks the download client
+        # or Free Music, so RequestService cannot function without it
+        self._acquisition = acquisition
 
     async def request_album(
         self,
@@ -128,23 +118,15 @@ class RequestService:
         # auto-approve (trusted/admin): dispatch the native pipeline and link the
         # request to its task; the 'already_in_library' sentinel is guarded
         try:
-            if self._use_free_music():
-                task_id = await self._get_free_music_service().request_album(
-                    user_id=user_id or "",
-                    release_group_mbid=musicbrainz_id,
-                    artist_name=artist or "Unknown",
-                    album_title=album or "Unknown",
-                )
-            else:
-                task_id = await self._get_download_service().request_album(
-                    user_id=user_id or "",
-                    release_group_mbid=musicbrainz_id,
-                    artist_name=artist or "Unknown",
-                    album_title=album or "Unknown",
-                    year=year,
-                    artist_mbid=artist_mbid,
-                    origin="user",
-                )
+            task_id = await self._acquisition.request_album(
+                user_id=user_id or "",
+                release_group_mbid=musicbrainz_id,
+                artist_name=artist or "Unknown",
+                album_title=album or "Unknown",
+                year=year,
+                artist_mbid=artist_mbid,
+                origin="user",
+            )
         except ValidationError as e:
             # cap/quota said no at dispatch (a race past the submit-time check):
             # surface the reason verbatim as a 400 rather than a wrapped 503
@@ -242,27 +224,18 @@ class RequestService:
             # single request_album). slskd search is serialized client-side, so there's
             # no queue cap (overflow is always 0).
             dispatched = 0
-            use_free_music = self._use_free_music()
             for item in new_items:
                 mbid = item["musicbrainz_id"]
                 try:
-                    if use_free_music:
-                        task_id = await self._get_free_music_service().request_album(
-                            user_id=user_id or "",
-                            release_group_mbid=mbid,
-                            artist_name=item.get("artist_name") or "Unknown",
-                            album_title=item.get("album_title") or "Unknown",
-                        )
-                    else:
-                        task_id = await self._get_download_service().request_album(
-                            user_id=user_id or "",
-                            release_group_mbid=mbid,
-                            artist_name=item.get("artist_name") or "Unknown",
-                            album_title=item.get("album_title") or "Unknown",
-                            year=item.get("year"),
-                            artist_mbid=item.get("artist_mbid"),
-                            origin="user",
-                        )
+                    task_id = await self._acquisition.request_album(
+                        user_id=user_id or "",
+                        release_group_mbid=mbid,
+                        artist_name=item.get("artist_name") or "Unknown",
+                        album_title=item.get("album_title") or "Unknown",
+                        year=item.get("year"),
+                        artist_mbid=item.get("artist_mbid"),
+                        origin="user",
+                    )
                 except Exception as e:  # noqa: BLE001 - one bad item must not sink the batch
                     logger.error("Batch download dispatch failed for %s: %s", mbid, e)
                     try:

@@ -11,11 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 
 from api.v1.routes import requests, tracks
-from core.dependencies import get_download_service, get_request_service
+from core.dependencies import get_acquisition_dispatcher, get_request_service
 from middleware import _get_current_user
 from services.native.download_service import ALREADY_IN_LIBRARY
 from services.request_service import RequestService
-from tests.helpers import build_test_client, mock_user
+from tests.helpers import build_test_client, make_builtin_dispatcher, mock_user
 
 _NEW_BODY = {"musicbrainz_id": "rg-1", "artist": "Radiohead", "album": "OK Computer", "year": 1997}
 
@@ -23,9 +23,11 @@ _NEW_BODY = {"musicbrainz_id": "rg-1", "artist": "Radiohead", "album": "OK Compu
 def _request_service(download_service: AsyncMock) -> tuple[RequestService, AsyncMock]:
     history = AsyncMock()
     history.async_get_record.return_value = None
+    get_ds = lambda: download_service  # noqa: E731
     service = RequestService(
         request_history=history,
-        get_download_service=lambda: download_service,
+        get_download_service=get_ds,
+        acquisition=make_builtin_dispatcher(get_ds),
     )
     return service, history
 
@@ -41,7 +43,7 @@ def _requests_app(service: RequestService, role: str) -> FastAPI:
 def _tracks_app(download_service: AsyncMock) -> FastAPI:
     app = FastAPI()
     app.include_router(tracks.router)
-    app.dependency_overrides[get_download_service] = lambda: download_service
+    app.dependency_overrides[get_acquisition_dispatcher] = lambda: download_service
     app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user", user_id="u1")
     return app
 
@@ -114,7 +116,7 @@ def test_track_request_unauthenticated_401():
     ds = AsyncMock()
     app = FastAPI()
     app.include_router(tracks.router)
-    app.dependency_overrides[get_download_service] = lambda: ds
+    app.dependency_overrides[get_acquisition_dispatcher] = lambda: ds
     response = build_test_client(app).post(
         "/tracks/rec-1/request", json={"artist_name": "Radiohead", "track_title": "Airbag"}
     )

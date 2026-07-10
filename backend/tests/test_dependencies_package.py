@@ -88,29 +88,50 @@ class TestSingletonDecorator:
 
 class TestDownloadServiceFreshness:
     """Regression for the stale-scorer bug: the DownloadService singleton is rebuilt on
-    a download-policy save, so every long-lived holder must store the get_download_service
-    GETTER (resolved per dispatch) rather than a captured instance - else a saved quality
-    change is silently ignored until the app restarts. Identity against the provider proves
-    the wiring and would fail if a provider is reverted to pass get_download_service()."""
+    a download-policy save, so every long-lived holder must store a GETTER (resolved per
+    dispatch) rather than a captured instance - else a saved quality change is silently
+    ignored until the app restarts.
 
-    def test_holders_store_the_getter_not_an_instance(self):
+    Acquisition now flows through the AcquisitionDispatcher, which itself holds the getter.
+    So the freshness guarantee lives in two places: holders that still touch DownloadService
+    directly (cancel, scout, purge) keep the getter; dispatch holders keep the dispatcher,
+    which keeps the getter. Both are pinned here."""
+
+    def test_direct_download_holders_store_the_getter(self):
         from core.dependencies import service_providers as sp
         from core.dependencies._registry import clear_all_singletons
 
         try:
-            holders = [
-                sp.get_request_service(),
-                sp.get_requests_page_service(),
-                sp.get_new_release_service(),
-                sp.get_personal_mix_service(),
-                sp.get_discovery_batch_service(),
-            ]
-            for holder in holders:
+            for holder in (
+                sp.get_request_service(),          # cancel_task
+                sp.get_requests_page_service(),    # cancel_task
+                sp.get_discovery_batch_service(),  # purge_album_downloads
+                sp.get_wanted_watcher_service(),   # scout, cancel, retry
+            ):
                 assert holder._get_download_service is sp.get_download_service, (
                     f"{type(holder).__name__} captured a DownloadService instance instead of "
                     "the get_download_service getter"
                 )
-            # WantedWatcherService already followed the pattern - keep it covered.
-            assert sp.get_wanted_watcher_service()._get_download_service is sp.get_download_service
+        finally:
+            clear_all_singletons()
+
+    def test_the_dispatcher_holds_the_getter_and_dispatch_holders_hold_the_dispatcher(self):
+        from core.dependencies import service_providers as sp
+        from core.dependencies._registry import clear_all_singletons
+
+        try:
+            dispatcher = sp.get_acquisition_dispatcher()
+            assert dispatcher._get_download_service is sp.get_download_service
+            assert dispatcher._get_free_music_service is sp.get_free_music_service
+            # every acquisition path shares the one dispatcher singleton
+            for holder in (
+                sp.get_request_service(),
+                sp.get_requests_page_service(),
+                sp.get_new_release_service(),
+                sp.get_personal_mix_service(),
+            ):
+                assert holder._acquisition is dispatcher, (
+                    f"{type(holder).__name__} is not routing through the shared dispatcher"
+                )
         finally:
             clear_all_singletons()
