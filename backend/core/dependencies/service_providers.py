@@ -904,6 +904,7 @@ def get_discover_service() -> "DiscoverService":
         follow_service=get_follow_service(),
         cover_repo=get_coverart_repository(),
         preview_repo=get_preview_repository(),
+        disk_cache=get_disk_cache(),
     )
 
 
