@@ -40,7 +40,11 @@ def _factory(store: UserConnectionsStore, *, app_key: str = "appkey", app_secret
         http_timeout=10, http_connect_timeout=5, http_max_connections=200
     )
     prefs.get_lastfm_connection.return_value = SimpleNamespace(
-        api_key=app_key, shared_secret=app_secret
+        api_key=app_key, shared_secret=app_secret,
+        api_url="https://ws.audioscrobbler.com/2.0/",
+    )
+    prefs.get_listenbrainz_connection.return_value = SimpleNamespace(
+        api_url="https://api.listenbrainz.org"
     )
     return PerUserClientFactory(
         connections_store=store,
