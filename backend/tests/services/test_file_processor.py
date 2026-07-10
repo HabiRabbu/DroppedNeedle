@@ -685,6 +685,72 @@ def test_fingerprint_skips_artist_check_for_various_artists():
     assert _fingerprint_disagrees(fp, None, "Various Artists") is False
 
 
+# --- fingerprint collab & remix credit handling --------------------------------------------
+
+def test_fingerprint_allows_collab_credit_containing_requested_artist():
+    # AcoustID credits the full collaboration; the request is for one member.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Electricity")
+    fp = _fp(title="Electricity", artist="Silk City; Dua Lipa")
+    assert _fingerprint_disagrees(fp, track, "Dua Lipa") is False
+
+
+def test_fingerprint_allows_collab_across_separator_styles():
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Song")
+    for credit in (
+        "Someone feat. Mark Ronson",
+        "Someone ft. Mark Ronson",
+        "Someone & Mark Ronson",
+        "Someone, Mark Ronson",
+        "Someone vs. Mark Ronson",
+        "Someone x Mark Ronson",
+        "Someone with Mark Ronson",
+    ):
+        fp = _fp(title="Song", artist=credit)
+        assert _fingerprint_disagrees(fp, track, "Mark Ronson") is False, credit
+
+
+def test_fingerprint_allows_requested_collab_when_credit_names_one_member():
+    # Mirror case: the REQUEST carries the collab credit, AcoustID names a member.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Song")
+    fp = _fp(title="Song", artist="Mark Ronson")
+    assert _fingerprint_disagrees(fp, track, "Mark Ronson & Diplo") is False
+
+
+def test_fingerprint_allows_remix_credited_to_original_artist():
+    # AcoustID credits the original performer of a remix; the requested artist
+    # (the remixer) is named in the track title - that's the right recording.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Higher Love (Kygo Remix)")
+    fp = _fp(title="Higher Love (Kygo remix)", artist="Whitney Houston")
+    assert _fingerprint_disagrees(fp, track, "Kygo") is False
+
+
+def test_fingerprint_still_rejects_unrelated_artist_with_matching_title():
+    # The collab/remix allowances must not weaken the plain wrong-artist case:
+    # same title, artist unrelated on both sides, not named in the title.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Hello")
+    fp = _fp(title="Hello", artist="Adele")
+    assert _fingerprint_disagrees(fp, track, "Metallica")
+
+
+def test_fingerprint_still_rejects_wrong_song_from_collab_member():
+    # The title gate has precedence: right artist member, clearly different song.
+    from models.download_manifest import ExpectedTrack
+    from services.native.file_processor import _fingerprint_disagrees
+    track = ExpectedTrack(track_number=1, title="Electricity")
+    fp = _fp(title="Find U Again", artist="Silk City; Dua Lipa")
+    assert _fingerprint_disagrees(fp, track, "Dua Lipa")
+
+
 # --- import-time wrong-album guard (#1, tagless-safe) -------------------------------------
 
 def _fc(album: str, *, artist: str = "Led Zeppelin", album_artist: str | None = None) -> _FolderCandidate:
