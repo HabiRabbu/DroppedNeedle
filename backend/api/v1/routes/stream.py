@@ -17,6 +17,7 @@ from core.dependencies import (
 )
 from core.exceptions import ExternalServiceError, PlaybackNotAllowedError, ResourceNotFoundError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
+from middleware import CurrentUserDep
 from services.jellyfin_playback_service import JellyfinPlaybackService
 from services.local_files_service import LocalFilesService
 from services.navidrome_playback_service import NavidromePlaybackService
@@ -67,6 +68,7 @@ async def head_jellyfin_audio(
 @router.post("/jellyfin/{item_id}/start", response_model=PlaybackSessionResponse)
 async def start_jellyfin_playback(
     item_id: str,
+    current_user: CurrentUserDep,
     body: StartPlaybackRequest | None = Body(default=None),
     playback_service: JellyfinPlaybackService = Depends(get_jellyfin_playback_service),
 ) -> PlaybackSessionResponse:
@@ -74,6 +76,7 @@ async def start_jellyfin_playback(
         play_session_id = await playback_service.start_playback(
             item_id,
             play_session_id=body.play_session_id if body else None,
+            user_id=current_user.id,
         )
         return PlaybackSessionResponse(play_session_id=play_session_id, item_id=item_id)
     except ResourceNotFoundError:
@@ -89,6 +92,7 @@ async def start_jellyfin_playback(
 @router.post("/jellyfin/{item_id}/progress", status_code=204)
 async def report_jellyfin_progress(
     item_id: str,
+    current_user: CurrentUserDep,
     body: ProgressReportRequest = MsgSpecBody(ProgressReportRequest),
     playback_service: JellyfinPlaybackService = Depends(get_jellyfin_playback_service),
 ) -> Response:
@@ -98,6 +102,7 @@ async def report_jellyfin_progress(
             play_session_id=body.play_session_id,
             position_seconds=body.position_seconds,
             is_paused=body.is_paused,
+            user_id=current_user.id,
         )
         return Response(status_code=204)
     except ExternalServiceError as e:
@@ -108,6 +113,7 @@ async def report_jellyfin_progress(
 @router.post("/jellyfin/{item_id}/stop", status_code=204)
 async def stop_jellyfin_playback(
     item_id: str,
+    current_user: CurrentUserDep,
     body: StopReportRequest = MsgSpecBody(StopReportRequest),
     playback_service: JellyfinPlaybackService = Depends(get_jellyfin_playback_service),
 ) -> Response:
@@ -116,6 +122,7 @@ async def stop_jellyfin_playback(
             item_id=item_id,
             play_session_id=body.play_session_id,
             position_seconds=body.position_seconds,
+            user_id=current_user.id,
         )
         return Response(status_code=204)
     except ExternalServiceError as e:
@@ -217,24 +224,27 @@ async def stream_navidrome_audio(
 @router.post("/navidrome/{item_id}/scrobble")
 async def scrobble_navidrome(
     item_id: str,
+    current_user: CurrentUserDep,
     playback_service: NavidromePlaybackService = Depends(get_navidrome_playback_service),
 ) -> dict[str, str]:
-    ok = await playback_service.scrobble(item_id)
+    ok = await playback_service.scrobble(item_id, user_id=current_user.id)
     return {"status": "ok" if ok else "error"}
 
 
 @router.post("/navidrome/{item_id}/now-playing")
 async def navidrome_now_playing(
     item_id: str,
+    current_user: CurrentUserDep,
     playback_service: NavidromePlaybackService = Depends(get_navidrome_playback_service),
 ) -> dict[str, str]:
-    ok = await playback_service.report_now_playing(item_id)
+    ok = await playback_service.report_now_playing(item_id, user_id=current_user.id)
     return {"status": "ok" if ok else "error"}
 
 
 @router.post("/navidrome/{item_id}/stopped")
 async def navidrome_stopped(
     item_id: str,
+    current_user: CurrentUserDep,
     playback_service: NavidromePlaybackService = Depends(get_navidrome_playback_service),
 ) -> dict[str, str]:
     await playback_service.clear_now_playing(item_id)
@@ -274,25 +284,28 @@ async def stream_plex_audio(
 @router.post("/plex/{rating_key}/scrobble")
 async def scrobble_plex(
     rating_key: str,
+    current_user: CurrentUserDep,
     playback_service: PlexPlaybackService = Depends(get_plex_playback_service),
 ) -> dict[str, str]:
-    ok = await playback_service.scrobble(rating_key)
+    ok = await playback_service.scrobble(rating_key, user_id=current_user.id)
     return {"status": "ok" if ok else "error"}
 
 
 @router.post("/plex/{rating_key}/now-playing")
 async def plex_now_playing(
     rating_key: str,
+    current_user: CurrentUserDep,
     playback_service: PlexPlaybackService = Depends(get_plex_playback_service),
 ) -> dict[str, str]:
-    ok = await playback_service.report_now_playing(rating_key)
+    ok = await playback_service.report_now_playing(rating_key, user_id=current_user.id)
     return {"status": "ok" if ok else "error"}
 
 
 @router.post("/plex/{rating_key}/stopped")
 async def plex_stopped(
     rating_key: str,
+    current_user: CurrentUserDep,
     playback_service: PlexPlaybackService = Depends(get_plex_playback_service),
 ) -> dict[str, str]:
-    ok = await playback_service.report_stopped(rating_key)
+    ok = await playback_service.report_stopped(rating_key, user_id=current_user.id)
     return {"status": "ok" if ok else "error"}

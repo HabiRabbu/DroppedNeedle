@@ -93,6 +93,16 @@ class PlexAuthError(PlexApiError):
     pass
 
 
+class JellyfinAuthError(ExternalServiceError):
+    """Outbound Jellyfin rejected our credential (401).
+
+    Non-breaking for the shared circuit breaker: with per-user access tokens a
+    single revoked/stale token must not open the circuit for every user.
+    """
+
+    pass
+
+
 class NavidromeApiError(ExternalServiceError):
     def __init__(
         self,

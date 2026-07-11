@@ -938,7 +938,7 @@ def get_jellyfin_playback_service() -> "JellyfinPlaybackService":
 
     jellyfin_repo = get_jellyfin_repository()
     cache = get_cache()
-    return JellyfinPlaybackService(jellyfin_repo, cache)
+    return JellyfinPlaybackService(jellyfin_repo, cache, get_per_user_client_factory())
 
 
 @singleton
@@ -977,7 +977,7 @@ def get_navidrome_playback_service() -> "NavidromePlaybackService":
 
     navidrome_repo = get_navidrome_repository()
     cache = get_cache()
-    return NavidromePlaybackService(navidrome_repo, cache)
+    return NavidromePlaybackService(navidrome_repo, cache, get_per_user_client_factory())
 
 
 @singleton
@@ -997,7 +997,7 @@ def get_plex_playback_service() -> "PlexPlaybackService":
 
     plex_repo = get_plex_repository()
     cache = get_cache()
-    return PlexPlaybackService(plex_repo, cache)
+    return PlexPlaybackService(plex_repo, cache, get_per_user_client_factory())
 
 
 @singleton

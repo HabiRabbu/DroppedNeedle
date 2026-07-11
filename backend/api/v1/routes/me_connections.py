@@ -21,7 +21,10 @@ from api.v1.schemas.me_connections import (
     ConnectionsResponse,
     ConnectionStatus,
     ListenBrainzConnectRequest,
+    MediaServerConnectRequest,
     PersonalMixRefreshResponse,
+    PlexLinkPinResponse,
+    PlexLinkPollResponse,
     ScrobblePreferences,
     ScrobblePreferencesUpdate,
     SpotifyAuthUrlResponse,
@@ -39,10 +42,12 @@ from api.v1.schemas.settings import (
 )
 from core.dependencies import (
     get_auth_store,
+    get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_now_playing_service,
     get_per_user_client_factory,
     get_personal_mix_service,
+    get_plex_user_auth_service,
     get_preferences_service,
     get_settings_service,
     get_sse_publisher,
@@ -51,6 +56,7 @@ from core.dependencies import (
     get_user_section_prefs_store,
 )
 from core.exceptions import (
+    AuthenticationError,
     ConfigurationError,
     ExternalServiceError,
     TokenNotAuthorizedError,
@@ -62,9 +68,11 @@ from infrastructure.persistence.user_connections_store import UserConnectionsSto
 from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
 from infrastructure.persistence.user_section_prefs_store import UserSectionPrefsStore
 from middleware import CurrentUserDep
+from services.jellyfin_user_auth_service import JellyfinUserAuthService
 from services.lastfm_auth_service import LastFmAuthService
 from services.per_user_client_factory import PerUserClientFactory
 from services.personal_mix_service import PersonalMixService
+from services.plex_user_auth_service import PlexUserAuthService
 from services.preferences_service import PreferencesService
 from services.section_catalog import Page, sections_for, valid_keys
 from services.settings_service import SettingsService
@@ -73,7 +81,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=MsgSpecRoute, prefix="/me", tags=["me"])
 
-_SUPPORTED_SERVICES = ("lastfm", "listenbrainz", "spotify")
+_SUPPORTED_SERVICES = ("lastfm", "listenbrainz", "spotify", "navidrome", "jellyfin", "plex")
 _SPOTIFY_SCOPES = "playlist-read-private playlist-read-collaborative user-read-private"
 
 
@@ -365,6 +373,103 @@ async def spotify_auth_callback(
         "spotify_user_id": spotify_user.get("id", ""),
     })
     return fastapi_responses.RedirectResponse("/profile?spotify=connected")
+
+
+@router.put("/connections/navidrome", response_model=ConnectionStatus)
+async def connect_navidrome(
+    current_user: CurrentUserDep,
+    body: MediaServerConnectRequest = MsgSpecBody(MediaServerConnectRequest),
+    client_factory: PerUserClientFactory = Depends(get_per_user_client_factory),
+    store: UserConnectionsStore = Depends(get_user_connections_store),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> ConnectionStatus:
+    nd = preferences_service.get_navidrome_connection_raw()
+    if not (nd.enabled and nd.navidrome_url):
+        raise HTTPException(status_code=400, detail="Navidrome is not configured by the administrator")
+    if not body.username.strip() or not body.password:
+        raise HTTPException(status_code=400, detail="A Navidrome username and password are required")
+    ok, message = await client_factory.validate_navidrome_credentials(body.username, body.password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    # Subsonic token auth needs the raw password per request; the store Fernet-encrypts it
+    await store.upsert(
+        current_user.id, "navidrome", {"username": body.username, "password": body.password}
+    )
+    return ConnectionStatus(service="navidrome", enabled=True, username=body.username)
+
+
+@router.put("/connections/jellyfin", response_model=ConnectionStatus)
+async def connect_jellyfin(
+    current_user: CurrentUserDep,
+    body: MediaServerConnectRequest = MsgSpecBody(MediaServerConnectRequest),
+    auth_service: JellyfinUserAuthService = Depends(get_jellyfin_user_auth_service),
+    store: UserConnectionsStore = Depends(get_user_connections_store),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> ConnectionStatus:
+    jf = preferences_service.get_jellyfin_connection()
+    if not (jf.enabled and jf.jellyfin_url):
+        raise HTTPException(status_code=400, detail="Jellyfin is not configured by the administrator")
+    if not body.username.strip() or not body.password:
+        raise HTTPException(status_code=400, detail="A Jellyfin username and password are required")
+    try:
+        profile = await auth_service.authenticate_credentials(body.username, body.password)
+    except AuthenticationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ExternalServiceError:
+        raise HTTPException(status_code=502, detail="Couldn't reach Jellyfin to verify the account")
+    # only the exchanged access token is persisted - never the password
+    await store.upsert(
+        current_user.id,
+        "jellyfin",
+        {
+            "access_token": profile["access_token"],
+            "jellyfin_user_id": profile["jellyfin_user_id"],
+            "username": profile["username"],
+        },
+    )
+    return ConnectionStatus(service="jellyfin", enabled=True, username=profile["username"])
+
+
+@router.post("/connections/plex/auth/pin", response_model=PlexLinkPinResponse)
+async def plex_link_pin(
+    current_user: CurrentUserDep,
+    auth_service: PlexUserAuthService = Depends(get_plex_user_auth_service),
+    preferences_service: PreferencesService = Depends(get_preferences_service),
+) -> PlexLinkPinResponse:
+    plex = preferences_service.get_plex_connection_raw()
+    if not (plex.enabled and plex.plex_url):
+        raise HTTPException(status_code=400, detail="Plex is not configured by the administrator")
+    try:
+        pin_id, auth_url = await auth_service.create_login_pin()
+    except AuthenticationError:
+        raise HTTPException(status_code=502, detail="Couldn't reach Plex to start account linking")
+    return PlexLinkPinResponse(pin_id=pin_id, auth_url=auth_url)
+
+
+@router.get("/connections/plex/auth/poll", response_model=PlexLinkPollResponse)
+async def plex_link_poll(
+    pin_id: int,
+    current_user: CurrentUserDep,
+    auth_service: PlexUserAuthService = Depends(get_plex_user_auth_service),
+    store: UserConnectionsStore = Depends(get_user_connections_store),
+) -> PlexLinkPollResponse:
+    try:
+        profile = await auth_service.poll_for_link(pin_id)
+    except AuthenticationError as e:
+        # covers both "not on this server" (membership gate) and profile-fetch failures
+        raise HTTPException(status_code=403, detail=str(e))
+    if profile is None:
+        return PlexLinkPollResponse(completed=False)
+    await store.upsert(
+        current_user.id,
+        "plex",
+        {
+            "auth_token": profile["auth_token"],
+            "plex_user_id": profile["uuid"],
+            "username": profile["display_name"],
+        },
+    )
+    return PlexLinkPollResponse(completed=True, username=profile["display_name"])
 
 
 @router.delete("/connections/{service}", response_model=ConnectionActionResponse)

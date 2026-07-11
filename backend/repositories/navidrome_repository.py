@@ -221,7 +221,9 @@ class NavidromeRepository:
         max_delay=5.0,
         circuit_breaker=_navidrome_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
-        non_breaking_exceptions=(NavidromeSubsonicError,),
+        # auth failures are non-breaking too: with per-user credentials one
+        # user's stale password must not open the circuit for everyone
+        non_breaking_exceptions=(NavidromeSubsonicError, NavidromeAuthError),
     )
     async def _request(
         self,

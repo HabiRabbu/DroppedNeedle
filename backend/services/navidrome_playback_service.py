@@ -9,6 +9,7 @@ from fastapi.responses import Response, StreamingResponse
 from infrastructure.cache.memory_cache import CacheInterface
 from repositories.navidrome_models import StreamProxyResult
 from repositories.protocols import NavidromeRepositoryProtocol
+from services.per_user_client_factory import PerUserClientFactory
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,24 @@ class NavidromePlaybackService:
         self,
         navidrome_repo: NavidromeRepositoryProtocol,
         cache: CacheInterface | None = None,
+        client_factory: PerUserClientFactory | None = None,
     ) -> None:
         self._navidrome = navidrome_repo
         self._cache = cache
+        self._client_factory = client_factory
+
+    async def _repo_for(self, user_id: str | None) -> NavidromeRepositoryProtocol:
+        """The user's own Navidrome client when linked, else the app-level one.
+
+        Fallback covers only "not linked" - an auth failure on a linked account
+        fails the attribution call (fail closed) rather than silently
+        misattributing it to the app account.
+        """
+        if user_id and self._client_factory:
+            per_user = await self._client_factory.resolve_navidrome(user_id)
+            if per_user is not None:
+                return per_user
+        return self._navidrome
 
     def get_stream_url(self, song_id: str) -> str:
         return self._navidrome.build_stream_url(song_id)
@@ -47,10 +63,11 @@ class NavidromePlaybackService:
             media_type=result.media_type,
         )
 
-    async def scrobble(self, song_id: str) -> bool:
+    async def scrobble(self, song_id: str, user_id: str | None = None) -> bool:
         time_ms = int(time.time() * 1000)
         try:
-            ok = await self._navidrome.scrobble(song_id, time_ms=time_ms)
+            repo = await self._repo_for(user_id)
+            ok = await repo.scrobble(song_id, time_ms=time_ms)
             _playback_start_times.pop(song_id, None)
             if self._cache:
                 await self._cache.delete("navidrome:now_playing")
@@ -59,9 +76,10 @@ class NavidromePlaybackService:
             logger.warning("Navidrome scrobble failed for %s", song_id, exc_info=True)
             return False
 
-    async def report_now_playing(self, song_id: str) -> bool:
+    async def report_now_playing(self, song_id: str, user_id: str | None = None) -> bool:
         try:
-            ok = await self._navidrome.now_playing(song_id)
+            repo = await self._repo_for(user_id)
+            ok = await repo.now_playing(song_id)
             _playback_start_times[song_id] = time.time()
             _playback_start_times.move_to_end(song_id)
             while len(_playback_start_times) > _MAX_TRACKED_PLAYBACKS:

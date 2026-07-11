@@ -257,7 +257,7 @@ backend-test-scrobble: $(BACKEND_VENV_STAMP) ## Run per-user scrobble service + 
 	$(PYTEST) tests/services/test_scrobble_service.py tests/routes/test_scrobble_routes.py -v
 
 backend-test-connections: $(BACKEND_VENV_STAMP) ## Run per-user connection stores + factory + /me routes + D10 backfill tests
-	$(PYTEST) tests/infrastructure/test_user_connections_store.py tests/infrastructure/test_user_listening_prefs_store.py tests/infrastructure/test_play_history_store.py tests/services/test_per_user_client_factory.py tests/routes/test_me_connections.py tests/services/test_global_connection_backfill.py -v
+	$(PYTEST) tests/infrastructure/test_user_connections_store.py tests/infrastructure/test_user_listening_prefs_store.py tests/infrastructure/test_play_history_store.py tests/services/test_per_user_client_factory.py tests/routes/test_me_connections.py tests/services/test_global_connection_backfill.py tests/services/test_media_server_auto_link.py -v
 
 backend-test-deep-discovery: $(BACKEND_VENV_STAMP) ## Run deep discovery and analytics tests
 	$(PYTEST) tests/services/test_deep_discovery.py -v

@@ -25,22 +25,24 @@ def get_auth_service() -> "AuthService":
 @singleton
 def get_plex_user_auth_service() -> "PlexUserAuthService":
     from services.plex_user_auth_service import PlexUserAuthService
-    from core.dependencies.repo_providers import get_plex_repository
+    from core.dependencies.repo_providers import get_plex_repository, get_user_connections_store
     return PlexUserAuthService(
         auth_store = get_auth_store(),
         plex_repository = get_plex_repository(),
         preferences_service = get_preferences_service(),
+        connections_store = get_user_connections_store(),
     )
 
 
 @singleton
 def get_jellyfin_user_auth_service() -> "JellyfinUserAuthService":
     from services.jellyfin_user_auth_service import JellyfinUserAuthService
-    from core.dependencies.repo_providers import get_jellyfin_repository
+    from core.dependencies.repo_providers import get_jellyfin_repository, get_user_connections_store
     return JellyfinUserAuthService(
         auth_store = get_auth_store(),
         jellyfin_repository = get_jellyfin_repository(),
         preferences_service = get_preferences_service(),
+        connections_store = get_user_connections_store(),
     )
 
 

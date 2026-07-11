@@ -12,9 +12,11 @@ from fastapi import FastAPI
 
 from api.v1.routes.me_connections import router as me_router
 from core.dependencies import (
+    get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_per_user_client_factory,
     get_personal_mix_service,
+    get_plex_user_auth_service,
     get_preferences_service,
     get_settings_service,
     get_user_connections_store,
@@ -63,6 +65,30 @@ def ctx(tmp_path: Path):
 
     prefs_service = MagicMock()
     prefs_service.get_lastfm_connection.return_value = SimpleNamespace(api_key="appkey", shared_secret="appsecret")
+    prefs_service.get_navidrome_connection_raw.return_value = SimpleNamespace(
+        enabled=True, navidrome_url="http://nd.local"
+    )
+    prefs_service.get_jellyfin_connection.return_value = SimpleNamespace(
+        enabled=True, jellyfin_url="http://jf.local"
+    )
+    prefs_service.get_plex_connection_raw.return_value = SimpleNamespace(
+        enabled=True, plex_url="http://plex.local"
+    )
+
+    jellyfin_user_auth = AsyncMock()
+    jellyfin_user_auth.authenticate_credentials.return_value = {
+        "access_token": "jf-token-secret",
+        "jellyfin_user_id": "jf-uid-1",
+        "username": "alice_jf",
+    }
+
+    plex_user_auth = AsyncMock()
+    plex_user_auth.create_login_pin.return_value = (123, "https://app.plex.tv/auth#?code=abc")
+    plex_user_auth.poll_for_link.return_value = {
+        "auth_token": "px-token-secret",
+        "uuid": "px-uid-1",
+        "display_name": "Alice Plex",
+    }
 
     # real grant logic against the real prefs store; everything else mocked
     download_service = AsyncMock()
@@ -79,6 +105,7 @@ def ctx(tmp_path: Path):
 
     client_factory = AsyncMock()
     client_factory.is_listenbrainz_linked = AsyncMock(return_value=True)
+    client_factory.validate_navidrome_credentials = AsyncMock(return_value=(True, "Connected"))
 
     app = FastAPI()
     app.include_router(me_router)
@@ -89,12 +116,15 @@ def ctx(tmp_path: Path):
     app.dependency_overrides[get_preferences_service] = lambda: prefs_service
     app.dependency_overrides[get_personal_mix_service] = lambda: personal_mix_service
     app.dependency_overrides[get_per_user_client_factory] = lambda: client_factory
+    app.dependency_overrides[get_jellyfin_user_auth_service] = lambda: jellyfin_user_auth
+    app.dependency_overrides[get_plex_user_auth_service] = lambda: plex_user_auth
     override_user_auth(app, user_id="user-a")
     client = build_test_client(app)
     return SimpleNamespace(
         client=client, app=app, conn_store=conn_store, prefs_store=prefs_store,
         settings_service=settings_service, personal_mix_service=personal_mix_service,
-        client_factory=client_factory,
+        client_factory=client_factory, prefs_service=prefs_service,
+        jellyfin_user_auth=jellyfin_user_auth, plex_user_auth=plex_user_auth,
     )
 
 
@@ -291,3 +321,128 @@ def test_personal_mix_refresh_reports_already_running(ctx, monkeypatch):
     resp = ctx.client.post("/me/personal-mix/refresh")
     assert resp.status_code == 200
     assert resp.json()["status"] == "already_running"
+
+
+# --- media-server links: per-user playback attribution (issue #138) ---
+
+
+def test_connect_navidrome_validates_and_persists_encrypted(ctx):
+    resp = ctx.client.put(
+        "/me/connections/navidrome", json={"username": "alice_nd", "password": "nd-pass-secret"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"service": "navidrome", "enabled": True, "username": "alice_nd"}
+    ctx.client_factory.validate_navidrome_credentials.assert_awaited_once_with(
+        "alice_nd", "nd-pass-secret"
+    )
+
+    data = asyncio.run(ctx.conn_store.get("user-a", "navidrome"))
+    assert data == {"username": "alice_nd", "password": "nd-pass-secret"}
+    # the secret never appears in any response body
+    body = ctx.client.get("/me/connections").text
+    assert "nd-pass-secret" not in body
+    assert "password" not in body
+
+
+def test_connect_navidrome_rejects_bad_credentials(ctx):
+    ctx.client_factory.validate_navidrome_credentials.return_value = (
+        False,
+        "Authentication failed: Wrong username or password",
+    )
+    resp = ctx.client.put(
+        "/me/connections/navidrome", json={"username": "alice_nd", "password": "wrong"}
+    )
+    assert resp.status_code == 400
+    assert asyncio.run(ctx.conn_store.get("user-a", "navidrome")) is None
+
+
+def test_connect_navidrome_400_when_admin_disabled(ctx):
+    ctx.prefs_service.get_navidrome_connection_raw.return_value = SimpleNamespace(
+        enabled=False, navidrome_url=""
+    )
+    resp = ctx.client.put(
+        "/me/connections/navidrome", json={"username": "a", "password": "b"}
+    )
+    assert resp.status_code == 400
+
+
+def test_connect_jellyfin_stores_token_never_password(ctx):
+    resp = ctx.client.put(
+        "/me/connections/jellyfin", json={"username": "alice_jf", "password": "jf-pass-secret"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["username"] == "alice_jf"
+
+    data = asyncio.run(ctx.conn_store.get("user-a", "jellyfin"))
+    assert data == {
+        "access_token": "jf-token-secret",
+        "jellyfin_user_id": "jf-uid-1",
+        "username": "alice_jf",
+    }
+    assert "password" not in data
+    body = ctx.client.get("/me/connections").text
+    assert "jf-token-secret" not in body
+    assert "jf-pass-secret" not in body
+
+
+def test_connect_jellyfin_maps_auth_failure_to_400(ctx):
+    from core.exceptions import AuthenticationError
+
+    ctx.jellyfin_user_auth.authenticate_credentials.side_effect = AuthenticationError(
+        "Invalid Jellyfin username or password"
+    )
+    resp = ctx.client.put(
+        "/me/connections/jellyfin", json={"username": "alice_jf", "password": "wrong"}
+    )
+    assert resp.status_code == 400
+    assert asyncio.run(ctx.conn_store.get("user-a", "jellyfin")) is None
+
+
+def test_plex_link_pin_returns_auth_url(ctx):
+    resp = ctx.client.post("/me/connections/plex/auth/pin")
+    assert resp.status_code == 200
+    assert resp.json() == {"pin_id": 123, "auth_url": "https://app.plex.tv/auth#?code=abc"}
+
+
+def test_plex_link_poll_pending_persists_nothing(ctx):
+    ctx.plex_user_auth.poll_for_link.return_value = None
+    resp = ctx.client.get("/me/connections/plex/auth/poll", params={"pin_id": 123})
+    assert resp.status_code == 200
+    assert resp.json() == {"completed": False, "username": ""}
+    assert asyncio.run(ctx.conn_store.get("user-a", "plex")) is None
+
+
+def test_plex_link_poll_completed_persists_connection(ctx):
+    resp = ctx.client.get("/me/connections/plex/auth/poll", params={"pin_id": 123})
+    assert resp.status_code == 200
+    assert resp.json() == {"completed": True, "username": "Alice Plex"}
+
+    data = asyncio.run(ctx.conn_store.get("user-a", "plex"))
+    assert data == {
+        "auth_token": "px-token-secret",
+        "plex_user_id": "px-uid-1",
+        "username": "Alice Plex",
+    }
+    body = ctx.client.get("/me/connections").text
+    assert "px-token-secret" not in body
+
+
+def test_plex_link_poll_membership_denial_is_403(ctx):
+    from core.exceptions import AuthenticationError
+
+    ctx.plex_user_auth.poll_for_link.side_effect = AuthenticationError(
+        "Your Plex account does not have access to this server"
+    )
+    resp = ctx.client.get("/me/connections/plex/auth/poll", params={"pin_id": 123})
+    assert resp.status_code == 403
+    assert asyncio.run(ctx.conn_store.get("user-a", "plex")) is None
+
+
+def test_disconnect_supports_media_server_services(ctx):
+    ctx.client.put(
+        "/me/connections/navidrome", json={"username": "alice_nd", "password": "p"}
+    )
+    resp = ctx.client.delete("/me/connections/navidrome")
+    assert resp.status_code == 200
+    assert resp.json() == {"service": "navidrome", "deleted": True}
+    assert asyncio.run(ctx.conn_store.get("user-a", "navidrome")) is None

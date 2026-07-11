@@ -124,6 +124,11 @@ const COVERAGE: Array<[string, string, string]> = [
 		'/api/v1/following/concerts/unseen-count'
 	],
 	['mark concerts seen', API.following.markConcertsSeen(), '/api/v1/following/concerts/seen'],
+	// Media-server account links (per-user playback attribution, issue #138)
+	['connect navidrome', API.me.navidrome(), '/api/v1/me/connections/navidrome'],
+	['connect jellyfin', API.me.jellyfin(), '/api/v1/me/connections/jellyfin'],
+	['plex link pin', API.me.plexAuthPin(), '/api/v1/me/connections/plex/auth/pin'],
+	['plex link poll', API.me.plexAuthPoll(7), '/api/v1/me/connections/plex/auth/poll?pin_id=7'],
 	// Weekly Mix (user-scoped refresh + admin standing-grant queue)
 	['personal mix refresh', API.me.personalMixRefresh(), '/api/v1/me/personal-mix/refresh'],
 	[

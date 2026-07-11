@@ -19,10 +19,12 @@ class PlexUserAuthService:
         auth_store: AuthStore,
         plex_repository,
         preferences_service,
+        connections_store=None,
     ) -> None:
         self._store = auth_store
         self._plex_repo = plex_repository
         self._prefs = preferences_service
+        self._connections_store = connections_store
 
     def get_client_id(self) -> str:
         return self._prefs.get_or_create_setting("plex_client_id", lambda: str(uuid.uuid4()))
@@ -59,6 +61,10 @@ class PlexUserAuthService:
 
         user = await self._find_or_create_user(profile, auth_token)
 
+        # auto-link the per-user media connection (D4): the login just handed us a
+        # fresh user-scoped token, so playback attribution works with zero setup
+        await self._auto_link_connection(user.id, profile)
+
         raw_token, token_hash = self._store.issue_token()
         await self._store.store_token(
             id = str(uuid.uuid4()),
@@ -70,6 +76,44 @@ class PlexUserAuthService:
 
         logger.info(f"Plex login: {user.display_name} ({user.id[:8]})")
         return user, raw_token
+
+    async def poll_for_link(self, pin_id: int) -> dict | None:
+        """Poll a link-flow pin. Returns the verified profile (uuid /
+        display_name / auth_token) once the user authorizes, ``None`` while the
+        pin is still pending. Enforces the same server-membership gate as login;
+        no DroppedNeedle login side effects."""
+        client_id = self.get_client_id()
+        auth_token = await self._plex_repo.poll_oauth_pin(pin_id, client_id)
+        if not auth_token:
+            return None
+
+        profile = await self._get_user_profile(auth_token, client_id)
+
+        machine_id = await self._get_server_machine_id()
+        if machine_id:
+            if not await self._check_server_membership(auth_token, client_id, machine_id):
+                logger.warning(f"Plex link rejected: user {profile.get('uuid', '?')[:8]} not on server {machine_id[:8]}")
+                raise AuthenticationError("Your Plex account does not have access to this server")
+
+        return profile
+
+    async def _auto_link_connection(self, user_id: str, profile: dict) -> None:
+        if self._connections_store is None:
+            return
+        try:
+            await self._connections_store.upsert(
+                user_id,
+                "plex",
+                {
+                    "auth_token": profile["auth_token"],
+                    "plex_user_id": profile["uuid"],
+                    "username": profile["display_name"],
+                },
+            )
+        except Exception:  # noqa: BLE001 - a failed auto-link must never fail the login
+            logger.warning(
+                f"Failed to auto-link Plex connection for user {user_id[:8]}", exc_info=True
+            )
 
     async def _get_user_profile(self, auth_token: str, client_id: str) -> dict:
         try:

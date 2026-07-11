@@ -76,3 +76,81 @@ class TestPlaybackTrackingBounded:
             assert service.get_estimated_position("song-0") is None
         finally:
             mod._playback_start_times.clear()
+
+
+class TestPerUserAttribution:
+    """Linked users scrobble through their own repo; unlinked fall back (issue #138)."""
+
+    def _factory(self, per_user_repo):
+        factory = MagicMock()
+        factory.resolve_navidrome = AsyncMock(return_value=per_user_repo)
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_scrobble_uses_per_user_repo_when_linked(self):
+        service, app_repo = _make_service()
+        per_user = MagicMock()
+        per_user.scrobble = AsyncMock(return_value=True)
+        service._client_factory = self._factory(per_user)
+
+        result = await service.scrobble("song-1", user_id="u1")
+
+        assert result is True
+        per_user.scrobble.assert_awaited_once()
+        app_repo.scrobble.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scrobble_falls_back_to_app_repo_when_unlinked(self):
+        service, app_repo = _make_service()
+        service._client_factory = self._factory(None)
+
+        result = await service.scrobble("song-1", user_id="u1")
+
+        assert result is True
+        app_repo.scrobble.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_scrobble_without_user_id_uses_app_repo(self):
+        service, app_repo = _make_service()
+        factory = self._factory(MagicMock())
+        service._client_factory = factory
+
+        await service.scrobble("song-1")
+
+        factory.resolve_navidrome.assert_not_awaited()
+        app_repo.scrobble.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_per_user_auth_failure_fails_closed(self):
+        from core.exceptions import NavidromeAuthError
+
+        service, app_repo = _make_service()
+        per_user = MagicMock()
+        per_user.scrobble = AsyncMock(side_effect=NavidromeAuthError("bad password"))
+        service._client_factory = self._factory(per_user)
+
+        result = await service.scrobble("song-1", user_id="u1")
+
+        # fail closed: no silent misattribution via the app account
+        assert result is False
+        app_repo.scrobble.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_now_playing_uses_per_user_repo_when_linked(self):
+        from services import navidrome_playback_service as mod
+
+        service, app_repo = _make_service()
+        app_repo.now_playing = AsyncMock(return_value=True)
+        per_user = MagicMock()
+        per_user.now_playing = AsyncMock(return_value=True)
+        service._client_factory = self._factory(per_user)
+
+        mod._playback_start_times.clear()
+        try:
+            result = await service.report_now_playing("song-1", user_id="u1")
+        finally:
+            mod._playback_start_times.clear()
+
+        assert result is True
+        per_user.now_playing.assert_awaited_once_with("song-1")
+        app_repo.now_playing.assert_not_awaited()

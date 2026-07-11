@@ -30,3 +30,20 @@ export interface ListenBrainzConnectVars {
 	user_token: string;
 	username: string;
 }
+
+// media-server account links (issue #138): the password is exchanged/stored
+// server-side only and never comes back in any response
+export interface MediaServerConnectVars {
+	username: string;
+	password: string;
+}
+
+export interface PlexLinkPinResponse {
+	pin_id: number;
+	auth_url: string;
+}
+
+export interface PlexLinkPollResponse {
+	completed: boolean;
+	username: string;
+}

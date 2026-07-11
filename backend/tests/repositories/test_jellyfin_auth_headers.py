@@ -78,3 +78,27 @@ async def test_proxy_image_sends_authorization_header():
     headers = http_client.get.await_args.kwargs["headers"]
     assert headers["Authorization"] == EXPECTED_AUTH
     assert "X-Emby-Token" not in headers
+
+
+@pytest.mark.asyncio
+async def test_401_raises_auth_error_without_tripping_breaker():
+    """Auth failures are non-breaking (issue #138, D6): with per-user access
+    tokens one user's revoked token must not open the shared circuit."""
+    from unittest.mock import patch
+
+    from core.exceptions import JellyfinAuthError
+    from infrastructure.resilience.retry import CircuitState
+    from repositories.jellyfin_repository import _jellyfin_circuit_breaker
+
+    response = MagicMock()
+    response.status_code = 401
+    http_client = AsyncMock()
+    http_client.request = AsyncMock(return_value=response)
+    repo = _make_repo(http_client)
+
+    with patch("infrastructure.resilience.retry.asyncio.sleep", new_callable=AsyncMock):
+        for _ in range(10):
+            with pytest.raises(JellyfinAuthError):
+                await repo._request("GET", "/System/Info")
+
+    assert _jellyfin_circuit_breaker.state == CircuitState.CLOSED

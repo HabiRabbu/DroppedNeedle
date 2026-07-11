@@ -19,6 +19,7 @@ from api.v1.schemas.plex import (
 )
 from core.dependencies import get_plex_library_service, get_plex_playback_service, get_plex_repository
 from core.exceptions import ExternalServiceError
+from tests.helpers import override_user_auth
 
 
 def _album_summary(id: str = "100", name: str = "Album") -> PlexAlbumSummary:
@@ -87,6 +88,7 @@ def stream_client(mock_playback_service):
     app = FastAPI()
     app.include_router(stream_router)
     app.dependency_overrides[get_plex_playback_service] = lambda: mock_playback_service
+    override_user_auth(app)
     return TestClient(app)
 
 

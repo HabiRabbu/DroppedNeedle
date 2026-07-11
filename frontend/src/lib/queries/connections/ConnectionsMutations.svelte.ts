@@ -8,7 +8,10 @@ import type {
 	ConnectionActionResponse,
 	LastFmAuthSessionResponse,
 	LastFmAuthTokenResponse,
-	ListenBrainzConnectVars
+	ListenBrainzConnectVars,
+	MediaServerConnectVars,
+	PlexLinkPinResponse,
+	PlexLinkPollResponse
 } from './types';
 
 function invalidateConnections(): Promise<void> {
@@ -54,6 +57,37 @@ export const createConnectSpotifyMutation = () =>
 			const data = await api.global.get<{ auth_url: string }>(CONNECTIONS_ENDPOINTS.spotifyAuthUrl);
 			window.location.href = data.auth_url;
 		}
+	}));
+
+// media-server account links (issue #138): credentials are validated live by the
+// backend and never echoed back
+export const createConnectNavidromeMutation = () =>
+	createMutation(() => ({
+		mutationFn: (vars: MediaServerConnectVars) =>
+			api.global.put<ConnectionStatusResponse>(CONNECTIONS_ENDPOINTS.navidrome, vars),
+		onSuccess: invalidateConnections
+	}));
+
+export const createConnectJellyfinMutation = () =>
+	createMutation(() => ({
+		mutationFn: (vars: MediaServerConnectVars) =>
+			api.global.put<ConnectionStatusResponse>(CONNECTIONS_ENDPOINTS.jellyfin, vars),
+		onSuccess: invalidateConnections
+	}));
+
+// Plex OAuth step 1: mint a pin + popup URL (no state change yet)
+export const createPlexLinkPinMutation = () =>
+	createMutation(() => ({
+		mutationFn: () => api.global.post<PlexLinkPinResponse>(CONNECTIONS_ENDPOINTS.plexAuthPin)
+	}));
+
+// Plex OAuth step 2: poll the pin; the backend persists the link on completion
+export const createPlexLinkPollMutation = () =>
+	createMutation(() => ({
+		mutationFn: (pinId: number) =>
+			api.global.get<PlexLinkPollResponse>(CONNECTIONS_ENDPOINTS.plexAuthPoll(pinId)),
+		onSuccess: (data: PlexLinkPollResponse) =>
+			data.completed ? invalidateConnections() : Promise.resolve()
 	}));
 
 type ConnectionStatusResponse = { service: string; enabled: boolean; username: string };

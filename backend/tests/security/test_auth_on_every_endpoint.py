@@ -38,6 +38,7 @@ from api.v1.routes import quarantine as quarantine_routes
 from api.v1.routes import requests_page as requests_page_routes
 from api.v1.routes import settings as settings_routes
 from api.v1.routes import spotify as spotify_routes
+from api.v1.routes import stream as stream_routes
 from api.v1.routes import system as system_routes
 from api.v1.routes import tracks as tracks_routes
 from core.dependencies import (
@@ -51,19 +52,25 @@ from core.dependencies import (
     get_events_service,
     get_follow_service,
     get_geocoding_repository,
+    get_jellyfin_playback_service,
+    get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
     get_library_service,
+    get_local_files_service,
     get_drop_import_service,
     get_free_music_service,
     get_plugin_host,
     get_lidarr_import_repository,
     get_lidarr_import_service,
+    get_navidrome_playback_service,
     get_now_playing_service,
     get_per_user_client_factory,
     get_personal_mix_service,
     get_playlist_service,
+    get_plex_playback_service,
+    get_plex_user_auth_service,
     get_preferences_service,
     get_request_service,
     get_requests_page_service,
@@ -90,19 +97,25 @@ _SERVICE_PROVIDERS = (
     get_events_service,
     get_follow_service,
     get_geocoding_repository,
+    get_jellyfin_playback_service,
+    get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_library_manager,
     get_library_scanner,
     get_library_service,
+    get_local_files_service,
     get_drop_import_service,
     get_free_music_service,
     get_plugin_host,
     get_lidarr_import_repository,
     get_lidarr_import_service,
+    get_navidrome_playback_service,
     get_now_playing_service,
     get_per_user_client_factory,
     get_personal_mix_service,
     get_playlist_service,
+    get_plex_playback_service,
+    get_plex_user_auth_service,
     get_preferences_service,
     get_request_service,
     get_requests_page_service,
@@ -247,6 +260,26 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/lidarr-import/status", None),
     ("GET", "/api/v1/lidarr-import/artists", None),
     ("POST", "/api/v1/lidarr-import/import", {"selected_mbids": []}),
+    # Media-server playback attribution (issue #138): the POST reporting routes
+    # carry CurrentUserDep so scrobbles/sessions land on the caller's own
+    # upstream account. GET/HEAD stream proxies stay dependency-free (guarded by
+    # AuthMiddleware in production, which this harness doesn't mount).
+    ("POST", "/api/v1/stream/jellyfin/item-1/start", None),
+    ("POST", "/api/v1/stream/jellyfin/item-1/progress",
+     {"play_session_id": "s-1", "position_seconds": 1.0, "is_paused": False}),
+    ("POST", "/api/v1/stream/jellyfin/item-1/stop",
+     {"play_session_id": "s-1", "position_seconds": 1.0}),
+    ("POST", "/api/v1/stream/navidrome/item-1/scrobble", None),
+    ("POST", "/api/v1/stream/navidrome/item-1/now-playing", None),
+    ("POST", "/api/v1/stream/navidrome/item-1/stopped", None),
+    ("POST", "/api/v1/stream/plex/rk-1/scrobble", None),
+    ("POST", "/api/v1/stream/plex/rk-1/now-playing", None),
+    ("POST", "/api/v1/stream/plex/rk-1/stopped", None),
+    # Media-server per-user account linking (issue #138)
+    ("PUT", "/api/v1/me/connections/navidrome", {"username": "u", "password": "p"}),
+    ("PUT", "/api/v1/me/connections/jellyfin", {"username": "u", "password": "p"}),
+    ("POST", "/api/v1/me/connections/plex/auth/pin", None),
+    ("GET", "/api/v1/me/connections/plex/auth/poll?pin_id=1", None),
 ]
 
 _ALL_ENDPOINTS = _ADMIN_ENDPOINTS + _USER_ENDPOINTS
@@ -284,6 +317,7 @@ def _client(scenario: str):
         plugins_routes.router,
         settings_routes.router,
         spotify_routes.router,
+        stream_routes.router,
     ):
         v1.include_router(router)
     app.include_router(v1)

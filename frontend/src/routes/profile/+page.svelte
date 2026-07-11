@@ -38,7 +38,9 @@
 	} from '$lib/queries/profile/ProfileMutations.svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
+	import PlexIcon from '$lib/components/PlexIcon.svelte';
 	import type { ProfileServiceConnection } from '$lib/queries/profile/types';
+	import MediaServerAccountsCard from '$lib/components/profile/MediaServerAccountsCard.svelte';
 	import ScrobblingDiscoveryCard from '$lib/components/profile/ScrobblingDiscoveryCard.svelte';
 	import SpotifyConnectionCard from '$lib/components/profile/SpotifyConnectionCard.svelte';
 	import ProfileConnectApps from '$lib/components/profile/ProfileConnectApps.svelte';
@@ -269,6 +271,7 @@
 	function getServiceIcon(name: string) {
 		if (name === 'Jellyfin') return JellyfinIcon;
 		if (name === 'Navidrome') return NavidromeIcon;
+		if (name === 'Plex') return PlexIcon;
 		if (name === 'ListenBrainz') return Music;
 		if (name === 'Last.fm') return Radio;
 		return Database;
@@ -277,6 +280,7 @@
 	function getServiceColor(name: string): string {
 		if (name === 'Jellyfin') return 'text-purple-400';
 		if (name === 'Navidrome') return 'text-green-400';
+		if (name === 'Plex') return 'text-amber-400';
 		if (name === 'ListenBrainz') return 'text-orange-400';
 		if (name === 'Last.fm') return 'text-red-400';
 		return 'text-base-content';
@@ -285,19 +289,22 @@
 	function getServiceBorderColor(name: string): string {
 		if (name === 'Jellyfin') return 'border-purple-500/30';
 		if (name === 'Navidrome') return 'border-green-500/30';
+		if (name === 'Plex') return 'border-amber-500/30';
 		if (name === 'ListenBrainz') return 'border-orange-500/30';
 		if (name === 'Last.fm') return 'border-red-500/30';
 		return 'border-base-300';
 	}
 
 	function getServiceProfileUrl(service: ProfileServiceConnection): string | null {
-		if (!service.enabled || !service.username) return null;
+		if (!service.enabled) return null;
+		if (!service.username && service.name !== 'Plex') return null;
 		if (service.name === 'Last.fm')
 			return `https://www.last.fm/user/${encodeURIComponent(service.username)}`;
 		if (service.name === 'ListenBrainz')
 			return `https://listenbrainz.org/user/${encodeURIComponent(service.username)}`;
 		if (service.name === 'Jellyfin' && service.url) return service.url;
 		if (service.name === 'Navidrome' && service.url) return service.url;
+		if (service.name === 'Plex' && service.url) return service.url;
 		return null;
 	}
 
@@ -720,6 +727,10 @@
 						{/each}
 					</div>
 				</section>
+
+				<div id="media-accounts" class="scroll-mt-20">
+					<MediaServerAccountsCard services={profile.services} />
+				</div>
 
 				<div id="connect-apps" class="scroll-mt-20">
 					<ProfileConnectApps />

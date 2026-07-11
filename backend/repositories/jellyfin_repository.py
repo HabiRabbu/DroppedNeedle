@@ -6,7 +6,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 import msgspec
-from core.exceptions import ExternalServiceError, PlaybackNotAllowedError, ResourceNotFoundError
+from core.exceptions import (
+    ExternalServiceError,
+    JellyfinAuthError,
+    PlaybackNotAllowedError,
+    ResourceNotFoundError,
+)
 from infrastructure.cache.cache_keys import JELLYFIN_PREFIX
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.persistence import MBIDStore
@@ -107,7 +112,8 @@ class JellyfinRepository:
         base_delay=1.0,
         max_delay=5.0,
         circuit_breaker=_jellyfin_circuit_breaker,
-        retriable_exceptions=(httpx.HTTPError, ExternalServiceError)
+        retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
+        non_breaking_exceptions=(JellyfinAuthError,),
     )
     async def _request(
         self,
@@ -132,7 +138,7 @@ class JellyfinRepository:
             )
             
             if response.status_code == 401:
-                raise ExternalServiceError("Jellyfin authentication failed - check API key")
+                raise JellyfinAuthError("Jellyfin authentication failed - check API key")
             
             if response.status_code == 404:
                 return None

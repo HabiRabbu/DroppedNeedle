@@ -20,6 +20,7 @@ from api.v1.schemas.navidrome import (
 from core.dependencies import get_navidrome_library_service, get_navidrome_playback_service
 from core.exceptions import ExternalServiceError
 from infrastructure.resilience.retry import CircuitOpenError
+from tests.helpers import override_user_auth
 
 
 def _album_summary(id: str = "a1", name: str = "Album") -> NavidromeAlbumSummary:
@@ -80,6 +81,7 @@ def stream_client(mock_playback_service):
     app = FastAPI()
     app.include_router(stream_router)
     app.dependency_overrides[get_navidrome_playback_service] = lambda: mock_playback_service
+    override_user_auth(app)
     return TestClient(app)
 
 
@@ -112,7 +114,7 @@ class TestLibraryAlbums:
         assert data["total"] == 5
 
     def test_get_albums_stats_fallback_circuit_open(self, library_client, mock_library_service):
-        """When CB is open, stats raises CircuitOpenError — albums still work."""
+        """When CB is open, stats raises CircuitOpenError - albums still work."""
         mock_library_service.get_albums = AsyncMock(return_value=[_album_summary(id=f"a{i}") for i in range(48)])
         mock_library_service.get_stats = AsyncMock(
             side_effect=CircuitOpenError("Circuit breaker 'navidrome' is OPEN", breaker_name="navidrome"),

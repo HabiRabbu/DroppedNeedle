@@ -52,3 +52,26 @@ class ListenBrainzConnectRequest(AppStruct):
 
 class SpotifyAuthUrlResponse(AppStruct):
     auth_url: str
+
+
+class MediaServerConnectRequest(AppStruct):
+    """Link a Navidrome/Jellyfin account with the user's own credentials.
+
+    The password is verified against the live server and either stored encrypted
+    (Navidrome - Subsonic token auth needs it per request) or exchanged for an
+    access token and discarded (Jellyfin). It is never serialized back out.
+    """
+
+    username: str
+    password: str
+
+
+class PlexLinkPinResponse(AppStruct):
+    pin_id: int
+    auth_url: str
+
+
+class PlexLinkPollResponse(AppStruct):
+    completed: bool = False
+    # set once completed: the linked Plex account's display name
+    username: str = ""

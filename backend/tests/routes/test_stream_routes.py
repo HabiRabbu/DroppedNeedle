@@ -8,6 +8,7 @@ from fastapi.responses import Response, StreamingResponse
 from api.v1.routes.stream import router
 from core.dependencies import get_jellyfin_playback_service
 from core.exceptions import ExternalServiceError, PlaybackNotAllowedError, ResourceNotFoundError
+from tests.helpers import override_user_auth
 
 
 async def _fake_body():
@@ -45,6 +46,7 @@ def client(mock_playback_service):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_jellyfin_playback_service] = lambda: mock_playback_service
+    override_user_auth(app)
     return TestClient(app)
 
 
@@ -134,6 +136,7 @@ def test_start_stream_uses_existing_play_session_id(client, mock_playback_servic
     mock_playback_service.start_playback.assert_awaited_once_with(
         "item-1",
         play_session_id="sess-existing",
+        user_id="test-user-id",
     )
 
 
@@ -145,6 +148,7 @@ def test_start_stream_without_payload_uses_service_default(client, mock_playback
     mock_playback_service.start_playback.assert_awaited_once_with(
         "item-2",
         play_session_id=None,
+        user_id="test-user-id",
     )
 
 

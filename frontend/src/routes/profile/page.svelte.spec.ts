@@ -39,6 +39,7 @@ vi.mock('$lib/queries/profile/ProfileMutations.svelte', () => ({
 // Sibling profile cards pull their own query graphs; stub them so the page renders in
 // isolation. ProfileConnectApps is left REAL (its queries are mocked below) so the
 // page↔section wiring is actually exercised.
+vi.mock('$lib/components/profile/MediaServerAccountsCard.svelte', emptyComponent);
 vi.mock('$lib/components/profile/ScrobblingDiscoveryCard.svelte', emptyComponent);
 vi.mock('$lib/components/profile/SpotifyConnectionCard.svelte', emptyComponent);
 

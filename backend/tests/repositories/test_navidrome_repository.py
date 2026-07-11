@@ -360,19 +360,20 @@ class TestCircuitBreakerNonBreaking:
         assert _navidrome_circuit_breaker.state == CircuitState.CLOSED
 
     @pytest.mark.asyncio
-    async def test_auth_error_still_trips_circuit_breaker(self):
-        """Auth errors (NavidromeAuthError) should still record CB failures."""
-        from infrastructure.resilience.retry import CircuitOpenError, CircuitState
+    async def test_auth_error_does_not_trip_circuit_breaker(self):
+        """Auth errors are non-breaking (issue #138, D6): with per-user credentials
+        one user's stale password must not open the shared circuit for everyone."""
+        from infrastructure.resilience.retry import CircuitState
 
         repo, client, _ = _make_repo()
         client.get = AsyncMock(return_value=_mock_response({}, status_code=401))
 
         with patch("infrastructure.resilience.retry.asyncio.sleep", new_callable=AsyncMock):
             for _ in range(10):
-                with pytest.raises((NavidromeAuthError, ExternalServiceError, CircuitOpenError)):
+                with pytest.raises(NavidromeAuthError):
                     await repo._request("/rest/ping")
 
-        assert _navidrome_circuit_breaker.state == CircuitState.OPEN
+        assert _navidrome_circuit_breaker.state == CircuitState.CLOSED
 
     @pytest.mark.asyncio
     async def test_connection_error_still_trips_circuit_breaker(self):

@@ -167,3 +167,61 @@ async def test_start_playback_propagates_play_method(service):
     repo.report_playback_start.assert_called_once_with(
         "item-1", "sess-123", play_method="Transcode"
     )
+
+
+class TestPerUserAttribution:
+    """Linked users report sessions through their own token; unlinked fall back (issue #138)."""
+
+    def _factory(self, per_user_repo):
+        factory = MagicMock()
+        factory.resolve_jellyfin = AsyncMock(return_value=per_user_repo)
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_start_playback_uses_per_user_repo_when_linked(self):
+        app_repo = _make_repo()
+        per_user = _make_repo()
+        svc = JellyfinPlaybackService(jellyfin_repo=app_repo, client_factory=self._factory(per_user))
+
+        result = await svc.start_playback("item-1", user_id="u1")
+
+        assert result == "sess-123"
+        per_user.report_playback_start.assert_called_once()
+        app_repo.get_playback_info.assert_not_called()
+        app_repo.report_playback_start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_progress_falls_back_to_app_repo_when_unlinked(self):
+        app_repo = _make_repo()
+        svc = JellyfinPlaybackService(jellyfin_repo=app_repo, client_factory=self._factory(None))
+
+        await svc.report_progress("item-1", "sess-1", 42.0, is_paused=False, user_id="u1")
+
+        app_repo.report_playback_progress.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_playback_per_user_auth_failure_streams_without_session(self):
+        from core.exceptions import JellyfinAuthError
+
+        app_repo = _make_repo()
+        per_user = _make_repo()
+        per_user.get_playback_info = AsyncMock(side_effect=JellyfinAuthError("revoked"))
+        svc = JellyfinPlaybackService(jellyfin_repo=app_repo, client_factory=self._factory(per_user))
+
+        result = await svc.start_playback("item-1", user_id="u1")
+
+        # fail closed: no session reporting, and no misattributed app-level report
+        assert result == ""
+        app_repo.report_playback_start.assert_not_called()
+        per_user.report_playback_start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_playback_app_level_auth_failure_still_raises(self):
+        from core.exceptions import JellyfinAuthError
+
+        app_repo = _make_repo()
+        app_repo.get_playback_info = AsyncMock(side_effect=JellyfinAuthError("bad api key"))
+        svc = JellyfinPlaybackService(jellyfin_repo=app_repo)
+
+        with pytest.raises(JellyfinAuthError):
+            await svc.start_playback("item-1")

@@ -34,7 +34,13 @@ def _seed_auth_users(db_path: Path) -> None:
         conn.close()
 
 
-def _factory(store: UserConnectionsStore, *, app_key: str = "appkey", app_secret: str = "appsecret"):
+def _factory(
+    store: UserConnectionsStore,
+    *,
+    app_key: str = "appkey",
+    app_secret: str = "appsecret",
+    media_enabled: bool = True,
+):
     prefs = MagicMock()
     prefs.get_advanced_settings.return_value = SimpleNamespace(
         http_timeout=10, http_connect_timeout=5, http_max_connections=200
@@ -42,6 +48,16 @@ def _factory(store: UserConnectionsStore, *, app_key: str = "appkey", app_secret
     prefs.get_lastfm_connection.return_value = SimpleNamespace(
         api_key=app_key, shared_secret=app_secret
     )
+    prefs.get_navidrome_connection_raw.return_value = SimpleNamespace(
+        enabled=media_enabled, navidrome_url="http://nd.local"
+    )
+    prefs.get_jellyfin_connection.return_value = SimpleNamespace(
+        enabled=media_enabled, jellyfin_url="http://jf.local"
+    )
+    prefs.get_plex_connection_raw.return_value = SimpleNamespace(
+        enabled=media_enabled, plex_url="http://plex.local"
+    )
+    prefs.get_setting.return_value = "app-client-id"
     return PerUserClientFactory(
         connections_store=store,
         preferences_service=prefs,
@@ -109,3 +125,126 @@ async def test_resolve_lastfm_username(store):
     assert await _factory(store).resolve_lastfm_username("u1") is None
     await store.upsert("u1", "lastfm", {"session_key": "sk", "username": "lfuser"})
     assert await _factory(store).resolve_lastfm_username("u1") == "lfuser"
+
+
+# --- media servers: admin-owned URL + per-user credential (issue #138) ---
+
+
+@pytest.mark.asyncio
+async def test_resolve_navidrome_threads_app_url_and_user_credentials(store):
+    await store.upsert("u1", "navidrome", {"username": "nduser", "password": "ndpass"})
+    repo = await _factory(store).resolve_navidrome("u1")
+    assert repo is not None
+    assert repo._url == "http://nd.local"
+    assert repo._username == "nduser"
+    assert repo._password == "ndpass"
+    assert repo.is_configured()
+
+
+@pytest.mark.asyncio
+async def test_resolve_navidrome_none_when_unlinked_or_incomplete(store):
+    assert await _factory(store).resolve_navidrome("u1") is None
+    await store.upsert("u1", "navidrome", {"username": "nduser", "password": ""})
+    assert await _factory(store).resolve_navidrome("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_navidrome_none_when_admin_disabled(store):
+    await store.upsert("u1", "navidrome", {"username": "nduser", "password": "ndpass"})
+    assert await _factory(store, media_enabled=False).resolve_navidrome("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_jellyfin_threads_token_and_jellyfin_user_id(store):
+    await store.upsert(
+        "u1",
+        "jellyfin",
+        {"access_token": "jf-tok", "jellyfin_user_id": "jf-uid", "username": "jfuser"},
+    )
+    repo = await _factory(store).resolve_jellyfin("u1")
+    assert repo is not None
+    assert repo._base_url == "http://jf.local"
+    assert repo._api_key == "jf-tok"
+    assert repo._user_id == "jf-uid"
+
+
+@pytest.mark.asyncio
+async def test_resolve_jellyfin_none_when_unlinked_or_incomplete(store):
+    assert await _factory(store).resolve_jellyfin("u1") is None
+    await store.upsert("u1", "jellyfin", {"access_token": "jf-tok", "jellyfin_user_id": ""})
+    assert await _factory(store).resolve_jellyfin("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_jellyfin_none_when_admin_disabled(store):
+    await store.upsert(
+        "u1", "jellyfin", {"access_token": "jf-tok", "jellyfin_user_id": "jf-uid"}
+    )
+    assert await _factory(store, media_enabled=False).resolve_jellyfin("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_plex_threads_token_and_app_client_id(store):
+    await store.upsert(
+        "u1", "plex", {"auth_token": "plex-tok", "plex_user_id": "px-uid", "username": "pxuser"}
+    )
+    repo = await _factory(store).resolve_plex("u1")
+    assert repo is not None
+    assert repo._url == "http://plex.local"
+    assert repo._token == "plex-tok"
+    assert repo._client_id == "app-client-id"
+    assert repo.is_configured()
+
+
+@pytest.mark.asyncio
+async def test_resolve_plex_none_when_unlinked_or_admin_disabled(store):
+    assert await _factory(store).resolve_plex("u1") is None
+    await store.upsert("u1", "plex", {"auth_token": "plex-tok"})
+    assert await _factory(store, media_enabled=False).resolve_plex("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_media_server_linked_checks_mirror_resolvers(store):
+    factory = _factory(store)
+    assert await factory.is_navidrome_linked("u1") is False
+    assert await factory.is_jellyfin_linked("u1") is False
+    assert await factory.is_plex_linked("u1") is False
+
+    await store.upsert("u1", "navidrome", {"username": "n", "password": "p"})
+    await store.upsert("u1", "jellyfin", {"access_token": "t", "jellyfin_user_id": "i"})
+    await store.upsert("u1", "plex", {"auth_token": "t"})
+    assert await factory.is_navidrome_linked("u1") is True
+    assert await factory.is_jellyfin_linked("u1") is True
+    assert await factory.is_plex_linked("u1") is True
+
+    disabled = _factory(store, media_enabled=False)
+    assert await disabled.is_navidrome_linked("u1") is False
+    assert await disabled.is_jellyfin_linked("u1") is False
+    assert await disabled.is_plex_linked("u1") is False
+
+
+@pytest.mark.asyncio
+async def test_validate_navidrome_credentials_pings_with_user_credentials(store, monkeypatch):
+    seen: dict = {}
+
+    async def fake_validate(self):
+        seen["url"] = self._url
+        seen["username"] = self._username
+        seen["password"] = self._password
+        return True, "Connected"
+
+    from repositories.navidrome_repository import NavidromeRepository
+
+    monkeypatch.setattr(NavidromeRepository, "validate_connection", fake_validate)
+    ok, message = await _factory(store).validate_navidrome_credentials("nduser", "ndpass")
+    assert ok is True
+    assert seen == {"url": "http://nd.local", "username": "nduser", "password": "ndpass"}
+
+
+@pytest.mark.asyncio
+async def test_validate_navidrome_credentials_fails_when_admin_disabled(store):
+    ok, message = await _factory(store, media_enabled=False).validate_navidrome_credentials(
+        "nduser", "ndpass"
+    )
+    assert ok is False
+    assert "not configured" in message
