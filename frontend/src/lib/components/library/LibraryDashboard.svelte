@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import {
 		Music,
 		Clock,
@@ -113,7 +114,7 @@
 			</div>
 			{#if showAttention}
 				<a
-					href="/library/unmatched"
+					href={resolve('/library/unmatched')}
 					class="ml-auto flex items-center gap-1.5 rounded-full border border-warning/40 bg-warning/10 px-3 py-1 text-xs font-semibold text-warning transition-colors hover:bg-warning/20"
 				>
 					<AlertTriangle class="h-3.5 w-3.5" />

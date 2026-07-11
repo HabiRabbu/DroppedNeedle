@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { getApiUrl } from '$lib/api/api-utils';
 	import { page } from '$app/state';
 	import { onMount, onDestroy } from 'svelte';
@@ -234,7 +235,10 @@
 
 	<div class="container mx-auto p-4 max-w-7xl relative" style="z-index: 1;">
 		<header class="mb-10 pt-2">
-			<a href="/" class="btn btn-ghost btn-sm gap-2 mb-6 -ml-2 opacity-70 hover:opacity-100">
+			<a
+				href={resolve('/')}
+				class="btn btn-ghost btn-sm gap-2 mb-6 -ml-2 opacity-70 hover:opacity-100"
+			>
 				<ArrowLeft class="w-4 h-4" />
 				Back
 			</a>

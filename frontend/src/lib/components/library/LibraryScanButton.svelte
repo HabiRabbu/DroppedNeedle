@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { ScanLine } from 'lucide-svelte';
 	import { goto } from '$app/navigation';
 	import { getLibraryScanStatusQuery } from '$lib/queries/library/LibraryQueries.svelte';
@@ -25,7 +26,7 @@
 	async function handleClick() {
 		if (!hasPath) {
 			toastStore.show({ message: 'Add a library path first', type: 'info' });
-			void goto('/settings?tab=library');
+			void goto(resolve('/settings?tab=library'));
 			return;
 		}
 		try {

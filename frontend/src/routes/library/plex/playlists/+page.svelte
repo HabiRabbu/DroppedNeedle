@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { API } from '$lib/constants';
 	import { api } from '$lib/api/client';
 	import BackButton from '$lib/components/BackButton.svelte';
@@ -45,7 +46,7 @@
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 			{#each playlists as playlist (playlist.id)}
-				<SourcePlaylistCard {playlist} href="/library/plex/playlists/{playlist.id}" />
+				<SourcePlaylistCard {playlist} href={resolve(`/library/plex/playlists/${playlist.id}`)} />
 			{/each}
 		</div>
 	{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { ApiError } from '$lib/api/client';
 	import {
 		UserRound,
@@ -806,7 +807,7 @@
 
 				<section class="flex justify-center gap-3 pt-2">
 					<a
-						href="/settings"
+						href={resolve('/settings')}
 						class="btn btn-outline btn-sm gap-2 rounded-full border-base-content/20 text-base-content/60 transition-all hover:border-primary hover:text-primary"
 					>
 						<Settings class="h-4 w-4" />
