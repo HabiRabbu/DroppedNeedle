@@ -12,6 +12,9 @@ from infrastructure.persistence.auth_store import AuthStore, UserRecord, _derive
 
 logger = logging.getLogger(__name__)
 
+# Sent as `Authorization`, not the legacy `X-Emby-Authorization` header Jellyfin
+# 10.11 removed alongside X-Emby-Token (issue #151); both spellings of the value
+# are accepted by older servers.
 _EMBY_AUTH_HEADER = (
     'MediaBrowser Client="DroppedNeedle", Device="DroppedNeedle", DeviceId="{client_id}", Version="1.4.0"'
 )
@@ -64,7 +67,7 @@ class JellyfinUserAuthService:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "X-Emby-Authorization": _EMBY_AUTH_HEADER.format(client_id = client_id),
+            "Authorization": _EMBY_AUTH_HEADER.format(client_id = client_id),
         }
         body = {"Username": username, "Pw": password}
 

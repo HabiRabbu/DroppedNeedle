@@ -2,6 +2,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from core.exceptions import ResourceNotFoundError
+from infrastructure.queue.priority_queue import RequestPriority
 from services.album_service import AlbumService
 
 
@@ -249,3 +251,70 @@ async def test_annotate_coverage_fails_open_on_mb_error():
 
     assert out.expected_tracks == 0  # zeroed -> page falls back to presence-only
     assert out.orphans == []
+
+
+# #78: release-MBID aliases must resolve to their release group
+
+_RELEASE_ALIAS = "04a68af0-b66b-4578-9844-12615de7183a"
+_RESOLVED_RG = "f722b0db-3035-3b4b-b499-57e42d4219c7"
+
+
+@pytest.mark.asyncio
+async def test_fetch_release_group_resolves_release_mbid_alias():
+    # A release MBID 404s as a release group; the fallback resolves release -> RG
+    # and retries with the real id, at the caller's priority.
+    service, _, _ = _make_service()
+    rg = {**_mb_release_group(), "id": _RESOLVED_RG}
+    service._mb_repo.get_release_group_by_id = AsyncMock(side_effect=[None, rg])
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(return_value=_RESOLVED_RG)
+
+    result = await service._fetch_release_group(_RELEASE_ALIAS)
+
+    assert result is rg
+    service._mb_repo.get_release_group_id_from_release.assert_awaited_once_with(
+        _RELEASE_ALIAS, priority=RequestPriority.USER_INITIATED
+    )
+    lookups = service._mb_repo.get_release_group_by_id.await_args_list
+    assert lookups[0].args[0] == _RELEASE_ALIAS
+    assert lookups[1].args[0] == _RESOLVED_RG
+
+
+@pytest.mark.asyncio
+async def test_fetch_release_group_raises_when_alias_unresolvable():
+    service, _, _ = _make_service()
+    service._mb_repo.get_release_group_by_id = AsyncMock(return_value=None)
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(return_value=None)
+
+    with pytest.raises(ResourceNotFoundError):
+        await service._fetch_release_group(_RELEASE_ALIAS)
+
+    service._mb_repo.get_release_group_by_id.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_release_group_raises_when_resolved_rg_also_missing():
+    service, _, _ = _make_service()
+    service._mb_repo.get_release_group_by_id = AsyncMock(return_value=None)
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(return_value=_RESOLVED_RG)
+
+    with pytest.raises(ResourceNotFoundError):
+        await service._fetch_release_group(_RELEASE_ALIAS)
+
+
+@pytest.mark.asyncio
+async def test_get_album_basic_info_via_release_mbid_alias():
+    # End-to-end: basic info succeeds for a release-MBID link, and the in-library
+    # check keys on the canonical RG id, not the alias.
+    service, library_repo, library_db = _make_service()
+    service._get_cached_album_info = AsyncMock(return_value=None)
+    rg = {**_mb_release_group(), "id": _RESOLVED_RG}
+    service._mb_repo.get_release_group_by_id = AsyncMock(side_effect=[None, rg])
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(return_value=_RESOLVED_RG)
+    library_repo.get_requested_mbids = AsyncMock(return_value=set())
+    library_db.has_album_files = AsyncMock(return_value=True)
+
+    result = await service.get_album_basic_info(_RELEASE_ALIAS)
+
+    assert result.title == "Album"
+    assert result.in_library is True
+    library_db.has_album_files.assert_awaited_once_with(_RESOLVED_RG)

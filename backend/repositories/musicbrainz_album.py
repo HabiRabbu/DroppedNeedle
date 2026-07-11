@@ -357,7 +357,8 @@ class MusicBrainzAlbumMixin:
 
     async def get_release_group_id_from_release(
         self,
-        release_id: str
+        release_id: str,
+        priority: RequestPriority = RequestPriority.BACKGROUND_SYNC
     ) -> str | None:
         cache_key = f"{MB_RELEASE_TO_RG_PREFIX}{release_id}"
         cached = await self._cache.get(cache_key)
@@ -367,19 +368,20 @@ class MusicBrainzAlbumMixin:
         dedupe_key = f"{MB_RELEASE_TO_RG_PREFIX}{release_id}"
         return await mb_deduplicator.dedupe(
             dedupe_key,
-            lambda: self._fetch_release_group_id_from_release(release_id, cache_key),
+            lambda: self._fetch_release_group_id_from_release(release_id, cache_key, priority),
         )
 
     async def _fetch_release_group_id_from_release(
         self,
         release_id: str,
         cache_key: str,
+        priority: RequestPriority = RequestPriority.BACKGROUND_SYNC,
     ) -> str | None:
         try:
             result = await mb_api_get(
                 f"/release/{release_id}",
                 params={"inc": "release-groups+recordings"},
-                priority=RequestPriority.BACKGROUND_SYNC,
+                priority=priority,
                 decode_type=_ReleaseLookupPayload,
             )
             rg = result.release_group

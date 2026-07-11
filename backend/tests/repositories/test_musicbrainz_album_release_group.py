@@ -75,3 +75,30 @@ async def test_fetch_rg_negative_caches_404_but_not_transient(monkeypatch):
     monkeypatch.setattr(mod, "mb_api_get", AsyncMock(side_effect=RuntimeError("503")))
     assert await repo._fetch_release_group_by_id("rg-503", ["artist-credits"], "ck-503") is None
     repo._cache.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_release_to_rg_resolution_threads_priority(monkeypatch):
+    """#78: the album-page release->RG fallback passes the caller's priority, while
+    background callers keep the BACKGROUND_SYNC default (honest-priority house rule)."""
+    from types import SimpleNamespace
+
+    import repositories.musicbrainz_album as mod
+    from infrastructure.queue.priority_queue import RequestPriority
+
+    repo = _Repo()
+    repo._cache = AsyncMock()
+    repo._cache.get = AsyncMock(return_value=None)
+
+    api = AsyncMock(return_value=SimpleNamespace(release_group={"id": "rg-9"}, media=[]))
+    monkeypatch.setattr(mod, "mb_api_get", api)
+
+    resolved = await repo.get_release_group_id_from_release(
+        "rel-1", priority=RequestPriority.USER_INITIATED
+    )
+    assert resolved == "rg-9"
+    assert api.await_args.kwargs["priority"] is RequestPriority.USER_INITIATED
+
+    api.reset_mock()
+    assert await repo.get_release_group_id_from_release("rel-2") == "rg-9"
+    assert api.await_args.kwargs["priority"] is RequestPriority.BACKGROUND_SYNC

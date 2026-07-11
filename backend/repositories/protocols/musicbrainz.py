@@ -1,5 +1,6 @@
 from typing import Any, Protocol
 
+from infrastructure.queue.priority_queue import RequestPriority
 from models.search import SearchResult
 from models.artist import ArtistInfo
 from models.album import AlbumInfo
@@ -48,7 +49,8 @@ class MusicBrainzRepositoryProtocol(Protocol):
 
     async def get_release_group_id_from_release(
         self,
-        release_mbid: str
+        release_mbid: str,
+        priority: RequestPriority = RequestPriority.BACKGROUND_SYNC
     ) -> str | None:
         ...
 

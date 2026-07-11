@@ -254,7 +254,10 @@ class AlbumService:
             release_group = await self._fetch_release_group(release_group_id)
             # in_library means non-deleted local files exist; the materialised
             # library_albums row lags removals and misses manually-added files.
-            in_library = await self._library_db.has_album_files(release_group_id)
+            # Key the check on the canonical RG id - when the requested id was a
+            # release-MBID alias (#78), local files live under the real one.
+            canonical_rg_id = release_group.get("id") or release_group_id
+            in_library = await self._library_db.has_album_files(canonical_rg_id)
             basic = AlbumBasicInfo(**mb_to_basic_info(release_group, release_group_id, in_library, is_requested))
             basic.album_thumb_url = await self._get_audiodb_album_thumb(
                 release_group_id, basic.artist_name, basic.title,
@@ -308,8 +311,10 @@ class AlbumService:
 
             candidate_ids = [r.get("id") for r in ranked_releases[:3] if r.get("id")]
             # Prefer the edition the library's files belong to, so an owned album shows
-            # what's on disc rather than a larger ranked release.
-            owned_release_id = await self._owned_release_id(release_group_id)
+            # what's on disc rather than a larger ranked release. Keyed on the canonical
+            # RG id - a release-MBID alias (#78) stores files under the real one.
+            canonical_rg_id = release_group.get("id") or release_group_id
+            owned_release_id = await self._owned_release_id(canonical_rg_id)
             if owned_release_id:
                 candidate_ids = [owned_release_id, *(cid for cid in candidate_ids if cid != owned_release_id)]
             if candidate_ids:
@@ -398,15 +403,31 @@ class AlbumService:
         release_group_id: str,
         priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> dict:
+        includes = ["artists", "releases", "tags"]
         rg_result = await self._mb_repo.get_release_group_by_id(
             release_group_id,
-            includes=["artists", "releases", "tags"],
+            includes=includes,
             priority=priority,
         )
-        
+
+        if not rg_result:
+            # Upstream sources (notably Last.fm top-albums) sometimes hand us a
+            # *release* MBID where a release-group MBID belongs, and MusicBrainz
+            # correctly 404s the RG lookup (#78). Resolve release -> release group
+            # and retry before declaring the album missing.
+            resolved_id = await self._mb_repo.get_release_group_id_from_release(
+                release_group_id, priority=priority
+            )
+            if resolved_id and resolved_id != release_group_id:
+                rg_result = await self._mb_repo.get_release_group_by_id(
+                    resolved_id,
+                    includes=includes,
+                    priority=priority,
+                )
+
         if not rg_result:
             raise ResourceNotFoundError(f"Release group {release_group_id} not found")
-        
+
         return rg_result
 
     async def _check_in_library(self, release_group_id: str, library_mbids: set[str] = None) -> bool:
@@ -556,17 +577,19 @@ class AlbumService:
         release_group_id: str,
         library_mbids: set[str] = None
     ) -> AlbumInfo:
-        # in_library reflects non-deleted local files, not the library_albums row
-        # (see get_album_basic_info).
-        has_files = await self._library_db.has_album_files(release_group_id)
-        in_library = has_files
-
         release_group = await self._fetch_release_group(release_group_id)
         primary_release = find_primary_release(release_group)
         artist_name, artist_id = extract_artist_info(release_group)
 
+        # in_library reflects non-deleted local files, not the library_albums row
+        # (see get_album_basic_info). Keyed on the canonical RG id - when the
+        # requested id was a release-MBID alias (#78), files live under the real one.
+        canonical_rg_id = release_group.get("id") or release_group_id
+        has_files = await self._library_db.has_album_files(canonical_rg_id)
+        in_library = has_files
+
         if not in_library:
-            in_library = await self._check_in_library(release_group_id, library_mbids)
+            in_library = await self._check_in_library(canonical_rg_id, library_mbids)
 
         basic_info = self._build_basic_info(
             release_group, release_group_id, artist_name, artist_id, in_library
@@ -574,7 +597,7 @@ class AlbumService:
 
         # An owned album shows the edition its files belong to (what's on disc); only fall
         # back to the top-ranked release, which is often a larger deluxe/multi-disc variant.
-        owned_release_id = await self._owned_release_id(release_group_id) if has_files else None
+        owned_release_id = await self._owned_release_id(canonical_rg_id) if has_files else None
         primary_id = primary_release.get("id") if primary_release else None
         for release_id in dict.fromkeys(rid for rid in (owned_release_id, primary_id) if rid):
             await self._enrich_with_release_details(basic_info, release_id)

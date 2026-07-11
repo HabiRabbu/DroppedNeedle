@@ -65,7 +65,10 @@ function createIntegrationStore() {
 					);
 					update((state) => ({ ...state, ...status, loaded: true }));
 				} catch {
-					update((state) => ({ ...state, loaded: true }));
+					// Leave `loaded` false so a later ensureLoaded() retries. Stamping it
+					// true here poisoned the store for the whole session when the load ran
+					// before auth completed - every integration stayed "disabled" until a
+					// hard refresh (#155).
 				}
 			})().finally(() => {
 				loadPromise = null;

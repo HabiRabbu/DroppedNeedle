@@ -1,5 +1,5 @@
 import { page } from '@vitest/browser/context';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { createRawSnippet } from 'svelte';
 
@@ -61,8 +61,24 @@ vi.mock('$lib/stores/integration', () => ({
 			cb(integrationState);
 			return () => {};
 		}),
-		ensureLoaded: vi.fn().mockResolvedValue(undefined)
+		ensureLoaded: vi.fn().mockResolvedValue(undefined),
+		reset: vi.fn()
 	}
+}));
+vi.mock('$lib/stores/nowPlayingSessions.svelte', () => ({
+	nowPlayingStore: { sessions: [], start: vi.fn(), stop: vi.fn() }
+}));
+vi.mock('$lib/stores/nowPlayingReporter.svelte', () => ({
+	nowPlayingReporter: { start: vi.fn(), stop: vi.fn() }
+}));
+vi.mock('$lib/stores/pendingApprovalCountStore.svelte', () => ({
+	pendingApprovalCountStore: { count: 0, startPolling: vi.fn(), stopPolling: vi.fn() }
+}));
+const { followingEventsMock } = vi.hoisted(() => ({
+	followingEventsMock: { start: vi.fn(), stop: vi.fn() }
+}));
+vi.mock('$lib/queries/following/FollowingEvents', () => ({
+	createFollowingEvents: vi.fn(() => followingEventsMock)
 }));
 vi.mock('$lib/stores/cacheTtl', () => ({ initCacheTTLs: vi.fn() }));
 vi.mock('$lib/stores/player.svelte', () => ({
@@ -121,6 +137,11 @@ vi.mock('$lib/components/YouTubeIcon.svelte', () => {
 });
 
 import Layout from './+layout.svelte';
+import { integrationStore } from '$lib/stores/integration';
+import { nowPlayingStore } from '$lib/stores/nowPlayingSessions.svelte';
+import { nowPlayingReporter } from '$lib/stores/nowPlayingReporter.svelte';
+import { pendingApprovalCountStore } from '$lib/stores/pendingApprovalCountStore.svelte';
+import { authStore, type AuthUser } from '$lib/stores/authStore.svelte';
 
 type IntegrationState = {
 	download_client: boolean;
@@ -201,5 +222,82 @@ describe('+layout.svelte sidebar', () => {
 		const link = page.getByText('Playlists');
 		const anchor = link.element().closest('a');
 		expect(anchor!.getAttribute('data-tip')).toBe('Playlists');
+	});
+});
+
+function testUser(role: AuthUser['role'] = 'user'): AuthUser {
+	return {
+		id: 'user-1',
+		display_name: 'Test User',
+		role,
+		email: null,
+		avatar_url: null,
+		username: 'testuser',
+		username_display: 'testuser',
+		providers: ['local']
+	};
+}
+
+describe('+layout.svelte auth-reactive session state (#155)', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		authStore.clear();
+	});
+
+	afterEach(() => {
+		authStore.clear();
+	});
+
+	it('resets the integration store instead of loading it when unauthenticated', async () => {
+		renderLayout();
+		await vi.waitFor(() => expect(vi.mocked(integrationStore.reset)).toHaveBeenCalled());
+		expect(integrationStore.ensureLoaded).not.toHaveBeenCalled();
+	});
+
+	it('loads integration status and starts session services when authenticated at mount', async () => {
+		authStore.setUser(testUser());
+		renderLayout();
+		await vi.waitFor(() => expect(vi.mocked(integrationStore.ensureLoaded)).toHaveBeenCalled());
+		expect(nowPlayingStore.start).toHaveBeenCalled();
+		expect(nowPlayingReporter.start).toHaveBeenCalled();
+		expect(followingEventsMock.start).toHaveBeenCalled();
+	});
+
+	it('loads integration status after a warm in-app login without a remount', async () => {
+		renderLayout();
+		await vi.waitFor(() => expect(vi.mocked(integrationStore.reset)).toHaveBeenCalled());
+		expect(integrationStore.ensureLoaded).not.toHaveBeenCalled();
+
+		authStore.setUser(testUser());
+		await vi.waitFor(() => expect(vi.mocked(integrationStore.ensureLoaded)).toHaveBeenCalled());
+		expect(nowPlayingStore.start).toHaveBeenCalled();
+	});
+
+	it('stops session services and resets integrations on logout', async () => {
+		authStore.setUser(testUser());
+		renderLayout();
+		await vi.waitFor(() => expect(nowPlayingStore.start).toHaveBeenCalled());
+
+		authStore.clear();
+		await vi.waitFor(() => expect(nowPlayingStore.stop).toHaveBeenCalled());
+		expect(nowPlayingReporter.stop).toHaveBeenCalled();
+		expect(followingEventsMock.stop).toHaveBeenCalled();
+		expect(vi.mocked(integrationStore.reset)).toHaveBeenCalled();
+	});
+
+	it('starts approval polling for admins only', async () => {
+		authStore.setUser(testUser('admin'));
+		renderLayout();
+		await vi.waitFor(() => expect(pendingApprovalCountStore.startPolling).toHaveBeenCalled());
+
+		authStore.clear();
+		await vi.waitFor(() => expect(pendingApprovalCountStore.stopPolling).toHaveBeenCalled());
+	});
+
+	it('does not start approval polling for non-admins', async () => {
+		authStore.setUser(testUser());
+		renderLayout();
+		await vi.waitFor(() => expect(vi.mocked(integrationStore.ensureLoaded)).toHaveBeenCalled());
+		expect(pendingApprovalCountStore.startPolling).not.toHaveBeenCalled();
 	});
 });

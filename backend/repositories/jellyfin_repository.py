@@ -85,11 +85,21 @@ class JellyfinRepository:
     def is_configured(self) -> bool:
         return bool(self._base_url and self._api_key)
     
+    def _auth_header(self) -> dict[str, str]:
+        """API-key auth via ``Authorization: MediaBrowser Token="<key>"``.
+
+        Jellyfin 10.11 dropped the legacy Emby auth: the same server API key gets
+        401 via ``X-Emby-Token`` / ``X-MediaBrowser-Token`` / ``?api_key=`` but 200
+        via this header (verified against Jellyfin 10.11.11 in issue #151, evidence
+        table on ``GET /System/Info``). Older servers accept both forms.
+        """
+        return {"Authorization": f'MediaBrowser Token="{self._api_key}"'}
+
     def _get_headers(self) -> dict[str, str]:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "X-Emby-Token": self._api_key,
+            **self._auth_header(),
         }
     
     @with_retry(
@@ -394,7 +404,7 @@ class JellyfinRepository:
             return []
     
     def get_auth_headers(self) -> dict[str, str]:
-        return {"X-Emby-Token": self._api_key}
+        return self._auth_header()
 
     def get_image_url(self, item_id: str, image_tag: str | None = None) -> str | None:
         if not self._base_url or not item_id:
@@ -420,7 +430,7 @@ class JellyfinRepository:
             response = await self._client.get(
                 url,
                 params=params,
-                headers={"X-Emby-Token": self._api_key},
+                headers=self._auth_header(),
                 timeout=15.0,
             )
         except httpx.TimeoutException:
@@ -1131,7 +1141,7 @@ class JellyfinRepository:
             )
 
     def _get_stream_headers(self) -> dict[str, str]:
-        return {"X-Emby-Token": self._api_key}
+        return self._auth_header()
 
     async def proxy_head_stream(self, item_id: str) -> StreamProxyResult:
         playback = await self.get_playback_url(item_id)

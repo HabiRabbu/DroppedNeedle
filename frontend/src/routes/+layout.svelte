@@ -43,7 +43,7 @@
 	import SearchSuggestions from '$lib/components/SearchSuggestions.svelte';
 	import Footer from '$lib/components/Footer.svelte';
 	import type { SuggestResult } from '$lib/types';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { cancelPendingImages } from '$lib/utils/lazyImage';
 	import { abortAllPageRequests } from '$lib/utils/navigationAbort';
 	import { pendingApprovalCountStore } from '$lib/stores/pendingApprovalCountStore.svelte';
@@ -162,20 +162,49 @@
 			void imageSettingsStore.load();
 			void restorePlayerSession();
 			void scrobbleManager.init();
-			if (authStore.isAdmin) pendingApprovalCountStore.startPolling();
-			if (authStore.isAuthenticated) followingEvents.start();
 			syncStatus.connect();
 			downloadsActivity.start();
 		});
-		// load integration status once for the whole app - the home entry cards and the
-		// services panel depend on it (only some pages call ensureLoaded themselves)
-		void integrationStore.ensureLoaded();
-		// presence is server-driven now (the backend polls upstream servers itself), so
-		// it no longer waits on integration status
+	});
+
+	// Everything auth-gated must track the session reactively, not be checked once at
+	// mount: an in-app login/logout is a goto() that never remounts this layout, so a
+	// mount-time check left integrations disabled (and these services stopped) until a
+	// hard refresh (#155). The bodies run untracked so only the auth flag re-triggers
+	// them - nowPlayingReporter.start() synchronously reads player $state, which would
+	// otherwise restart every service on each play/pause.
+	$effect(() => {
 		if (authStore.isAuthenticated) {
+			untrack(() => {
+				// integration status feeds the home entry cards and the services panel
+				// (only some pages call ensureLoaded themselves)
+				void integrationStore.ensureLoaded();
+			});
+		} else {
+			untrack(() => integrationStore.reset());
+		}
+	});
+
+	$effect(() => {
+		if (!authStore.isAuthenticated) return;
+		untrack(() => {
+			followingEvents.start();
+			// presence is server-driven now (the backend polls upstream servers itself),
+			// so it no longer waits on integration status
 			nowPlayingStore.start();
 			nowPlayingReporter.start();
-		}
+		});
+		return () => {
+			followingEvents.stop();
+			nowPlayingStore.stop();
+			nowPlayingReporter.stop();
+		};
+	});
+
+	$effect(() => {
+		if (!authStore.isAdmin) return;
+		untrack(() => pendingApprovalCountStore.startPolling());
+		return () => pendingApprovalCountStore.stopPolling();
 	});
 
 	onDestroy(() => {
@@ -185,12 +214,8 @@
 		if (browser) {
 			document.removeEventListener('keydown', handleGlobalKeydown);
 		}
-		pendingApprovalCountStore.stopPolling();
-		followingEvents.stop();
 		downloadsActivity.stop();
 		syncStatus.disconnect();
-		nowPlayingStore.stop();
-		nowPlayingReporter.stop();
 		unregisterPlaylistModal();
 	});
 

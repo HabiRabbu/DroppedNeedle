@@ -783,8 +783,9 @@ class ArtistDiscoveryService:
 
             trimmed = lfm_albums[:count]
 
-            # Last.fm usually returns release-group MBIDs here, so keep them as-is
-            # and let the discover queue resolve the rare mismatches.
+            # Last.fm usually returns release-group MBIDs here, so keep them as-is.
+            # When one is actually a *release* MBID, the album page recovers via the
+            # release->RG fallback in AlbumService._fetch_release_group (#78).
             albums = []
             for a in trimmed:
                 raw_mbid = a.mbid.strip().lower() if a.mbid and a.mbid.strip() else None
