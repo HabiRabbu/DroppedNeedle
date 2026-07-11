@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { api, ApiError } from '$lib/api/client';
@@ -72,7 +73,7 @@
 
 	function storeSession(data: AuthSessionResponse) {
 		authStore.setUser(toAuthUser(data.user));
-		goto('/');
+		goto(resolve('/'));
 	}
 
 	async function handleLocalLogin() {

@@ -1,4 +1,5 @@
 import { API } from '$lib/constants';
+import { getApiUrl } from '$lib/api/api-utils';
 import type { ScanStatus } from '$lib/types';
 
 export interface LibraryScanState {
@@ -46,7 +47,7 @@ export function createLibraryScanStream() {
 	function start() {
 		if (source) return;
 		state = { ...state, status: 'scanning', errorMessage: null };
-		source = new EventSource(API.library.scanStream());
+		source = new EventSource(getApiUrl(API.library.scanStream()));
 
 		source.addEventListener('started', (e) => {
 			const d = parse(e);

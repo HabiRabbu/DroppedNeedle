@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { API } from '$lib/constants';
 	import { api } from '$lib/api/client';
 	import { resetPlexScrobblePreference } from '$lib/player/plexPlaybackApi';
@@ -420,7 +421,7 @@
 					</div>
 					{#if historyTotal > 10}
 						<div class="mt-2 flex gap-2">
-							<a href="/library/plex/activity" class="btn btn-sm btn-outline">
+							<a href={resolve('/library/plex/activity')} class="btn btn-sm btn-outline">
 								View full history and analytics ({historyTotal.toLocaleString()} plays)
 							</a>
 						</div>
@@ -440,9 +441,9 @@
 						index={genericArtistIndex}
 						onselect={(artist) => {
 							if (artist.musicbrainz_id) {
-								goto(`/artist/${artist.musicbrainz_id}`);
+								goto(resolve(`/artist/${artist.musicbrainz_id}`));
 							} else {
-								goto(`/library/plex/artists?search=${encodeURIComponent(artist.name)}`);
+								goto(resolve(`/library/plex/artists?search=${encodeURIComponent(artist.name)}`));
 							}
 						}}
 					/>

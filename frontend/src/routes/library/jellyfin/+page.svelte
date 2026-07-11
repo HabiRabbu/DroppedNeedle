@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { API } from '$lib/constants';
 	import { api } from '$lib/api/client';
 	import SourceAlbumCardCompact from '$lib/components/SourceAlbumCardCompact.svelte';
@@ -489,9 +490,11 @@
 						index={genericArtistIndex}
 						onselect={(artist) => {
 							if (artist.musicbrainz_id) {
-								goto(`/artist/${artist.musicbrainz_id}`);
+								goto(resolve(`/artist/${artist.musicbrainz_id}`));
 							} else {
-								goto(`/library/jellyfin/artists?search=${encodeURIComponent(artist.name)}`);
+								goto(
+									resolve(`/library/jellyfin/artists?search=${encodeURIComponent(artist.name)}`)
+								);
 							}
 						}}
 					/>

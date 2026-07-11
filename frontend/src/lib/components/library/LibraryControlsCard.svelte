@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { Radar, ArrowRight, CalendarClock, Play } from 'lucide-svelte';
 	import {
 		getLibrarySettingsQuery,
@@ -78,7 +79,10 @@
 		<span class="truncate">
 			{paths.length} path{paths.length === 1 ? '' : 's'} · AcoustID {hasKey ? 'set' : 'not set'}
 		</span>
-		<a class="link link-hover inline-flex items-center gap-1" href="/settings?tab=library">
+		<a
+			class="link link-hover inline-flex items-center gap-1"
+			href={resolve('/settings?tab=library')}
+		>
 			Manage library settings <ArrowRight class="h-3.5 w-3.5" />
 		</a>
 	</div>

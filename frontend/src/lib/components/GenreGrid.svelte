@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { imageSettingsStore } from '$lib/stores/imageSettings';
 	import { appendAudioDBSizeSuffix } from '$lib/utils/imageSuffix';
 
@@ -55,7 +56,7 @@
 			{@const useCdn =
 				cdnUrl && $imageSettingsStore.directRemoteImagesEnabled && !cdnFailedSet.has(genre.name)}
 			<a
-				href="/genre?name={encodeURIComponent(genre.name)}"
+				href={resolve(`/genre?name=${encodeURIComponent(genre.name)}`)}
 				class="group relative isolate overflow-hidden rounded-xl text-white shadow-md transition-all duration-300 hover:shadow-xl hover:ring-2 hover:ring-white/20 active:scale-[0.97]"
 			>
 				<div class="aspect-16/10"></div>

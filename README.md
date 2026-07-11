@@ -540,8 +540,25 @@ DroppedNeedle stores its config in `config/config.json` inside the mapped config
 | `PORT` | `8688` | Port the application listens on |
 | `TZ` | `Etc/UTC` | Container timezone |
 | `SLSKD_DOWNLOADS_PATH` | `/data/downloads/slskd` | In-container path where slskd's downloads dir is bind-mounted (read-write, same filesystem as the library). The import moves finished files from here into the library. |
+| `TRUSTED_PROXY_IPS` | `*` | Comma-separated IPs/CIDRs trusted for `X-Forwarded-*` headers. Restrict to your proxy's IP in production. |
+| `BASE_PATH` | *(empty)* | Subpath to serve under behind a reverse proxy, e.g. `/droppedneedle`. Empty serves at the domain root. See [Serving Under a Subpath](#serving-under-a-subpath). |
 
 Run `id` on your host to find your PUID and PGID values.
+
+### Serving Under a Subpath
+
+By default DroppedNeedle is served at the root of its domain (`https://music.example.com/`).
+To serve it under a subpath instead (`https://example.com/droppedneedle/`), set `BASE_PATH`
+to that subpath and configure your reverse proxy to forward it **with the prefix stripped**.
+The single prebuilt image handles any subpath at runtime; no rebuild is needed. Example nginx:
+
+```nginx
+location /droppedneedle/ {
+    proxy_pass http://droppedneedle:8688/;  # trailing slash strips the prefix
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
 
 > **Unraid / NAS users:** Unraid defaults to `nobody:users` (PUID=99, PGID=100). If you see `chown: Operation not permitted` at startup, your volume mount is on a filesystem that rejects ownership changes (FUSE/shfs, NFS, CIFS). The container skips `chown` when the directories and their contents are already writable, so this is usually fine as long as the host paths are owned by the correct UID:GID.
 
