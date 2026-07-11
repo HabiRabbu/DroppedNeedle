@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/subsonic", route_class=MsgSpecRoute)
 
 _PUBLIC = {"getOpenSubsonicExtensions"}
-_BINARY = {"stream", "download", "getCoverArt"}
+_BINARY = {"stream", "download", "getCoverArt", "getAvatar"}
 _AUTH_CODES = {10, 40, 41, 42, 43, 44, 50}
 
 _HANDLERS: dict[str, "Handler"] = {}
@@ -184,6 +184,7 @@ async def _extensions(c: Ctx) -> Response:
         m.SOpenSubsonicExtension(name="apiKeyAuthentication", versions=[1]),
         m.SOpenSubsonicExtension(name="formPost", versions=[1]),
         m.SOpenSubsonicExtension(name="transcodeOffset", versions=[1]),
+        m.SOpenSubsonicExtension(name="songLyrics", versions=[1]),
     ]
     return c.render("openSubsonicExtensions", exts)
 
@@ -270,6 +271,11 @@ async def _get_album(c: Ctx) -> Response:
     tracks = await c.services.view.get_album_tracks(rg, user=c.user)
     s = m.to_album_id3(album)
     s.song = [c.child(t) for t in tracks]
+    ratings = await c.services.play_state.map_ratings_for_items(
+        c.user.id, "album", [rg]
+    )
+    s.userRating = ratings.get(rg)
+    await _overlay_song_ratings(c, s.song)
     return c.render("album", s)
 
 
@@ -279,7 +285,9 @@ async def _get_song(c: Ctx) -> Response:
     track = await c.services.view.get_track(fid, user=c.user)
     if track is None:
         raise SubsonicError(70, "Song not found")
-    return c.render("song", c.child(track))
+    child = c.child(track)
+    await _overlay_song_ratings(c, [child])
+    return c.render("song", child)
 
 
 def _album_page(c: Ctx) -> tuple[str, int, int]:
@@ -665,10 +673,12 @@ async def _starred_lists(c: Ctx):
 @endpoint("getStarred2")
 async def _get_starred2(c: Ctx) -> Response:
     artists, albums, songs = await _starred_lists(c)
+    children = [c.child(t) for t in songs]
+    await _overlay_song_ratings(c, children)
     return c.render("starred2", {
         "artist": [m.to_artist_id3(a) for a in artists],
         "album": [m.to_album_id3(a) for a in albums],
-        "song": [c.child(t) for t in songs],
+        "song": children,
     })
 
 
@@ -682,9 +692,30 @@ async def _get_starred(c: Ctx) -> Response:
     })
 
 
+async def _overlay_song_ratings(c: Ctx, children: list["m.SChild"]) -> None:
+    """Fill userRating on already-built song Children (batch, one query)."""
+    if not children:
+        return
+    fids = [decode(ch.id)[1] for ch in children]
+    ratings = await c.services.play_state.map_ratings_for_items(
+        c.user.id, "track", fids
+    )
+    for ch, fid in zip(children, fids):
+        ch.userRating = ratings.get(fid)
+
+
 @endpoint("setRating")
 async def _set_rating(c: Ctx) -> Response:
-    # ratings not implemented (decision Q4): accept and no-op
+    sid = c.p("id")
+    if not sid:
+        raise SubsonicError(10, "Required parameter 'id' is missing")
+    rating = c.pint("rating")
+    if rating is None:
+        raise SubsonicError(10, "Required parameter 'rating' is missing")
+    kind, internal = decode(sid)
+    if kind not in _FAV_KINDS:
+        raise SubsonicError(70, "Only artists, albums and songs can be rated")
+    await c.services.play_state.set_rating(c.user.id, kind, internal, rating)
     return c.render(None, None)
 
 
@@ -779,3 +810,320 @@ async def _get_similar_songs2(c: Ctx) -> Response:
 async def _get_similar_songs(c: Ctx) -> Response:
     tracks = await _similar_songs(c)
     return c.render("similarSongs", {"song": [c.child(t) for t in tracks]})
+
+
+# ----- play queue (P3) -----
+
+
+@endpoint("savePlayQueue")
+async def _save_play_queue(c: Ctx) -> Response:
+    fids = [_decode_expect(s, "track") for s in c.plist("id")]
+    current = c.p("current")
+    cur_fid = _decode_expect(current, "track") if current else None
+    await c.services.play_state.save_queue(
+        c.user.id, fids, current_file_id=cur_fid,
+        position_ms=c.pint("position", 0) or 0, changed_by=c.p("c"),
+    )
+    return c.render(None, None)
+
+
+@endpoint("getPlayQueue")
+async def _get_play_queue(c: Ctx) -> Response:
+    q = await c.services.play_state.get_queue(c.user.id)
+    if q is None:  # nothing ever saved: bare ok envelope (no playQueue element)
+        return c.render(None, None)
+    entries = []
+    for fid in q["file_ids"]:
+        track = await c.services.view.get_track(fid, user=c.user)
+        if track is not None:  # a since-deleted file silently drops out
+            entries.append(c.child(track))
+    current = q["current_file_id"]
+    return c.render("playQueue", {
+        "current": encode("track", current) if current else None,
+        "position": q["position_ms"],
+        "username": c.user.username,
+        "changed": m.iso(q["changed_at"]),
+        "changedBy": q["changed_by"] or "",
+        "entry": entries,
+    })
+
+
+# ----- bookmarks (P3) -----
+
+
+@endpoint("createBookmark")
+async def _create_bookmark(c: Ctx) -> Response:
+    fid = _decode_expect(c.p("id") or "", "track")
+    position = c.pint("position")
+    if position is None:
+        raise SubsonicError(10, "Required parameter 'position' is missing")
+    track = await c.services.view.get_track(fid, user=c.user)
+    if track is None:
+        raise SubsonicError(70, "Song not found")
+    await c.services.play_state.set_bookmark(c.user.id, fid, position, c.p("comment"))
+    return c.render(None, None)
+
+
+@endpoint("deleteBookmark")
+async def _delete_bookmark(c: Ctx) -> Response:
+    fid = _decode_expect(c.p("id") or "", "track")
+    await c.services.play_state.remove_bookmark(c.user.id, fid)
+    return c.render(None, None)
+
+
+@endpoint("getBookmarks")
+async def _get_bookmarks(c: Ctx) -> Response:
+    rows = await c.services.play_state.list_bookmarks(c.user.id)
+    bookmarks = []
+    for r in rows:
+        track = await c.services.view.get_track(r["file_id"], user=c.user)
+        if track is None:
+            continue
+        bookmarks.append({
+            "position": r["position_ms"],
+            "username": c.user.username,
+            "comment": r["comment"],
+            "created": m.iso(r["created_at"]),
+            "changed": m.iso(r["changed_at"]),
+            "entry": c.child(track),
+        })
+    return c.render("bookmarks", {"bookmark": bookmarks})
+
+
+# ----- lyrics (P3): strictly read-only reuse of LocalLyricsService -----
+
+
+async def _lyrics_for_file(c: Ctx, file_id: str):
+    """Best-effort lyrics lookup; a lyrics problem must never fail the endpoint."""
+    try:
+        return await c.services.lyrics.get_lyrics(file_id)
+    except Exception as exc:  # noqa: BLE001 - missing file/permission => no lyrics
+        logger.debug("Compat lyrics lookup failed for %s: %s", file_id, exc)
+        return None
+
+
+@endpoint("getLyricsBySongId")
+async def _get_lyrics_by_song_id(c: Ctx) -> Response:
+    fid = _decode_expect(c.p("id") or "", "track")
+    track = await c.services.view.get_track(fid, user=c.user)
+    if track is None:
+        raise SubsonicError(70, "Song not found")
+    res = await _lyrics_for_file(c, fid)
+    structured = []
+    if res is not None and res.lines:
+        lines = []
+        for ln in res.lines:
+            entry: dict = {"value": ln.text}
+            if res.is_synced and ln.start_seconds is not None:
+                entry["start"] = round(ln.start_seconds * 1000)
+            lines.append(entry)
+        structured.append({
+            "displayArtist": track.artist_name,
+            "displayTitle": track.title,
+            "lang": "und",
+            "offset": 0,
+            "synced": res.is_synced,
+            "line": lines,
+        })
+    return c.render("lyricsList", {"structuredLyrics": structured})
+
+
+@endpoint("getLyrics")
+async def _get_lyrics(c: Ctx) -> Response:
+    artist = (c.p("artist") or "").strip()
+    title = (c.p("title") or "").strip()
+    track = None
+    if title:
+        tracks, _ = await c.services.view.get_tracks_page(
+            limit=25, q=title, user=c.user
+        )
+        low_artist = artist.lower()
+        candidates = [
+            t for t in tracks
+            if not low_artist or low_artist in (t.artist_name or "").lower()
+        ]
+        track = next(
+            (t for t in candidates if t.title.lower() == title.lower()),
+            candidates[0] if candidates else None,
+        )
+    res = await _lyrics_for_file(c, track.file_id) if track is not None else None
+    if res is None:  # empty <lyrics/> element, matching Subsonic's no-match shape
+        payload = {}
+        if artist:
+            payload["artist"] = artist
+        if title:
+            payload["title"] = title
+        return c.render("lyrics", payload)
+    return c.render("lyrics", {
+        "artist": track.artist_name, "title": track.title, "value": res.text,
+    })
+
+
+# ----- OpenSubsonic apiKeyAuthentication: tokenInfo -----
+
+
+@endpoint("tokenInfo")
+async def _token_info(c: Ctx) -> Response:
+    return c.render("tokenInfo", {"username": c.user.username})
+
+
+# ----- library status + misc metadata -----
+
+
+async def _scan_status_payload(c: Ctx) -> dict:
+    _, total = await c.services.view.get_tracks_page(limit=1, offset=0)
+    return {"scanning": False, "count": total}
+
+
+@endpoint("getScanStatus")
+async def _get_scan_status(c: Ctx) -> Response:
+    return c.render("scanStatus", await _scan_status_payload(c))
+
+
+@endpoint("startScan")
+async def _start_scan(c: Ctx) -> Response:
+    # library scans are managed by the native DroppedNeedle scanner; report the
+    # current state instead of spawning a duplicate scan from the shim
+    return c.render("scanStatus", await _scan_status_payload(c))
+
+
+@endpoint("getNowPlaying")
+async def _get_now_playing(c: Ctx) -> Response:
+    # compat presence entries carry no library file ids, so an entry list can't
+    # be built without guessing; an empty element is valid and universally handled
+    return c.render("nowPlaying", {"entry": []})
+
+
+async def _artist_info_payload(c: Ctx) -> dict:
+    kind, internal = decode(c.p("id") or "")
+    if kind == "artist":
+        if await c.services.view.get_artist_with_albums(internal, user=c.user) is None:
+            raise SubsonicError(70, "Artist not found")
+        return {"musicBrainzId": internal}
+    # old-API directory/song ids are accepted; nothing artist-level to report
+    return {}
+
+
+@endpoint("getArtistInfo2")
+async def _get_artist_info2(c: Ctx) -> Response:
+    return c.render("artistInfo2", await _artist_info_payload(c))
+
+
+@endpoint("getArtistInfo")
+async def _get_artist_info(c: Ctx) -> Response:
+    return c.render("artistInfo", await _artist_info_payload(c))
+
+
+async def _album_info_payload(c: Ctx) -> dict:
+    kind, internal = decode(c.p("id") or "")
+    if kind == "album":
+        if await c.services.view.get_album(internal, user=c.user) is None:
+            raise SubsonicError(70, "Album not found")
+        return {"musicBrainzId": internal}
+    return {}
+
+
+@endpoint("getAlbumInfo2")
+async def _get_album_info2(c: Ctx) -> Response:
+    return c.render("albumInfo", await _album_info_payload(c))
+
+
+@endpoint("getAlbumInfo")
+async def _get_album_info(c: Ctx) -> Response:
+    return c.render("albumInfo", await _album_info_payload(c))
+
+
+@endpoint("getAvatar")
+async def _get_avatar(c: Ctx) -> Response:
+    return _placeholder()
+
+
+@endpoint("search")
+async def _search_old(c: Ctx) -> Response:
+    """Deprecated 1.4-era search: song matches only, like modern servers."""
+    q = c.p("any") or c.p("title") or c.p("album") or c.p("artist") or None
+    count = min(max(c.pint("count", 20) or 20, 1), 500)
+    offset = max(c.pint("offset", 0) or 0, 0)
+    songs, total = await c.services.view.get_tracks_page(
+        limit=count, offset=offset, q=q, user=c.user
+    )
+    return c.render("searchResult", {
+        "offset": offset, "totalHits": total,
+        "match": [c.child(t) for t in songs],
+    })
+
+
+@endpoint("getUsers")
+async def _get_users(c: Ctx) -> Response:
+    if c.user.role != "admin":
+        raise SubsonicError(50, "Not authorized to list users")
+    settings = c.services.preferences.get_connect_apps_settings()
+    me = m.SUser(
+        username=c.user.username or "", adminRole=True,
+        maxBitRate=settings.transcode_max_bitrate_kbps,
+    )
+    return c.render("users", {"user": [me]})
+
+
+# ----- P4 stubs: valid-empty responses (never 404/500) -----
+
+
+def _empty_stub(name: str, key: str, payload: dict | None = None) -> None:
+    async def handler(c: Ctx) -> Response:
+        return c.render(key, payload if payload is not None else {})
+
+    _HANDLERS[name] = handler
+
+
+_empty_stub("getPodcasts", "podcasts")
+_empty_stub("getNewestPodcasts", "newestPodcasts")
+_empty_stub("getInternetRadioStations", "internetRadioStations")
+_empty_stub("getChatMessages", "chatMessages")
+_empty_stub("getShares", "shares")
+_empty_stub("getVideos", "videos")
+
+
+@endpoint("addChatMessage")
+async def _add_chat_message(c: Ctx) -> Response:
+    # accepted and dropped: there is no chat surface to deliver to
+    return c.render(None, None)
+
+
+@endpoint("jukeboxControl")
+async def _jukebox_control(c: Ctx) -> Response:
+    # no server-side audio device; report a stopped, empty jukebox
+    status = {"currentIndex": 0, "playing": False, "gain": 1.0}
+    if (c.p("action") or "").lower() == "get":
+        return c.render("jukeboxPlaylist", {**status, "entry": []})
+    return c.render("jukeboxStatus", status)
+
+
+# ----- declined endpoints: correct Subsonic error, never 404/500 -----
+
+
+def _unsupported_stub(name: str, message: str, code: int = 0) -> None:
+    async def handler(c: Ctx) -> Response:
+        raise SubsonicError(code, message)
+
+    _HANDLERS[name] = handler
+
+
+for _name in ("createShare", "updateShare", "deleteShare"):
+    _unsupported_stub(_name, "Sharing is not supported by this server")
+for _name in (
+    "refreshPodcasts", "createPodcastChannel", "deletePodcastChannel",
+    "deletePodcastEpisode", "downloadPodcastEpisode",
+):
+    _unsupported_stub(_name, "Podcasts are not supported by this server")
+for _name in (
+    "createInternetRadioStation", "updateInternetRadioStation",
+    "deleteInternetRadioStation",
+):
+    _unsupported_stub(_name, "Internet radio is not supported by this server")
+for _name in ("createUser", "updateUser", "deleteUser", "changePassword"):
+    _unsupported_stub(
+        _name, "User management is handled in the DroppedNeedle settings UI"
+    )
+_unsupported_stub("getVideoInfo", "Video not found", code=70)
+_unsupported_stub("getCaptions", "No captions available", code=70)
+_unsupported_stub("hls", "HLS streaming is not supported by this server")

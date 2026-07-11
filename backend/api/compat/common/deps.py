@@ -16,11 +16,13 @@ from core.dependencies import (
     get_app_password_service,
     get_compat_discover_service,
     get_compat_id_map_service,
+    get_compat_play_state_service,
     get_compat_scrobble_adapter,
     get_coverart_repository,
     get_favorites_service,
     get_library_view_service,
     get_local_files_service,
+    get_local_lyrics_service,
     get_playlist_service,
     get_preferences_service,
     get_transcode_service,
@@ -34,8 +36,10 @@ if TYPE_CHECKING:
     from services.compat.favorites_service import FavoritesService
     from services.compat.id_map_service import CompatIdMapService
     from services.compat.library_view_service import LibraryViewService
+    from services.compat.play_state_service import CompatPlayStateService
     from services.compat.transcode_service import TranscodeService
     from services.local_files_service import LocalFilesService
+    from services.local_lyrics_service import LocalLyricsService
     from services.playlist_service import PlaylistService
     from services.preferences_service import PreferencesService
 
@@ -53,6 +57,8 @@ class CompatServices:
     coverart: "CoverArtRepository"
     preferences: "PreferencesService"
     transcode: "TranscodeService"
+    play_state: "CompatPlayStateService"
+    lyrics: "LocalLyricsService"
 
 
 def get_compat_services(
@@ -67,6 +73,8 @@ def get_compat_services(
     coverart=Depends(get_coverart_repository),
     preferences=Depends(get_preferences_service),
     transcode=Depends(get_transcode_service),
+    play_state=Depends(get_compat_play_state_service),
+    lyrics=Depends(get_local_lyrics_service),
 ) -> CompatServices:
     return CompatServices(
         app_passwords=app_passwords,
@@ -80,4 +88,6 @@ def get_compat_services(
         coverart=coverart,
         preferences=preferences,
         transcode=transcode,
+        play_state=play_state,
+        lyrics=lyrics,
     )

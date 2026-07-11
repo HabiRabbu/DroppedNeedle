@@ -3,7 +3,6 @@
 import asyncio
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -175,7 +174,7 @@ def test_ffmpeg_available_matches_environment():
 
 @pytest.mark.asyncio
 @_needs_ffmpeg
-async def test_transcode_produces_decodable_mp3():
+async def test_transcode_produces_decodable_mp3(tmp_path: Path):
     src = Path(__file__).parent.parent / "fixtures" / "library" / "flac_full_01.flac"
     from services.compat.transcode_service import StreamPlan
 
@@ -187,14 +186,15 @@ async def test_transcode_produces_decodable_mp3():
     assert resp.media_type == "audio/mpeg"
     body = b"".join([chunk async for chunk in resp.body_iterator])
     assert body  # non-empty transcoded output
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=True) as tmp:
-        tmp.write(body)
-        tmp.flush()
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=format_name",
-             "-of", "default=nw=1:nk=1", tmp.name],
-            capture_output=True, text=True,
-        )
+    # tmp_path, not NamedTemporaryFile: Windows won't let ffprobe open a file
+    # another process still holds open
+    out_file = tmp_path / "out.mp3"
+    out_file.write_bytes(body)
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=format_name",
+         "-of", "default=nw=1:nk=1", str(out_file)],
+        capture_output=True, text=True,
+    )
     assert "mp3" in out.stdout
 
 
