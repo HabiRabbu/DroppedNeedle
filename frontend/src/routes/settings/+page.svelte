@@ -18,6 +18,7 @@
 	import SettingsAbout from '$lib/components/settings/SettingsAbout.svelte';
 	import SettingsHome from '$lib/components/settings/SettingsHome.svelte';
 	import SettingsDiscover from '$lib/components/settings/SettingsDiscover.svelte';
+	import SettingsSidebar from '$lib/components/settings/SettingsSidebar.svelte';
 	import SettingsUsers from '$lib/components/settings/SettingsUsers.svelte';
 	import SettingsSecurity from '$lib/components/settings/SettingsSecurity.svelte';
 	import SettingsDownloadClient from '$lib/components/settings/SettingsDownloadClient.svelte';
@@ -60,7 +61,8 @@
 		Gift,
 		ShoppingBag,
 		Landmark,
-		Blocks
+		Blocks,
+		PanelLeft
 	} from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import NavidromeIcon from '$lib/components/NavidromeIcon.svelte';
@@ -124,6 +126,7 @@
 		{ id: 'settings', label: 'Release Types', tier: 'personalize', icon: Settings2 },
 		{ id: 'home', label: 'Home', tier: 'personalize', icon: Home },
 		{ id: 'discover', label: 'Discover', tier: 'personalize', icon: Compass },
+		{ id: 'sidebar', label: 'Sidebar', tier: 'personalize', icon: PanelLeft },
 		{ id: 'music-source', label: 'Music Source', tier: 'personalize', icon: BarChart3 },
 		{ id: 'cache', label: 'Cache', tier: 'system', icon: Database },
 		{ id: 'musicbrainz', label: 'MusicBrainz', tier: 'system', icon: Globe },
@@ -272,6 +275,8 @@
 					<SettingsHome />
 				{:else if activeTab === 'discover'}
 					<SettingsDiscover />
+				{:else if activeTab === 'sidebar'}
+					<SettingsSidebar />
 				{:else if activeTab === 'music-source'}
 					<SettingsMusicSource />
 				{:else if activeTab === 'cache'}

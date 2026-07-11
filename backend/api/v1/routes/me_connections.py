@@ -520,7 +520,7 @@ async def get_section_prefs(
     client_factory: PerUserClientFactory = Depends(get_per_user_client_factory),
 ) -> SectionPrefsResponse:
     pages: dict[str, list[SectionPrefItem]] = {}
-    for page in ("home", "discover"):
+    for page in ("home", "discover", "sidebar"):
         pages[page] = await _build_section_page(
             page, current_user.id, section_prefs, client_factory
         )

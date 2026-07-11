@@ -2101,7 +2101,7 @@ export interface SectionPrefsResponse {
 }
 
 export interface SectionPrefsUpdate {
-	page: 'home' | 'discover';
+	page: 'home' | 'discover' | 'sidebar';
 	sections: { key: string; enabled: boolean }[];
 }
 

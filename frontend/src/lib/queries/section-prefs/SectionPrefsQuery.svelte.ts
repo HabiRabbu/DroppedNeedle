@@ -28,10 +28,11 @@ export async function saveSectionPrefs(update: SectionPrefsUpdate): Promise<void
 			pages: { ...(prev?.pages ?? {}), ...saved.pages }
 		})
 	);
-	// the page responses are filtered server-side, so their caches are stale now
+	// the home/discover responses are filtered server-side, so their caches are stale
+	// now; sidebar prefs are client-only chrome read straight from the prefs cache
 	if (update.page === 'home') {
 		await invalidateQueriesWithPersister({ queryKey: HomeQueryKeyFactory.prefix });
-	} else {
+	} else if (update.page === 'discover') {
 		await invalidateQueriesWithPersister({ queryKey: DiscoverQueryKeyFactory.prefix });
 	}
 }

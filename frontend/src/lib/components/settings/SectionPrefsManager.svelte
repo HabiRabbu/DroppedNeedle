@@ -10,7 +10,7 @@
 	import { toastStore } from '$lib/stores/toast';
 
 	interface Props {
-		page: 'home' | 'discover';
+		page: 'home' | 'discover' | 'sidebar';
 		title: string;
 		description: string;
 	}

@@ -59,7 +59,9 @@ async def get_discover_data(
     result = apply_section_prefs(result, "discover", disabled)
     ctx = try_get_degradation_context()
     if ctx is not None and ctx.has_degradation():
-        result = msgspec.structs.replace(result, service_status=ctx.degraded_summary())
+        # merge over the build-time summary the cached copy carries (in-request wins)
+        merged = {**(result.service_status or {}), **ctx.degraded_summary()}
+        result = msgspec.structs.replace(result, service_status=merged)
     return result
 
 

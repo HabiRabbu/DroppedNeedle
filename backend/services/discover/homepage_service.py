@@ -24,6 +24,7 @@ from api.v1.schemas.home import (
 )
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cover_urls import prefer_artist_cover_url
+from infrastructure.degradation import DegradationContext, init_degradation_context
 from infrastructure.persistence import MBIDStore
 from infrastructure.serialization import clone_with_updates
 from repositories.protocols import (
@@ -400,21 +401,63 @@ class DiscoverHomepageService:
         cache_key = self._integration.get_discover_cache_key(
             user_id, lb_enabled, lfm_enabled
         )
+        # the request-scoped context is gone by the time this background build runs;
+        # without a fresh one the build's degradations vanish and the page can't
+        # explain an empty result
+        ctx = init_degradation_context()
         try:
             response = await self.build_discover_data(user_id)
+            response = clone_with_updates(
+                response, {"service_status": self._build_status_summary(ctx)}
+            )
             if self._memory_cache and self._has_meaningful_content(response):
                 await self._memory_cache.set(cache_key, response, DISCOVER_CACHE_TTL)
                 self._spawn_cover_prewarm(user_id, response)
             else:
                 logger.warning("Discover build produced no meaningful content, keeping existing cache")
+                await self._cache_empty_build_marker(cache_key, response)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to build discover data: {e}")
+            await self._cache_empty_build_marker(
+                cache_key,
+                DiscoverResponse(
+                    integration_status=self._integration.get_integration_status(),
+                    service_prompts=self._build_service_prompts(lb_enabled, lfm_enabled),
+                    service_status=self._build_status_summary(ctx),
+                ),
+            )
         finally:
             self._building_keys.discard(user_id)
             # record the attempt time on every build (success, empty, or failure) so both
             # the stale-while-revalidate window and the cache-miss path back off instead of
             # rebuilding on every poll - including users whose build is legitimately empty
             self._built_at[cache_key] = time.time()
+
+    @staticmethod
+    def _build_status_summary(ctx: DegradationContext) -> dict[str, str] | None:
+        """The build's degradation summary, plus the LB-popularity health gate: sections
+        consult the gate and skip the dead popularity calls entirely, so the context
+        alone would miss the very outage that thinned the build."""
+        summary = ctx.degraded_summary()
+        if lb_popularity_degraded():
+            summary.setdefault("listenbrainz", "degraded")
+        return summary or None
+
+    async def _cache_empty_build_marker(self, cache_key: str, response: DiscoverResponse) -> None:
+        """Briefly cache an empty (possibly degraded) build so the page settles on a
+        terminal refreshing=false state that carries the degradation summary, instead of
+        looping cache-miss -> rebuild -> skeleton forever. Never overwrites a previous
+        meaningful copy - stale good recommendations beat an honest empty page."""
+        if not self._memory_cache:
+            return
+        existing = await self._memory_cache.get(cache_key)
+        if (
+            existing is not None
+            and isinstance(existing, DiscoverResponse)
+            and self._has_meaningful_content(existing)
+        ):
+            return
+        await self._memory_cache.set(cache_key, response, STALE_REVALIDATE_SECONDS)
 
     def _spawn_cover_prewarm(self, user_id: str, response: DiscoverResponse) -> None:
         """Warm covers for the WHOLE Discover grid (albums + artists) so the page paints from

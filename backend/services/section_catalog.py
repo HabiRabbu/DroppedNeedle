@@ -12,7 +12,7 @@ import msgspec
 
 from infrastructure.serialization import clone_with_updates
 
-Page = Literal["home", "discover"]
+Page = Literal["home", "discover", "sidebar"]
 
 # 'listenbrainz'/'lastfm' are per-user links; 'library' is the global library.
 Requires = Literal["listenbrainz", "lastfm", "library"] | None
@@ -266,9 +266,45 @@ DISCOVER_SECTIONS: tuple[SectionDef, ...] = (
     ),
 )
 
+# Sidebar service entries (issue #52). Hiding one hides both its library link
+# and its admin "Connect X" hint. All client-only chrome: the frontend filters.
+SIDEBAR_SECTIONS: tuple[SectionDef, ...] = (
+    SectionDef(
+        key="youtube",
+        title="YouTube",
+        description="The YouTube entry in the sidebar.",
+        zone="Services",
+    ),
+    SectionDef(
+        key="jellyfin",
+        title="Jellyfin",
+        description="The Jellyfin entry in the sidebar.",
+        zone="Services",
+    ),
+    SectionDef(
+        key="navidrome",
+        title="Navidrome",
+        description="The Navidrome entry in the sidebar.",
+        zone="Services",
+    ),
+    SectionDef(
+        key="plex",
+        title="Plex",
+        description="The Plex entry in the sidebar.",
+        zone="Services",
+    ),
+    SectionDef(
+        key="localfiles",
+        title="Local Files",
+        description="The Local Files entry in the sidebar.",
+        zone="Services",
+    ),
+)
+
 _CATALOGS: dict[str, tuple[SectionDef, ...]] = {
     "home": HOME_SECTIONS,
     "discover": DISCOVER_SECTIONS,
+    "sidebar": SIDEBAR_SECTIONS,
 }
 
 # Blank values per response field. List-typed fields must blank to [] and the

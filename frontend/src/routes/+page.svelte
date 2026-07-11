@@ -186,168 +186,185 @@
 			<button class="btn btn-primary mt-4" onclick={() => homeQuery.refetch()}>Try Again</button>
 		</div>
 	{:else}
-		<div
-			class="space-y-10 px-4 sm:space-y-12 sm:px-6 lg:px-8"
-			class:is-refreshing={homeData?.refreshing}
-		>
-			{#if !downloadClientConfigured && downloadClientPrompt}
-				<div
-					class="card bg-linear-to-br from-accent/20 via-accent/10 to-base-200 border-2 border-accent/40 shadow-xl relative overflow-hidden"
-				>
-					<div class="card-body items-center text-center py-12 stagger-fade-in">
-						<Music class="h-16 w-16 mb-4 animate-float text-accent" />
-						<h2 class="card-title text-3xl sm:text-4xl lg:text-5xl font-bold mb-2">
-							Welcome to <span class="text-primary">DroppedNeedle</span>!
-						</h2>
-						<p class="text-base-content/70 max-w-lg mb-6">
-							Get started by connecting a download client. You need it to request albums and tracks
-							for your library.
-						</p>
-						<div class="flex flex-wrap justify-center gap-2 mb-6">
-							{#each downloadClientPrompt.features as feature (feature)}
-								<span class="badge badge-accent badge-lg">{feature}</span>
-							{/each}
-						</div>
-						<a href="/settings?tab=download-client" class="btn btn-accent btn-lg gap-2">
-							<Download class="h-5 w-5" />
-							Configure Download Client
-						</a>
-					</div>
-				</div>
-			{/if}
-
-			{#if otherPrompts.length > 0 && downloadClientConfigured}
-				<div class="space-y-3">
-					{#each otherPrompts as prompt, i (`prompt-${i}`)}
-						<ServicePromptCard {prompt} ondismiss={handlePromptDismiss} />
-					{/each}
-				</div>
-			{/if}
-
-			<HomeSectionNowPlaying />
-
-			{#if loading && !homeData}
-				<section>
-					<div class="skeleton skeleton-shimmer mb-4 h-6 w-40"></div>
-					<CarouselSkeleton />
-				</section>
-			{:else}
-				{#if whatsHotBlocks.length > 0}
-					<div>
-						<SectionDivider label="What's Hot">
-							{#snippet icon()}<TrendingUp class="w-3.5 h-3.5" />{/snippet}
-						</SectionDivider>
-						<div class="discover-section-enter space-y-2">
-							{#each whatsHotBlocks as block (block.key)}
-								<div>
-									{#if block.kind === 'section'}
-										<HomeSection
-											section={block.section}
-											headerLink={block.link}
-											showPreview={block.showPreview}
-										/>
-									{:else}
-										<WeeklyExploration section={block.section} />
-									{/if}
-								</div>
-							{/each}
-						</div>
-					</div>
-				{/if}
-
-				{#if !loading || homeData}
-					<div class="discover-section-enter">
-						<DiscoverTeaserBand preview={homeData?.discover_preview ?? null} />
-					</div>
-				{/if}
-
-				{#if forYouBlocks.length > 0}
-					<div>
-						<SectionDivider label="For You">
-							{#snippet icon()}<Sparkles class="w-3.5 h-3.5" />{/snippet}
-						</SectionDivider>
-						<div class="discover-section-enter space-y-2">
-							{#each forYouBlocks as block (block.key)}
-								<div>
-									{#if block.kind === 'section'}
-										<HomeSection
-											section={block.section}
-											headerLink={block.link}
-											showPreview={block.showPreview}
-										/>
-									{:else}
-										<WeeklyExploration section={block.section} />
-									{/if}
-								</div>
-							{/each}
-						</div>
-					</div>
-				{/if}
-			{/if}
-
-			{#if loading && !homeData}
-				<section>
-					<div class="skeleton skeleton-shimmer mb-4 h-6 w-36"></div>
-					<div class="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4 lg:grid-cols-5">
-						{#each Array(10) as _, i (`genre-skeleton-${i}`)}
-							<div class="skeleton skeleton-shimmer h-20 rounded-lg sm:h-24"></div>
-						{/each}
-					</div>
-				</section>
-			{:else if homeData?.genre_list && homeData.genre_list.items.length > 0}
-				<div class="mt-10 mb-10">
-					<GenreGrid
-						title={homeData.genre_list.title}
-						genres={homeData.genre_list.items}
-						genreArtistImages={homeData.genre_artist_images}
-					/>
-				</div>
-			{/if}
-
-			{#if loading && !homeData}
-				{#each Array(4) as _, i (`post-genre-skeleton-${i}`)}
-					<section>
-						<div class="skeleton skeleton-shimmer mb-4 h-6 w-32"></div>
-						<CarouselSkeleton showSubtitle={false} />
-					</section>
-				{/each}
-			{:else if postGenreSections.length > 0}
-				<div>
-					<SectionDivider label="Your Library">
-						{#snippet icon()}<Library class="w-3.5 h-3.5" />{/snippet}
-					</SectionDivider>
-					<div class="discover-section-enter space-y-2">
-						{#each postGenreSections as { key, section, link } (key)}
-							<div>
-								<HomeSection {section} headerLink={link} />
+		<!-- a render error in any section degrades to the failed card below instead
+		     of crashing the whole SPA (the #147 freeze) -->
+		<svelte:boundary>
+			<div
+				class="space-y-10 px-4 sm:space-y-12 sm:px-6 lg:px-8"
+				class:is-refreshing={homeData?.refreshing}
+			>
+				{#if !downloadClientConfigured && downloadClientPrompt}
+					<div
+						class="card bg-linear-to-br from-accent/20 via-accent/10 to-base-200 border-2 border-accent/40 shadow-xl relative overflow-hidden"
+					>
+						<div class="card-body items-center text-center py-12 stagger-fade-in">
+							<Music class="h-16 w-16 mb-4 animate-float text-accent" />
+							<h2 class="card-title text-3xl sm:text-4xl lg:text-5xl font-bold mb-2">
+								Welcome to <span class="text-primary">DroppedNeedle</span>!
+							</h2>
+							<p class="text-base-content/70 max-w-lg mb-6">
+								Get started by connecting a download client. You need it to request albums and
+								tracks for your library.
+							</p>
+							<div class="flex flex-wrap justify-center gap-2 mb-6">
+								{#each downloadClientPrompt.features as feature (feature)}
+									<span class="badge badge-accent badge-lg">{feature}</span>
+								{/each}
 							</div>
+							<a href="/settings?tab=download-client" class="btn btn-accent btn-lg gap-2">
+								<Download class="h-5 w-5" />
+								Configure Download Client
+							</a>
+						</div>
+					</div>
+				{/if}
+
+				{#if otherPrompts.length > 0 && downloadClientConfigured}
+					<div class="space-y-3">
+						{#each otherPrompts as prompt, i (`prompt-${i}`)}
+							<ServicePromptCard {prompt} ondismiss={handlePromptDismiss} />
 						{/each}
 					</div>
-				</div>
-			{/if}
+				{/if}
 
-			{#if !loading && !hasContent && servicePrompts.length === 0}
-				<div class="flex flex-col items-center justify-center py-12 sm:py-16">
-					<Music class="h-12 w-12 sm:h-16 sm:w-16 mb-4 sm:mb-6" />
-					<h2 class="mb-2 text-center text-3xl font-bold sm:text-4xl lg:text-5xl">
-						Welcome to <span class="text-primary">DroppedNeedle</span>
-					</h2>
-					{#if authStore.isAdmin}
-						<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
-							Your library is empty. Add a library path and start a scan to fill it.
-						</p>
-						<div class="flex flex-wrap justify-center gap-2">
-							<a href="/settings?tab=library" class="btn btn-primary">Start scan</a>
-							<a href="/library" class="btn btn-ghost">Go to Library</a>
+				<HomeSectionNowPlaying />
+
+				{#if loading && !homeData}
+					<section>
+						<div class="skeleton skeleton-shimmer mb-4 h-6 w-40"></div>
+						<CarouselSkeleton />
+					</section>
+				{:else}
+					{#if whatsHotBlocks.length > 0}
+						<div>
+							<SectionDivider label="What's Hot">
+								{#snippet icon()}<TrendingUp class="w-3.5 h-3.5" />{/snippet}
+							</SectionDivider>
+							<div class="discover-section-enter space-y-2">
+								{#each whatsHotBlocks as block (block.key)}
+									<div>
+										{#if block.kind === 'section'}
+											<HomeSection
+												section={block.section}
+												headerLink={block.link}
+												showPreview={block.showPreview}
+											/>
+										{:else}
+											<WeeklyExploration section={block.section} />
+										{/if}
+									</div>
+								{/each}
+							</div>
 						</div>
-					{:else}
-						<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
-							Your library is being prepared. An admin is setting things up - check back soon.
-						</p>
-						<a href="/library" class="btn btn-ghost">Go to Library</a>
 					{/if}
+
+					{#if !loading || homeData}
+						<div class="discover-section-enter">
+							<DiscoverTeaserBand preview={homeData?.discover_preview ?? null} />
+						</div>
+					{/if}
+
+					{#if forYouBlocks.length > 0}
+						<div>
+							<SectionDivider label="For You">
+								{#snippet icon()}<Sparkles class="w-3.5 h-3.5" />{/snippet}
+							</SectionDivider>
+							<div class="discover-section-enter space-y-2">
+								{#each forYouBlocks as block (block.key)}
+									<div>
+										{#if block.kind === 'section'}
+											<HomeSection
+												section={block.section}
+												headerLink={block.link}
+												showPreview={block.showPreview}
+											/>
+										{:else}
+											<WeeklyExploration section={block.section} />
+										{/if}
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				{/if}
+
+				{#if loading && !homeData}
+					<section>
+						<div class="skeleton skeleton-shimmer mb-4 h-6 w-36"></div>
+						<div
+							class="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 md:grid-cols-4 lg:grid-cols-5"
+						>
+							{#each Array(10) as _, i (`genre-skeleton-${i}`)}
+								<div class="skeleton skeleton-shimmer h-20 rounded-lg sm:h-24"></div>
+							{/each}
+						</div>
+					</section>
+				{:else if homeData?.genre_list && homeData.genre_list.items.length > 0}
+					<div class="mt-10 mb-10">
+						<GenreGrid
+							title={homeData.genre_list.title}
+							genres={homeData.genre_list.items}
+							genreArtistImages={homeData.genre_artist_images}
+						/>
+					</div>
+				{/if}
+
+				{#if loading && !homeData}
+					{#each Array(4) as _, i (`post-genre-skeleton-${i}`)}
+						<section>
+							<div class="skeleton skeleton-shimmer mb-4 h-6 w-32"></div>
+							<CarouselSkeleton showSubtitle={false} />
+						</section>
+					{/each}
+				{:else if postGenreSections.length > 0}
+					<div>
+						<SectionDivider label="Your Library">
+							{#snippet icon()}<Library class="w-3.5 h-3.5" />{/snippet}
+						</SectionDivider>
+						<div class="discover-section-enter space-y-2">
+							{#each postGenreSections as { key, section, link } (key)}
+								<div>
+									<HomeSection {section} headerLink={link} />
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				{#if !loading && !hasContent && servicePrompts.length === 0}
+					<div class="flex flex-col items-center justify-center py-12 sm:py-16">
+						<Music class="h-12 w-12 sm:h-16 sm:w-16 mb-4 sm:mb-6" />
+						<h2 class="mb-2 text-center text-3xl font-bold sm:text-4xl lg:text-5xl">
+							Welcome to <span class="text-primary">DroppedNeedle</span>
+						</h2>
+						{#if authStore.isAdmin}
+							<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+								Your library is empty. Add a library path and start a scan to fill it.
+							</p>
+							<div class="flex flex-wrap justify-center gap-2">
+								<a href="/settings?tab=library" class="btn btn-primary">Start scan</a>
+								<a href="/library" class="btn btn-ghost">Go to Library</a>
+							</div>
+						{:else}
+							<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+								Your library is being prepared. An admin is setting things up - check back soon.
+							</p>
+							<a href="/library" class="btn btn-ghost">Go to Library</a>
+						{/if}
+					</div>
+				{/if}
+			</div>
+
+			{#snippet failed(_error, reset)}
+				<div class="flex flex-col items-center justify-center py-12 sm:py-16">
+					<CircleAlert class="mb-4 h-12 w-12 sm:mb-6 sm:h-14 sm:w-14 text-base-content/50" />
+					<h2 class="mb-2 text-center text-xl font-bold sm:text-2xl">Something Went Wrong</h2>
+					<p class="mb-6 max-w-md px-4 text-center text-sm text-base-content/70 sm:text-base">
+						Part of the Home page failed to render. The rest of the app still works.
+					</p>
+					<button class="btn btn-primary" onclick={() => reset()}>Try Again</button>
 				</div>
-			{/if}
-		</div>
+			{/snippet}
+		</svelte:boundary>
 	{/if}
 </div>

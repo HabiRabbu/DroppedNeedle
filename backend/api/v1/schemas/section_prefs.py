@@ -23,5 +23,5 @@ class SectionPrefUpdateItem(AppStruct):
 
 
 class SectionPrefsUpdate(AppStruct):
-    page: Literal["home", "discover"]
+    page: Literal["home", "discover", "sidebar"]
     sections: list[SectionPrefUpdateItem] = []
