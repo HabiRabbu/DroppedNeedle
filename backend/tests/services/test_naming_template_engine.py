@@ -76,6 +76,8 @@ def test_genre_variable(engine):
     [
         ("Radiohead", "R"),
         ("The National", "N"),  # leading "The " ignored
+        ("The\tNational", "N"),  # any whitespace after "The", not just a space
+        ("The  Doors", "D"),  # multiple spaces after "The"
         ("the xx", "X"),  # case-insensitive "the", result uppercased
         ("t0ni", "T"),  # lowercase first letter uppercased
         ("2 Chainz", "#"),  # digit lead -> '#'
