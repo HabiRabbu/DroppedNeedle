@@ -5,6 +5,7 @@ from infrastructure.validators import sanitize_optional_string
 class LibraryAlbum(AppStruct):
     artist: str
     album: str
+    local_id: str | None = None
     year: int | None = None
     quality: str | None = None
     cover_url: str | None = None

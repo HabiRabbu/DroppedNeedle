@@ -67,6 +67,36 @@ def test_get_policy_admin():
     assert resp.json()["preflight_score_auto_accept"] == 0.70
 
 
+def test_put_policy_rebuilds_target_download_singletons(monkeypatch):
+    from core.dependencies import (
+        get_target_download_orchestrator,
+        get_target_download_service,
+        get_target_file_processor,
+    )
+
+    providers = (
+        get_target_file_processor,
+        get_target_download_orchestrator,
+        get_target_download_service,
+    )
+    spies = []
+    for provider in providers:
+        spy = MagicMock()
+        monkeypatch.setattr(provider, "cache_clear", spy)
+        spies.append(spy)
+
+    app = _app()
+    app.dependency_overrides[_get_current_admin] = mock_admin_user
+    response = build_test_client(app).put(
+        "/download-clients/policy",
+        json={"preflight_score_auto_accept": 0.8},
+    )
+
+    assert response.status_code == 200
+    for spy in spies:
+        spy.assert_called_once()
+
+
 def test_get_wanted_settings_admin():
     app = _app()
     app.dependency_overrides[_get_current_admin] = mock_admin_user
@@ -111,15 +141,20 @@ def test_put_wanted_settings_rejects_out_of_range():
 
 def test_test_sabnzbd_reports_version_and_categories(monkeypatch):
     fake_client = MagicMock()
-    fake_client.health_check = AsyncMock(return_value=ServiceStatus(status="ok", version="5.0.4"))
+    fake_client.health_check = AsyncMock(
+        return_value=ServiceStatus(status="ok", version="5.0.4")
+    )
     fake_client.get_categories = AsyncMock(return_value=["*", "audio"])
     fake_client.get_complete_dir = AsyncMock(return_value="/data/Downloads/complete")
-    monkeypatch.setattr(download_clients, "build_sabnzbd_download_client", lambda url, key: fake_client)
+    monkeypatch.setattr(
+        download_clients, "build_sabnzbd_download_client", lambda url, key: fake_client
+    )
 
     app = _app()
     app.dependency_overrides[_get_current_admin] = mock_admin_user
     resp = build_test_client(app).post(
-        "/download-clients/sabnzbd/test", json={"url": "http://sab:8080", "api_key": "k"}
+        "/download-clients/sabnzbd/test",
+        json={"url": "http://sab:8080", "api_key": "k"},
     )
     assert resp.status_code == 200
     body = resp.json()

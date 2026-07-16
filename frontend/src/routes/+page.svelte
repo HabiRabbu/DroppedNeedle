@@ -304,7 +304,7 @@
 						<GenreGrid
 							title={homeData.genre_list.title}
 							genres={homeData.genre_list.items}
-							genreArtistImages={homeData.genre_artist_images}
+							genreArtwork={homeData.genre_artwork}
 						/>
 					</div>
 				{/if}

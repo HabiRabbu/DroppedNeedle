@@ -16,7 +16,7 @@ import pytest
 from core.exceptions import TicketmasterApiError
 from infrastructure.persistence.events_store import EventsStore
 from infrastructure.persistence.follow_store import DistinctFollowedArtist
-from models.events import LiveEventInput
+from models.events import LiveEventInput, SweepArtist
 from repositories.skiddle_models import SkiddleArtist, SkiddleEvent, SkiddleVenue
 from repositories.ticketmaster_models import (
     TmAttraction,
@@ -143,7 +143,10 @@ def test_pick_tm_attraction_conflicting_mbid_vetoes_name_match():
 
 def test_pick_tm_attraction_exact_name_without_mbids():
     attractions = [_attraction("A-1", "Fontaines DC")]  # punctuation-insensitive
-    assert pick_tm_attraction(attractions, "Fontaines D.C.", MBID) == ("A-1", "exact_name")
+    assert pick_tm_attraction(attractions, "Fontaines D.C.", MBID) == (
+        "A-1",
+        "exact_name",
+    )
 
 
 def test_pick_skiddle_ids_collects_duplicates_and_rejects_tribute():
@@ -176,7 +179,10 @@ def test_map_tm_event_dateless_is_dropped_and_statuses_map():
     assert row.status == "cancelled"
     assert row.match_confidence == "name"
     # a postponed gig isn't happening on its listed date; nearest badge
-    assert map_tm_event(_tm_event(status="postponed"), ARTIST, "mbid").status == "rescheduled"
+    assert (
+        map_tm_event(_tm_event(status="postponed"), ARTIST, "mbid").status
+        == "rescheduled"
+    )
 
 
 def test_map_skiddle_event_quirks():
@@ -214,8 +220,13 @@ def test_dedupe_drops_skiddle_duplicate_by_venue_name():
     kept = dedupe_across_sources(
         [
             _row("ticketmaster", "tm-1"),
-            _row("skiddle", "sk-1", venue_name="little johns farm", latitude=None,
-                 longitude=None),
+            _row(
+                "skiddle",
+                "sk-1",
+                venue_name="little johns farm",
+                latitude=None,
+                longitude=None,
+            ),
         ]
     )
     assert [(r.source, r.source_event_id) for r in kept] == [("ticketmaster", "tm-1")]
@@ -225,8 +236,13 @@ def test_dedupe_drops_skiddle_duplicate_by_proximity():
     kept = dedupe_across_sources(
         [
             _row("ticketmaster", "tm-1", venue_name="Reading Fest Site"),
-            _row("skiddle", "sk-1", venue_name="Little Johns", latitude=51.457,
-                 longitude=-0.992),
+            _row(
+                "skiddle",
+                "sk-1",
+                venue_name="Little Johns",
+                latitude=51.457,
+                longitude=-0.992,
+            ),
         ]
     )
     assert len(kept) == 1
@@ -238,8 +254,13 @@ def test_dedupe_keeps_distinct_gigs():
         [
             _row("ticketmaster", "tm-1"),
             _row("skiddle", "sk-1", local_date="2026-08-29"),  # different day
-            _row("skiddle", "sk-2", venue_name="The Jacaranda", latitude=53.4024,
-                 longitude=-2.9796),  # different venue, far away
+            _row(
+                "skiddle",
+                "sk-2",
+                venue_name="The Jacaranda",
+                latitude=53.4024,
+                longitude=-2.9796,
+            ),  # different venue, far away
         ]
     )
     assert len(kept) == 3
@@ -282,7 +303,16 @@ class _Clock:
         return self.now
 
 
-def _service(store, tm=None, skiddle=None, prefs=None, follows=None, sse=None, clock=None):
+def _service(
+    store,
+    tm=None,
+    skiddle=None,
+    prefs=None,
+    follows=None,
+    sse=None,
+    clock=None,
+    library_artist_getter=None,
+):
     follows = follows or AsyncMock()
     tm = tm or AsyncMock()
     skiddle = skiddle or AsyncMock()
@@ -297,6 +327,7 @@ def _service(store, tm=None, skiddle=None, prefs=None, follows=None, sse=None, c
             sse_publisher=sse,
             inter_artist_delay=0,
             now_fn=clock or _Clock(),
+            library_artist_getter=library_artist_getter,
         ),
         tm,
         skiddle,
@@ -310,7 +341,9 @@ def store(tmp_path: Path) -> EventsStore:
     return EventsStore(db_path=tmp_path / "library.db", write_lock=threading.Lock())
 
 
-def _follows_with(artists: list[DistinctFollowedArtist], followers: list[str]) -> AsyncMock:
+def _follows_with(
+    artists: list[DistinctFollowedArtist], followers: list[str]
+) -> AsyncMock:
     follows = AsyncMock()
     follows.list_distinct_followed_artists.return_value = artists
     follows.list_followers.return_value = followers
@@ -373,7 +406,9 @@ async def test_resolution_cached_within_ttl_and_rerun_after_expiry(store):
     clock = _Clock()
     follows = _follows_with([ARTIST], [])
     tm = AsyncMock()
-    tm.search_attractions.return_value = [_attraction("A-real", "Fontaines D.C.", [MBID])]
+    tm.search_attractions.return_value = [
+        _attraction("A-real", "Fontaines D.C.", [MBID])
+    ]
     tm.events_for_attraction.return_value = [_tm_event()]
     service, *_ = _service(
         store, tm=tm, follows=follows, prefs=_Prefs(skiddle=False), clock=clock
@@ -413,24 +448,30 @@ async def test_stale_rows_deleted_and_supersede(store):
     skiddle.events_for_artist.return_value = [_sk_event("sk-1")]
     service, *_ = _service(store, tm=tm, skiddle=skiddle, follows=follows)
     await service.run_sweep()
-    assert {(e.source, e.source_event_id) for e in await store.list_events_for_artist(MBID)} == {
-        ("skiddle", "sk-1")
-    }
+    assert {
+        (e.source, e.source_event_id) for e in await store.list_events_for_artist(MBID)
+    } == {("skiddle", "sk-1")}
 
     # sweep 2 (post-TTL not needed - fresh service, same store): TM now lists the
     # same gig -> the Skiddle row loses the dedupe and is superseded
     clock = _Clock(now=1_000.0 + RESOLUTION_TTL_SECONDS + 1)
     tm2, skiddle2 = AsyncMock(), AsyncMock()
-    tm2.search_attractions.return_value = [_attraction("A-real", "Fontaines D.C.", [MBID])]
+    tm2.search_attractions.return_value = [
+        _attraction("A-real", "Fontaines D.C.", [MBID])
+    ]
     tm2.events_for_attraction.return_value = [_tm_event("tm-1")]
-    skiddle2.search_artists.return_value = [SkiddleArtist(id="2", name="Fontaines D.C.")]
+    skiddle2.search_artists.return_value = [
+        SkiddleArtist(id="2", name="Fontaines D.C.")
+    ]
     skiddle2.events_for_artist.return_value = [_sk_event("sk-1")]
-    service2, *_ = _service(store, tm=tm2, skiddle=skiddle2, follows=follows, clock=clock)
+    service2, *_ = _service(
+        store, tm=tm2, skiddle=skiddle2, follows=follows, clock=clock
+    )
     await service2.run_sweep()
 
-    assert {(e.source, e.source_event_id) for e in await store.list_events_for_artist(MBID)} == {
-        ("ticketmaster", "tm-1")
-    }
+    assert {
+        (e.source, e.source_event_id) for e in await store.list_events_for_artist(MBID)
+    } == {("ticketmaster", "tm-1")}
 
 
 @pytest.mark.asyncio
@@ -451,9 +492,9 @@ async def test_disabled_source_keeps_its_rows(store):
     service2, *_ = _service(store, tm=tm2, follows=follows, prefs=_Prefs(skiddle=False))
     await service2.run_sweep()
 
-    assert [(e.source, e.source_event_id) for e in await store.list_events_for_artist(MBID)] == [
-        ("skiddle", "sk-club")
-    ]
+    assert [
+        (e.source, e.source_event_id) for e in await store.list_events_for_artist(MBID)
+    ] == [("skiddle", "sk-club")]
 
 
 @pytest.mark.asyncio
@@ -490,7 +531,51 @@ async def test_library_scope_unions_and_dedupes_library_artists(store):
 
 
 @pytest.mark.asyncio
-async def test_sweep_cap_rotates_least_recently_checked_first(store, monkeypatch, caplog):
+async def test_library_scope_uses_injected_target_artist_authority(store):
+    import sqlite3
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "CREATE TABLE library_artists ("
+            "mbid_lower TEXT PRIMARY KEY, mbid TEXT NOT NULL, name TEXT NOT NULL, "
+            "album_count INTEGER DEFAULT 0, date_added INTEGER, raw_json TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO library_artists VALUES "
+            "('legacy-only', 'legacy-only', 'Legacy Only', 1, 1, '{}')"
+        )
+
+    target_artist = SweepArtist(
+        artist_mbid="target-only",
+        artist_mbid_lower="target-only",
+        artist_name="Target Only",
+    )
+    target_getter = AsyncMock(return_value=[target_artist])
+    follows = _follows_with([ARTIST], [])
+    tm = AsyncMock()
+    tm.search_attractions.return_value = []
+    service, *_ = _service(
+        store,
+        tm=tm,
+        follows=follows,
+        prefs=_Prefs(skiddle=False, scope="library"),
+        library_artist_getter=target_getter,
+    )
+
+    summary = await service.run_sweep()
+
+    assert summary.artists_swept == 2
+    assert {call.args[0] for call in tm.search_attractions.await_args_list} == {
+        "Fontaines D.C.",
+        "Target Only",
+    }
+    target_getter.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_sweep_cap_rotates_least_recently_checked_first(
+    store, monkeypatch, caplog
+):
     from services.native import events_watcher_service as module
 
     monkeypatch.setattr(module, "MAX_ARTISTS_PER_SWEEP", 1)
@@ -507,7 +592,9 @@ async def test_sweep_cap_rotates_least_recently_checked_first(store, monkeypatch
         summary = await service.run_sweep()
 
     assert summary.artists_swept == 1
-    tm.search_attractions.assert_awaited_once_with(ARTIST.artist_name)  # never-checked first
+    tm.search_attractions.assert_awaited_once_with(
+        ARTIST.artist_name
+    )  # never-checked first
     assert any("per-sweep budget" in r.message for r in caplog.records)
 
     # next sweep: the just-checked artist now sorts last -> the other one runs
@@ -533,7 +620,9 @@ async def test_catchup_skip_drops_recently_checked_artists(store):
     follows = _follows_with([fresh, ARTIST], [])
     tm = AsyncMock()
     tm.search_attractions.return_value = []
-    service, *_ = _service(store, tm=tm, follows=follows, prefs=_Prefs(skiddle=False), clock=clock)
+    service, *_ = _service(
+        store, tm=tm, follows=follows, prefs=_Prefs(skiddle=False), clock=clock
+    )
 
     summary = await service.run_sweep(skip_recent_hours=20)
     assert summary.artists_swept == 1  # only the never-checked artist
@@ -576,13 +665,21 @@ async def test_provider_error_records_cursor_and_continues(store):
 
 @pytest.mark.asyncio
 async def test_prune_runs_each_sweep(store):
-    await store.apply_sweep_result(MBID, [
-        LiveEventInput(
-            source="ticketmaster", source_event_id="old", artist_mbid_lower=MBID,
-            artist_name="x", event_name="x", local_date="2000-01-01",
-            status="scheduled", match_confidence="mbid",
-        )
-    ])
+    await store.apply_sweep_result(
+        MBID,
+        [
+            LiveEventInput(
+                source="ticketmaster",
+                source_event_id="old",
+                artist_mbid_lower=MBID,
+                artist_name="x",
+                event_name="x",
+                local_date="2000-01-01",
+                status="scheduled",
+                match_confidence="mbid",
+            )
+        ],
+    )
     follows = _follows_with([], [])
     service, *_ = _service(store, follows=follows)
     summary = await service.run_sweep()

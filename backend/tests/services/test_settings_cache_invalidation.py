@@ -37,7 +37,10 @@ async def test_clear_musicbrainz_cache():
 
     mb_keys = [f"{p}dummy" for p in musicbrainz_prefixes()]
     extra_keys = [f"{ARTIST_INFO_PREFIX}art1", f"{ALBUM_INFO_PREFIX}alb1"]
-    library_keys = [f"{LIBRARY_ARTIST_ALBUMS_PREFIX}mbid1", f"{LIBRARY_ARTIST_ALBUMS_PREFIX}mbid2"]
+    library_keys = [
+        f"{LIBRARY_ARTIST_ALBUMS_PREFIX}mbid1",
+        f"{LIBRARY_ARTIST_ALBUMS_PREFIX}mbid2",
+    ]
     unrelated = ["unrelated:key"]
     await _populate(cache, mb_keys + extra_keys + library_keys + unrelated)
 
@@ -148,12 +151,58 @@ async def test_jellyfin_settings_change_clears_user_import_service():
         patch("core.dependencies.get_home_charts_service", MagicMock()),
         patch("core.dependencies.get_mbid_store", MagicMock(return_value=mbid)),
         patch("core.dependencies.auth_providers.get_user_import_service", import_fn),
-        patch("core.dependencies.auth_providers.get_jellyfin_user_auth_service", auth_fn),
+        patch(
+            "core.dependencies.auth_providers.get_jellyfin_user_auth_service", auth_fn
+        ),
     ):
         await service.on_jellyfin_settings_changed()
 
     import_fn.cache_clear.assert_called_once()
     auth_fn.cache_clear.assert_called_once()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_jellyfin_and_cover_changes_rebuild_every_target_cover_consumer():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    service, _cache = await _build_service()
+    target_names = (
+        "get_target_coverart_repository",
+        "get_target_consumer_composition",
+        "get_target_compat_services",
+        "get_target_search_service",
+        "get_target_genre_cover_prewarm_service",
+        "get_target_home_service",
+        "get_target_home_charts_service",
+        "get_target_wrapped_service",
+        "get_target_discover_service",
+        "get_target_discover_queue_manager",
+    )
+    target_providers = {name: MagicMock() for name in target_names}
+    mbid = MagicMock()
+    mbid.clear_jellyfin_mbid_index = AsyncMock()
+
+    with (
+        patch("core.dependencies.get_jellyfin_repository", MagicMock()),
+        patch("core.dependencies.get_jellyfin_playback_service", MagicMock()),
+        patch("core.dependencies.get_jellyfin_library_service", MagicMock()),
+        patch("core.dependencies.get_home_service", MagicMock()),
+        patch("core.dependencies.get_home_charts_service", MagicMock()),
+        patch("core.dependencies.get_coverart_repository", MagicMock()),
+        patch("core.dependencies.get_mbid_store", MagicMock(return_value=mbid)),
+        patch("core.dependencies.auth_providers.get_user_import_service", MagicMock()),
+        patch(
+            "core.dependencies.auth_providers.get_jellyfin_user_auth_service",
+            MagicMock(),
+        ),
+        patch.multiple("core.dependencies", **target_providers),
+    ):
+        await service.on_jellyfin_settings_changed()
+        await service.on_coverart_settings_changed()
+
+    for name, provider in target_providers.items():
+        minimum = 2 if name != "get_target_home_service" else 1
+        assert provider.cache_clear.call_count >= minimum, name
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -169,6 +218,7 @@ async def test_navidrome_settings_change_rebuilds_every_captured_repository():
         name: MagicMock()
         for name in (
             "get_navidrome_library_service",
+            "get_target_navidrome_library_service",
             "get_navidrome_folder_scope_service",
             "get_navidrome_playback_service",
             "get_library_service",
@@ -203,10 +253,14 @@ async def test_plex_settings_change_clears_user_import_service():
     plex_repo.clear_cache = AsyncMock()
     import_fn = MagicMock()
     auth_fn = MagicMock()
+    target_plex = MagicMock()
 
     with (
-        patch("core.dependencies.get_plex_repository", MagicMock(return_value=plex_repo)),
+        patch(
+            "core.dependencies.get_plex_repository", MagicMock(return_value=plex_repo)
+        ),
         patch("core.dependencies.get_plex_library_service", MagicMock()),
+        patch("core.dependencies.get_target_plex_library_service", target_plex),
         patch("core.dependencies.get_plex_playback_service", MagicMock()),
         patch("core.dependencies.get_home_service", MagicMock()),
         patch("core.dependencies.get_home_charts_service", MagicMock()),
@@ -218,6 +272,7 @@ async def test_plex_settings_change_clears_user_import_service():
 
     import_fn.cache_clear.assert_called_once()
     auth_fn.cache_clear.assert_called_once()
+    target_plex.cache_clear.assert_called_once()
 
 
 @pytest.mark.asyncio(loop_scope="function")

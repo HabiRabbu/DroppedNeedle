@@ -1,7 +1,9 @@
 """Discovery batches: ownership-scoped routes + service behaviour (create outcomes,
 removal scoping, recycle-bin routing)."""
 
+import sqlite3
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,7 +16,15 @@ from api.v1.schemas.request import BatchCancelResponse
 from core.dependencies import get_discovery_batch_service
 from core.exceptions import ResourceNotFoundError, ValidationError
 from infrastructure.persistence.discovery_batch_store import DiscoveryBatchStore
+from infrastructure.persistence.library_db import LibraryDB
+from infrastructure.persistence.native_library_store import NativeLibraryStore
+from models.local_catalog import CatalogMembership, LocalAlbum, LocalArtist, LocalTrack
 from services.discovery_batch_service import DiscoveryBatchService
+from services.local_files_service import LocalFilesService
+from services.native.target_catalog_writer_service import TargetCatalogWriterService
+from services.native.target_library_repository import TargetLibraryRepository
+from services.native.target_native_library_service import TargetNativeLibraryService
+from services.native.target_reference_adapters import TargetDiscoveryBatchLibraryService
 from tests.helpers import build_test_client, override_user_auth
 
 _OWNER = "owner-1"
@@ -22,7 +32,9 @@ _OWNER = "owner-1"
 
 @pytest.fixture
 def store(tmp_path):
-    return DiscoveryBatchStore(db_path=tmp_path / "library.db", write_lock=threading.Lock())
+    return DiscoveryBatchStore(
+        db_path=tmp_path / "library.db", write_lock=threading.Lock()
+    )
 
 
 def _service(store, **overrides) -> DiscoveryBatchService:
@@ -31,7 +43,9 @@ def _service(store, **overrides) -> DiscoveryBatchService:
         return_value=SimpleNamespace(success=True, requested=1, skipped=0)
     )
     request_service.cancel_batch = AsyncMock(
-        return_value=BatchCancelResponse(success=True, cancelled=1, failed=0, message="ok")
+        return_value=BatchCancelResponse(
+            success=True, cancelled=1, failed=0, message="ok"
+        )
     )
     history = MagicMock()
     history.async_get_active_mbids = AsyncMock(return_value=set())
@@ -74,8 +88,12 @@ class TestServiceCreate:
         svc._history.async_get_active_mbids = AsyncMock(return_value={"rg-1"})
 
         detail = await svc.create(
-            _OWNER, "trusted", "Owner",
-            DiscoveryBatchCreate(name="Mix", source_section="daily_mixes", items=_items(3)),
+            _OWNER,
+            "trusted",
+            "Owner",
+            DiscoveryBatchCreate(
+                name="Mix", source_section="daily_mixes", items=_items(3)
+            ),
         )
 
         by_mbid = {i.release_group_mbid: i.outcome for i in detail.items}
@@ -94,7 +112,10 @@ class TestServiceCreate:
         svc._library_db.get_all_album_mbids = AsyncMock(return_value={"rg-0", "rg-1"})
         with pytest.raises(ValidationError):
             await svc.create(
-                _OWNER, "trusted", "Owner", DiscoveryBatchCreate(name="Mix", items=_items(2))
+                _OWNER,
+                "trusted",
+                "Owner",
+                DiscoveryBatchCreate(name="Mix", items=_items(2)),
             )
         assert await svc.list_for_user(_OWNER) == []
 
@@ -103,16 +124,24 @@ class TestServiceCreate:
         svc = _service(store)
         with pytest.raises(ValidationError):
             await svc.create(
-                _OWNER, "trusted", "Owner", DiscoveryBatchCreate(name="Big", items=_items(31))
+                _OWNER,
+                "trusted",
+                "Owner",
+                DiscoveryBatchCreate(name="Big", items=_items(31)),
             )
 
     @pytest.mark.asyncio
     async def test_quota_rejection_creates_no_batch(self, store):
         svc = _service(store)
-        svc._requests.request_batch = AsyncMock(side_effect=ValidationError("over quota"))
+        svc._requests.request_batch = AsyncMock(
+            side_effect=ValidationError("over quota")
+        )
         with pytest.raises(ValidationError):
             await svc.create(
-                _OWNER, "user", "Owner", DiscoveryBatchCreate(name="Mix", items=_items(2))
+                _OWNER,
+                "user",
+                "Owner",
+                DiscoveryBatchCreate(name="Mix", items=_items(2)),
             )
         assert await svc.list_for_user(_OWNER) == []
 
@@ -123,11 +152,16 @@ class TestServiceRemove:
         svc = _service(store)
         # rg-0 was already in the library at batch time -> never touched;
         # rg-1 imported by the batch -> recycled; rg-2 still pending -> cancelled
-        await store.create_batch(_OWNER, "Mix", "s", [
-            {"release_group_mbid": "rg-0", "outcome": "skipped_in_library"},
-            {"release_group_mbid": "rg-1", "outcome": "requested"},
-            {"release_group_mbid": "rg-2", "outcome": "requested"},
-        ])
+        await store.create_batch(
+            _OWNER,
+            "Mix",
+            "s",
+            [
+                {"release_group_mbid": "rg-0", "outcome": "skipped_in_library"},
+                {"release_group_mbid": "rg-1", "outcome": "requested"},
+                {"release_group_mbid": "rg-2", "outcome": "requested"},
+            ],
+        )
         batch_id = (await store.list_batches(_OWNER))[0]["id"]
         svc._library_db.get_all_album_mbids = AsyncMock(return_value={"rg-0", "rg-1"})
         svc._history.async_get_record = AsyncMock(
@@ -142,19 +176,30 @@ class TestServiceRemove:
         assert result.cancelled_requests == 1
         assert result.kept == 1
         # the pre-existing album must never be removed
-        removed_mbids = [c.args[0] for c in svc._library_service.remove_album.await_args_list]
+        removed_mbids = [
+            c.args[0] for c in svc._library_service.remove_album.await_args_list
+        ]
         assert removed_mbids == ["rg-1"]
         # removal is reversible: files go through the recycle bin
-        assert svc._library_service.remove_album.await_args.kwargs == {"to_recycle": True}
-        svc._get_download_service().purge_album_downloads.assert_awaited_once_with("rg-1")
+        assert svc._library_service.remove_album.await_args.kwargs == {
+            "to_recycle": True
+        }
+        svc._get_download_service().purge_album_downloads.assert_awaited_once_with(
+            "rg-1"
+        )
         assert await store.get_batch(batch_id) is None
 
     @pytest.mark.asyncio
     async def test_keep_albums_only_deletes_the_batch_record(self, store):
         svc = _service(store)
-        await store.create_batch(_OWNER, "Mix", "s", [
-            {"release_group_mbid": "rg-1", "outcome": "requested"},
-        ])
+        await store.create_batch(
+            _OWNER,
+            "Mix",
+            "s",
+            [
+                {"release_group_mbid": "rg-1", "outcome": "requested"},
+            ],
+        )
         batch_id = (await store.list_batches(_OWNER))[0]["id"]
 
         result = await svc.remove(_OWNER, "trusted", batch_id, remove_albums=False)
@@ -166,9 +211,14 @@ class TestServiceRemove:
     @pytest.mark.asyncio
     async def test_non_owner_gets_not_found(self, store):
         svc = _service(store)
-        await store.create_batch(_OWNER, "Mix", "s", [
-            {"release_group_mbid": "rg-1", "outcome": "requested"},
-        ])
+        await store.create_batch(
+            _OWNER,
+            "Mix",
+            "s",
+            [
+                {"release_group_mbid": "rg-1", "outcome": "requested"},
+            ],
+        )
         batch_id = (await store.list_batches(_OWNER))[0]["id"]
         with pytest.raises(ResourceNotFoundError):
             await svc.remove("someone-else", "user", batch_id, remove_albums=True)
@@ -176,9 +226,14 @@ class TestServiceRemove:
     @pytest.mark.asyncio
     async def test_admin_may_remove_any_batch(self, store):
         svc = _service(store)
-        await store.create_batch(_OWNER, "Mix", "s", [
-            {"release_group_mbid": "rg-1", "outcome": "requested"},
-        ])
+        await store.create_batch(
+            _OWNER,
+            "Mix",
+            "s",
+            [
+                {"release_group_mbid": "rg-1", "outcome": "requested"},
+            ],
+        )
         batch_id = (await store.list_batches(_OWNER))[0]["id"]
         result = await svc.remove("admin-1", "admin", batch_id, remove_albums=False)
         assert result.kept == 1
@@ -199,7 +254,7 @@ class TestRoutes:
         resp = http.post(
             "/discover/batches",
             json={
-                "name": "Daily Mix — Jul 3",
+                "name": "Daily Mix - Jul 3",
                 "source_section": "daily_mixes",
                 "items": [
                     {
@@ -213,7 +268,7 @@ class TestRoutes:
         )
         assert resp.status_code == 202
         created = resp.json()
-        assert created["name"] == "Daily Mix — Jul 3"
+        assert created["name"] == "Daily Mix - Jul 3"
         assert created["items"][0]["outcome"] == "requested"
 
         listing = http.get("/discover/batches")
@@ -239,3 +294,217 @@ class TestStoreIdempotency:
         path = tmp_path / "library.db"
         DiscoveryBatchStore(db_path=path, write_lock=lock)
         DiscoveryBatchStore(db_path=path, write_lock=lock)
+
+
+class TestTargetRouteAuthority:
+    @staticmethod
+    async def _environment(tmp_path: Path):
+        db_path = tmp_path / "library.db"
+        lock = threading.Lock()
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("CREATE TABLE auth_users (id TEXT PRIMARY KEY)")
+            connection.executemany(
+                "INSERT INTO auth_users(id) VALUES (?)",
+                [(_OWNER,)],
+            )
+        LibraryDB(db_path, lock)
+        native_store = NativeLibraryStore(db_path, lock)
+        batch_store = DiscoveryBatchStore(db_path, lock)
+        root = tmp_path / "Music"
+        root.mkdir()
+        target_path = root / "target.flac"
+        target_path.write_bytes(b"target-audio")
+        legacy_sentinel = root / "legacy-sentinel.flac"
+        legacy_sentinel.write_bytes(b"legacy-audio")
+        artist = LocalArtist(
+            id="target-artist",
+            display_name="Target Artist",
+            folded_name="target artist",
+            kind="person",
+            created_at=1,
+            updated_at=1,
+        )
+        album = LocalAlbum(
+            id="target-album",
+            root_id="root-1",
+            grouping_key="target-group",
+            title="Target Album",
+            album_artist_id=artist.id,
+            album_artist_name=artist.display_name,
+            created_at=1,
+            updated_at=1,
+        )
+        track = LocalTrack(
+            id="target-track",
+            local_album_id=album.id,
+            root_id="root-1",
+            file_path=str(target_path),
+            relative_path=target_path.name,
+            path_hash="target-path",
+            file_size_bytes=target_path.stat().st_size,
+            file_mtime_ns=target_path.stat().st_mtime_ns,
+            stat_revision="target-stat",
+            title="Target Track",
+            artist_name=artist.display_name,
+            album_title=album.title,
+            album_artist_name=artist.display_name,
+            file_format="flac",
+            imported_at=1,
+        )
+        await native_store.create_catalog_membership(
+            CatalogMembership(album=album, artists=[artist], tracks=[track])
+        )
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                "INSERT INTO local_album_external_identities "
+                "(local_album_id, provider, release_group_mbid, decision_source, selected_at) "
+                "VALUES ('target-album', 'musicbrainz', 'target-rg', 'manual', 1)"
+            )
+            connection.execute(
+                "INSERT INTO library_albums "
+                "(mbid_lower, mbid, title, raw_json) "
+                "VALUES ('legacy-only', 'legacy-only', 'Legacy Only', '{}')"
+            )
+        target_repo = TargetLibraryRepository(native_store)
+        preferences = SimpleNamespace(
+            get_typed_library_settings=lambda: SimpleNamespace(
+                library_roots=[SimpleNamespace(path=str(root))]
+            )
+        )
+        local_files = LocalFilesService(target_repo, preferences, AsyncMock())
+        writer = TargetCatalogWriterService(
+            native_store,
+            local_files,
+            TargetNativeLibraryService(native_store),
+            recycle_bin_getter=lambda: root / ".recycle",
+        )
+        requests = MagicMock()
+        requests.request_batch = AsyncMock(
+            return_value=SimpleNamespace(success=True, requested=1, skipped=0)
+        )
+        requests.cancel_batch = AsyncMock(
+            return_value=BatchCancelResponse(
+                success=True, cancelled=1, failed=0, message="ok"
+            )
+        )
+        history = MagicMock()
+        history.async_get_active_mbids = AsyncMock(return_value=set())
+        history.async_get_record = AsyncMock(return_value=None)
+        download = MagicMock()
+        download.purge_album_downloads = AsyncMock()
+        service = DiscoveryBatchService(
+            batch_store=batch_store,
+            request_service=requests,
+            request_history=history,
+            library_service=TargetDiscoveryBatchLibraryService(writer),
+            library_db=target_repo,
+            get_download_service=lambda: download,
+        )
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_discovery_batch_service] = lambda: service
+        override_user_auth(app, user_id=_OWNER, role="trusted")
+        return SimpleNamespace(
+            http=build_test_client(app),
+            store=native_store,
+            batches=batch_store,
+            requests=requests,
+            download=download,
+            target_path=target_path,
+            legacy_sentinel=legacy_sentinel,
+            db_path=db_path,
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_and_status_use_only_the_target_catalog(self, tmp_path: Path):
+        env = await self._environment(tmp_path)
+
+        response = env.http.post(
+            "/discover/batches",
+            json={
+                "name": "Target batch",
+                "items": [
+                    {
+                        "release_group_mbid": "target-rg",
+                        "album_name": "Target Album",
+                        "artist_name": "Target Artist",
+                    },
+                    {
+                        "release_group_mbid": "new-rg",
+                        "album_name": "New Album",
+                        "artist_name": "New Artist",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 202
+        detail = response.json()
+        by_id = {item["release_group_mbid"]: item for item in detail["items"]}
+        assert by_id["target-rg"]["outcome"] == "skipped_in_library"
+        assert by_id["target-rg"]["in_library"] is True
+        assert by_id["new-rg"]["outcome"] == "requested"
+        assert (
+            env.requests.request_batch.await_args.kwargs["items"][0]["musicbrainz_id"]
+            == "new-rg"
+        )
+        assert env.http.get(f"/discover/batches/{detail['id']}").status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_removal_recycles_target_audio_and_preserves_legacy(
+        self, tmp_path: Path
+    ):
+        env = await self._environment(tmp_path)
+        batch_id = await env.batches.create_batch(
+            _OWNER,
+            "Imported target",
+            "test",
+            [{"release_group_mbid": "target-rg", "outcome": "requested"}],
+        )
+
+        response = env.http.delete(f"/discover/batches/{batch_id}?remove_albums=true")
+
+        assert response.status_code == 200
+        assert response.json()["removed_albums"] == 1
+        assert not env.target_path.exists()
+        assert env.legacy_sentinel.read_bytes() == b"legacy-audio"
+        assert (await env.store.get_target_track("target-track"))[
+            "availability"
+        ] == "missing"
+        env.download.purge_album_downloads.assert_awaited_once_with("target-rg")
+        with sqlite3.connect(env.db_path) as connection:
+            assert connection.execute("SELECT mbid FROM library_albums").fetchall() == [
+                ("legacy-only",)
+            ]
+
+    @pytest.mark.asyncio
+    async def test_removal_restores_file_when_target_catalog_update_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        env = await self._environment(tmp_path)
+        batch_id = await env.batches.create_batch(
+            _OWNER,
+            "Imported target",
+            "test",
+            [{"release_group_mbid": "target-rg", "outcome": "requested"}],
+        )
+        monkeypatch.setattr(
+            env.store,
+            "mark_target_tracks_missing",
+            AsyncMock(side_effect=RuntimeError("catalog write failed")),
+        )
+
+        response = env.http.delete(f"/discover/batches/{batch_id}?remove_albums=true")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "removed_albums": 0,
+            "cancelled_requests": 0,
+            "kept": 1,
+        }
+        assert env.target_path.read_bytes() == b"target-audio"
+        assert env.legacy_sentinel.read_bytes() == b"legacy-audio"
+        assert (await env.store.get_target_track("target-track"))[
+            "availability"
+        ] == "indexed"
+        env.download.purge_album_downloads.assert_not_awaited()

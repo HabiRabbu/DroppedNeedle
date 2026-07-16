@@ -18,7 +18,7 @@
 
 <div class="bg-base-100/60 px-4 py-3 text-xs">
 	<div class="mb-2 flex flex-wrap items-center gap-2">
-		<AudioQualityBadge codec={meta.file_format} bitrate={meta.bit_rate} />
+		<AudioQualityBadge codec={meta.format} bitrate={meta.bit_rate} />
 		{#if meta.bit_depth && meta.sample_rate}
 			<span class="badge badge-ghost badge-xs font-mono">
 				{meta.bit_depth}/{Math.round(meta.sample_rate / 1000)}k
@@ -52,15 +52,15 @@
 				{meta.sample_rate} Hz
 			</div>
 		{/if}
-		{#if meta.recording_mbid}
+		{#if meta.musicbrainz_recording_id}
 			<div class="truncate sm:col-span-2">
 				<dt class="inline text-base-content/50">Recording MBID:</dt>
-				<span class="font-mono">{meta.recording_mbid}</span>
+				<span class="font-mono">{meta.musicbrainz_recording_id}</span>
 			</div>
 		{/if}
 		<div class="break-all sm:col-span-2">
-			<dt class="inline text-base-content/50">Path:</dt>
-			<span class="font-mono">{meta.file_path}</span>
+			<dt class="inline text-base-content/50">Local track ID:</dt>
+			<span class="font-mono">{meta.id}</span>
 		</div>
 	</dl>
 </div>

@@ -1,18 +1,15 @@
-"""Unit tests for cache cleanup gaps — cover deletion, store pruning, genre disk cleanup."""
+"""Unit tests for cache cleanup gaps - cover deletion, store pruning, genre disk cleanup."""
 
 import asyncio
 import json
 import sqlite3
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 # ---------------------------------------------------------------------------
-# Step 1 — CoverDiskCache: delete_by_identifiers, cleanup_expired, demote_orphaned
 # ---------------------------------------------------------------------------
 
 
@@ -119,7 +116,6 @@ class TestDemoteOrphaned:
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — CoverArtRepository: delete_covers_for_album/artist
 # ---------------------------------------------------------------------------
 
 
@@ -181,7 +177,6 @@ class TestCoverArtRepositoryDeletion:
 
 
 # ---------------------------------------------------------------------------
-# Step 5 — YouTube cascade delete & orphan cleanup
 # ---------------------------------------------------------------------------
 
 
@@ -232,7 +227,12 @@ class TestYouTubeStoreCascade:
 
         conn = sqlite3.connect(str(yt_db))
         assert conn.execute("SELECT COUNT(*) FROM youtube_links").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM youtube_track_links WHERE album_id='a1'").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM youtube_track_links WHERE album_id='a1'"
+            ).fetchone()[0]
+            == 0
+        )
         conn.close()
 
     @pytest.mark.asyncio()
@@ -264,7 +264,6 @@ class TestYouTubeStoreCascade:
 
 
 # ---------------------------------------------------------------------------
-# Step 6 — RequestHistoryStore.prune_old_terminal_requests
 # ---------------------------------------------------------------------------
 
 
@@ -324,7 +323,9 @@ class TestRequestHistoryPruning:
         assert count == 2
 
         conn = sqlite3.connect(str(rh_db))
-        remaining = conn.execute("SELECT musicbrainz_id_lower FROM request_history").fetchall()
+        remaining = conn.execute(
+            "SELECT musicbrainz_id_lower FROM request_history"
+        ).fetchall()
         ids = {r[0] for r in remaining}
         assert "active-pending" in ids
         assert "recent-imported" in ids
@@ -333,7 +334,6 @@ class TestRequestHistoryPruning:
 
 
 # ---------------------------------------------------------------------------
-# Step 8 — AdvancedSettings new fields
 # ---------------------------------------------------------------------------
 
 
@@ -356,52 +356,3 @@ class TestAdvancedSettingsNewFields:
 
         with pytest.raises(msgspec.ValidationError):
             AdvancedSettings(orphan_cover_demote_interval_hours=0)
-
-
-# ---------------------------------------------------------------------------
-# Step 9 — GenreService.clear_disk_cache
-# ---------------------------------------------------------------------------
-
-
-class TestGenreDiskCacheClear:
-    def test_clears_json_files(self, tmp_path):
-        genre_dir = tmp_path / "genre_sections"
-        genre_dir.mkdir()
-        (genre_dir / "listenbrainz.json").write_text("{}")
-        (genre_dir / "lastfm.json").write_text("{}")
-
-        from services.home.genre_service import GenreService
-
-        svc = object.__new__(GenreService)
-        svc._genre_section_dir = genre_dir
-
-        count = svc.clear_disk_cache()
-        assert count == 2
-        assert not list(genre_dir.glob("*.json"))
-
-    def test_returns_zero_for_missing_dir(self, tmp_path):
-        from services.home.genre_service import GenreService
-
-        svc = object.__new__(GenreService)
-        svc._genre_section_dir = tmp_path / "nonexistent"
-
-        assert svc.clear_disk_cache() == 0
-
-
-# ---------------------------------------------------------------------------
-# Step 11 — HomeService.clear_genre_disk_cache facade
-# ---------------------------------------------------------------------------
-
-
-class TestHomeServiceGenreFacade:
-    def test_delegates_to_genre_service(self):
-        from services.home.facade import HomeService
-
-        svc = object.__new__(HomeService)
-        mock_genre = MagicMock()
-        mock_genre.clear_disk_cache.return_value = 3
-        svc._genre = mock_genre
-
-        result = svc.clear_genre_disk_cache()
-        assert result == 3
-        mock_genre.clear_disk_cache.assert_called_once()

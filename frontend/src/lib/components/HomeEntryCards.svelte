@@ -55,7 +55,7 @@
 	}
 	const localFormats = $derived(localStats ? topFormats(localStats.format_breakdown) : '');
 
-	const libUnmatched = $derived(libraryStats?.unmatched_count ?? 0);
+	const libUnmatched = $derived(libraryStats?.review_count ?? 0);
 	const libLastScan = $derived(
 		libraryStats?.last_scan_at ? new Date(libraryStats.last_scan_at * 1000) : null
 	);

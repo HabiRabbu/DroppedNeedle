@@ -6,7 +6,7 @@ class DroppedNeedleException(Exception):
         self.message = message
         self.details = details
         super().__init__(message)
-    
+
     def __str__(self) -> str:
         if self.details:
             return f"{self.message}: {self.details}"
@@ -44,6 +44,10 @@ class ValidationError(DroppedNeedleException):
     pass
 
 
+class ProviderIdentityRequiredError(ValidationError):
+    error_code = "PROVIDER_IDENTITY_REQUIRED"
+
+
 class RangeNotSatisfiableError(ValidationError):
     def __init__(self, file_size: int):
         super().__init__("Requested byte range is not satisfiable")
@@ -52,11 +56,13 @@ class RangeNotSatisfiableError(ValidationError):
 
 class PermissionDeniedError(DroppedNeedleException):
     """Ownership/authorization violation. Mapped to HTTP 403 by the registered handler."""
+
     pass
 
 
 class ConflictError(DroppedNeedleException):
     """Duplicate active request/download. Mapped to HTTP 409 by the registered handler."""
+
     pass
 
 
@@ -73,6 +79,18 @@ class SourceResolutionError(ValidationError):
 
 
 class ConfigurationError(DroppedNeedleException):
+    pass
+
+
+class StaleRevisionError(ConflictError):
+    pass
+
+
+class RevisionOverflowError(DroppedNeedleException):
+    pass
+
+
+class TargetStartupInvariantError(DroppedNeedleException):
     pass
 
 
@@ -182,6 +200,7 @@ class NewznabApiError(ExternalServiceError):
 
 class NewznabAuthError(NewznabApiError):
     """Newznab auth failure (error code 100-199, or a missing/invalid API key)."""
+
     pass
 
 
@@ -193,7 +212,9 @@ class LidarrImportError(ExternalServiceError):
     (``auth`` flags a rejected API key), never a leaked exception body (5xx bodies stay
     generic)."""
 
-    def __init__(self, message: str, details: Any = None, *, auth: bool = False) -> None:
+    def __init__(
+        self, message: str, details: Any = None, *, auth: bool = False
+    ) -> None:
         super().__init__(message, details)
         self.auth = auth
 
@@ -203,6 +224,7 @@ class TicketmasterApiError(ExternalServiceError):
 
     Mapped to HTTP 503 by the registered ``ExternalServiceError`` handler.
     """
+
     pass
 
 
@@ -211,6 +233,7 @@ class SkiddleApiError(ExternalServiceError):
 
     Mapped to HTTP 503 by the registered ``ExternalServiceError`` handler.
     """
+
     pass
 
 
@@ -219,6 +242,7 @@ class GeocodingApiError(ExternalServiceError):
     (the events city picker). Mapped to HTTP 503 - a failed city search must
     surface as 'geocoding unavailable', never as an empty result list.
     """
+
     pass
 
 

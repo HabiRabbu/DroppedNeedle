@@ -1,4 +1,5 @@
 """Tests for now-playing and session service methods."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
@@ -277,10 +278,12 @@ class TestJellyfinGetSessions:
     @pytest.mark.asyncio
     async def test_ticks_to_seconds_conversion(self):
         svc, repo = _make_jellyfin_service()
-        repo.get_sessions.return_value = [_jellyfin_session(
-            position_ticks=600_000_000,
-            runtime_ticks=3_000_000_000,
-        )]
+        repo.get_sessions.return_value = [
+            _jellyfin_session(
+                position_ticks=600_000_000,
+                runtime_ticks=3_000_000_000,
+            )
+        ]
 
         result = await svc.get_sessions()
 
@@ -309,10 +312,12 @@ class TestJellyfinGetSessions:
     @pytest.mark.asyncio
     async def test_zero_ticks_returns_zero_seconds(self):
         svc, repo = _make_jellyfin_service()
-        repo.get_sessions.return_value = [_jellyfin_session(
-            position_ticks=0,
-            runtime_ticks=0,
-        )]
+        repo.get_sessions.return_value = [
+            _jellyfin_session(
+                position_ticks=0,
+                runtime_ticks=0,
+            )
+        ]
 
         result = await svc.get_sessions()
 
@@ -388,7 +393,9 @@ async def test_presence_update_publishes_full_entry():
 @pytest.mark.asyncio
 async def test_presence_track_hidden_redacts_song_but_keeps_progress():
     svc = NowPlayingService(_RecordingSSE(), _FakePrefs({"u1": "track_hidden"}))
-    await svc.update(**_update_kwargs(track_name="Secret", artist_name="SArtist", progress_ms=5000))
+    await svc.update(
+        **_update_kwargs(track_name="Secret", artist_name="SArtist", progress_ms=5000)
+    )
     snap = svc.snapshot()
     assert len(snap) == 1
     entry = snap[0]
@@ -560,6 +567,29 @@ async def test_poller_gates_each_source_on_integration_status():
     nav.get_now_playing.assert_not_awaited()
     plex.get_sessions.assert_not_awaited()
     assert now_playing.reconcile_source.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_presence_loop_resolves_rebuilt_services_each_cycle(monkeypatch):
+    import asyncio
+
+    now_playing = AsyncMock()
+    instances = [MagicMock() for _ in range(4)]
+    getters = [MagicMock(return_value=instance) for instance in instances]
+    poll_once = AsyncMock()
+
+    async def stop_after_cycle(_interval):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(poller, "poll_external_once", poll_once)
+    monkeypatch.setattr(poller.asyncio, "sleep", stop_after_cycle)
+
+    with pytest.raises(asyncio.CancelledError):
+        await poller.run_now_playing_presence_loop(now_playing, *getters)
+
+    for getter in getters:
+        getter.assert_called_once_with()
+    poll_once.assert_awaited_once_with(now_playing, *instances)
 
 
 class _FailingPrefs:

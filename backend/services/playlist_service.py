@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 class PlaylistSummaryView(msgspec.Struct, frozen=True):
     """A list-row a user is allowed to see in full: the summary record plus the
     visibility decision (D4). ``owner_name`` is set only for non-owned public rows."""
+
     record: PlaylistSummaryRecord
     is_owner: bool
     owner_name: str | None = None
@@ -40,6 +41,7 @@ class PlaylistSummaryView(msgspec.Struct, frozen=True):
 
 class RedactedSummaryView(msgspec.Struct, frozen=True):
     """A private list-row an admin may only see redacted (D4): no name, no tracks."""
+
     id: str
     track_count: int
     owner_name: str | None = None
@@ -47,6 +49,7 @@ class RedactedSummaryView(msgspec.Struct, frozen=True):
 
 class PlaylistDetailView(msgspec.Struct, frozen=True):
     """A playlist detail a user is allowed to see in full (owner or public, D4)."""
+
     record: PlaylistRecord
     tracks: list[PlaylistTrackRecord]
     is_owner: bool
@@ -55,9 +58,11 @@ class PlaylistDetailView(msgspec.Struct, frozen=True):
 
 class RedactedDetailView(msgspec.Struct, frozen=True):
     """A private playlist detail an admin may only see redacted (D4)."""
+
     id: str
     track_count: int
     owner_name: str | None = None
+
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_COVER_SIZE = 2 * 1024 * 1024
@@ -133,14 +138,17 @@ def _fuzzy_name_match(name1: str, name2: str) -> bool:
 class PlaylistService:
     def __init__(
         self,
-        repo: PlaylistRepository,
+        repo: PlaylistRepository | None,
         cache_dir: Path,
         cache: Optional[CacheInterface] = None,
         genre_index: Any = None,
         auth_store: AuthStore | None = None,
         library_db: Any = None,
+        async_repo: Any = None,
     ):
-        self._repo = AsyncPlaylistRepository(repo)
+        if async_repo is None and repo is None:
+            raise ValueError("A playlist repository is required")
+        self._repo = async_repo or AsyncPlaylistRepository(repo)
         self._cover_dir = cache_dir / "covers" / "playlists"
         self._cache = cache
         self._genre_index = genre_index
@@ -148,7 +156,9 @@ class PlaylistService:
         self._library_db = library_db  # LibraryDB; needed by add_file_id_entry (Q11)
 
     async def _load_owned_or_raise(
-        self, playlist_id: str, requesting: UserRecord,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
     ) -> PlaylistRecord:
         """Load a playlist for MUTATION. Owner only (admins included cannot mutate
         another user's playlist, D4/AMU-2). Missing -> 404 (no existence leak)."""
@@ -156,7 +166,9 @@ class PlaylistService:
         if playlist is None:
             raise PlaylistNotFoundError(f"Playlist {playlist_id} not found")
         if playlist.user_id != requesting.id:
-            raise PermissionDeniedError("You do not have permission to modify this playlist")
+            raise PermissionDeniedError(
+                "You do not have permission to modify this playlist"
+            )
         return playlist
 
     async def _owner_name(self, user_id: str | None) -> str | None:
@@ -174,22 +186,34 @@ class PlaylistService:
         return names
 
     async def create_playlist(
-        self, name: str, *, source_ref: str | None = None, user_id: str,
+        self,
+        name: str,
+        *,
+        source_ref: str | None = None,
+        user_id: str,
     ) -> PlaylistRecord:
         stripped = name.strip() if name else ""
         if not stripped:
             raise InvalidPlaylistDataError("Playlist name must not be empty")
         if len(stripped) > MAX_NAME_LENGTH:
-            raise InvalidPlaylistDataError(f"Playlist name must not exceed {MAX_NAME_LENGTH} characters")
-        result = await self._repo.create_playlist(stripped, source_ref=source_ref, user_id=user_id)
+            raise InvalidPlaylistDataError(
+                f"Playlist name must not exceed {MAX_NAME_LENGTH} characters"
+            )
+        result = await self._repo.create_playlist(
+            stripped, source_ref=source_ref, user_id=user_id
+        )
         return result
 
     async def get_by_source_ref(
-        self, source_ref: str, user_id: str | None = None,
+        self,
+        source_ref: str,
+        user_id: str | None = None,
     ) -> PlaylistRecord | None:
         return await self._repo.get_by_source_ref(source_ref, user_id)
 
-    async def get_imported_source_ids(self, prefix: str, user_id: str | None = None) -> set[str]:
+    async def get_imported_source_ids(
+        self, prefix: str, user_id: str | None = None
+    ) -> set[str]:
         return await self._repo.get_imported_source_ids(prefix, user_id)
 
     async def get_playlist(self, playlist_id: str) -> PlaylistRecord:
@@ -199,10 +223,13 @@ class PlaylistService:
         return result
 
     async def get_all_playlists(
-        self, requesting: UserRecord,
+        self,
+        requesting: UserRecord,
     ) -> list[PlaylistSummaryView | RedactedSummaryView]:
         is_admin = requesting.role == "admin"
-        rows = await self._repo.get_all_playlists(user_id=None if is_admin else requesting.id)
+        rows = await self._repo.get_all_playlists(
+            user_id=None if is_admin else requesting.id
+        )
         owner_names = await self._resolve_owner_names(
             {r.user_id for r in rows if r.user_id and r.user_id != requesting.id}
         )
@@ -211,19 +238,29 @@ class PlaylistService:
             if r.user_id == requesting.id:
                 views.append(PlaylistSummaryView(record=r, is_owner=True))
             elif r.is_public:
-                views.append(PlaylistSummaryView(
-                    record=r, is_owner=False, owner_name=owner_names.get(r.user_id),
-                ))
+                views.append(
+                    PlaylistSummaryView(
+                        record=r,
+                        is_owner=False,
+                        owner_name=owner_names.get(r.user_id),
+                    )
+                )
             else:
                 # Reached only for admins (non-admins never receive private non-owned
                 # rows from the repo). Redact: keep count + owner, drop name/tracks (D4).
-                views.append(RedactedSummaryView(
-                    id=r.id, track_count=r.track_count, owner_name=owner_names.get(r.user_id),
-                ))
+                views.append(
+                    RedactedSummaryView(
+                        id=r.id,
+                        track_count=r.track_count,
+                        owner_name=owner_names.get(r.user_id),
+                    )
+                )
         return views
 
     async def get_playlist_with_tracks(
-        self, playlist_id: str, requesting: UserRecord,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
     ) -> PlaylistDetailView | RedactedDetailView:
         playlist = await self._repo.get_playlist(playlist_id)
         if playlist is None:
@@ -235,19 +272,27 @@ class PlaylistService:
             tracks = await self._repo.get_tracks(playlist_id)
             owner_name = await self._owner_name(playlist.user_id)
             return PlaylistDetailView(
-                record=playlist, tracks=tracks, is_owner=False, owner_name=owner_name,
+                record=playlist,
+                tracks=tracks,
+                is_owner=False,
+                owner_name=owner_name,
             )
         if requesting.role == "admin":
             tracks = await self._repo.get_tracks(playlist_id)
             owner_name = await self._owner_name(playlist.user_id)
             return RedactedDetailView(
-                id=playlist.id, track_count=len(tracks), owner_name=owner_name,
+                id=playlist.id,
+                track_count=len(tracks),
+                owner_name=owner_name,
             )
         # Private, non-owner, non-admin: do NOT leak existence (404, not 403).
         raise PlaylistNotFoundError(f"Playlist {playlist_id} not found")
 
     async def update_playlist(
-        self, playlist_id: str, requesting: UserRecord, name: Optional[str] = None,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
+        name: Optional[str] = None,
     ) -> PlaylistRecord:
         await self._load_owned_or_raise(playlist_id, requesting)
         if name is not None:
@@ -255,7 +300,9 @@ class PlaylistService:
             if not stripped:
                 raise InvalidPlaylistDataError("Playlist name must not be empty")
             if len(stripped) > MAX_NAME_LENGTH:
-                raise InvalidPlaylistDataError(f"Playlist name must not exceed {MAX_NAME_LENGTH} characters")
+                raise InvalidPlaylistDataError(
+                    f"Playlist name must not exceed {MAX_NAME_LENGTH} characters"
+                )
             name = stripped
 
         result = await self._repo.update_playlist(playlist_id, name=name)
@@ -264,14 +311,20 @@ class PlaylistService:
         return result
 
     async def update_playlist_with_detail(
-        self, playlist_id: str, requesting: UserRecord, name: Optional[str] = None,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
+        name: Optional[str] = None,
     ) -> tuple[PlaylistRecord, list[PlaylistTrackRecord]]:
         playlist = await self.update_playlist(playlist_id, requesting, name=name)
         tracks = await self._repo.get_tracks(playlist_id)
         return playlist, tracks
 
     async def set_public(
-        self, playlist_id: str, requesting: UserRecord, is_public: bool,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
+        is_public: bool,
     ) -> PlaylistSummaryView:
         # Owner-only: an admin cannot publish another user's playlist (D4).
         await self._load_owned_or_raise(playlist_id, requesting)
@@ -289,12 +342,13 @@ class PlaylistService:
         if playlist is None:
             raise PlaylistNotFoundError(f"Playlist {playlist_id} not found")
         if playlist.user_id != requesting.id and requesting.role != "admin":
-            raise PermissionDeniedError("You do not have permission to delete this playlist")
+            raise PermissionDeniedError(
+                "You do not have permission to delete this playlist"
+            )
         deleted = await self._repo.delete_playlist(playlist_id)
         if not deleted:
             raise PlaylistNotFoundError(f"Playlist {playlist_id} not found")
         await asyncio.to_thread(self._delete_cover_file, playlist_id)
-
 
     async def add_tracks(
         self,
@@ -381,33 +435,49 @@ class PlaylistService:
         return created[0]
 
     async def remove_track(
-        self, playlist_id: str, requesting: UserRecord, track_id: str,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
+        track_id: str,
     ) -> None:
         await self._load_owned_or_raise(playlist_id, requesting)
         removed = await self._repo.remove_track(playlist_id, track_id)
         if not removed:
-            raise PlaylistNotFoundError(f"Track {track_id} not found in playlist {playlist_id}")
+            raise PlaylistNotFoundError(
+                f"Track {track_id} not found in playlist {playlist_id}"
+            )
 
     async def remove_tracks(
-        self, playlist_id: str, requesting: UserRecord, track_ids: list[str],
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
+        track_ids: list[str],
     ) -> int:
         if not track_ids:
             raise InvalidPlaylistDataError("No track IDs provided")
         await self._load_owned_or_raise(playlist_id, requesting)
         removed = await self._repo.remove_tracks(playlist_id, track_ids)
         if not removed:
-            raise PlaylistNotFoundError(f"No matching tracks found in playlist {playlist_id}")
+            raise PlaylistNotFoundError(
+                f"No matching tracks found in playlist {playlist_id}"
+            )
         return removed
 
     async def reorder_track(
-        self, playlist_id: str, requesting: UserRecord, track_id: str, new_position: int,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
+        track_id: str,
+        new_position: int,
     ) -> int:
         if new_position < 0:
             raise InvalidPlaylistDataError("Position must be >= 0")
         await self._load_owned_or_raise(playlist_id, requesting)
         result = await self._repo.reorder_track(playlist_id, track_id, new_position)
         if result is None:
-            raise PlaylistNotFoundError(f"Track {track_id} not found in playlist {playlist_id}")
+            raise PlaylistNotFoundError(
+                f"Track {track_id} not found in playlist {playlist_id}"
+            )
         return result
 
     async def update_track_source(
@@ -446,14 +516,24 @@ class PlaylistService:
         if normalized_source:
             current_track = await self._repo.get_track(playlist_id, track_id)
             if current_track is None:
-                raise PlaylistNotFoundError(f"Track {track_id} not found in playlist {playlist_id}")
+                raise PlaylistNotFoundError(
+                    f"Track {track_id} not found in playlist {playlist_id}"
+                )
             if normalized_source != current_track.source_type or (
-                normalized_source == "navidrome"
-                and navidrome_folder_ids is not None
+                normalized_source == "navidrome" and navidrome_folder_ids is not None
             ):
-                new_track_source_id, new_plex_rating_key = await self._resolve_new_source_id(
-                    current_track, normalized_source, jf_service, local_service, nd_service,
-                    plex_service, requesting.id, navidrome_folder_ids,
+                (
+                    new_track_source_id,
+                    new_plex_rating_key,
+                ) = await self._resolve_new_source_id(
+                    current_track,
+                    normalized_source,
+                    jf_service,
+                    local_service,
+                    nd_service,
+                    plex_service,
+                    requesting.id,
+                    navidrome_folder_ids,
                 )
                 new_plex_rating_key_resolved = True
 
@@ -466,11 +546,16 @@ class PlaylistService:
             repo_kwargs["library_file_id"] = new_track_source_id
 
         result = await self._repo.update_track_source(
-            playlist_id, track_id, normalized_source, normalized_available_sources,
+            playlist_id,
+            track_id,
+            normalized_source,
+            normalized_available_sources,
             **repo_kwargs,
         )
         if result is None:
-            raise PlaylistNotFoundError(f"Track {track_id} not found in playlist {playlist_id}")
+            raise PlaylistNotFoundError(
+                f"Track {track_id} not found in playlist {playlist_id}"
+            )
         return result
 
     async def get_tracks(self, playlist_id: str) -> list[PlaylistTrackRecord]:
@@ -481,7 +566,9 @@ class PlaylistService:
         return await self._repo.get_streamable_counts()
 
     async def analyse_playlist_profile(
-        self, playlist_id: str, requesting: UserRecord,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
     ) -> "PlaylistProfile | None":
         from api.v1.schemas.discover import PlaylistProfile
 
@@ -499,7 +586,9 @@ class PlaylistService:
 
         genre_distribution: dict[str, list[str]] = {}
         if artist_mbids and self._genre_index is not None:
-            genre_distribution = await self._genre_index.get_genres_for_artists(artist_mbids)
+            genre_distribution = await self._genre_index.get_genres_for_artists(
+                artist_mbids
+            )
 
         return PlaylistProfile(
             artist_mbids=artist_mbids,
@@ -508,10 +597,11 @@ class PlaylistService:
         )
 
     async def check_track_membership(
-        self, tracks: list[tuple[str, str, str]], user_id: str | None = None,
+        self,
+        tracks: list[tuple[str, str, str]],
+        user_id: str | None = None,
     ) -> dict[str, list[int]]:
         return await self._repo.check_track_membership(tracks, user_id)
-
 
     async def resolve_track_sources(
         self,
@@ -557,10 +647,16 @@ class PlaylistService:
             async with sem:
                 try:
                     return await self._resolve_album_sources(
-                        representative.album_id, jf_service, local_service, nd_service, plex_service,
+                        representative.album_id,
+                        jf_service,
+                        local_service,
+                        nd_service,
+                        plex_service,
                         album_name=representative.album_name or "",
                         artist_name=representative.artist_name or "",
-                        user_id=requesting.id if requesting is not None else "background",
+                        user_id=requesting.id
+                        if requesting is not None
+                        else "background",
                         navidrome_folder_ids=navidrome_folder_ids,
                     )
                 except Exception:  # noqa: BLE001
@@ -571,7 +667,8 @@ class PlaylistService:
                     # album; its tracks keep their stored available_sources.
                     logger.warning(
                         "Source resolution failed for album %s; skipping",
-                        representative.album_id, exc_info=True,
+                        representative.album_id,
+                        exc_info=True,
                     )
                     return ({}, {}, {}, {})
 
@@ -592,8 +689,7 @@ class PlaylistService:
             for t in album_tracks:
                 sources = set()
                 if t.source_type and not (
-                    t.source_type == "navidrome"
-                    and navidrome_folder_ids is not None
+                    t.source_type == "navidrome" and navidrome_folder_ids is not None
                 ):
                     sources.add(t.source_type)
 
@@ -623,8 +719,7 @@ class PlaylistService:
                 [t.source_type]
                 if t.source_type
                 and not (
-                    t.source_type == "navidrome"
-                    and navidrome_folder_ids is not None
+                    t.source_type == "navidrome" and navidrome_folder_ids is not None
                 )
                 else []
             )
@@ -638,7 +733,9 @@ class PlaylistService:
             if set(resolved) >= existing and set(resolved) != existing:
                 persist_updates[t.id] = resolved
         if persist_updates and navidrome_folder_ids is None:
-            await self._repo.batch_update_available_sources(playlist_id, persist_updates)
+            await self._repo.batch_update_available_sources(
+                playlist_id, persist_updates
+            )
         if file_links:
             await self._repo.batch_link_library_files(playlist_id, file_links)
 
@@ -655,14 +752,22 @@ class PlaylistService:
         artist_name: str = "",
         user_id: str = "global",
         navidrome_folder_ids: tuple[str, ...] | None = None,
-    ) -> tuple[dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str, str]]]:
+    ) -> tuple[
+        dict[tuple[int, int], tuple[str, str]],
+        dict[tuple[int, int], tuple[str, str]],
+        dict[tuple[int, int], tuple[str, str]],
+        dict[tuple[int, int], tuple[str, str, str]],
+    ]:
         scope_segment = "all"
         if navidrome_folder_ids is not None:
             scope_segment = "selected-empty"
             if navidrome_folder_ids:
-                scope_segment = "selected-" + hashlib.sha256(
-                    "\0".join(navidrome_folder_ids).encode()
-                ).hexdigest()[:20]
+                scope_segment = (
+                    "selected-"
+                    + hashlib.sha256(
+                        "\0".join(navidrome_folder_ids).encode()
+                    ).hexdigest()[:20]
+                )
         cache_key = (
             f"{SOURCE_RESOLUTION_PREFIX}:user:{user_id}:"
             f"scope:{scope_segment}:{album_id}"
@@ -671,7 +776,12 @@ class PlaylistService:
             cached = await self._cache.get(cache_key)
             if cached is not None:
                 if len(cached) == 2:
-                    return (_normalize_source_map(cached[0]), _normalize_source_map(cached[1]), {}, {})
+                    return (
+                        _normalize_source_map(cached[0]),
+                        _normalize_source_map(cached[1]),
+                        {},
+                        {},
+                    )
                 if len(cached) == 3:
                     return (
                         _normalize_source_map(cached[0]),
@@ -698,9 +808,16 @@ class PlaylistService:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            jf_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (t.title, t.jellyfin_id)
+                            jf_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (
+                                t.title,
+                                t.jellyfin_id,
+                            )
             except Exception:  # noqa: BLE001
-                logger.debug("Jellyfin source resolution failed for album %s", album_id, exc_info=True)
+                logger.debug(
+                    "Jellyfin source resolution failed for album %s",
+                    album_id,
+                    exc_info=True,
+                )
 
         if local_service is not None:
             try:
@@ -709,36 +826,61 @@ class PlaylistService:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            local_by_num[(getattr(t, "disc_number", None) or 1, key)] = (t.title, str(t.track_file_id))
+                            local_by_num[
+                                (getattr(t, "disc_number", None) or 1, key)
+                            ] = (t.title, str(t.track_file_id))
             except Exception:  # noqa: BLE001
-                logger.debug("Local source resolution failed for album %s", album_id, exc_info=True)
+                logger.debug(
+                    "Local source resolution failed for album %s",
+                    album_id,
+                    exc_info=True,
+                )
 
         if nd_service is not None:
             try:
                 match = await nd_service.get_album_match(
-                    album_id=album_id, album_name=album_name, artist_name=artist_name,
+                    album_id=album_id,
+                    album_name=album_name,
+                    artist_name=artist_name,
                     music_folder_ids=navidrome_folder_ids,
                 )
                 if match.found:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            nd_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (t.title, t.navidrome_id)
+                            nd_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (
+                                t.title,
+                                t.navidrome_id,
+                            )
             except Exception:  # noqa: BLE001
-                logger.debug("Navidrome source resolution failed for album %s", album_id, exc_info=True)
+                logger.debug(
+                    "Navidrome source resolution failed for album %s",
+                    album_id,
+                    exc_info=True,
+                )
 
         if plex_service is not None:
             try:
                 match = await plex_service.get_album_match(
-                    album_id=album_id, album_name=album_name, artist_name=artist_name,
+                    album_id=album_id,
+                    album_name=album_name,
+                    artist_name=artist_name,
                 )
                 if match.found:
                     for t in match.tracks:
                         key = _safe_track_number(t.track_number)
                         if key is not None:
-                            plex_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (t.title, t.part_key or t.plex_id, t.plex_id)
+                            plex_by_num[(getattr(t, "disc_number", 1) or 1, key)] = (
+                                t.title,
+                                t.part_key or t.plex_id,
+                                t.plex_id,
+                            )
             except Exception:  # noqa: BLE001
-                logger.debug("Plex source resolution failed for album %s", album_id, exc_info=True)
+                logger.debug(
+                    "Plex source resolution failed for album %s",
+                    album_id,
+                    exc_info=True,
+                )
 
         resolved = (jf_by_num, local_by_num, nd_by_num, plex_by_num)
         if self._cache:
@@ -762,8 +904,17 @@ class PlaylistService:
                 f"Cannot switch source for track '{track.track_name}': missing album_id or track_number"
             )
 
-        jf_by_num, local_by_num, nd_by_num, plex_by_num = await self._resolve_album_sources(
-            track.album_id, jf_service, local_service, nd_service, plex_service,
+        (
+            jf_by_num,
+            local_by_num,
+            nd_by_num,
+            plex_by_num,
+        ) = await self._resolve_album_sources(
+            track.album_id,
+            jf_service,
+            local_service,
+            nd_service,
+            plex_service,
             album_name=track.album_name or "",
             artist_name=track.artist_name or "",
             user_id=user_id,
@@ -804,11 +955,16 @@ class PlaylistService:
                 f"Track '{track.track_name}' not found in Plex for album {track.album_id}"
             )
 
-        raise SourceResolutionError(f"Unsupported source type for resolution: {new_source_type}")
-
+        raise SourceResolutionError(
+            f"Unsupported source type for resolution: {new_source_type}"
+        )
 
     async def upload_cover(
-        self, playlist_id: str, requesting: UserRecord, data: bytes, content_type: str,
+        self,
+        playlist_id: str,
+        requesting: UserRecord,
+        data: bytes,
+        content_type: str,
     ) -> str:
         await self._load_owned_or_raise(playlist_id, requesting)
         self._validate_cover_id(playlist_id)
@@ -836,13 +992,16 @@ class PlaylistService:
 
         cover_path = str(file_path)
         await self._repo.update_playlist(
-            playlist_id, cover_image_path=cover_path,
+            playlist_id,
+            cover_image_path=cover_path,
         )
 
         cover_url = f"/api/v1/playlists/{playlist_id}/cover"
         return cover_url
 
-    async def get_cover_path(self, playlist_id: str, requesting: UserRecord) -> Optional[Path]:
+    async def get_cover_path(
+        self, playlist_id: str, requesting: UserRecord
+    ) -> Optional[Path]:
         playlist = await self.get_playlist(playlist_id)
         # Owner or public can fetch the cover; a private playlist's cover is invisible
         # to everyone else (including admins -> redaction shows no covers, D4) -> 404.
@@ -865,9 +1024,9 @@ class PlaylistService:
             except OSError:
                 pass
         await self._repo.update_playlist(
-            playlist_id, cover_image_path=None,
+            playlist_id,
+            cover_image_path=None,
         )
-
 
     @staticmethod
     def _validate_cover_id(playlist_id: str) -> None:

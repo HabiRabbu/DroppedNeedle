@@ -90,7 +90,17 @@ class FreeMusicStore(PersistenceBase):
                 "INSERT INTO free_music_tasks "
                 "(id, user_id, kind, mbid, artist, title, status, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, user_id, kind, mbid, artist, title, FreeMusicStatus.SEARCHING, now, now),
+                (
+                    task_id,
+                    user_id,
+                    kind,
+                    mbid,
+                    artist,
+                    title,
+                    FreeMusicStatus.SEARCHING,
+                    now,
+                    now,
+                ),
             )
 
         await self._write(operation)
@@ -140,7 +150,8 @@ class FreeMusicStore(PersistenceBase):
         bytes_downloaded: int | None = None,
         attempts: int | None = None,
         error: str | None = None,
-    ) -> None:
+        expected_statuses: tuple[str, ...] | None = None,
+    ) -> bool:
         now = time.time()
         fields = {
             "status": status,
@@ -160,14 +171,96 @@ class FreeMusicStore(PersistenceBase):
             if value is not None:
                 sets.append(f"{column} = ?")
                 params.append(value)
+        where = "id = ?"
         params.append(task_id)
+        if expected_statuses:
+            placeholders = ",".join("?" for _ in expected_statuses)
+            where += f" AND status IN ({placeholders})"
+            params.extend(expected_statuses)
 
-        def operation(conn: sqlite3.Connection) -> None:
-            conn.execute(
-                f"UPDATE free_music_tasks SET {', '.join(sets)} WHERE id = ?", tuple(params)
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                f"UPDATE free_music_tasks SET {', '.join(sets)} WHERE {where}",
+                tuple(params),
             )
+            return cursor.rowcount == 1
 
-        await self._write(operation)
+        return await self._write(operation)
+
+    async def restart_terminal(self, task_id: str) -> bool:
+        """Atomically move a failed or cancelled task back to searching.
+
+        The status guard prevents a concurrent history removal from deleting a task
+        after retry has claimed it.
+        """
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                "UPDATE free_music_tasks SET status = 'searching', identifier = NULL, "
+                "licence_url = NULL, format = NULL, files_total = 0, files_completed = 0, "
+                "bytes_total = 0, bytes_downloaded = 0, attempts = 0, error = NULL, "
+                "updated_at = ? WHERE id = ? AND status IN ('failed','cancelled')",
+                (now, task_id),
+            )
+            return cursor.rowcount == 1
+
+        return await self._write(operation)
+
+    async def cancel_active(self, task_id: str) -> FreeMusicTask | None:
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> FreeMusicTask | None:
+            changed = conn.execute(
+                "UPDATE free_music_tasks SET status = 'cancelled', error = 'Cancelled', "
+                "updated_at = ? WHERE id = ? AND status IN ('searching','downloading')",
+                (now, task_id),
+            ).rowcount
+            if changed != 1:
+                return None
+            row = conn.execute(
+                f"SELECT {_COLUMNS} FROM free_music_tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            return _row_to_task(row)
+
+        return await self._write(operation)
+
+    async def delete_terminal(self, task_id: str) -> FreeMusicTask | None:
+        """Delete one terminal history row and return the deleted task."""
+
+        def operation(conn: sqlite3.Connection) -> FreeMusicTask | None:
+            row = conn.execute(
+                f"SELECT {_COLUMNS} FROM free_music_tasks WHERE id = ? "
+                "AND status IN ('completed','failed','cancelled')",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            task = _row_to_task(row)
+            conn.execute("DELETE FROM free_music_tasks WHERE id = ?", (task_id,))
+            return task
+
+        return await self._write(operation)
+
+    async def delete_terminal_tasks(
+        self, *, user_id: str | None
+    ) -> list[tuple[str, str]]:
+        """Delete terminal history for one user, or everyone when ``user_id=None``."""
+
+        def operation(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+            where = "status IN ('completed','failed','cancelled')"
+            params: tuple[str, ...] = ()
+            if user_id is not None:
+                where += " AND user_id = ?"
+                params = (user_id,)
+            rows = conn.execute(
+                f"SELECT id, user_id FROM free_music_tasks WHERE {where}", params
+            ).fetchall()
+            if rows:
+                conn.execute(f"DELETE FROM free_music_tasks WHERE {where}", params)
+            return [(row["id"], row["user_id"]) for row in rows]
+
+        return await self._write(operation)
 
     async def fail_stale(self, detail: str) -> int:
         """Startup sweep: a non-terminal task whose coroutine died with the

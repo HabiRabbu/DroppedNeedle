@@ -62,7 +62,7 @@ vi.mock('$lib/components/library/LibraryTrackRow.svelte', emptyComponent);
 
 import AlbumTrackList from './AlbumTrackList.svelte';
 import { buildRenderedTrackSections } from './albumTrackResolvers';
-import type { HeldImport, LibraryFileMeta } from '$lib/types';
+import type { AlbumBasicInfo, AlbumTracksInfo, HeldImport, LibraryFileMeta } from '$lib/types';
 
 function heldFor(recording_mbid: string): HeldImport {
 	return {
@@ -88,7 +88,7 @@ function heldFor(recording_mbid: string): HeldImport {
 	};
 }
 
-const TRACKS = [
+const TRACKS: AlbumTracksInfo['tracks'] = [
 	{ position: 1, disc_number: 1, title: 'Matched By MBID', length: 100000, recording_id: 'rec-1' },
 	{
 		position: 2,
@@ -103,18 +103,30 @@ const TRACKS = [
 function libTrack(over: Partial<LibraryFileMeta>): LibraryFileMeta {
 	return {
 		id: 'f',
-		recording_mbid: null,
+		title: '',
+		album_id: 'album-1',
+		album_title: 'Album',
+		artist_id: 'artist-1',
+		artist_name: 'Artist',
+		album_artist_id: 'artist-1',
+		album_artist_name: 'Artist',
+		musicbrainz_recording_id: null,
+		musicbrainz_release_group_id: null,
+		musicbrainz_artist_id: null,
+		musicbrainz_album_artist_id: null,
 		disc_number: 1,
 		track_number: 0,
-		track_title: '',
-		artist_name: 'Artist',
-		file_path: '/x.flac',
-		file_format: 'flac',
+		year: null,
+		genre: null,
+		format: 'flac',
 		bit_rate: null,
 		sample_rate: null,
 		bit_depth: null,
-		duration_seconds: null,
+		channels: null,
+		duration_seconds: 0,
 		file_size_bytes: 1,
+		date_added: 1,
+		cover_available: false,
 		current_tier: null,
 		below_cutoff: false,
 		...over
@@ -123,11 +135,11 @@ function libTrack(over: Partial<LibraryFileMeta>): LibraryFileMeta {
 
 // rec-1 present by recording MBID; track 1:2 present by position only (NULL MBID)
 const byRecording = new Map<string, LibraryFileMeta>([
-	['rec-1', libTrack({ id: 'a', recording_mbid: 'rec-1', track_number: 1 })]
+	['rec-1', libTrack({ id: 'a', musicbrainz_recording_id: 'rec-1', track_number: 1 })]
 ]);
 const byPosition = new Map<string, LibraryFileMeta>([
-	['1:1', libTrack({ id: 'a', recording_mbid: 'rec-1', track_number: 1 })],
-	['1:2', libTrack({ id: 'b', recording_mbid: null, track_number: 2 })]
+	['1:1', libTrack({ id: 'a', musicbrainz_recording_id: 'rec-1', track_number: 1 })],
+	['1:2', libTrack({ id: 'b', musicbrainz_recording_id: null, track_number: 2 })]
 ]);
 
 function renderList(
@@ -137,20 +149,17 @@ function renderList(
 		byRecording?: Map<string, LibraryFileMeta>;
 	} = {}
 ) {
-	const album = {
+	const album: AlbumBasicInfo = {
 		musicbrainz_id: 'rg-1',
 		artist_name: 'Artist',
 		title: 'Album',
 		cover_url: null,
-		artist_id: 'art-1'
+		artist_id: 'art-1',
+		in_library: false
 	};
 	const props = {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal album stub for the test
-		album: album as any,
-		renderedTrackSections: buildRenderedTrackSections(
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal MB track stubs
-			TRACKS as any
-		),
+		album,
+		renderedTrackSections: buildRenderedTrackSections(TRACKS),
 		trackLinkMap: new Map(),
 		jellyfinMatch: null,
 		localMatch: null,
@@ -215,7 +224,7 @@ describe('AlbumTrackList upgrade affordance (admin/trusted, below cutoff)', () =
 			'rec-1',
 			libTrack({
 				id: 'a',
-				recording_mbid: 'rec-1',
+				musicbrainz_recording_id: 'rec-1',
 				track_number: 1,
 				current_tier: 'mp3_192',
 				below_cutoff: true

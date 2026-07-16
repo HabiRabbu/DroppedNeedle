@@ -85,7 +85,10 @@ def mock_repo() -> SlskdRepository:
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=slskd_mock.app))
     client = SlskdClient(http, "http://slskd", "test-key")
     return SlskdRepository(
-        client=client, url="http://slskd", api_key="test-key", downloads_mount=Path("/dl")
+        client=client,
+        url="http://slskd",
+        api_key="test-key",
+        downloads_mount=Path("/dl"),
     )
 
 
@@ -95,9 +98,7 @@ def test_is_instance_of_protocol(mock_repo):
 
 
 def test_is_configured_requires_url_and_key():
-    repo = SlskdRepository(
-        client=None, url="", api_key="", downloads_mount=Path("/dl")
-    )
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=Path("/dl"))
     assert repo.is_configured() is False
 
 
@@ -105,7 +106,11 @@ def test_is_configured_requires_url_and_key():
 async def test_search_semaphore_serializes():
     fake = _ConcFake()
     repo = SlskdRepository(
-        client=fake, url="u", api_key="k", downloads_mount=Path("/dl"), concurrent_searches=1
+        client=fake,
+        url="u",
+        api_key="k",
+        downloads_mount=Path("/dl"),
+        concurrent_searches=1,
     )
     await asyncio.gather(*(repo.search_album("A", f"Album {i}") for i in range(5)))
     assert fake.search_max == 1
@@ -115,11 +120,19 @@ async def test_search_semaphore_serializes():
 async def test_enqueue_semaphore_serializes_and_returns_taskref():
     fake = _ConcFake()
     repo = SlskdRepository(
-        client=fake, url="u", api_key="k", downloads_mount=Path("/dl"), concurrent_enqueues=1
+        client=fake,
+        url="u",
+        api_key="k",
+        downloads_mount=Path("/dl"),
+        concurrent_enqueues=1,
     )
     refs = await asyncio.gather(
         *(
-            repo.enqueue(_req([DownloadFileRef(username="alice", filename=f"f{i}.flac", size=10)]))
+            repo.enqueue(
+                _req(
+                    [DownloadFileRef(username="alice", filename=f"f{i}.flac", size=10)]
+                )
+            )
             for i in range(5)
         )
     )
@@ -144,7 +157,9 @@ class _LaggedCompletionFake:
 
     async def get_search_state(self, search_id):
         self.state_calls += 1
-        return SlskdSearchResponse(id=search_id, is_complete=self.state_calls > self._incomplete_polls)
+        return SlskdSearchResponse(
+            id=search_id, is_complete=self.state_calls > self._incomplete_polls
+        )
 
     async def get_search_responses(self, search_id):
         return self._files
@@ -164,7 +179,9 @@ async def test_search_waits_for_completion_past_the_search_window():
         )
     ]
     fake = _LaggedCompletionFake(incomplete_polls=2, files=files)
-    repo = SlskdRepository(client=fake, url="u", api_key="k", downloads_mount=Path("/dl"))
+    repo = SlskdRepository(
+        client=fake, url="u", api_key="k", downloads_mount=Path("/dl")
+    )
     repo._COMPLETION_GRACE_SECONDS = 5.0  # bound the test if the fix regresses
     # timeout=0 -> the OLD deadline (now + timeout) would poll zero times. The fix
     # keeps polling through the grace window until the lagged completion.
@@ -196,7 +213,13 @@ class _LadderFake:
 
 
 def _one_file(username="bob", filename="bob\\Folder\\01.flac"):
-    return [SlskdUserSearchResponse(username=username, file_count=1, files=[SlskdFile(filename=filename, size=1)])]
+    return [
+        SlskdUserSearchResponse(
+            username=username,
+            file_count=1,
+            files=[SlskdFile(filename=filename, size=1)],
+        )
+    ]
 
 
 def test_album_query_ladder_escalates_and_dedupes():
@@ -224,7 +247,9 @@ def test_album_query_ladder_skips_wildcards_for_unwildcardable_artist():
 async def test_search_album_stops_at_first_nonempty():
     q0 = SlskdRepository._build_album_query("Artist", "Album", 2000)
     fake = _LadderFake({q0: _one_file()})
-    repo = SlskdRepository(client=fake, url="u", api_key="k", downloads_mount=Path("/dl"))
+    repo = SlskdRepository(
+        client=fake, url="u", api_key="k", downloads_mount=Path("/dl")
+    )
     results = await repo.search_album("Artist", "Album", 2000)
     assert len(results) == 1
     assert fake.queries == [q0]  # first rung had results -> no wasted broad search
@@ -233,11 +258,19 @@ async def test_search_album_stops_at_first_nonempty():
 @pytest.mark.asyncio
 async def test_search_album_falls_back_to_broad_query_on_empty():
     # Only the broadest (artist-only) rung has results - the Aphex Twin case.
-    fake = _LadderFake({"Aphex Twin": _one_file(filename="bob\\Aphex Twin\\SAW 85-92\\01.flac")})
-    repo = SlskdRepository(client=fake, url="u", api_key="k", downloads_mount=Path("/dl"))
-    results = await repo.search_album("Aphex Twin", "Selected Ambient Works 85-92", 1992)
+    fake = _LadderFake(
+        {"Aphex Twin": _one_file(filename="bob\\Aphex Twin\\SAW 85-92\\01.flac")}
+    )
+    repo = SlskdRepository(
+        client=fake, url="u", api_key="k", downloads_mount=Path("/dl")
+    )
+    results = await repo.search_album(
+        "Aphex Twin", "Selected Ambient Works 85-92", 1992
+    )
     assert len(results) == 1
-    assert fake.queries[0] == SlskdRepository._build_album_query("Aphex Twin", "Selected Ambient Works 85-92", 1992)
+    assert fake.queries[0] == SlskdRepository._build_album_query(
+        "Aphex Twin", "Selected Ambient Works 85-92", 1992
+    )
     assert fake.queries[-1] == "Aphex Twin"  # escalated all the way to artist-only
     assert len(fake.queries) == 5  # exact + wildcard siblings before the hit
 
@@ -245,7 +278,9 @@ async def test_search_album_falls_back_to_broad_query_on_empty():
 @pytest.mark.asyncio
 async def test_search_album_empty_when_whole_ladder_empty():
     fake = _LadderFake({})
-    repo = SlskdRepository(client=fake, url="u", api_key="k", downloads_mount=Path("/dl"))
+    repo = SlskdRepository(
+        client=fake, url="u", api_key="k", downloads_mount=Path("/dl")
+    )
     assert await repo.search_album("Nobody", "Nothing", 1999) == []
     assert len(fake.queries) == 6  # exhausted the ladder (incl. wildcard rungs)
 
@@ -256,9 +291,15 @@ async def test_search_album_wildcard_rung_bypasses_blocked_artist():
     # artist terms, so every exact rung returns 0; the first-letter-wildcarded
     # sibling defeats the filter and must be tried before broadening.
     fake = _LadderFake(
-        {"*nter *hikari Take to the Skies 2007": _one_file(filename="bob\\Take to the Skies\\01.flac")}
+        {
+            "*nter *hikari Take to the Skies 2007": _one_file(
+                filename="bob\\Take to the Skies\\01.flac"
+            )
+        }
     )
-    repo = SlskdRepository(client=fake, url="u", api_key="k", downloads_mount=Path("/dl"))
+    repo = SlskdRepository(
+        client=fake, url="u", api_key="k", downloads_mount=Path("/dl")
+    )
     results = await repo.search_album("Enter Shikari", "Take to the Skies", 2007)
     assert len(results) == 1
     # wildcard sibling right after the exact rung, before dropping specificity.
@@ -271,7 +312,9 @@ async def test_search_album_wildcard_rung_bypasses_blocked_artist():
 @pytest.mark.asyncio
 async def test_search_track_keeps_title_and_does_not_go_artist_only():
     fake = _LadderFake({})
-    repo = SlskdRepository(client=fake, url="u", api_key="k", downloads_mount=Path("/dl"))
+    repo = SlskdRepository(
+        client=fake, url="u", api_key="k", downloads_mount=Path("/dl")
+    )
     await repo.search_track("Artist", "Song", "Album")
     # every rung keeps the track title; never falls back to artist-only.
     assert fake.queries == [
@@ -325,7 +368,8 @@ async def test_get_file_path_resolves_slskd_leaf_folder_layout(tmp_path):
     f = leaf / "The Marías - Nobody New.mp3"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(_h("alice"), "@@peer\\Music\\The Marías\\The Marías - Nobody New.mp3"
+    path = await repo.get_file_path(
+        _h("alice"), "@@peer\\Music\\The Marías\\The Marías - Nobody New.mp3"
     )
     assert path == f.resolve()
 
@@ -373,7 +417,9 @@ async def test_get_file_path_username_nested_album_layout(tmp_path):
     f = folder / "Artist - Album - 01 - Track.flac"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(_h("dshaw8772"), "@@peer\\Music\\2024 Some Album\\Artist - Album - 01 - Track.flac"
+    path = await repo.get_file_path(
+        _h("dshaw8772"),
+        "@@peer\\Music\\2024 Some Album\\Artist - Album - 01 - Track.flac",
     )
     assert path == f.resolve()
 
@@ -387,7 +433,9 @@ async def test_get_file_path_username_walk_handles_glob_chars(tmp_path):
     f = folder / "01 - Song [Remix].flac"
     f.write_bytes(b"x")
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(_h("peer1"), "@@p\\X\\Disc [2019]\\01 - Song [Remix].flac")
+    path = await repo.get_file_path(
+        _h("peer1"), "@@p\\X\\Disc [2019]\\01 - Song [Remix].flac"
+    )
     assert path == f.resolve()
 
 
@@ -400,7 +448,9 @@ async def test_get_file_path_size_fallback_for_sanitised_filename(tmp_path):
     f = folder / "Track _ Sanitised.flac"  # on-disk: '?' replaced with '_'
     f.write_bytes(b"abcdefghij")  # size 10
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(_h("peer1"), "@@p\\Album\\Track ? Sanitised.flac", size=10)
+    path = await repo.get_file_path(
+        _h("peer1"), "@@p\\Album\\Track ? Sanitised.flac", size=10
+    )
     assert path == f.resolve()
 
 
@@ -408,9 +458,13 @@ async def test_get_file_path_size_fallback_for_sanitised_filename(tmp_path):
 async def test_get_file_path_size_fallback_is_scoped_to_peer(tmp_path):
     # a same-size file under a DIFFERENT peer must not be returned by the size fallback
     (tmp_path / "other").mkdir()
-    (tmp_path / "other" / "decoy.flac").write_bytes(b"abcdefghij")  # size 10, wrong peer
+    (tmp_path / "other" / "decoy.flac").write_bytes(
+        b"abcdefghij"
+    )  # size 10, wrong peer
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    assert await repo.get_file_path(_h("peer1"), "@@p\\A\\missing.flac", size=10) is None
+    assert (
+        await repo.get_file_path(_h("peer1"), "@@p\\A\\missing.flac", size=10) is None
+    )
 
 
 @pytest.mark.asyncio
@@ -423,7 +477,8 @@ async def test_get_file_path_deep_nested_non_username_folder(tmp_path):
     f = folder / "01 - Come Together.flac"
     f.write_bytes(b"abcdefghij")  # size 10
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(_h("peer1"), "@@p\\Music\\Abbey Road (1969)\\01 - Come Together.flac", size=10
+    path = await repo.get_file_path(
+        _h("peer1"), "@@p\\Music\\Abbey Road (1969)\\01 - Come Together.flac", size=10
     )
     assert path == f.resolve()
 
@@ -440,19 +495,25 @@ async def test_get_file_path_whole_mount_fallback_disambiguates_by_size(tmp_path
     right.parent.mkdir(parents=True)
     right.write_bytes(b"abcdefghij")  # size 10, the real download
     repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=tmp_path)
-    path = await repo.get_file_path(_h("peer1"), "@@p\\X\\AlbumB\\01 - Track.flac", size=10)
+    path = await repo.get_file_path(
+        _h("peer1"), "@@p\\X\\AlbumB\\01 - Track.flac", size=10
+    )
     assert path == right.resolve()
 
 
 def _completed(filename, username="peer"):
-    return SlskdTransfer(id=filename, username=username, filename=filename, state="Completed, Succeeded")
+    return SlskdTransfer(
+        id=filename, username=username, filename=filename, state="Completed, Succeeded"
+    )
 
 
 @pytest.mark.asyncio
 async def test_diagnose_mount_flags_completed_downloads_but_empty_mount(tmp_path):
     # slskd finished downloads but our (empty) mount shows nothing -> silent misconfig
     client = AsyncMock()
-    client.get_all_downloads = AsyncMock(return_value=[_completed("a/01.flac"), _completed("a/02.flac")])
+    client.get_all_downloads = AsyncMock(
+        return_value=[_completed("a/01.flac"), _completed("a/02.flac")]
+    )
     client.get_options = AsyncMock(return_value=SlskdOptions())
     repo = SlskdRepository(client=client, url="", api_key="", downloads_mount=tmp_path)
     diag = await repo.diagnose_downloads_mount()
@@ -472,29 +533,38 @@ async def test_diagnose_mount_ok_when_mount_has_files(tmp_path):
     diag = await repo.diagnose_downloads_mount()
     assert diag.completed_downloads == 1
     assert diag.mount_has_files is True
-    assert diag.resolvable_downloads == 1  # the finished file is locatable under the mount
+    assert (
+        diag.resolvable_downloads == 1
+    )  # the finished file is locatable under the mount
 
 
 @pytest.mark.asyncio
-async def test_diagnose_mount_flags_unresolvable_downloads_under_full_parent_mount(tmp_path):
+async def test_diagnose_mount_flags_unresolvable_downloads_under_full_parent_mount(
+    tmp_path,
+):
     # The footgun: the mount is a PARENT of slskd's downloads (e.g. the whole media
     # library) - full of files, so mount_has_files is True, yet none of slskd's finished
     # downloads resolve under it. resolvable_downloads is the honest signal.
     (tmp_path / "library").mkdir()
     (tmp_path / "library" / "unrelated.flac").write_bytes(b"x")
     client = AsyncMock()
-    client.get_all_downloads = AsyncMock(return_value=[
-        _completed("slskd/complete/a/01.flac"), _completed("slskd/complete/a/02.flac"),
-    ])
+    client.get_all_downloads = AsyncMock(
+        return_value=[
+            _completed("slskd/complete/a/01.flac"),
+            _completed("slskd/complete/a/02.flac"),
+        ]
+    )
     client.get_options = AsyncMock(
-        return_value=SlskdOptions(directories=SlskdDirectories(downloads="/data/downloads/slskd/complete"))
+        return_value=SlskdOptions(
+            directories=SlskdDirectories(downloads="/data/downloads/slskd/complete")
+        )
     )
     repo = SlskdRepository(client=client, url="", api_key="", downloads_mount=tmp_path)
     diag = await repo.diagnose_downloads_mount()
     assert diag.completed_downloads == 2
-    assert diag.mount_has_files is True       # fooled by the library file
+    assert diag.mount_has_files is True  # fooled by the library file
     assert diag.sampled_downloads == 2
-    assert diag.resolvable_downloads == 0     # but DN can locate none of slskd's files
+    assert diag.resolvable_downloads == 0  # but DN can locate none of slskd's files
     # and we surface slskd's own path so the advisory can name it
     assert diag.client_downloads_dir == "/data/downloads/slskd/complete"
 
@@ -504,7 +574,9 @@ async def test_get_file_path_runs_off_the_event_loop(tmp_path, monkeypatch):
     # The file finder does potentially large filesystem walks. It must run in a worker
     # thread, not inline - otherwise a big/misconfigured mount freezes the whole loop
     # (polling, SSE, requests, the cancel button) -> "won't cancel and everything hangs".
-    repo = SlskdRepository(client=AsyncMock(), url="", api_key="", downloads_mount=tmp_path)
+    repo = SlskdRepository(
+        client=AsyncMock(), url="", api_key="", downloads_mount=tmp_path
+    )
     release = threading.Event()
 
     def slow_locate(*_args, **_kwargs):
@@ -529,9 +601,13 @@ async def test_get_file_path_runs_off_the_event_loop(tmp_path, monkeypatch):
 async def test_diagnose_mount_no_completed_downloads_skips_walk(tmp_path):
     # in-progress only -> nothing to flag, and the mount walk is skipped
     client = AsyncMock()
-    client.get_all_downloads = AsyncMock(return_value=[
-        SlskdTransfer(id="1", username="peer", filename="a/01.flac", state="InProgress")
-    ])
+    client.get_all_downloads = AsyncMock(
+        return_value=[
+            SlskdTransfer(
+                id="1", username="peer", filename="a/01.flac", state="InProgress"
+            )
+        ]
+    )
     client.get_options = AsyncMock(return_value=SlskdOptions())
     repo = SlskdRepository(client=client, url="", api_key="", downloads_mount=tmp_path)
     diag = await repo.diagnose_downloads_mount()
@@ -554,6 +630,7 @@ def test_parse_search_responses_windows_linux_and_disc():
         username="u",
         has_free_upload_slot=True,
         upload_speed=5,
+        queue_length=7,
         files=[
             SlskdFile(filename="Artist\\Album\\01 song.flac", size=1),
             SlskdFile(filename="Artist/Album/CD 2/05 song.flac", size=2),
@@ -562,12 +639,16 @@ def test_parse_search_responses_windows_linux_and_disc():
     out = SlskdRepository._parse_search_responses([resp])
     assert out[0].parent_directory == "Album"
     assert out[0].extension == "flac"
+    assert out[0].queue_length == 7
     # disc-pattern directory walked past to the album-level folder.
     assert out[1].parent_directory == "Album"
 
 
 def test_sanitize_query_preserves_hyphenated_names():
-    assert SlskdRepository._sanitize_query("AC-DC - Back in Black") == "AC-DC Back in Black"
+    assert (
+        SlskdRepository._sanitize_query("AC-DC - Back in Black")
+        == "AC-DC Back in Black"
+    )
 
 
 def test_sanitize_query_normalises_typographic_apostrophes():

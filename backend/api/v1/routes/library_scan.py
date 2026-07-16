@@ -71,7 +71,8 @@ async def start_scan(
     if state["status"] == "scanning":
         raise ConflictError("A library scan is already running")
     library_paths = [
-        Path(p) for p in preferences_service.get_library_settings_raw().library_paths
+        Path(root.path)
+        for root in preferences_service.get_typed_library_settings_raw().library_roots
     ]
     if not library_paths:
         raise ConfigurationError(
@@ -128,7 +129,9 @@ async def scan_unmatched(
     return LibraryUnmatchedResponse(items=rows, total=len(rows))
 
 
-@router.post("/scan/unmatched/{review_id}/resolve", response_model=StatusMessageResponse)
+@router.post(
+    "/scan/unmatched/{review_id}/resolve", response_model=StatusMessageResponse
+)
 async def resolve_unmatched(
     review_id: int,
     current_user: CurrentAdminDep,

@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI, HTTPException
 
 from api.v1.routes import download_client
-from api.v1.schemas.settings import DOWNLOAD_CLIENT_API_KEY_MASK, DownloadClientConnectionSettings
+from api.v1.schemas.settings import (
+    DOWNLOAD_CLIENT_API_KEY_MASK,
+    DownloadClientConnectionSettings,
+)
 from core.dependencies import (
     get_download_client_repository,
     get_preferences_service,
@@ -16,12 +19,16 @@ from models.common import ServiceStatus
 from tests.helpers import build_test_client, mock_admin_user, mock_user
 
 
-def _prefs(url="http://slskd:5030", key=DOWNLOAD_CLIENT_API_KEY_MASK, library_paths=("/music",)):
+def _prefs(
+    url="http://slskd:5030", key=DOWNLOAD_CLIENT_API_KEY_MASK, library_paths=("/music",)
+):
     prefs = MagicMock()
     prefs.get_download_client_settings.return_value = DownloadClientConnectionSettings(
         url=url, api_key=key
     )
-    prefs.get_library_settings.return_value = MagicMock(library_paths=list(library_paths))
+    prefs.get_typed_library_settings.return_value = MagicMock(
+        library_roots=[MagicMock(path=path) for path in library_paths]
+    )
     return prefs
 
 
@@ -37,7 +44,9 @@ def _client(status="ok", version="0.25.1.0", configured=True):
 def _settings_service(status="ok", version="0.25.1.0"):
     svc = MagicMock()
     svc.verify_download_client = AsyncMock(
-        return_value=ServiceStatus(status=status, version=version, message=f"slskd {version}")
+        return_value=ServiceStatus(
+            status=status, version=version, message=f"slskd {version}"
+        )
     )
     return svc
 
@@ -46,8 +55,12 @@ def _app(prefs=None, client=None, settings_service=None) -> FastAPI:
     app = FastAPI()
     app.include_router(download_client.router)
     app.dependency_overrides[get_preferences_service] = lambda: prefs or _prefs()
-    app.dependency_overrides[get_download_client_repository] = lambda: client or _client()
-    app.dependency_overrides[get_settings_service] = lambda: settings_service or _settings_service()
+    app.dependency_overrides[get_download_client_repository] = (
+        lambda: client or _client()
+    )
+    app.dependency_overrides[get_settings_service] = (
+        lambda: settings_service or _settings_service()
+    )
     return app
 
 
@@ -97,14 +110,30 @@ def test_put_config_forwards_masked_sentinel():
     assert saved.url == "http://new:5030"
 
 
-def test_put_config_busts_orchestrator_singleton(monkeypatch):
+def test_put_config_busts_source_and_target_singleton_chains(monkeypatch):
     """Regression: the orchestrator is built eagerly at startup and holds its
     slskd client, so saving settings must clear its singleton too - otherwise
     downloads keep running against the old/empty URL."""
-    from core.dependencies import get_download_orchestrator
+    from core.dependencies import (
+        get_download_orchestrator,
+        get_target_download_orchestrator,
+        get_target_download_service,
+        get_target_file_processor,
+        get_target_status_service,
+    )
 
-    spy = MagicMock()
-    monkeypatch.setattr(get_download_orchestrator, "cache_clear", spy)
+    providers = (
+        get_download_orchestrator,
+        get_target_file_processor,
+        get_target_status_service,
+        get_target_download_orchestrator,
+        get_target_download_service,
+    )
+    spies = []
+    for provider in providers:
+        spy = MagicMock()
+        monkeypatch.setattr(provider, "cache_clear", spy)
+        spies.append(spy)
 
     app = _app()
     app.dependency_overrides[_get_current_admin] = mock_admin_user
@@ -122,7 +151,8 @@ def test_put_config_busts_orchestrator_singleton(monkeypatch):
         },
     )
     assert response.status_code == 200
-    spy.assert_called_once()
+    for spy in spies:
+        spy.assert_called_once()
 
 
 def test_test_connection_admin_verifies_submitted_form_values():
@@ -162,13 +192,16 @@ def test_test_connection_non_admin_forbidden():
     app = _app()
     app.dependency_overrides[_get_current_admin] = _deny_admin
     response = build_test_client(app).post(
-        "/download-client/test", json={"url": "https://slskd.example.com", "api_key": "k"}
+        "/download-client/test",
+        json={"url": "https://slskd.example.com", "api_key": "k"},
     )
     assert response.status_code == 403
 
 
 def test_status_authenticated_includes_mount(tmp_path):
-    app = _app(prefs=_prefs(library_paths=(str(tmp_path),)), client=_client(configured=True))
+    app = _app(
+        prefs=_prefs(library_paths=(str(tmp_path),)), client=_client(configured=True)
+    )
     app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user")
     response = build_test_client(app).get("/download-client/status")
     assert response.status_code == 200
@@ -195,10 +228,14 @@ def test_status_surfaces_mount_advisory_when_downloads_invisible(tmp_path, monke
 
     dl = tmp_path / "dl"
     dl.mkdir()
-    monkeypatch.setattr(dc_mod, "get_settings", lambda: MagicMock(slskd_downloads_path=dl))
+    monkeypatch.setattr(
+        dc_mod, "get_settings", lambda: MagicMock(slskd_downloads_path=dl)
+    )
     client = _client(configured=True)
     client.diagnose_downloads_mount = AsyncMock(
-        return_value=MountDiagnosis(supported=True, completed_downloads=5, mount_has_files=False)
+        return_value=MountDiagnosis(
+            supported=True, completed_downloads=5, mount_has_files=False
+        )
     )
     app = _app(prefs=_prefs(library_paths=(str(tmp_path),)), client=client)
     app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user")
@@ -215,10 +252,14 @@ def test_status_no_advisory_when_downloads_visible(tmp_path, monkeypatch):
 
     dl = tmp_path / "dl"
     dl.mkdir()
-    monkeypatch.setattr(dc_mod, "get_settings", lambda: MagicMock(slskd_downloads_path=dl))
+    monkeypatch.setattr(
+        dc_mod, "get_settings", lambda: MagicMock(slskd_downloads_path=dl)
+    )
     client = _client(configured=True)
     client.diagnose_downloads_mount = AsyncMock(
-        return_value=MountDiagnosis(supported=True, completed_downloads=5, mount_has_files=True)
+        return_value=MountDiagnosis(
+            supported=True, completed_downloads=5, mount_has_files=True
+        )
     )
     app = _app(prefs=_prefs(library_paths=(str(tmp_path),)), client=client)
     app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user")

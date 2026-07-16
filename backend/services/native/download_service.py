@@ -31,7 +31,10 @@ from models.download import (
 from repositories.protocols.download_client import DownloadClientProtocol
 from repositories.protocols.indexer import IndexerProtocol
 from services.native.acquisition.status import DownloadStatus
-from services.native.album_preflight_scorer import AlbumPreflightScorer
+from services.native.album_preflight_scorer import (
+    AlbumPreflightScorer,
+    rank_stored_candidates,
+)
 from services.native.download_orchestrator import DownloadOrchestrator
 from services.native.library_manager import LibraryManager
 from services.native.quality_tiers import should_acquire, tier_for, tier_rank
@@ -42,6 +45,7 @@ if TYPE_CHECKING:
     from services.album_service import AlbumService
     from services.native.file_processor import FileProcessor
     from services.native.musicbrainz_matcher import MusicBrainzMatcher
+    from services.native.library_ownership_service import LibraryOwnershipService
     from services.native.track_matcher import TrackMatcher
 
 logger = logging.getLogger(__name__)
@@ -73,9 +77,13 @@ def check_downloads_mount(
         existing = [lib for lib in library_paths if lib.exists()]
         same_fs = any(lib.stat().st_dev == dev for lib in existing)
     except OSError as exc:
-        return DownloadsMountStatus(ok=False, reason=f"stat_error: {exc}", path=path_str)
+        return DownloadsMountStatus(
+            ok=False, reason=f"stat_error: {exc}", path=path_str
+        )
     if existing and not same_fs:
-        return DownloadsMountStatus(ok=False, reason="different_filesystem", path=path_str)
+        return DownloadsMountStatus(
+            ok=False, reason="different_filesystem", path=path_str
+        )
     return DownloadsMountStatus(ok=True, reason="ok", path=path_str)
 
 
@@ -106,6 +114,8 @@ class DownloadService:
         quality_cutoff: str = "lossless",
         quota_service=None,  # QuotaService | None - byte-cap admission (Feature C layer 2)
         release_pin_store=None,  # AlbumReleasePinStore | None - edition pins (Feature E)
+        ownership_service: "LibraryOwnershipService | None" = None,
+        library_reconciler=None,
     ):
         self._client = download_client
         self._indexer = indexer
@@ -134,6 +144,8 @@ class DownloadService:
         self._enabled = enabled
         self._quota = quota_service
         self._pins = release_pin_store
+        self._ownership = ownership_service
+        self._library_reconciler = library_reconciler or library_manager
 
     def _ensure_enabled(self) -> None:
         # flag captured at construction; the config-save PUT clears the
@@ -143,7 +155,9 @@ class DownloadService:
                 "The download client is disabled. Enable it in Settings to start downloads."
             )
 
-    async def _already_satisfied(self, release_group_mbid: str, origin: str = "user") -> bool:
+    async def _already_satisfied(
+        self, release_group_mbid: str, origin: str = "user"
+    ) -> bool:
         """True when the library already holds this album at a quality this request won't
         improve on. Origin-aware (D18): only an ``origin='upgrade'`` request may treat a
         below-cutoff held album as not-satisfied - replace-on-import fires only for
@@ -233,6 +247,10 @@ class DownloadService:
         release_group_mbid: str | None = None,
     ) -> str:
         """Returns the new search job id, or the ``already_in_library`` sentinel."""
+        if self._ownership is not None and release_group_mbid is not None:
+            release_group_mbid = await self._ownership.provider_album_id(
+                release_group_mbid
+            )
         self._ensure_enabled()
         if release_group_mbid and await self._already_satisfied(release_group_mbid):
             return ALREADY_IN_LIBRARY
@@ -296,8 +314,12 @@ class DownloadService:
                 logger.exception("usenet album search failed for job %s", job_id)
 
         if not candidates and not soulseek_ok:
-            await self._store.update_search_job_status(job_id, "failed", error="search failed")
-            await self._bus.publish(f"search:{job_id}", "complete", {"status": "failed"})
+            await self._store.update_search_job_status(
+                job_id, "failed", error="search failed"
+            )
+            await self._bus.publish(
+                f"search:{job_id}", "complete", {"status": "failed"}
+            )
             return
         await self._store.set_search_job_candidates(job_id, candidates)
         await self._store.update_search_job_status(job_id, "completed")
@@ -336,11 +358,16 @@ class DownloadService:
                     recording_mbid=recording_mbid,
                 )
                 return await self._track_matcher.rank(
-                    track_target, results,
-                    auto_accept_threshold=self._auto, manual_threshold=self._manual,
+                    track_target,
+                    results,
+                    auto_accept_threshold=self._auto,
+                    manual_threshold=self._manual,
                 )
         return await self._scorer.rank(
-            target, results, auto_accept_threshold=self._auto, manual_threshold=self._manual
+            target,
+            results,
+            auto_accept_threshold=self._auto,
+            manual_threshold=self._manual,
         )
 
     async def _search_usenet(self, target: TargetAlbum) -> list[ScoredCandidate]:
@@ -349,8 +376,11 @@ class DownloadService:
         )
         releases = [r.usenet for r in indexer_results if r.usenet is not None]
         return await self._usenet_scorer.rank(
-            target, releases, auto_accept_threshold=self._auto,
-            manual_threshold=self._manual, track_count=target.track_count,
+            target,
+            releases,
+            auto_accept_threshold=self._auto,
+            manual_threshold=self._manual,
+            track_count=target.track_count,
         )
 
     async def scout_album(
@@ -380,20 +410,26 @@ class DownloadService:
             else None
         )
         target = TargetAlbum(
-            artist_name=artist_name, album_title=album_title,
-            year=year, track_count=track_count,
+            artist_name=artist_name,
+            album_title=album_title,
+            year=year,
+            track_count=track_count,
         )
         candidates: list[ScoredCandidate] = []
         if self._soulseek_enabled:
             try:
                 candidates.extend(await self._search_soulseek(target, single_identity))
             except Exception:
-                logger.exception("soulseek scout search failed for %s", release_group_mbid)
+                logger.exception(
+                    "soulseek scout search failed for %s", release_group_mbid
+                )
         if self._usenet_enabled:
             try:
                 candidates.extend(await self._search_usenet(target))
             except Exception:
-                logger.exception("usenet scout search failed for %s", release_group_mbid)
+                logger.exception(
+                    "usenet scout search failed for %s", release_group_mbid
+                )
         return candidates
 
     async def get_search_job(
@@ -405,9 +441,17 @@ class DownloadService:
         if job.user_id != user_id:
             raise PermissionDeniedError("Cannot view another user's search job")
         candidates = await self._store.get_search_job_candidates(job_id)
-        return job, candidates
+        target = TargetAlbum(
+            artist_name=job.artist_name,
+            album_title=job.album_title,
+            year=job.year,
+            track_count=job.track_count,
+        )
+        return job, rank_stored_candidates(target, candidates)
 
-    async def pick_candidate(self, user_id: str, job_id: str, candidate_index: int) -> str:
+    async def pick_candidate(
+        self, user_id: str, job_id: str, candidate_index: int
+    ) -> str:
         """User picked a manual-tier candidate -> resume the parked orchestrator task
         when one exists, else create a linked queued task; dispatch either way."""
         self._ensure_enabled()
@@ -453,9 +497,11 @@ class DownloadService:
         recording_mbid = track_title = None
         track_duration_seconds = None
         if job.track_count == 1:
-            recording_mbid, track_title, track_duration_seconds = (
-                await self._single_track_identity(job.release_group_mbid)
-            )
+            (
+                recording_mbid,
+                track_title,
+                track_duration_seconds,
+            ) = await self._single_track_identity(job.release_group_mbid)
 
         # Route a picked Usenet candidate to SABnzbd, not the slskd default (D2/D16).
         task = await self._store.create_task(
@@ -505,18 +551,31 @@ class DownloadService:
         """Create a download task and dispatch the orchestrator. Returns the new
         task id, the existing active task id (dedup), or the ``already_in_library``
         sentinel. The orchestrator runs search -> score -> auto-pick internally."""
+        if self._ownership is not None:
+            release_group_mbid = await self._ownership.provider_album_id(
+                release_group_mbid
+            )
+            if recording_mbid is not None:
+                recording_mbid = await self._ownership.provider_track_id(recording_mbid)
+            artist_mbid = await self._ownership.optional_provider_artist_id(artist_mbid)
         self._ensure_enabled()
         # skipped for orphan-track requests, which download a track whose album
         # isn't in the library yet
-        if download_type == "album" and await self._already_satisfied(release_group_mbid, origin):
+        if download_type == "album" and await self._already_satisfied(
+            release_group_mbid, origin
+        ):
             return ALREADY_IN_LIBRARY
 
         # track tasks dedup on the recording (not the album) so a different track of
         # the same album runs concurrently
         if download_type == "track" and recording_mbid:
-            existing = await self._store.get_active_task_for_track(recording_mbid, user_id)
+            existing = await self._store.get_active_task_for_track(
+                recording_mbid, user_id
+            )
         else:
-            existing = await self._store.get_active_task_for_album(release_group_mbid, user_id)
+            existing = await self._store.get_active_task_for_album(
+                release_group_mbid, user_id
+            )
         if existing:
             return existing.id
 
@@ -549,7 +608,10 @@ class DownloadService:
             if cleared:
                 logger.info(
                     "download.blocklist_cleared_on_request",
-                    extra={"release_group_mbid": release_group_mbid, "cleared": cleared},
+                    extra={
+                        "release_group_mbid": release_group_mbid,
+                        "cleared": cleared,
+                    },
                 )
 
         # Folder naming uses the request's year ({album} ({year})); compact request
@@ -557,7 +619,11 @@ class DownloadService:
         # queue UI's artist link) from the release group when missing, or the folder
         # is created as "Album ()". After dedup, so it runs once per new request;
         # best-effort, since a MusicBrainz failure must not fail the download.
-        if (year is None or artist_mbid is None) and release_group_mbid and self._mb is not None:
+        if (
+            (year is None or artist_mbid is None)
+            and release_group_mbid
+            and self._mb is not None
+        ):
             try:
                 album_meta = await self._mb.get_release_group(release_group_mbid)
             except Exception:  # noqa: BLE001 - year is best-effort, never block the request
@@ -588,9 +654,11 @@ class DownloadService:
             and track_count == 1
             and not (recording_mbid or track_title or track_duration_seconds)
         ):
-            recording_mbid, track_title, track_duration_seconds = (
-                await self._single_track_identity(release_group_mbid)
-            )
+            (
+                recording_mbid,
+                track_title,
+                track_duration_seconds,
+            ) = await self._single_track_identity(release_group_mbid)
 
         task = await self._store.create_task(
             user_id=user_id,
@@ -626,6 +694,13 @@ class DownloadService:
         """Request a single track. Orphan tracks (album not in the library) resolve
         the release group via MusicBrainz, auto-create the album folder, and download
         the one track; the album appears partially present."""
+        if self._ownership is not None:
+            recording_mbid = await self._ownership.provider_track_id(recording_mbid)
+            if release_group_mbid is not None:
+                release_group_mbid = await self._ownership.provider_album_id(
+                    release_group_mbid
+                )
+            artist_mbid = await self._ownership.optional_provider_artist_id(artist_mbid)
         self._ensure_enabled()
         if recording_mbid:
             if origin == "upgrade":
@@ -642,7 +717,9 @@ class DownloadService:
 
         if not release_group_mbid:
             if self._matcher is None:
-                raise ValidationError("Per-track download is unavailable (no MusicBrainz resolver)")
+                raise ValidationError(
+                    "Per-track download is unavailable (no MusicBrainz resolver)"
+                )
             release_group_mbid = await self._matcher.resolve_recording_to_release_group(
                 recording_mbid
             )
@@ -653,7 +730,9 @@ class DownloadService:
                 )
 
         year: int | None = None
-        if (not album_title or not artist_name or not artist_mbid) and self._mb is not None:
+        if (
+            not album_title or not artist_name or not artist_mbid
+        ) and self._mb is not None:
             album_meta = await self._mb.get_release_group(release_group_mbid)
             if album_meta is not None:
                 album_title = album_title or album_meta.title
@@ -753,9 +832,13 @@ class DownloadService:
         if not release_id:
             raise ValidationError("No edition is pinned or owned for this album")
         try:
-            release = await self._mb.get_release_by_id(release_id, includes=["recordings"])
+            release = await self._mb.get_release_by_id(
+                release_id, includes=["recordings"]
+            )
         except Exception as exc:  # noqa: BLE001 - MB hiccup -> clean 400, not a 500
-            raise ValidationError("Could not load that edition from MusicBrainz") from exc
+            raise ValidationError(
+                "Could not load that edition from MusicBrainz"
+            ) from exc
         if not release:
             raise ValidationError("Could not load that edition from MusicBrainz")
         from services.album_utils import extract_tracks
@@ -781,7 +864,8 @@ class DownloadService:
         # positional fallback is best-effort and lossy across editions (a deluxe's
         # position N != the standard's), so recording matching is preferred
         by_position = {
-            (int(r.get("disc_number") or 1), int(r.get("track_number") or 0)): r for r in rows
+            (int(r.get("disc_number") or 1), int(r.get("track_number") or 0)): r
+            for r in rows
         }
 
         requested = upgraded = skipped = 0
@@ -900,7 +984,10 @@ class DownloadService:
         if cancelled:
             logger.info(
                 "download.album_retries_cancelled",
-                extra={"release_group_mbid": release_group_mbid, "count": len(cancelled)},
+                extra={
+                    "release_group_mbid": release_group_mbid,
+                    "count": len(cancelled),
+                },
             )
         return len(cancelled)
 
@@ -956,7 +1043,9 @@ class DownloadService:
         self, user_id: str, user_role: str, release_group_mbid: str | None = None
     ) -> list["HeldImport"]:
         """Tracks held for review, optionally scoped to one album (the album page)."""
-        return await self._store.list_held_imports(user_id, user_role, release_group_mbid)
+        return await self._store.list_held_imports(
+            user_id, user_role, release_group_mbid
+        )
 
     async def get_held(
         self, held_id: int, user_id: str, user_role: str
@@ -982,7 +1071,9 @@ class DownloadService:
             ) from exc
         await self._store.resolve_held_import(held_id, "imported")
         try:
-            await self._library.reconcile_with_filesystem(targets=[target.parent])
+            await self._library_reconciler.reconcile_with_filesystem(
+                targets=[target.parent]
+            )
         except Exception:  # noqa: BLE001 - reconcile is best-effort
             logger.warning("post-held-import reconcile failed for %s", target)
         # the import may have completed the album - settle the source task so a finished
@@ -990,11 +1081,16 @@ class DownloadService:
         try:
             await self._orchestrator.settle_after_manual_import(held.source_task_id)
         except Exception:  # noqa: BLE001
-            logger.warning("post-held-import task settle failed for %s", held.source_task_id)
+            logger.warning(
+                "post-held-import task settle failed for %s", held.source_task_id
+            )
         logger.info(
             "download.held_imported",
-            extra={"held_id": held_id, "release_group_mbid": held.release_group_mbid,
-                   "track": held.track_title},
+            extra={
+                "held_id": held_id,
+                "release_group_mbid": held.release_group_mbid,
+                "track": held.track_title,
+            },
         )
         return str(target)
 
@@ -1025,7 +1121,8 @@ class DownloadService:
         )
         if cleared:
             logger.info(
-                "download.cleared_finished", extra={"user_id": user_id, "count": cleared}
+                "download.cleared_finished",
+                extra={"user_id": user_id, "count": cleared},
             )
         return cleared
 

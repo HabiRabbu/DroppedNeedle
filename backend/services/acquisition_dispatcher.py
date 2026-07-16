@@ -4,8 +4,10 @@ A user-configured download client (slskd or Usenet) wins when one is set up;
 otherwise the request goes to Free Music (D24), the native lawful client. This is
 the single place that choice is made, so every acquisition path - interactive
 album and track requests, batch requests, Weekly Mix, new-release auto-download,
-the wanted watcher - routes the same way. After 2.0 deletes slskd and Usenet, the
-builtin branch goes and this always routes to Free Music.
+and request approvals routes the same way. The wanted watcher remains on the
+built-in client because it needs source scouting and partial-track acquisition.
+After 2.0 deletes slskd and Usenet, that watcher will be reworked separately and
+this dispatcher will always route to Free Music.
 
 The method signatures mirror ``DownloadService`` exactly, so a call site swaps the
 receiver and nothing else. Free Music ignores the args it has no use for (year,
@@ -20,6 +22,7 @@ if TYPE_CHECKING:
     from services.native.download_service import DownloadService
     from services.native.free_music_service import FreeMusicService
     from services.preferences_service import PreferencesService
+    from services.native.library_ownership_service import LibraryOwnershipService
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +34,14 @@ class AcquisitionDispatcher:
         get_download_service: "Callable[[], DownloadService]",
         get_free_music_service: "Callable[[], FreeMusicService]",
         preferences_service: "PreferencesService",
+        ownership_service: "LibraryOwnershipService | None" = None,
     ) -> None:
         # both resolved fresh per call: a settings save rebuilds the DownloadService
         # singleton, and Free Music reads its own settings per request
         self._get_download_service = get_download_service
         self._get_free_music_service = get_free_music_service
         self._prefs = preferences_service
+        self._ownership = ownership_service
 
     def _use_free_music(self) -> bool:
         if self._prefs.is_builtin_download_ready():
@@ -59,6 +64,14 @@ class AcquisitionDispatcher:
         origin: str = "user",
         release_mbid: str | None = None,
     ) -> str:
+        if self._ownership is not None:
+            release_group_mbid = await self._ownership.provider_album_id(
+                release_group_mbid
+            )
+            if recording_mbid is not None:
+                recording_mbid = await self._ownership.provider_track_id(recording_mbid)
+            if artist_mbid is not None:
+                artist_mbid = await self._ownership.provider_artist_id(artist_mbid)
         if self._use_free_music():
             return await self._get_free_music_service().request_album(
                 user_id=user_id,
@@ -96,6 +109,14 @@ class AcquisitionDispatcher:
         origin: str = "user",
         release_mbid: str | None = None,
     ) -> str:
+        if self._ownership is not None:
+            recording_mbid = await self._ownership.provider_track_id(recording_mbid)
+            if release_group_mbid is not None:
+                release_group_mbid = await self._ownership.provider_album_id(
+                    release_group_mbid
+                )
+            if artist_mbid is not None:
+                artist_mbid = await self._ownership.provider_artist_id(artist_mbid)
         if self._use_free_music():
             return await self._get_free_music_service().request_track(
                 user_id=user_id,

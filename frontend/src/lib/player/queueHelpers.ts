@@ -326,17 +326,18 @@ export function buildDiscoveryQueueFromNavidrome(tracks: NavidromeTrackInfo[]): 
 
 export function buildDiscoveryQueueFromLocal(tracks: NativeTrackListItem[]): QueueItem[] {
 	return tracks.map((t) => ({
-		trackSourceId: t.track_file_id,
+		trackSourceId: t.id,
 		trackName: t.title,
 		artistName: t.artist_name,
 		trackNumber: t.track_number,
 		discNumber: normalizeDiscNumber(t.disc_number),
-		albumId: t.album_mbid ?? '',
-		albumName: t.album_name,
-		coverUrl: getCoverUrl(t.cover_url, t.album_mbid ?? ''),
-		coverRemoteUrl: t.cover_url ?? null,
+		albumId: t.album_id,
+		albumName: t.album_title,
+		coverUrl: getCoverUrl(null, t.album_id),
+		coverRemoteUrl: null,
 		sourceType: 'local' as const,
-		streamUrl: API.stream.local(t.track_file_id),
+		artistId: t.artist_id,
+		streamUrl: API.stream.local(t.id),
 		format: (t.format ?? '').toLowerCase(),
 		availableSources: ['local'] as SourceType[],
 		duration: t.duration_seconds ?? undefined

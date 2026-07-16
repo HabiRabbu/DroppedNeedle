@@ -38,7 +38,9 @@ class _FakeScanner:
         self.scanned_force: bool | None = None
         self.cancelled = False
 
-    async def scan(self, library_paths, resume: bool = False, force: bool = False) -> None:
+    async def scan(
+        self, library_paths, resume: bool = False, force: bool = False
+    ) -> None:
         self.scanned_with = library_paths
         self.scanned_force = force
 
@@ -47,8 +49,8 @@ class _FakeScanner:
 
 
 class _FakePrefs:
-    def get_library_settings_raw(self):
-        return SimpleNamespace(library_paths=["/music"])
+    def get_typed_library_settings_raw(self):
+        return SimpleNamespace(library_roots=[SimpleNamespace(path="/music")])
 
 
 class _FakeCache:
@@ -118,7 +120,9 @@ def test_start_scan_default_is_not_forced(admin_client, fake_scanner, fake_cache
     assert fake_cache.cleared == []
 
 
-def test_start_scan_force_clears_mb_cache_and_passes_force(admin_client, fake_scanner, fake_cache):
+def test_start_scan_force_clears_mb_cache_and_passes_force(
+    admin_client, fake_scanner, fake_cache
+):
     resp = admin_client.post("/library/scan/start?force=true")
     assert resp.status_code == 202
     assert fake_scanner.scanned_force is True
@@ -142,8 +146,8 @@ def test_start_scan_conflict_when_already_scanning(admin_client, scan_store):
 
 def test_start_scan_400_when_no_library_paths(app):
     class _EmptyPrefs:
-        def get_library_settings_raw(self):
-            return SimpleNamespace(library_paths=[])
+        def get_typed_library_settings_raw(self):
+            return SimpleNamespace(library_roots=[])
 
     app.dependency_overrides[get_preferences_service] = lambda: _EmptyPrefs()
     override_admin_auth(app)
@@ -219,7 +223,9 @@ def test_resolve_unmatched_accept_returns_resolved(app):
     override_admin_auth(app)
     override_user_auth(app, role="admin")
     client = build_test_client(app)
-    resp = client.post("/library/scan/unmatched/1/resolve", json={"resolution": "accept"})
+    resp = client.post(
+        "/library/scan/unmatched/1/resolve", json={"resolution": "accept"}
+    )
     assert resp.status_code == 200
     assert resp.json()["status"] == "resolved"
     scanner.resolve_unmatched.assert_awaited_once_with(1, "accept", None)
@@ -247,7 +253,9 @@ def test_resolve_unmatched_unknown_id_returns_404(app):
     override_admin_auth(app)
     override_user_auth(app, role="admin")
     client = build_test_client(app)
-    resp = client.post("/library/scan/unmatched/99/resolve", json={"resolution": "reject"})
+    resp = client.post(
+        "/library/scan/unmatched/99/resolve", json={"resolution": "reject"}
+    )
     assert resp.status_code == 404
 
 
@@ -260,7 +268,9 @@ def test_resolve_unmatched_bad_request_returns_400(app):
     override_admin_auth(app)
     override_user_auth(app, role="admin")
     client = build_test_client(app)
-    resp = client.post("/library/scan/unmatched/1/resolve", json={"resolution": "accept"})
+    resp = client.post(
+        "/library/scan/unmatched/1/resolve", json={"resolution": "accept"}
+    )
     assert resp.status_code == 400
 
 
@@ -271,5 +281,7 @@ def test_resolve_unmatched_forbidden_for_non_admin(app):
     app.dependency_overrides[_get_current_admin] = reject_admin
     override_user_auth(app, role="user")
     client = build_test_client(app)
-    resp = client.post("/library/scan/unmatched/1/resolve", json={"resolution": "reject"})
+    resp = client.post(
+        "/library/scan/unmatched/1/resolve", json={"resolution": "reject"}
+    )
     assert resp.status_code == 403

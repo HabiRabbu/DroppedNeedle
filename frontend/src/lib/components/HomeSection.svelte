@@ -9,7 +9,12 @@
 	import type { Snippet } from 'svelte';
 	import { ArrowRight, X, Check, Disc3, Music2, Tv, Sparkles, Search } from 'lucide-svelte';
 	import { goto } from '$app/navigation';
-	import { albumHrefOrNull, artistHrefOrNull } from '$lib/utils/entityRoutes';
+	import {
+		albumHrefOrNull,
+		artistHrefOrNull,
+		localAlbumHref,
+		localArtistHref
+	} from '$lib/utils/entityRoutes';
 	import { formatListenCount, formatListenedAt } from '$lib/utils/formatting';
 	import { integrationStore } from '$lib/stores/integration';
 	import { libraryStore } from '$lib/stores/library';
@@ -155,7 +160,8 @@
 		<HorizontalCarousel class="-mx-4 px-4 sm:mx-0 sm:px-0 pb-2">
 			{#each section.items as item, i (`${item.name}-${i}`)}
 				{#if isArtist(item)}
-					{@const artistHref = artistHrefOrNull(item.mbid)}
+					{@const artistHref =
+						artistHrefOrNull(item.mbid) ?? (item.local_id ? localArtistHref(item.local_id) : null)}
 					<div class="w-32 sm:w-36 md:w-44 shrink-0">
 						<svelte:element
 							this={artistHref ? 'a' : 'div'}
@@ -190,7 +196,8 @@
 						</svelte:element>
 					</div>
 				{:else if isAlbum(item)}
-					{@const albumHref = albumHrefOrNull(item.mbid)}
+					{@const albumHref =
+						albumHrefOrNull(item.mbid) ?? (item.local_id ? localAlbumHref(item.local_id) : null)}
 					{@const isItemRequested = item.requested || libraryStore.isRequested(item.mbid)}
 					<div class="w-32 sm:w-36 md:w-44 shrink-0">
 						<svelte:element
@@ -223,7 +230,7 @@
 										size="sm"
 									/>
 								{/if}
-								{#if !item.mbid}
+								{#if !item.mbid && !item.local_id}
 									<button
 										type="button"
 										class="btn btn-ghost btn-xs btn-circle absolute bottom-2 right-2"

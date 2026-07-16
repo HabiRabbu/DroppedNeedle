@@ -26,7 +26,9 @@ from services.native.download_service import check_downloads_mount
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(route_class=MsgSpecRoute, prefix="/download-client", tags=["download-client"])
+router = APIRouter(
+    route_class=MsgSpecRoute, prefix="/download-client", tags=["download-client"]
+)
 
 
 @router.get("/config", response_model=DownloadClientConnectionSettings)
@@ -37,7 +39,9 @@ async def get_config(_: CurrentAdminDep, preferences=Depends(get_preferences_ser
 @router.put("/config", response_model=DownloadClientConnectionSettings)
 async def update_config(
     _: CurrentAdminDep,
-    settings: DownloadClientConnectionSettings = MsgSpecBody(DownloadClientConnectionSettings),
+    settings: DownloadClientConnectionSettings = MsgSpecBody(
+        DownloadClientConnectionSettings
+    ),
     preferences=Depends(get_preferences_service),
 ):
     preferences.save_download_client_settings(settings)
@@ -57,6 +61,10 @@ async def update_config(
         get_slskd_indexer,
         get_slskd_repository,
         get_status_service,
+        get_target_download_orchestrator,
+        get_target_download_service,
+        get_target_file_processor,
+        get_target_status_service,
         get_track_matcher,
     )
 
@@ -74,6 +82,10 @@ async def update_config(
         get_status_service,
         get_download_orchestrator,
         get_download_service,
+        get_target_file_processor,
+        get_target_status_service,
+        get_target_download_orchestrator,
+        get_target_download_service,
     ):
         provider.cache_clear()
     return preferences.get_download_client_settings()
@@ -82,14 +94,18 @@ async def update_config(
 @router.post("/test", response_model=TestConnectionResponse)
 async def test_connection(
     _: CurrentAdminDep,
-    settings: DownloadClientConnectionSettings = MsgSpecBody(DownloadClientConnectionSettings),
+    settings: DownloadClientConnectionSettings = MsgSpecBody(
+        DownloadClientConnectionSettings
+    ),
     settings_service=Depends(get_settings_service),
 ):
     # tests credentials in the request body, not stored config, so Test works
     # before the first save and reflects edits
     status = await settings_service.verify_download_client(settings)
     return TestConnectionResponse(
-        valid=status.status == "ok", version=status.version, message=status.message or ""
+        valid=status.status == "ok",
+        version=status.version,
+        message=status.message or "",
     )
 
 
@@ -100,7 +116,10 @@ async def get_status(
     preferences=Depends(get_preferences_service),
 ):
     app_settings = get_settings()
-    library_paths = [Path(p) for p in preferences.get_library_settings().library_paths]
+    library_paths = [
+        Path(root.path)
+        for root in preferences.get_typed_library_settings().library_roots
+    ]
     # Offload the blocking stat/access syscalls (slow on network mounts) off the loop.
     mount = await asyncio.to_thread(
         check_downloads_mount, app_settings.slskd_downloads_path, library_paths
@@ -138,6 +157,9 @@ async def get_status(
                     f"folder. Point it at the completed-downloads folder."
                 )
     return DownloadClientStatusResponse(
-        configured=configured, client=client_status, mount=mount,
-        mount_advisory=advisory, slskd_downloads_dir=slskd_dir,
+        configured=configured,
+        client=client_status,
+        mount=mount,
+        mount_advisory=advisory,
+        slskd_downloads_dir=slskd_dir,
     )

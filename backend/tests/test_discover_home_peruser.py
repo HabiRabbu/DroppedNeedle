@@ -45,15 +45,23 @@ def _global_prefs() -> MagicMock:
     yt = _conn(api_enabled=False)
     yt.has_valid_api_key = MagicMock(return_value=False)
     prefs.get_youtube_connection.return_value = yt
-    prefs.get_navidrome_connection.return_value = _conn(navidrome_url="", username="", password="")
-    prefs.get_plex_connection.return_value = _conn(plex_url="", plex_token="", music_library_ids=[])
+    prefs.get_navidrome_connection.return_value = _conn(
+        navidrome_url="", username="", password=""
+    )
+    prefs.get_plex_connection.return_value = _conn(
+        plex_url="", plex_token="", music_library_ids=[]
+    )
     prefs.is_lastfm_enabled.return_value = False
-    prefs.get_lastfm_connection.return_value = _conn(api_key="", shared_secret="", session_key="", username="")
+    prefs.get_lastfm_connection.return_value = _conn(
+        api_key="", shared_secret="", session_key="", username=""
+    )
     prefs.get_primary_music_source.return_value = SimpleNamespace(source="listenbrainz")
     return prefs
 
 
-def _factory(*, lb_linked: bool, lfm_linked: bool, lb_username="lbuser", lfm_username="lfmuser") -> MagicMock:
+def _factory(
+    *, lb_linked: bool, lfm_linked: bool, lb_username="lbuser", lfm_username="lfmuser"
+) -> MagicMock:
     f = MagicMock()
     lb_repo = None
     if lb_linked:
@@ -69,8 +77,12 @@ def _factory(*, lb_linked: bool, lfm_linked: bool, lb_username="lbuser", lfm_use
         lfm_repo.get_user_loved_tracks = AsyncMock(return_value=[])
     f.resolve_listenbrainz = AsyncMock(return_value=lb_repo)
     f.resolve_lastfm = AsyncMock(return_value=lfm_repo)
-    f.resolve_listenbrainz_username = AsyncMock(return_value=lb_username if lb_linked else None)
-    f.resolve_lastfm_username = AsyncMock(return_value=lfm_username if lfm_linked else None)
+    f.resolve_listenbrainz_username = AsyncMock(
+        return_value=lb_username if lb_linked else None
+    )
+    f.resolve_lastfm_username = AsyncMock(
+        return_value=lfm_username if lfm_linked else None
+    )
     return f
 
 
@@ -87,7 +99,9 @@ def _play_record(track: str, artist: str = "Artist") -> SimpleNamespace:
     )
 
 
-def _home_service(factory: MagicMock, *, cache: _FakeCache | None = None, play_records=None):
+def _home_service(
+    factory: MagicMock, *, cache: _FakeCache | None = None, play_records=None
+):
     lb_repo = AsyncMock()
     lb_repo.get_sitewide_top_artists = AsyncMock(return_value=[])
     lb_repo.get_sitewide_top_release_groups = AsyncMock(return_value=[])
@@ -102,7 +116,9 @@ def _home_service(factory: MagicMock, *, cache: _FakeCache | None = None, play_r
     library_repo.get_recently_imported = AsyncMock(return_value=[])
 
     prefs_store = MagicMock()
-    prefs_store.get = AsyncMock(return_value=SimpleNamespace(primary_music_source="listenbrainz"))
+    prefs_store.get = AsyncMock(
+        return_value=SimpleNamespace(primary_music_source="listenbrainz")
+    )
 
     play_store = MagicMock()
     play_store.recent = AsyncMock(return_value=play_records or [])
@@ -124,8 +140,14 @@ def _home_service(factory: MagicMock, *, cache: _FakeCache | None = None, play_r
 
 @pytest.mark.asyncio
 async def test_recently_played_is_per_user_from_play_history():
-    svc_a, _ = _home_service(_factory(lb_linked=True, lfm_linked=False), play_records=[_play_record("Song A")])
-    svc_b, _ = _home_service(_factory(lb_linked=False, lfm_linked=False), play_records=[_play_record("Song B")])
+    svc_a, _ = _home_service(
+        _factory(lb_linked=True, lfm_linked=False),
+        play_records=[_play_record("Song A")],
+    )
+    svc_b, _ = _home_service(
+        _factory(lb_linked=False, lfm_linked=False),
+        play_records=[_play_record("Song B")],
+    )
 
     resp_a = await svc_a.get_home_data("user-a")
     resp_b = await svc_b.get_home_data("user-b")
@@ -138,7 +160,10 @@ async def test_recently_played_is_per_user_from_play_history():
 
 @pytest.mark.asyncio
 async def test_unlinked_user_omits_personalized_and_shows_connect_prompt():
-    svc, _ = _home_service(_factory(lb_linked=False, lfm_linked=False), play_records=[_play_record("Local Song")])
+    svc, _ = _home_service(
+        _factory(lb_linked=False, lfm_linked=False),
+        play_records=[_play_record("Local Song")],
+    )
 
     resp = await svc.get_home_data("unlinked-user")
 
@@ -157,8 +182,16 @@ async def test_unlinked_user_omits_personalized_and_shows_connect_prompt():
 @pytest.mark.asyncio
 async def test_two_linked_users_write_distinct_cache_entries():
     cache = _FakeCache()
-    svc_a, _ = _home_service(_factory(lb_linked=True, lfm_linked=False), cache=cache, play_records=[_play_record("A")])
-    svc_b, _ = _home_service(_factory(lb_linked=True, lfm_linked=False), cache=cache, play_records=[_play_record("B")])
+    svc_a, _ = _home_service(
+        _factory(lb_linked=True, lfm_linked=False),
+        cache=cache,
+        play_records=[_play_record("A")],
+    )
+    svc_b, _ = _home_service(
+        _factory(lb_linked=True, lfm_linked=False),
+        cache=cache,
+        play_records=[_play_record("B")],
+    )
 
     # the SWR shell hands the full build to warm_cache; that's the cache writer now
     await svc_a.warm_cache("user-a")
@@ -266,8 +299,11 @@ async def test_seed_artists_fall_back_to_broader_ranges():
     client.get_user_top_artists = AsyncMock(side_effect=top_artists)
 
     seeds = await svc._get_seed_artists(
-        lb_enabled=True, username="u", jf_enabled=False,
-        resolved_source="listenbrainz", lb_client=client,
+        lb_enabled=True,
+        username="u",
+        jf_enabled=False,
+        resolved_source="listenbrainz",
+        lb_client=client,
     )
     assert [s.artist_mbids[0] for s in seeds] == ["mbid-1"]
 
@@ -288,6 +324,7 @@ def _swr_service(cache_key: str, cached_response):
     svc._integration = MagicMock()
     svc._integration.get_discover_cache_key.return_value = cache_key
     svc._trigger_warm = MagicMock()
+    svc._genre_artwork = None
     return svc
 
 
@@ -358,7 +395,9 @@ def _miss_service(built_at: dict):
     svc._building_keys = set()
     svc._memory_cache = _FakeCache()  # no cached response -> cache miss
     svc._integration = MagicMock()
-    svc._integration.get_discover_cache_key.return_value = "discover_response:u1:True:False"
+    svc._integration.get_discover_cache_key.return_value = (
+        "discover_response:u1:True:False"
+    )
     svc._integration.get_integration_status.return_value = MagicMock()
     svc._build_service_prompts = MagicMock(return_value=[])
     svc._trigger_warm = MagicMock()

@@ -2,7 +2,10 @@
 	import { Disc3, Users, Music2, ArrowUpRight } from 'lucide-svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import ArtistImage from '$lib/components/ArtistImage.svelte';
-	import { getLibraryArtistThumbsQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import {
+		getLibraryArtistThumbsQuery,
+		getLibraryRecentlyAddedQuery
+	} from '$lib/queries/library/LibraryQueries.svelte';
 	import type { LibraryStats } from '$lib/types';
 
 	interface Props {
@@ -15,28 +18,29 @@
 		mbid: string;
 		remoteUrl: string | null;
 		type: 'album' | 'artist';
+		available: boolean;
 	}
 
 	const artistThumbsQuery = getLibraryArtistThumbsQuery();
+	const recentlyAddedQuery = getLibraryRecentlyAddedQuery();
 
 	const albumArt = $derived<Art[]>(
-		(stats.recently_added ?? []).slice(0, 9).map((a) => ({
-			key: a.release_group_mbid,
-			mbid: a.release_group_mbid,
-			remoteUrl: a.cover_url,
-			type: 'album'
+		(recentlyAddedQuery.data?.items ?? []).slice(0, 9).map((a) => ({
+			key: a.id,
+			mbid: a.id,
+			remoteUrl: null,
+			type: 'album',
+			available: a.cover_available
 		}))
 	);
 	const artistArt = $derived<Art[]>(
-		(artistThumbsQuery.data?.items ?? [])
-			.filter((a) => a.artist_mbid)
-			.slice(0, 9)
-			.map((a) => ({
-				key: a.artist_mbid as string,
-				mbid: a.artist_mbid as string,
-				remoteUrl: null,
-				type: 'artist'
-			}))
+		(artistThumbsQuery.data?.items ?? []).slice(0, 9).map((a) => ({
+			key: a.id,
+			mbid: a.id,
+			remoteUrl: null,
+			type: 'artist',
+			available: a.musicbrainz_artist_id !== null
+		}))
 	);
 	// rotate the reused album pool so the tracks fan never mirrors the albums fan in a small library
 	const trackArt = $derived<Art[]>(
@@ -119,6 +123,8 @@
 					{#if item.type === 'album'}
 						<AlbumImage
 							mbid={item.mbid}
+							source="local"
+							available={item.available}
 							remoteUrl={item.remoteUrl}
 							alt=""
 							size="full"
@@ -128,6 +134,8 @@
 					{:else}
 						<ArtistImage
 							mbid={item.mbid}
+							source="local"
+							available={item.available}
 							remoteUrl={item.remoteUrl}
 							alt=""
 							size="full"

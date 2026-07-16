@@ -1,11 +1,9 @@
 <script lang="ts">
-	import { Search, X, Users, Music2, Play, ArrowUpRight } from 'lucide-svelte';
+	import { Search, X, Music2, Play, ArrowUpRight } from 'lucide-svelte';
 	import { fly, fade } from 'svelte/transition';
 	import { getLibrarySearchQuery } from '$lib/queries/library/LibraryQueries.svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import ArtistImage from '$lib/components/ArtistImage.svelte';
-	import { isValidMbid } from '$lib/utils/formatting';
-	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 	import { buildDiscoveryQueueFromLocal } from '$lib/player/queueHelpers';
 	import { playerStore } from '$lib/stores/player.svelte';
 	import type { NativeTrackListItem } from '$lib/types';
@@ -203,45 +201,31 @@
 						>
 							Artists
 						</div>
-						{#each results.artists as artist (artist.artist_name + (artist.artist_mbid ?? ''))}
-							{@const artistLinkable = isValidMbid(artist.artist_mbid)}
-							<svelte:element
-								this={artistLinkable ? 'a' : 'div'}
-								href={artistLinkable && artist.artist_mbid
-									? artistHref(artist.artist_mbid)
-									: undefined}
-								class="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-base-content/5 {artistLinkable
-									? ''
-									: 'cursor-default opacity-80'}"
+						{#each results.artists as artist (artist.id)}
+							<a
+								href={`/artist/${artist.musicbrainz_artist_id ?? artist.id}`}
+								class="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-base-content/5"
 							>
-								{#if artistLinkable}
-									<div class="h-10 w-10 shrink-0 overflow-hidden rounded-full">
-										<ArtistImage
-											mbid={artist.artist_mbid ?? ''}
-											alt={artist.artist_name}
-											size="xs"
-											className="h-full w-full object-cover"
-										/>
-									</div>
-								{:else}
-									<div
-										class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent ring-1 ring-accent/25"
-									>
-										<Users class="h-5 w-5" />
-									</div>
-								{/if}
+								<div class="h-10 w-10 shrink-0 overflow-hidden rounded-full">
+									<ArtistImage
+										mbid={artist.id}
+										source="local"
+										available={artist.musicbrainz_artist_id !== null}
+										alt={artist.name}
+										size="xs"
+										className="h-full w-full object-cover"
+									/>
+								</div>
 								<div class="min-w-0 flex-1">
-									<div class="truncate text-sm font-semibold">{artist.artist_name}</div>
+									<div class="truncate text-sm font-semibold">{artist.name}</div>
 									<div class="truncate text-xs text-base-content/50">
 										{artist.album_count}
 										{artist.album_count === 1 ? 'album' : 'albums'} · {artist.track_count}
 										{artist.track_count === 1 ? 'track' : 'tracks'}
 									</div>
 								</div>
-								{#if artistLinkable}
-									<ArrowUpRight class="h-4 w-4 shrink-0 text-base-content/30" />
-								{/if}
-							</svelte:element>
+								<ArrowUpRight class="h-4 w-4 shrink-0 text-base-content/30" />
+							</a>
 						{/each}
 					{/if}
 
@@ -251,27 +235,26 @@
 						>
 							Albums
 						</div>
-						{#each results.albums as album (album.release_group_mbid)}
+						{#each results.albums as album (album.id)}
 							<a
-								href={albumHref(album.release_group_mbid)}
+								href={`/album/${album.musicbrainz_release_group_id ?? album.id}`}
 								class="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-base-content/5"
 							>
 								<div class="h-10 w-10 shrink-0 overflow-hidden rounded-md">
 									<AlbumImage
-										mbid={album.release_group_mbid}
-										remoteUrl={album.cover_url}
-										alt={album.album_title}
+										mbid={album.id}
+										source="local"
+										available={album.cover_available}
+										alt={album.title}
 										size="xs"
 										rounded="none"
 										className="h-full w-full object-cover"
 									/>
 								</div>
 								<div class="min-w-0 flex-1">
-									<div class="truncate text-sm font-semibold">{album.album_title}</div>
+									<div class="truncate text-sm font-semibold">{album.title}</div>
 									<div class="truncate text-xs text-base-content/50">
-										{album.year ?? 'Unknown'}{album.album_artist_name
-											? ` · ${album.album_artist_name}`
-											: ''}
+										{album.year ?? 'Unknown'}{album.artist_name ? ` · ${album.artist_name}` : ''}
 									</div>
 								</div>
 								<span class="shrink-0 text-xs text-base-content/40">
@@ -288,16 +271,17 @@
 						>
 							Tracks
 						</div>
-						{#each results.tracks as track (track.track_file_id)}
+						{#each results.tracks as track (track.id)}
 							<button
 								onclick={() => playTrack(track)}
 								class="group/track flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-base-content/5"
 							>
 								<div class="relative h-10 w-10 shrink-0 overflow-hidden rounded-md">
 									<AlbumImage
-										mbid={track.album_mbid ?? ''}
-										remoteUrl={track.cover_url}
-										alt={track.album_name}
+										mbid={track.album_id}
+										source="local"
+										available={track.cover_available}
+										alt={track.album_title}
 										size="xs"
 										rounded="none"
 										className="h-full w-full object-cover"
@@ -311,7 +295,7 @@
 								<div class="min-w-0 flex-1">
 									<div class="truncate text-sm font-semibold">{track.title}</div>
 									<div class="truncate text-xs text-base-content/50">
-										{track.artist_name}{track.album_name ? ` · ${track.album_name}` : ''}
+										{track.artist_name}{track.album_title ? ` · ${track.album_title}` : ''}
 									</div>
 								</div>
 								<Music2 class="h-4 w-4 shrink-0 text-base-content/25" />

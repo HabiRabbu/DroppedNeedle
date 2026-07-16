@@ -36,7 +36,12 @@
 	const candidates = $derived(jobQuery.data?.candidates ?? []);
 	// Keep each candidate's ORIGINAL index - the backend's candidate_index is into the
 	// full pooled list, so grouping/truncating must not renumber.
-	const indexed = $derived(candidates.map((candidate, index) => ({ candidate, index })));
+	const indexed = $derived(
+		candidates.map((candidate, index) => ({
+			candidate,
+			index: candidate.candidate_index ?? index
+		}))
+	);
 	// Source-grouped (D16): Soulseek and Usenet scores aren't commensurable, so they show
 	// in separate labelled groups, ranked within each - never interleaved.
 	const groups = $derived(
@@ -80,25 +85,28 @@
 			anything that can't be verified is held for you to listen to first.
 		</p>
 		{#each groups as group (group.key)}
-			{@const visible = showAll ? group.items : group.items.slice(0, 3)}
-			<div class="space-y-2">
-				<p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
-					{group.label}
-				</p>
-				{#each visible as { candidate, index } (index)}
-					<SearchResultCard
-						{candidate}
-						albumTitle={task.album_title}
-						viaAlbumNzb={group.key === 'usenet' && isTrack}
-						picking={pickingIndex === index}
-						disabled={picked || pickingIndex !== null}
-						onPick={() => handlePick(index)}
-					/>
-				{/each}
-			</div>
+			{@const recommended = group.items.filter((item) => item.candidate.tier !== 'rejected')}
+			{@const visible = showAll ? group.items : recommended.slice(0, 3)}
+			{#if visible.length > 0}
+				<div class="space-y-2">
+					<p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+						{group.label}
+					</p>
+					{#each visible as { candidate, index } (index)}
+						<SearchResultCard
+							{candidate}
+							albumTitle={task.album_title}
+							viaAlbumNzb={group.key === 'usenet' && isTrack}
+							picking={pickingIndex === index}
+							disabled={picked || pickingIndex !== null}
+							onPick={() => handlePick(index)}
+						/>
+					{/each}
+				</div>
+			{/if}
 		{/each}
 		<div class="flex items-center justify-between gap-2">
-			{#if groups.some((g) => g.items.length > 3)}
+			{#if groups.some((g) => g.items.length > 3 || g.items.some((item) => item.candidate.tier === 'rejected'))}
 				<button class="btn btn-ghost btn-xs" onclick={() => (showAll = !showAll)}>
 					{showAll ? 'Show fewer' : `Show all ${candidates.length} candidates`}
 				</button>

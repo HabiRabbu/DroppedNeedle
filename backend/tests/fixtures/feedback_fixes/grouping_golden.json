@@ -1,0 +1,75 @@
+[
+  {
+    "name": "single_directory_album",
+    "tracks": [
+      {"id": "a1", "path": "Artist/Album/01.flac", "album": "Album", "album_artist": "Artist", "number": 1},
+      {"id": "a2", "path": "Artist/Album/02.flac", "album": "Album", "album_artist": "Artist", "number": 2}
+    ],
+    "groups": [["a1", "a2"]]
+  },
+  {
+    "name": "compatible_disc_directories",
+    "tracks": [
+      {"id": "d1", "path": "Artist/Album/CD1/01.flac", "album": "Album", "album_artist": "Artist", "number": 1, "disc": 1},
+      {"id": "d2", "path": "Artist/Album/Disc-02/01.flac", "album": "Album", "album_artist": "Artist", "number": 1, "disc": 2}
+    ],
+    "groups": [["d1", "d2"]]
+  },
+  {
+    "name": "box_set_disc_subtitles",
+    "tracks": [
+      {"id": "b1", "path": "Artist/Box/Disk 1/01.flac", "album": "Box", "album_artist": "Artist", "number": 1, "disc": 1},
+      {"id": "b2", "path": "Artist/Box/Disk 2/01.flac", "album": "Box", "album_artist": "Artist", "number": 1, "disc": 2}
+    ],
+    "groups": [["b1", "b2"]]
+  },
+  {
+    "name": "flat_well_tagged_albums",
+    "tracks": [
+      {"id": "f1", "path": "Incoming/01.flac", "album": "First", "album_artist": "One", "number": 1},
+      {"id": "f2", "path": "Incoming/02.flac", "album": "Second", "album_artist": "Two", "number": 1}
+    ],
+    "groups": [["f1"], ["f2"]]
+  },
+  {
+    "name": "flat_untagged_singles",
+    "tracks": [
+      {"id": "u1", "path": "Incoming/one.flac", "album": "", "album_artist": "", "number": 0, "readable": false},
+      {"id": "u2", "path": "Incoming/two.flac", "album": "", "album_artist": "", "number": 0, "readable": false}
+    ],
+    "groups": [["u1"], ["u2"]]
+  },
+  {
+    "name": "compilation_track_artists",
+    "tracks": [
+      {"id": "c1", "path": "Various/Mix/01.flac", "album": "Mix", "album_artist": "Various Artists", "artist": "One", "number": 1, "compilation": true},
+      {"id": "c2", "path": "Various/Mix/02.flac", "album": "Mix", "album_artist": "Various Artists", "artist": "Two", "number": 2, "compilation": true}
+    ],
+    "groups": [["c1", "c2"]]
+  },
+  {
+    "name": "same_title_different_album_artists",
+    "tracks": [
+      {"id": "s1", "path": "Incoming/one.flac", "album": "Greatest Hits", "album_artist": "One", "number": 1},
+      {"id": "s2", "path": "Incoming/two.flac", "album": "Greatest Hits", "album_artist": "Two", "number": 1}
+    ],
+    "groups": [["s1"], ["s2"]]
+  },
+  {
+    "name": "unicode_normalization",
+    "tracks": [
+      {"id": "n1", "path": "Beyoncé/Café/01.flac", "album": "Café", "album_artist": "Beyoncé", "number": 1},
+      {"id": "n2", "path": "Beyoncé/Café/02.flac", "album": "Café", "album_artist": "Beyoncé", "number": 2}
+    ],
+    "groups": [["n1", "n2"]]
+  },
+  {
+    "name": "corrupt_and_changed_neighbor",
+    "tracks": [
+      {"id": "g1", "path": "Artist/Album/01.flac", "album": "Album", "album_artist": "Artist", "number": 1},
+      {"id": "g2", "path": "Artist/Album/02.flac", "album": "", "album_artist": "", "number": 2, "readable": false},
+      {"id": "g3", "path": "Artist/Album/03.flac", "album": "Album", "album_artist": "Artist", "number": 3}
+    ],
+    "groups": [["g1", "g2", "g3"]]
+  }
+]

@@ -10,13 +10,8 @@
 	} from 'lucide-svelte';
 	import { onMount } from 'svelte';
 	import { fromStore } from 'svelte/store';
-	import {
-		getLibraryStatsQuery,
-		getLibrarySettingsQuery
-	} from '$lib/queries/library/LibraryQueries.svelte';
-	import LibraryScanProgress from './LibraryScanProgress.svelte';
-	import LibraryScanButton from './LibraryScanButton.svelte';
-	import LibraryControlsCard from './LibraryControlsCard.svelte';
+	import { getLibraryStatsQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import LibraryOperationsPanel from './LibraryOperationsPanel.svelte';
 	import LibrarySearch from './LibrarySearch.svelte';
 	import LocalFilesBand from './LocalFilesBand.svelte';
 	import LibraryHubTiles from './LibraryHubTiles.svelte';
@@ -26,7 +21,6 @@
 	import { formatBytes, formatLastUpdated } from '$lib/utils/formatting';
 
 	const statsQuery = getLibraryStatsQuery();
-	const settingsQuery = getLibrarySettingsQuery(() => authStore.isAdmin);
 
 	const integrations = fromStore(integrationStore);
 	const localEnabled = $derived(integrations.current.localfiles);
@@ -36,7 +30,6 @@
 
 	const stats = $derived(statsQuery.data);
 	const isEmpty = $derived(!!stats && stats.total_albums === 0);
-	const hasPath = $derived((settingsQuery.data?.library_paths.length ?? 0) > 0);
 	const lastScan = $derived(stats?.last_scan_at ? new Date(stats.last_scan_at * 1000) : null);
 	const formatSummary = $derived(
 		stats
@@ -45,14 +38,12 @@
 					.join(' / ')
 			: ''
 	);
-	const showAttention = $derived(authStore.isAdmin && (stats?.unmatched_count ?? 0) > 0);
+	const showAttention = $derived(authStore.isAdmin && (stats?.review_count ?? 0) > 0);
 
 	function scrollToTop() {
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	}
 </script>
-
-<LibraryScanProgress />
 
 {#if statsQuery.isLoading}
 	<div class="space-y-4">
@@ -73,9 +64,7 @@
 			title="Your library is empty"
 			description="Add a library path in Settings and start a scan to get started."
 		/>
-		<div class="flex justify-center">
-			<LibraryScanButton {hasPath} class="btn btn-primary gap-1" />
-		</div>
+		<LibraryOperationsPanel />
 	{:else}
 		<EmptyState
 			icon={Clock}
@@ -113,11 +102,11 @@
 			</div>
 			{#if showAttention}
 				<a
-					href="/library/unmatched"
+					href="/library/review"
 					class="ml-auto flex items-center gap-1.5 rounded-full border border-warning/40 bg-warning/10 px-3 py-1 text-xs font-semibold text-warning transition-colors hover:bg-warning/20"
 				>
 					<AlertTriangle class="h-3.5 w-3.5" />
-					{stats.unmatched_count} unmatched
+					{stats.review_count} need review
 					<ArrowRight class="h-3.5 w-3.5" />
 				</a>
 			{/if}
@@ -129,9 +118,7 @@
 	{/if}
 
 	{#if authStore.isAdmin}
-		<div id="library-controls" class="scroll-mt-20">
-			<LibraryControlsCard {lastScan} />
-		</div>
+		<LibraryOperationsPanel />
 	{/if}
 
 	<div class="flex justify-center pt-4">

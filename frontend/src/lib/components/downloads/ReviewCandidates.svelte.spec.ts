@@ -44,14 +44,20 @@ function makeTask(): DownloadTask {
 	} as unknown as DownloadTask;
 }
 
-function candidate(username = 'peer-a') {
+function candidate(
+	username = 'peer-a',
+	tier = 'manual',
+	finalScore = 0.6,
+	candidateIndex: number | null = null
+) {
 	return {
 		source: 'soulseek',
 		username,
 		parent_directory: 'dir',
 		files: [],
-		final_score: 0.6,
-		tier: 'manual'
+		final_score: finalScore,
+		tier,
+		candidate_index: candidateIndex
 	};
 }
 
@@ -72,6 +78,27 @@ describe('ReviewCandidates.svelte', () => {
 	it('explains the safe-pick flow (verification + held listen)', async () => {
 		renderReview(makeTask());
 		await expect.element(page.getByText(/Picking is safe/)).toBeVisible();
+	});
+
+	it('keeps rejected results out of the default shortlist', async () => {
+		h.candidates = [candidate('recommended'), candidate('weak-match', 'rejected', 0.49)];
+		renderReview(makeTask());
+
+		await expect.element(page.getByText('recommended')).toBeVisible();
+		await expect.element(page.getByText('weak-match')).not.toBeInTheDocument();
+
+		await page.getByText('Show all 2 candidates').click();
+		await expect.element(page.getByText('weak-match')).toBeVisible();
+	});
+
+	it('picks the preserved index after an older review is reranked', async () => {
+		h.candidates = [candidate('best-current-match', 'manual', 0.68, 7)];
+		renderReview(makeTask());
+
+		await page.getByRole('button', { name: 'Pick candidate from best-current-match' }).click();
+
+		expect(h.pick).toHaveBeenCalledOnce();
+		expect(h.pick.mock.calls[0][0]).toEqual({ jobId: 'job-1', candidate_index: 7 });
 	});
 
 	it('dismissing rejects the whole review into the watchlist', async () => {

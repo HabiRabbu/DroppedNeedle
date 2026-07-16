@@ -1,180 +1,70 @@
 <script lang="ts">
-	import { getApiUrl } from '$lib/api/api-utils';
 	import { page } from '$app/state';
-	import { onMount, onDestroy } from 'svelte';
-	import { beforeNavigate } from '$app/navigation';
 	import GenreArtistCard from '$lib/components/GenreArtistCard.svelte';
 	import GenreAlbumCard from '$lib/components/GenreAlbumCard.svelte';
-	import { CACHE_KEYS, CACHE_TTL } from '$lib/constants';
-	import type { GenreDetailResponse } from '$lib/types';
-	import { createAbortable } from '$lib/utils/abortController';
-	import { albumHrefOrNull, artistHrefOrNull } from '$lib/utils/entityRoutes';
-	import { isAbortError } from '$lib/utils/errorHandling';
-	import { api } from '$lib/api/client';
-	import { createLocalStorageCache } from '$lib/utils/localStorageCache';
+	import GenreArtwork from '$lib/components/GenreArtwork.svelte';
+	import {
+		albumHrefOrNull,
+		artistHrefOrNull,
+		localAlbumHref,
+		localArtistHref
+	} from '$lib/utils/entityRoutes';
+	import { getGenreGradient } from '$lib/utils/genreGradient';
+	import {
+		getGenreAlbumPagesQuery,
+		getGenreDetailQuery
+	} from '$lib/queries/genre/GenreQueries.svelte';
 	import { ArrowLeft, BookOpen, Music2, CircleAlert, Mic, Disc3, ChevronDown } from 'lucide-svelte';
 	import RadioPlayButton from '$lib/components/discover/RadioPlayButton.svelte';
 	import type { RadioMode } from '$lib/player/launchRadio';
 	import type { SampleEntry } from '$lib/stores/deckSampler.svelte';
 
 	let genreName = $derived(page.url.searchParams.get('name') || '');
-	let genreData: GenreDetailResponse | null = $state(null);
-	let loading = $state(true);
-	let error = $state('');
-	let heroArtistMbid: string | null = $state(null);
-	let heroImageLoaded = $state(false);
-	const genreRequestAbortable = createAbortable();
-	let lastLoadedGenre = '';
-
-	let artistOffset = $state(0);
-	let albumOffset = $state(0);
-	let loadingMoreArtists = $state(false);
-	let loadingMoreAlbums = $state(false);
-	const PAGE_SIZE = 50;
-	const genreDetailCache = createLocalStorageCache<GenreDetailResponse>(
-		CACHE_KEYS.GENRE_DETAIL_CACHE,
-		CACHE_TTL.GENRE_DETAIL,
-		{ maxEntries: 60 }
+	let loadAlbumPages = $state(false);
+	let albumPagesGenre = $state('');
+	const genreQuery = getGenreDetailQuery(() => genreName);
+	const albumPagesQuery = getGenreAlbumPagesQuery(
+		() => genreName,
+		() => loadAlbumPages
+	);
+	let genreData = $derived(genreQuery.data?.pages[0] ?? null);
+	let popularArtists = $derived(
+		genreQuery.data?.pages.flatMap((item) => item.popular?.artists ?? []) ?? []
+	);
+	let popularAlbums = $derived([
+		...(genreData?.popular?.albums ?? []),
+		...(albumPagesQuery.data?.pages.flatMap((item) => item.popular?.albums ?? []) ?? [])
+	]);
+	let loading = $derived(Boolean(genreName) && genreQuery.isPending);
+	let error = $derived(
+		!genreName ? 'No genre specified' : genreQuery.isError ? "Couldn't load this genre" : ''
+	);
+	let loadingMoreArtists = $derived(genreQuery.isFetchingNextPage);
+	let loadingMoreAlbums = $derived(albumPagesQuery.isFetching);
+	let hasMoreAlbums = $derived(
+		loadAlbumPages
+			? albumPagesQuery.isPending || albumPagesQuery.isError || albumPagesQuery.hasNextPage
+			: Boolean(genreData?.popular?.has_more_albums)
 	);
 
-	function getGenreCacheSuffix(): string {
-		return encodeURIComponent(genreName.trim().toLowerCase());
-	}
-
-	function persistGenreCache() {
-		if (!genreData || !genreName) return;
-		genreDetailCache.set(genreData, getGenreCacheSuffix());
-	}
-
-	async function loadHeroArtist() {
-		if (!genreName) return;
-		heroArtistMbid = null;
-		heroImageLoaded = false;
-		try {
-			const data = await api.get<{ artist_mbid: string }>(
-				`/api/v1/home/genre-artist/${encodeURIComponent(genreName)}`,
-				{
-					signal: genreRequestAbortable.signal
-				}
-			);
-			heroArtistMbid = data.artist_mbid;
-		} catch (e) {
-			if (isAbortError(e)) return;
-		}
-	}
-
-	async function loadGenreData() {
-		if (!genreName) {
-			error = 'No genre specified';
-			loading = false;
-			return;
-		}
-
-		const cacheSuffix = getGenreCacheSuffix();
-		const cachedGenreData = genreDetailCache.get(cacheSuffix);
-		const hasCachedGenreData = !!cachedGenreData?.data;
-		const shouldRefresh = !cachedGenreData || genreDetailCache.isStale(cachedGenreData.timestamp);
-
-		if (hasCachedGenreData) {
-			genreData = cachedGenreData.data;
-			loading = false;
-		}
-
-		if (!shouldRefresh) {
-			error = '';
-			return;
-		}
-
-		loading = !hasCachedGenreData;
-		error = '';
-		artistOffset = 0;
-		albumOffset = 0;
-
-		try {
-			const data: GenreDetailResponse = await api.get(
-				`/api/v1/home/genre/${encodeURIComponent(genreName)}?limit=${PAGE_SIZE}`,
-				{ signal: genreRequestAbortable.signal }
-			);
-			genreData = data;
-			genreDetailCache.set(data, cacheSuffix);
-		} catch (e) {
-			if (isAbortError(e)) return;
-			if (!hasCachedGenreData) {
-				error = "Couldn't load this genre";
-			}
-		} finally {
-			if (!hasCachedGenreData) {
-				loading = false;
-			}
-		}
-	}
-
-	async function loadMoreArtists() {
-		if (!genreData || loadingMoreArtists || !genreData.popular?.has_more_artists) return;
-		loadingMoreArtists = true;
-		artistOffset += PAGE_SIZE;
-
-		try {
-			const data: GenreDetailResponse = await api.get(
-				`/api/v1/home/genre/${encodeURIComponent(genreName)}?limit=${PAGE_SIZE}&artist_offset=${artistOffset}`,
-				{ signal: genreRequestAbortable.signal }
-			);
-			if (genreData.popular && data.popular) {
-				genreData.popular.artists = [...genreData.popular.artists, ...data.popular.artists];
-				genreData.popular.has_more_artists = data.popular.has_more_artists;
-				persistGenreCache();
-			}
-		} catch (e) {
-			if (isAbortError(e)) return;
-			artistOffset -= PAGE_SIZE;
-		} finally {
-			loadingMoreArtists = false;
-		}
-	}
-
-	async function loadMoreAlbums() {
-		if (!genreData || loadingMoreAlbums || !genreData.popular?.has_more_albums) return;
-		loadingMoreAlbums = true;
-		albumOffset += PAGE_SIZE;
-
-		try {
-			const data: GenreDetailResponse = await api.get(
-				`/api/v1/home/genre/${encodeURIComponent(genreName)}?limit=${PAGE_SIZE}&album_offset=${albumOffset}`,
-				{ signal: genreRequestAbortable.signal }
-			);
-			if (genreData.popular && data.popular) {
-				genreData.popular.albums = [...genreData.popular.albums, ...data.popular.albums];
-				genreData.popular.has_more_albums = data.popular.has_more_albums;
-				persistGenreCache();
-			}
-		} catch (e) {
-			if (isAbortError(e)) return;
-			albumOffset -= PAGE_SIZE;
-		} finally {
-			loadingMoreAlbums = false;
-		}
-	}
-
-	function loadData() {
-		genreRequestAbortable.reset();
-		lastLoadedGenre = genreName;
-		void loadGenreData();
-		void loadHeroArtist();
-	}
-
-	function cleanup() {
-		genreRequestAbortable.abort();
-	}
-
-	onMount(() => {
-		if (genreName) loadData();
-	});
-	onDestroy(cleanup);
-	beforeNavigate(cleanup);
-
 	$effect(() => {
-		if (genreName && genreName !== lastLoadedGenre) loadData();
+		if (genreName !== albumPagesGenre) {
+			albumPagesGenre = genreName;
+			loadAlbumPages = false;
+		}
 	});
+
+	function loadMoreAlbums() {
+		if (!loadAlbumPages) {
+			loadAlbumPages = true;
+			return;
+		}
+		if (!albumPagesQuery.data) {
+			void albumPagesQuery.refetch();
+			return;
+		}
+		void albumPagesQuery.fetchNextPage();
+	}
 
 	const hasLibraryContent = $derived.by(() => {
 		const data = genreData;
@@ -190,7 +80,7 @@
 	const previewStation = $derived.by(() => {
 		const seen: Record<string, true> = {};
 		const entries: SampleEntry[] = [];
-		const albums = [...(genreData?.popular?.albums ?? []), ...(genreData?.library?.albums ?? [])];
+		const albums = [...popularAlbums, ...(genreData?.library?.albums ?? [])];
 		for (const album of albums) {
 			if (!album.mbid || seen[album.mbid]) continue;
 			seen[album.mbid] = true;
@@ -213,25 +103,6 @@
 </svelte:head>
 
 <div class="min-h-screen bg-base-100 relative overflow-hidden">
-	{#if heroArtistMbid}
-		<div
-			class="absolute inset-x-0 top-0 h-96 overflow-hidden pointer-events-none"
-			style="z-index: 0;"
-		>
-			<img
-				src={getApiUrl(`/api/v1/covers/artist/${heroArtistMbid}?size=500`)}
-				alt=""
-				class="w-full h-full object-cover object-top transition-opacity duration-700 {heroImageLoaded
-					? 'opacity-20'
-					: 'opacity-0'}"
-				onload={() => (heroImageLoaded = true)}
-			/>
-			<div
-				class="absolute inset-0 bg-linear-to-b from-base-100/30 via-base-100/70 to-base-100"
-			></div>
-		</div>
-	{/if}
-
 	<div class="container mx-auto p-4 max-w-7xl relative" style="z-index: 1;">
 		<header class="mb-10 pt-2">
 			<a href="/" class="btn btn-ghost btn-sm gap-2 mb-6 -ml-2 opacity-70 hover:opacity-100">
@@ -240,9 +111,15 @@
 			</a>
 			<div class="flex items-center gap-5">
 				<div
-					class="w-20 h-20 rounded-2xl bg-linear-to-br from-primary/30 to-secondary/30 flex items-center justify-center shrink-0"
+					class="relative isolate w-20 h-20 overflow-hidden rounded-2xl flex items-center justify-center shrink-0"
 				>
-					<Music2 class="h-10 w-10 text-primary" />
+					<GenreArtwork
+						artwork={genreData?.genre_artwork}
+						gradientClass={getGenreGradient(genreName)}
+					/>
+					{#if !genreData?.genre_artwork.albums.length}
+						<Music2 class="relative z-10 h-10 w-10 text-white/80" />
+					{/if}
 				</div>
 				<div>
 					<h1 class="text-4xl sm:text-5xl font-bold capitalize tracking-tight">
@@ -348,7 +225,7 @@
 			<div class="flex flex-col items-center justify-center py-24">
 				<CircleAlert class="h-12 w-12 text-base-content/40 mb-4" strokeWidth={1.5} />
 				<p class="text-base-content/70 text-lg">{error}</p>
-				<button class="btn btn-primary mt-6" onclick={loadData}>Try Again</button>
+				<button class="btn btn-primary mt-6" onclick={() => genreQuery.refetch()}>Try Again</button>
 			</div>
 		{:else if genreData}
 			{#if hasLibraryContent}
@@ -373,11 +250,12 @@
 						<div
 							class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 mb-8"
 						>
-							{#each genreData.library?.artists ?? [] as artist (artist.mbid || artist.name)}
+							{#each genreData.library?.artists ?? [] as artist (artist.local_id || artist.mbid || artist.name)}
 								<GenreArtistCard
 									{artist}
 									showLibraryBadge={true}
-									href={artistHrefOrNull(artist.mbid)}
+									href={artistHrefOrNull(artist.mbid) ??
+										(artist.local_id ? localArtistHref(artist.local_id) : null)}
 								/>
 							{/each}
 						</div>
@@ -388,11 +266,12 @@
 						<div
 							class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
 						>
-							{#each genreData.library?.albums ?? [] as album (album.mbid || album.name)}
+							{#each genreData.library?.albums ?? [] as album (album.local_id || album.mbid || album.name)}
 								<GenreAlbumCard
 									{album}
 									showLibraryBadge={true}
-									href={albumHrefOrNull(album.mbid)}
+									href={albumHrefOrNull(album.mbid) ??
+										(album.local_id ? localAlbumHref(album.local_id) : null)}
 								/>
 							{/each}
 						</div>
@@ -414,7 +293,7 @@
 					</div>
 				</div>
 
-				{#if (genreData.popular?.artists?.length ?? 0) === 0}
+				{#if popularArtists.length === 0}
 					<div class="flex flex-col items-center justify-center py-16">
 						<Mic class="h-10 w-10 text-base-content/30 mb-4" strokeWidth={1.5} />
 						<p class="text-base-content/50">No artists found for this genre</p>
@@ -423,15 +302,15 @@
 					<div
 						class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
 					>
-						{#each genreData.popular?.artists ?? [] as artist (artist.mbid || artist.name)}
+						{#each popularArtists as artist (artist.mbid || artist.name)}
 							<GenreArtistCard {artist} href={artistHrefOrNull(artist.mbid)} />
 						{/each}
 					</div>
-					{#if genreData.popular?.has_more_artists}
+					{#if genreQuery.hasNextPage}
 						<div class="flex justify-center mt-8">
 							<button
 								class="btn btn-outline btn-wide gap-2"
-								onclick={loadMoreArtists}
+								onclick={() => genreQuery.fetchNextPage()}
 								disabled={loadingMoreArtists}
 							>
 								{#if loadingMoreArtists}
@@ -459,7 +338,7 @@
 					</div>
 				</div>
 
-				{#if (genreData.popular?.albums?.length ?? 0) === 0}
+				{#if popularAlbums.length === 0}
 					<div class="flex flex-col items-center justify-center py-16">
 						<Disc3 class="h-10 w-10 text-base-content/30 mb-4" strokeWidth={1.5} />
 						<p class="text-base-content/50">No albums found for this genre</p>
@@ -468,11 +347,11 @@
 					<div
 						class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
 					>
-						{#each genreData.popular?.albums ?? [] as album (album.mbid || album.name)}
+						{#each popularAlbums as album (album.mbid || album.name)}
 							<GenreAlbumCard {album} href={albumHrefOrNull(album.mbid)} />
 						{/each}
 					</div>
-					{#if genreData.popular?.has_more_albums}
+					{#if hasMoreAlbums}
 						<div class="flex justify-center mt-8">
 							<button
 								class="btn btn-outline btn-wide gap-2"

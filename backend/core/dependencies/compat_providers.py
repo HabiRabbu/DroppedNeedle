@@ -206,3 +206,87 @@ def get_advanced_transcode_service() -> "AdvancedTranscodeService":
     from services.compat.advanced_transcode_service import AdvancedTranscodeService
 
     return AdvancedTranscodeService()
+
+
+@singleton
+def get_target_consumer_composition() -> "TargetConsumerComposition":
+    from services.native.target_consumer_composition import (
+        build_target_consumer_composition,
+    )
+
+    from .cache_providers import (
+        get_cache,
+        get_native_library_store,
+        get_preferences_service,
+    )
+    from .repo_providers import (
+        get_request_history_store,
+        get_target_coverart_repository,
+        get_user_listening_prefs_store,
+    )
+    from .service_providers import (
+        get_now_playing_service,
+        get_per_user_client_factory,
+    )
+
+    return build_target_consumer_composition(
+        store=get_native_library_store(),
+        preferences=get_preferences_service(),
+        auth_store=get_auth_store(),
+        provider_covers=get_target_coverart_repository(),
+        cache=get_cache(),
+        cache_dir=get_settings().cache_dir,
+        client_factory=get_per_user_client_factory(),
+        listening_prefs_store=get_user_listening_prefs_store(),
+        now_playing=get_now_playing_service(),
+        request_history=get_request_history_store(),
+    )
+
+
+@singleton
+def get_target_compat_scan_service() -> "TargetCompatScanService":
+    from services.compat.target_scan_service import TargetCompatScanService
+
+    from .service_providers import (
+        get_library_policy_resolver,
+        get_target_library_scan_coordinator,
+    )
+
+    return TargetCompatScanService(
+        get_target_library_scan_coordinator(), get_library_policy_resolver
+    )
+
+
+@singleton
+def get_target_compat_services() -> "CompatServices":
+    from api.compat.common.deps import CompatServices
+    from services.compat.avatar_service import CompatAvatarService
+    from services.compat.native_lyrics_service import NativeLyricsService
+
+    from .cache_providers import get_preferences_service
+    from .service_providers import get_now_playing_service, get_version_service
+
+    target = get_target_consumer_composition()
+    return CompatServices(
+        app_passwords=get_app_password_service(),
+        view=target.view,
+        favorites=target.favorites,
+        playlists=target.playlists,
+        scrobble=target.scrobble,
+        discover=target.discover,
+        id_map=target.id_map,
+        local_files=target.local_files,
+        coverart=target.covers,
+        preferences=get_preferences_service(),
+        transcode=get_transcode_service(),
+        stream_concurrency=get_stream_concurrency_service(),
+        now_playing=get_now_playing_service(),
+        version=get_version_service(),
+        play_queue=target.play_queue,
+        bookmarks=target.bookmarks,
+        lyrics=NativeLyricsService(target.local_files),
+        avatars=CompatAvatarService(get_settings().cache_dir),
+        playback_report=target.playback_report,
+        scan=get_target_compat_scan_service(),
+        advanced_transcode=get_advanced_transcode_service(),
+    )

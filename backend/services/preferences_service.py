@@ -1,5 +1,7 @@
 import logging
 import threading
+import uuid
+from pathlib import Path
 from typing import Optional, TypeVar, Type
 from typing import Any
 
@@ -50,15 +52,16 @@ from api.v1.schemas.settings import (
     WantedWatcherSettings,
 )
 from api.v1.schemas.advanced_settings import AdvancedSettings
+from api.v1.schemas.library_policies import LibraryRootSettings, TypedLibrarySettings
 from core.config import Settings
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, StaleRevisionError
 from infrastructure.crypto import decrypt, encrypt
 from infrastructure.file_utils import atomic_write_json, read_json
 from infrastructure.serialization import to_jsonable
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T', bound=msgspec.Struct)
+T = TypeVar("T", bound=msgspec.Struct)
 
 
 class PreferencesService:
@@ -76,6 +79,7 @@ class PreferencesService:
         if config.get("instance_id"):
             return
         import uuid
+
         instance_id = str(uuid.uuid4())
         config = self._load_config().copy()
         config["instance_id"] = instance_id
@@ -110,12 +114,16 @@ class PreferencesService:
             atomic_write_json(self._config_path, config)
             self._config_cache = config
 
-    def _get_section(self, key: str, model: Type[T], default_factory: Optional[callable] = None) -> T:
+    def _get_section(
+        self, key: str, model: Type[T], default_factory: Optional[callable] = None
+    ) -> T:
         config = self._load_config()
         data = config.get(key, {})
         try:
             if not (isinstance(model, type) and issubclass(model, msgspec.Struct)):
-                raise TypeError(f"Preferences section model must be msgspec.Struct, got {model!r}")
+                raise TypeError(
+                    f"Preferences section model must be msgspec.Struct, got {model!r}"
+                )
 
             if data:
                 return msgspec.convert(data, type=model)
@@ -155,7 +163,9 @@ class PreferencesService:
     def get_library_sync_settings(self) -> LibrarySyncSettings:
         return self._get_section("library_sync_settings", LibrarySyncSettings)
 
-    def save_library_sync_settings(self, library_sync_settings: LibrarySyncSettings) -> None:
+    def save_library_sync_settings(
+        self, library_sync_settings: LibrarySyncSettings
+    ) -> None:
         try:
             self._save_section("library_sync_settings", library_sync_settings)
         except Exception as e:  # noqa: BLE001
@@ -191,7 +201,9 @@ class PreferencesService:
 
     def get_download_client_settings(self) -> DownloadClientConnectionSettings:
         """Download client settings with the slskd ``api_key`` MASKED (safe for API responses)."""
-        settings = self._get_section("download_client", DownloadClientConnectionSettings)
+        settings = self._get_section(
+            "download_client", DownloadClientConnectionSettings
+        )
         if settings.api_key:
             settings.api_key = DOWNLOAD_CLIENT_API_KEY_MASK
         return settings
@@ -200,17 +212,25 @@ class PreferencesService:
         """Download client settings with the slskd ``api_key`` DECRYPTED (for the client/scorer)."""
         config = self._load_config()
         data = config.get("download_client", {})
-        settings = self._get_section("download_client", DownloadClientConnectionSettings)
-        settings.api_key = self._read_secret(("download_client", "api_key"), data.get("api_key", ""))
+        settings = self._get_section(
+            "download_client", DownloadClientConnectionSettings
+        )
+        settings.api_key = self._read_secret(
+            ("download_client", "api_key"), data.get("api_key", "")
+        )
         return settings
 
-    def save_download_client_settings(self, settings: DownloadClientConnectionSettings) -> None:
+    def save_download_client_settings(
+        self, settings: DownloadClientConnectionSettings
+    ) -> None:
         try:
             config = self._load_config().copy()
             current = config.get("download_client", {})
             api_key = settings.api_key
             if api_key == DOWNLOAD_CLIENT_API_KEY_MASK:
-                api_key = current.get("api_key", "")  # preserve existing on masked sentinel
+                api_key = current.get(
+                    "api_key", ""
+                )  # preserve existing on masked sentinel
             elif api_key:
                 api_key = encrypt(api_key)
             config["download_client"] = {
@@ -256,13 +276,19 @@ class PreferencesService:
                 verify_downloads=dc.get("verify_downloads", True),
                 preflight_score_auto_accept=dc.get("preflight_score_auto_accept", 0.70),
                 preflight_score_manual_min=dc.get("preflight_score_manual_min", 0.50),
-                download_stall_timeout_minutes=dc.get("download_stall_timeout_minutes", 30),
-                download_queued_timeout_minutes=dc.get("download_queued_timeout_minutes", 120),
+                download_stall_timeout_minutes=dc.get(
+                    "download_stall_timeout_minutes", 30
+                ),
+                download_queued_timeout_minutes=dc.get(
+                    "download_queued_timeout_minutes", 120
+                ),
                 max_failover_attempts=dc.get("max_failover_attempts", 3),
                 max_concurrent_downloads=dc.get("max_concurrent_downloads", 3),
                 auto_retry_enabled=dc.get("auto_retry_enabled", True),
                 auto_retry_max_attempts=dc.get("auto_retry_max_attempts", 6),
-                auto_retry_base_interval_minutes=dc.get("auto_retry_base_interval_minutes", 15),
+                auto_retry_base_interval_minutes=dc.get(
+                    "auto_retry_base_interval_minutes", 15
+                ),
             )
         return DownloadPolicySettings()
 
@@ -291,7 +317,11 @@ class PreferencesService:
         """The order acquisition sources are tried (D3). Defaults to Soulseek-first;
         unknown/missing sources are appended so the list always covers both."""
         raw = self._load_config().get("source_priority")
-        order = [s for s in raw if s in ("soulseek", "usenet")] if isinstance(raw, list) else []
+        order = (
+            [s for s in raw if s in ("soulseek", "usenet")]
+            if isinstance(raw, list)
+            else []
+        )
         for source in ("soulseek", "usenet"):
             if source not in order:
                 order.append(source)
@@ -386,7 +416,9 @@ class PreferencesService:
         settings.api_key = decrypt(stored)[0].strip() if stored else ""
         return settings
 
-    def save_lidarr_import_connection(self, settings: LidarrImportConnectionSettings) -> None:
+    def save_lidarr_import_connection(
+        self, settings: LidarrImportConnectionSettings
+    ) -> None:
         try:
             config = self._load_config().copy()
             current = config.get("lidarr_import", {})
@@ -507,7 +539,11 @@ class PreferencesService:
         """SABnzbd (Usenet) is enabled with a URL AND at least one enabled indexer to
         search - SABnzbd with no indexer can't find anything to download."""
         sab = self.get_sabnzbd_connection()
-        return sab.enabled and bool(sab.url) and any(i.enabled for i in self.get_indexers())
+        return (
+            sab.enabled
+            and bool(sab.url)
+            and any(i.enabled for i in self.get_indexers())
+        )
 
     def is_builtin_download_ready(self) -> bool:
         """A user-configured download client (Soulseek OR Usenet) is set up.
@@ -518,7 +554,9 @@ class PreferencesService:
         """At least one acquisition source is set up: Soulseek, Usenet, or Free
         Music (D24). The single source of truth for "can the user acquire" -
         after 2.0 this reduces to Free Music alone."""
-        return self.is_builtin_download_ready() or self.get_free_music_settings().enabled
+        return (
+            self.is_builtin_download_ready() or self.get_free_music_settings().enabled
+        )
 
     def get_free_music_settings(self) -> FreeMusicSettings:
         data = self._load_config().get("free_music", {})
@@ -543,9 +581,13 @@ class PreferencesService:
     def get_jellyfin_connection(self) -> JellyfinConnectionSettings:
         config = self._load_config()
         jellyfin_data = config.get("jellyfin_settings", {})
-        api_key = self._read_secret(("jellyfin_settings", "api_key"), jellyfin_data.get("api_key", ""))
+        api_key = self._read_secret(
+            ("jellyfin_settings", "api_key"), jellyfin_data.get("api_key", "")
+        )
         return JellyfinConnectionSettings(
-            jellyfin_url=jellyfin_data.get("jellyfin_url", config.get("jellyfin_url", self._settings.jellyfin_url)),
+            jellyfin_url=jellyfin_data.get(
+                "jellyfin_url", config.get("jellyfin_url", self._settings.jellyfin_url)
+            ),
             api_key=api_key,
             user_id=jellyfin_data.get("user_id", ""),
             enabled=jellyfin_data.get("enabled", False),
@@ -568,7 +610,9 @@ class PreferencesService:
             self._settings.jellyfin_url = settings.jellyfin_url
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to save Jellyfin connection settings: {e}")
-            raise ConfigurationError(f"Failed to save Jellyfin connection settings: {e}")
+            raise ConfigurationError(
+                f"Failed to save Jellyfin connection settings: {e}"
+            )
 
     def get_navidrome_connection(self) -> NavidromeConnectionSettings:
         config = self._load_config()
@@ -584,7 +628,9 @@ class PreferencesService:
     def get_navidrome_connection_raw(self) -> NavidromeConnectionSettings:
         config = self._load_config()
         nd_data = config.get("navidrome_settings", {})
-        password = self._read_secret(("navidrome_settings", "password"), nd_data.get("password", ""))
+        password = self._read_secret(
+            ("navidrome_settings", "password"), nd_data.get("password", "")
+        )
         return NavidromeConnectionSettings(
             navidrome_url=nd_data.get("navidrome_url", ""),
             username=nd_data.get("username", ""),
@@ -612,7 +658,9 @@ class PreferencesService:
             self._save_config(config)
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to save Navidrome connection settings: %s", e)
-            raise ConfigurationError(f"Failed to save Navidrome connection settings: {e}")
+            raise ConfigurationError(
+                f"Failed to save Navidrome connection settings: {e}"
+            )
 
     def get_plex_connection(self) -> PlexConnectionSettings:
         config = self._load_config()
@@ -632,7 +680,9 @@ class PreferencesService:
     def get_plex_connection_raw(self) -> PlexConnectionSettings:
         config = self._load_config()
         plex_data = config.get("plex_settings", {})
-        token = self._read_secret(("plex_settings", "plex_token"), plex_data.get("plex_token", ""))
+        token = self._read_secret(
+            ("plex_settings", "plex_token"), plex_data.get("plex_token", "")
+        )
         return PlexConnectionSettings(
             plex_url=plex_data.get("plex_url", ""),
             plex_token=token,
@@ -670,14 +720,18 @@ class PreferencesService:
     def get_listenbrainz_connection(self) -> ListenBrainzConnectionSettings:
         config = self._load_config()
         lb_data = config.get("listenbrainz_settings", {})
-        user_token = self._read_secret(("listenbrainz_settings", "user_token"), lb_data.get("user_token", ""))
+        user_token = self._read_secret(
+            ("listenbrainz_settings", "user_token"), lb_data.get("user_token", "")
+        )
         return ListenBrainzConnectionSettings(
             username=lb_data.get("username", ""),
             user_token=user_token,
             enabled=lb_data.get("enabled", False),
         )
 
-    def save_listenbrainz_connection(self, settings: ListenBrainzConnectionSettings) -> None:
+    def save_listenbrainz_connection(
+        self, settings: ListenBrainzConnectionSettings
+    ) -> None:
         try:
             config = self._load_config().copy()
             config["listenbrainz_settings"] = {
@@ -688,12 +742,16 @@ class PreferencesService:
             self._save_config(config)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to save ListenBrainz connection settings: {e}")
-            raise ConfigurationError(f"Failed to save ListenBrainz connection settings: {e}")
+            raise ConfigurationError(
+                f"Failed to save ListenBrainz connection settings: {e}"
+            )
 
     def get_youtube_connection(self) -> YouTubeConnectionSettings:
         config = self._load_config()
         yt_data = config.get("youtube_settings", {})
-        api_key = self._read_secret(("youtube_settings", "api_key"), str(yt_data.get("api_key") or ""))
+        api_key = self._read_secret(
+            ("youtube_settings", "api_key"), str(yt_data.get("api_key") or "")
+        )
         enabled = yt_data.get("enabled", False)
         # Auto-migrate: existing setups with enabled+api_key get api_enabled=True
         if "api_enabled" not in yt_data and enabled and api_key.strip():
@@ -721,7 +779,6 @@ class PreferencesService:
             logger.error(f"Failed to save YouTube connection settings: {e}")
             raise ConfigurationError(f"Failed to save YouTube connection settings: {e}")
 
-
     def get_connect_apps_settings(self) -> ConnectAppsSettings:
         return self._get_section("connect_apps", ConnectAppsSettings)
 
@@ -736,7 +793,9 @@ class PreferencesService:
         config = self._load_config()
         data = config.get("wrapped_settings", {})
         return WrappedSettings(
-            api_key=self._read_secret(("wrapped_settings", "api_key"), data.get("api_key", "")),
+            api_key=self._read_secret(
+                ("wrapped_settings", "api_key"), data.get("api_key", "")
+            ),
         )
 
     def save_wrapped_settings(self, settings: WrappedSettings) -> None:
@@ -747,7 +806,9 @@ class PreferencesService:
                 api_key = current.api_key
             else:
                 api_key = api_key.strip()
-            self._save_section("wrapped_settings", WrappedSettings(api_key=encrypt(api_key)))
+            self._save_section(
+                "wrapped_settings", WrappedSettings(api_key=encrypt(api_key))
+            )
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to save Wrapped settings: {e}")
             raise ConfigurationError(f"Failed to save Wrapped settings.")
@@ -755,7 +816,9 @@ class PreferencesService:
     def get_local_files_connection(self) -> LocalFilesConnectionSettings:
         return self._get_section("local_files_settings", LocalFilesConnectionSettings)
 
-    def save_local_files_connection(self, settings: LocalFilesConnectionSettings) -> None:
+    def save_local_files_connection(
+        self, settings: LocalFilesConnectionSettings
+    ) -> None:
         try:
             self._save_section("local_files_settings", settings)
         except Exception as e:  # noqa: BLE001
@@ -766,9 +829,15 @@ class PreferencesService:
         config = self._load_config()
         data = config.get("lastfm_settings", {})
         return LastFmConnectionSettings(
-            api_key=self._read_secret(("lastfm_settings", "api_key"), data.get("api_key", "")),
-            shared_secret=self._read_secret(("lastfm_settings", "shared_secret"), data.get("shared_secret", "")),
-            session_key=self._read_secret(("lastfm_settings", "session_key"), data.get("session_key", "")),
+            api_key=self._read_secret(
+                ("lastfm_settings", "api_key"), data.get("api_key", "")
+            ),
+            shared_secret=self._read_secret(
+                ("lastfm_settings", "shared_secret"), data.get("shared_secret", "")
+            ),
+            session_key=self._read_secret(
+                ("lastfm_settings", "session_key"), data.get("session_key", "")
+            ),
             username=data.get("username", ""),
             enabled=data.get("enabled", False),
         )
@@ -811,12 +880,16 @@ class PreferencesService:
 
     def is_lastfm_enabled(self) -> bool:
         settings = self.get_lastfm_connection()
-        return settings.enabled and bool(settings.api_key) and bool(settings.shared_secret)
+        return (
+            settings.enabled and bool(settings.api_key) and bool(settings.shared_secret)
+        )
 
     def get_spotify_settings(self) -> SpotifySettings:
         config = self._load_config()
         data = config.get("spotify_settings", {})
-        client_secret = self._read_secret(("spotify_settings", "client_secret"), data.get("client_secret", ""))
+        client_secret = self._read_secret(
+            ("spotify_settings", "client_secret"), data.get("client_secret", "")
+        )
         return SpotifySettings(
             client_id=data.get("client_id", ""),
             client_secret=SPOTIFY_SECRET_MASK if client_secret else "",
@@ -826,7 +899,9 @@ class PreferencesService:
     def get_spotify_settings_raw(self) -> SpotifySettings:
         config = self._load_config()
         data = config.get("spotify_settings", {})
-        client_secret = self._read_secret(("spotify_settings", "client_secret"), data.get("client_secret", ""))
+        client_secret = self._read_secret(
+            ("spotify_settings", "client_secret"), data.get("client_secret", "")
+        )
         return SpotifySettings(
             client_id=data.get("client_id", ""),
             client_secret=client_secret,
@@ -855,7 +930,7 @@ class PreferencesService:
         return raw.enabled and bool(raw.client_id) and bool(raw.client_secret)
 
     def get_get_it_settings(self) -> GetItSettings:
-        """"Get it" purchase-link settings (no secrets - safe for API responses)."""
+        """ "Get it" purchase-link settings (no secrets - safe for API responses)."""
         data = self._load_config().get("get_it", {})
         return GetItSettings(
             store_region=(data.get("store_region") or "US").upper(),
@@ -880,9 +955,11 @@ class PreferencesService:
         section = self._load_config().get("plugins", {})
         data = section.get(plugin_name, {}) if isinstance(section, dict) else {}
         raw_settings = data.get("settings", {})
-        settings = {
-            str(k): str(v) for k, v in raw_settings.items()
-        } if isinstance(raw_settings, dict) else {}
+        settings = (
+            {str(k): str(v) for k, v in raw_settings.items()}
+            if isinstance(raw_settings, dict)
+            else {}
+        )
         return PluginConfig(enabled=bool(data.get("enabled", False)), settings=settings)
 
     def save_plugin_config(self, plugin_name: str, plugin_config: PluginConfig) -> None:
@@ -926,7 +1003,9 @@ class PreferencesService:
         return EventsSettings(
             enabled=raw.enabled,
             ticketmaster_enabled=raw.ticketmaster_enabled,
-            ticketmaster_api_key=TICKETMASTER_KEY_MASK if raw.ticketmaster_api_key else "",
+            ticketmaster_api_key=TICKETMASTER_KEY_MASK
+            if raw.ticketmaster_api_key
+            else "",
             skiddle_enabled=raw.skiddle_enabled,
             skiddle_api_key=SKIDDLE_KEY_MASK if raw.skiddle_api_key else "",
             poll_time=raw.poll_time,
@@ -971,21 +1050,98 @@ class PreferencesService:
             raw.skiddle_enabled and bool(raw.skiddle_api_key)
         )
 
-    def _library_settings_section(self) -> LibrarySettings:
-        """Decoded library_settings section, seeding library_paths once from the
-        legacy root folder on first read."""
+    @staticmethod
+    def _library_root_label(path: str, used: set[str]) -> str:
+        base = Path(path).name or Path(path).anchor or "Library"
+        label = base
+        number = 2
+        while label.casefold() in used:
+            label = f"{base} ({number})"
+            number += 1
+        used.add(label.casefold())
+        return label
+
+    def _typed_library_settings_section(self) -> TypedLibrarySettings:
+        """Return the canonical typed shape, migrating legacy paths once."""
         config = self._load_config()
-        data = config.get("library_settings")
-        if data:
+        data = config.get("library_settings") or {}
+        if "library_roots" in data:
             try:
-                return msgspec.convert(data, type=LibrarySettings)
+                settings = msgspec.convert(data, type=TypedLibrarySettings)
+                from services.native.library_policy_resolver import (
+                    LibraryPolicyResolver,
+                )
+
+                return LibraryPolicyResolver(settings).settings
             except Exception as e:  # noqa: BLE001
-                logger.error("Failed to parse library_settings; using defaults: %s", e)
-                return LibrarySettings()
-        legacy_root = config.get("_legacy_lidarr", {}).get("root_folder_path")
-        if legacy_root:
-            return LibrarySettings(library_paths=[legacy_root])
-        return LibrarySettings()
+                logger.error("Failed to parse typed library settings: %s", e)
+                raise ConfigurationError("Library settings are invalid.") from e
+
+        legacy_paths = list(data.get("library_paths") or [])
+        if not legacy_paths:
+            legacy_root = config.get("_legacy_lidarr", {}).get("root_folder_path")
+            legacy_paths = [legacy_root] if legacy_root else ["/music"]
+
+        used_labels: set[str] = set()
+        roots = [
+            LibraryRootSettings(
+                id=str(uuid.uuid4()),
+                path=path,
+                label=self._library_root_label(path, used_labels),
+                policy="automatic",
+                rules=[],
+            )
+            for path in legacy_paths
+        ]
+        migrated = TypedLibrarySettings(
+            library_roots=roots,
+            staging_path=data.get("staging_path", ""),
+            naming_template=data.get("naming_template") or DEFAULT_NAMING_TEMPLATE,
+            acoustid_api_key=data.get("acoustid_api_key", ""),
+        )
+        from services.native.library_policy_resolver import LibraryPolicyResolver
+
+        normalized = LibraryPolicyResolver(migrated).settings
+        new_config = config.copy()
+        new_config["library_settings"] = to_jsonable(normalized)
+        self._save_config(new_config)
+        return normalized
+
+    def _library_settings_section(self) -> LibrarySettings:
+        settings = self._typed_library_settings_section()
+        return LibrarySettings(
+            library_paths=self.get_legacy_library_paths(),
+            staging_path=settings.staging_path,
+            naming_template=settings.naming_template,
+            acoustid_api_key=settings.acoustid_api_key,
+        )
+
+    def get_legacy_library_paths(self) -> list[str]:
+        """Derived compatibility projection for consumers not switched to roots yet."""
+        return [
+            root.path for root in self._typed_library_settings_section().library_roots
+        ]
+
+    def get_typed_library_settings(self) -> TypedLibrarySettings:
+        settings = self._typed_library_settings_section()
+        return TypedLibrarySettings(
+            library_roots=settings.library_roots,
+            staging_path=settings.staging_path,
+            naming_template=settings.naming_template,
+            acoustid_api_key=ACOUSTID_KEY_MASK if settings.acoustid_api_key else "",
+        )
+
+    def get_typed_library_settings_raw(self) -> TypedLibrarySettings:
+        settings = self._typed_library_settings_section()
+        api_key = self._read_secret(
+            ("library_settings", "acoustid_api_key"), settings.acoustid_api_key
+        )
+        return TypedLibrarySettings(
+            library_roots=settings.library_roots,
+            staging_path=settings.staging_path,
+            naming_template=settings.naming_template,
+            acoustid_api_key=api_key,
+        )
 
     def get_library_settings(self) -> LibrarySettings:
         """Library settings with the AcoustID key MASKED (safe for API responses)."""
@@ -1011,22 +1167,113 @@ class PreferencesService:
         )
 
     def save_library_settings(self, settings: LibrarySettings) -> None:
+        current = self._typed_library_settings_section()
+        current_by_path = {
+            Path(root.path).resolve(strict=False): root
+            for root in current.library_roots
+        }
+        used_labels = {root.label.casefold() for root in current.library_roots}
+        roots: list[LibraryRootSettings] = []
+        for path in settings.library_paths:
+            candidate = Path(path)
+            existing = (
+                current_by_path.get(candidate.resolve(strict=False))
+                if candidate.is_absolute()
+                else None
+            )
+            if existing is not None:
+                roots.append(existing)
+                continue
+            roots.append(
+                LibraryRootSettings(
+                    id=str(uuid.uuid4()),
+                    path=path,
+                    label=self._library_root_label(path, used_labels),
+                    policy="automatic",
+                    rules=[],
+                )
+            )
+        self.save_typed_library_settings(
+            TypedLibrarySettings(
+                library_roots=roots,
+                staging_path=settings.staging_path,
+                naming_template=settings.naming_template,
+                acoustid_api_key=settings.acoustid_api_key,
+            )
+        )
+
+    def save_typed_library_settings(self, settings: TypedLibrarySettings) -> None:
+        with self._cache_lock:
+            self._save_typed_library_settings(settings)
+
+    def save_typed_library_settings_if_current(
+        self,
+        settings: TypedLibrarySettings,
+        *,
+        expected_policy_revision: str,
+    ) -> None:
+        from services.native.library_policy_resolver import LibraryPolicyResolver
+
+        with self._cache_lock:
+            current = LibraryPolicyResolver(
+                self._typed_library_settings_section()
+            ).policy_revision
+            if current != expected_policy_revision:
+                raise StaleRevisionError(
+                    "The library settings changed. Refresh this page and try again."
+                )
+            self._save_typed_library_settings(settings)
+
+    def _save_typed_library_settings(self, settings: TypedLibrarySettings) -> None:
         try:
+            from services.native.library_policy_resolver import LibraryPolicyResolver
+
+            current_settings = self._typed_library_settings_section()
+            current_by_id = {root.id: root for root in current_settings.library_roots}
+            for root in settings.library_roots:
+                previous = current_by_id.get(root.id)
+                if previous is not None and Path(previous.path).resolve(
+                    strict=False
+                ) != Path(root.path).resolve(strict=False):
+                    raise ConfigurationError(
+                        f"Library root {previous.label} cannot be moved. Add a new root instead."
+                    )
+                previous_rules = (
+                    {rule.id: rule for rule in previous.rules}
+                    if previous is not None
+                    else {}
+                )
+                for rule in root.rules:
+                    old_rule = previous_rules.get(rule.id)
+                    if (
+                        old_rule is not None
+                        and old_rule.relative_path != rule.relative_path
+                    ):
+                        raise ConfigurationError(
+                            "A policy rule path cannot be changed. Add a new rule instead."
+                        )
+
+            normalized = LibraryPolicyResolver(settings).settings
             current = self._load_config().get("library_settings", {})
             api_key = settings.acoustid_api_key
             if api_key == ACOUSTID_KEY_MASK:
-                api_key = current.get("acoustid_api_key", "")  # preserve existing (encrypted)
+                api_key = current.get(
+                    "acoustid_api_key", ""
+                )  # preserve existing (encrypted)
             elif api_key:
                 api_key = encrypt(api_key)
             self._save_section(
                 "library_settings",
-                LibrarySettings(
-                    library_paths=settings.library_paths,
-                    staging_path=settings.staging_path,
-                    naming_template=settings.naming_template or DEFAULT_NAMING_TEMPLATE,
+                TypedLibrarySettings(
+                    library_roots=normalized.library_roots,
+                    staging_path=normalized.staging_path,
+                    naming_template=normalized.naming_template
+                    or DEFAULT_NAMING_TEMPLATE,
                     acoustid_api_key=api_key,
                 ),
             )
+        except ConfigurationError:
+            raise
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to save library settings: %s", e)
             raise ConfigurationError(f"Failed to save library settings: {e}")
@@ -1085,7 +1332,9 @@ class PreferencesService:
     def get_musicbrainz_connection(self) -> MusicBrainzConnectionSettings:
         return self._get_section("musicbrainz_settings", MusicBrainzConnectionSettings)
 
-    def save_musicbrainz_connection(self, settings: MusicBrainzConnectionSettings) -> None:
+    def save_musicbrainz_connection(
+        self, settings: MusicBrainzConnectionSettings
+    ) -> None:
         try:
             settings.api_url = settings.api_url.rstrip("/")
             self._save_section("musicbrainz_settings", settings)
@@ -1103,13 +1352,19 @@ class PreferencesService:
             advanced_data = config.get("advanced_settings", {})
             old_value = advanced_data.get("musicbrainz_concurrent_searches")
             if old_value is not None:
-                settings = MusicBrainzConnectionSettings(concurrent_searches=int(old_value))
+                settings = MusicBrainzConnectionSettings(
+                    concurrent_searches=int(old_value)
+                )
                 self._save_section("musicbrainz_settings", settings)
-                logger.info(f"Migrated musicbrainz_concurrent_searches={old_value} to musicbrainz_settings")
+                logger.info(
+                    f"Migrated musicbrainz_concurrent_searches={old_value} to musicbrainz_settings"
+                )
         except Exception:  # noqa: BLE001
-            logger.warning("Failed to migrate musicbrainz_concurrent_searches, using defaults")
+            logger.warning(
+                "Failed to migrate musicbrainz_concurrent_searches, using defaults"
+            )
             self._save_section("musicbrainz_settings", MusicBrainzConnectionSettings())
-    
+
     def get_oidc_connection(self) -> OIDCConnectionSettings:
         config = self._load_config()
         data = config.get("oidc_settings", {})
@@ -1125,7 +1380,9 @@ class PreferencesService:
     def get_oidc_connection_raw(self) -> OIDCConnectionSettings:
         config = self._load_config()
         data = config.get("oidc_settings", {})
-        secret = self._read_secret(("oidc_settings", "client_secret"), data.get("client_secret", ""))
+        secret = self._read_secret(
+            ("oidc_settings", "client_secret"), data.get("client_secret", "")
+        )
         return OIDCConnectionSettings(
             enabled=data.get("enabled", False),
             issuer=data.get("issuer", ""),

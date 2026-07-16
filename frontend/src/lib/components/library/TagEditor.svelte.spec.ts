@@ -1,7 +1,7 @@
 import { page } from '@vitest/browser/context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { LibraryTrack, TrackTagUpdate } from '$lib/types';
+import type { LibraryFileMeta, TrackTagUpdate } from '$lib/types';
 
 const { mockGet, mockSave } = vi.hoisted(() => ({ mockGet: vi.fn(), mockSave: vi.fn() }));
 
@@ -19,20 +19,32 @@ vi.mock('$lib/stores/toast', () => ({
 
 import TagEditor from './TagEditor.svelte';
 
-const track: LibraryTrack = {
+const track: LibraryFileMeta = {
 	id: 'file-1',
-	recording_mbid: 'rec-1',
+	title: 'Airbag',
+	album_id: 'album-1',
+	album_title: 'OK Computer',
+	artist_id: 'artist-1',
+	artist_name: 'Radiohead',
+	album_artist_id: 'artist-1',
+	album_artist_name: 'Radiohead',
+	musicbrainz_recording_id: 'rec-1',
+	musicbrainz_release_group_id: null,
+	musicbrainz_artist_id: null,
+	musicbrainz_album_artist_id: null,
 	disc_number: 1,
 	track_number: 1,
-	track_title: 'Airbag',
-	artist_name: 'Radiohead',
-	file_path: '/music/Radiohead/OK Computer/01 Airbag.flac',
-	file_format: 'flac',
+	year: 1997,
+	genre: 'Rock',
+	duration_seconds: 260,
+	format: 'flac',
 	bit_rate: 900,
 	sample_rate: 44100,
 	bit_depth: 16,
-	duration_seconds: 260,
+	channels: 2,
 	file_size_bytes: 1048576,
+	date_added: 1,
+	cover_available: false,
 	current_tier: 'lossless',
 	below_cutoff: false
 };

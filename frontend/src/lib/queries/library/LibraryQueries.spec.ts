@@ -15,9 +15,7 @@ import {
 	getLibraryAlbumsQueryOptions,
 	getLibraryStatsQueryOptions,
 	getLibraryAlbumStatusQueryOptions,
-	getLibraryScanStatusQuery,
-	getLibraryScanScheduleQuery,
-	getLibraryUnmatchedQuery
+	getLibraryScanScheduleQuery
 } from './LibraryQueries.svelte';
 
 const mockGet = vi.mocked(api.global.get);
@@ -89,24 +87,6 @@ describe('library query endpoints', () => {
 	it('album status query hits the combined /status endpoint', async () => {
 		await callQueryFn(getLibraryAlbumStatusQueryOptions('rg-1'));
 		expect(mockGet.mock.calls[0][0]).toBe('/api/v1/library/albums/rg-1/status');
-	});
-
-	it('scan status query polls /scan/status fast while scanning, lazily when idle', async () => {
-		const opts = getLibraryScanStatusQuery() as unknown as Record<string, unknown>;
-		const refetchInterval = opts.refetchInterval as (q: {
-			state: { data?: { status: string } };
-		}) => number | false;
-		expect(refetchInterval({ state: { data: { status: 'scanning' } } })).toBe(2000);
-		expect(refetchInterval({ state: { data: { status: 'idle' } } })).toBe(15000);
-		expect(refetchInterval({ state: { data: undefined } })).toBe(15000);
-		await callQueryFn(opts);
-		expect(mockGet.mock.calls[0][0]).toBe('/api/v1/library/scan/status');
-	});
-
-	it('unmatched query hits /scan/unmatched', async () => {
-		const opts = getLibraryUnmatchedQuery() as unknown as Record<string, unknown>;
-		await callQueryFn(opts);
-		expect(mockGet.mock.calls[0][0]).toBe('/api/v1/library/scan/unmatched');
 	});
 
 	it('scan schedule query hits the schedule endpoint', async () => {

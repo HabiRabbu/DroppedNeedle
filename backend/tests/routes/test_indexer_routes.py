@@ -1,7 +1,7 @@
 """Newznab indexer route tests: admin auth, list/create/update/delete/reorder,
 masked-key passthrough, and the caps Test (audio-search reporting)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from fastapi import FastAPI, HTTPException
 
@@ -16,8 +16,11 @@ def _prefs():
     prefs = MagicMock()
     prefs.get_indexers.return_value = [
         NewznabIndexerSettings(
-            id="idx1", name="My Indexer", url="https://idx.test/api",
-            api_key=INDEXER_API_KEY_MASK, priority=1,
+            id="idx1",
+            name="My Indexer",
+            url="https://idx.test/api",
+            api_key=INDEXER_API_KEY_MASK,
+            priority=1,
         )
     ]
     prefs.save_indexer.return_value = "idx1"
@@ -58,7 +61,18 @@ def test_list_indexers_unauthenticated():
     assert build_test_client(_app()).get("/indexers").status_code == 401
 
 
-def test_create_indexer_saves_and_returns_id():
+def test_create_indexer_saves_and_rebuilds_target_download_singletons(monkeypatch):
+    from core.dependencies import (
+        get_target_download_orchestrator,
+        get_target_download_service,
+    )
+
+    orchestrator_clear = MagicMock()
+    service_clear = MagicMock()
+    monkeypatch.setattr(
+        get_target_download_orchestrator, "cache_clear", orchestrator_clear
+    )
+    monkeypatch.setattr(get_target_download_service, "cache_clear", service_clear)
     prefs = _prefs()
     app = _app(prefs)
     app.dependency_overrides[_get_current_admin] = mock_admin_user
@@ -69,6 +83,8 @@ def test_create_indexer_saves_and_returns_id():
     assert response.status_code == 200
     assert response.json()["id"] == "idx1"
     prefs.save_indexer.assert_called_once()
+    orchestrator_clear.assert_called_once()
+    service_clear.assert_called_once()
 
 
 def test_delete_indexer_admin():
@@ -99,9 +115,13 @@ def test_test_indexer_reports_audio_search_capability(monkeypatch):
     # A real NewznabClient over the DrunkenSlug mock (audio-search=no); the route
     # calls build_newznab_client() directly, so patch it on the route module.
     caps_client = NewznabClient(
-        newznab_mock.client_for(newznab_mock.drunkenslug_handler), "https://idx.test/api", "KEY"
+        newznab_mock.client_for(newznab_mock.drunkenslug_handler),
+        "https://idx.test/api",
+        "KEY",
     )
-    monkeypatch.setattr(indexers, "build_newznab_client", lambda url, api_key: caps_client)
+    monkeypatch.setattr(
+        indexers, "build_newznab_client", lambda url, api_key: caps_client
+    )
     app = _app()
     app.dependency_overrides[_get_current_admin] = mock_admin_user
     response = build_test_client(app).post(
@@ -119,7 +139,9 @@ def test_test_indexer_reports_failure_on_bad_caps(monkeypatch):
     from tests.mocks import newznab_mock
 
     bad = NewznabClient(
-        newznab_mock.client_for(newznab_mock.auth_error_handler), "https://idx.test/api", "BAD"
+        newznab_mock.client_for(newznab_mock.auth_error_handler),
+        "https://idx.test/api",
+        "BAD",
     )
     monkeypatch.setattr(indexers, "build_newznab_client", lambda url, api_key: bad)
     app = _app()
@@ -140,11 +162,18 @@ def test_test_indexer_suggests_api_path_when_site_url_pasted(monkeypatch):
     from tests.mocks import newznab_mock
 
     def homepage_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<!doctype html><head><title>Site</title></head>",
-                              headers={"Content-Type": "text/html"})
+        return httpx.Response(
+            200,
+            content=b"<!doctype html><head><title>Site</title></head>",
+            headers={"Content-Type": "text/html"},
+        )
 
     def _build(url, api_key):
-        handler = newznab_mock.drunkenslug_handler if url.endswith("/api") else homepage_handler
+        handler = (
+            newznab_mock.drunkenslug_handler
+            if url.endswith("/api")
+            else homepage_handler
+        )
         return NewznabClient(newznab_mock.client_for(handler), url, api_key)
 
     monkeypatch.setattr(indexers, "build_newznab_client", _build)
@@ -168,11 +197,18 @@ def test_test_indexer_suggests_api_path_even_when_key_is_wrong(monkeypatch):
     from tests.mocks import newznab_mock
 
     def homepage_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<!doctype html><head></head>",
-                              headers={"Content-Type": "text/html"})
+        return httpx.Response(
+            200,
+            content=b"<!doctype html><head></head>",
+            headers={"Content-Type": "text/html"},
+        )
 
     def _build(url, api_key):
-        handler = newznab_mock.auth_error_handler if url.endswith("/api") else homepage_handler
+        handler = (
+            newznab_mock.auth_error_handler
+            if url.endswith("/api")
+            else homepage_handler
+        )
         return NewznabClient(newznab_mock.client_for(handler), url, api_key)
 
     monkeypatch.setattr(indexers, "build_newznab_client", _build)
@@ -193,12 +229,18 @@ def test_test_indexer_no_suggestion_when_url_already_has_path(monkeypatch):
     from tests.mocks import newznab_mock
 
     def homepage_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<!doctype html><head></head>",
-                              headers={"Content-Type": "text/html"})
+        return httpx.Response(
+            200,
+            content=b"<!doctype html><head></head>",
+            headers={"Content-Type": "text/html"},
+        )
 
     monkeypatch.setattr(
-        indexers, "build_newznab_client",
-        lambda url, api_key: NewznabClient(newznab_mock.client_for(homepage_handler), url, api_key),
+        indexers,
+        "build_newznab_client",
+        lambda url, api_key: NewznabClient(
+            newznab_mock.client_for(homepage_handler), url, api_key
+        ),
     )
     app = _app()
     app.dependency_overrides[_get_current_admin] = mock_admin_user

@@ -65,7 +65,11 @@ class LibraryViewService:
     ) -> tuple[list[ViewArtist], int]:
         # synthetic (Q14) ids stay: compat browse-by-id keys off them for MBID-less artists
         items, total = await self._lm.get_artists(
-            limit=limit, offset=offset, sort_by=sort_by, sort_order=sort_order, q=q,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            q=q,
             include_synthetic_mbids=True,
         )
         artists = [self._artist_from_summary(s) for s in items]
@@ -80,7 +84,11 @@ class LibraryViewService:
         self, targets: list[tuple[str, str]]
     ) -> list[tuple[str, str]]:
         by_kind = {
-            kind: list(dict.fromkeys(item_id for item_kind, item_id in targets if item_kind == kind))
+            kind: list(
+                dict.fromkeys(
+                    item_id for item_kind, item_id in targets if item_kind == kind
+                )
+            )
             for kind in ("artist", "album", "track")
         }
         existing = await self._db.existing_compat_ids(
@@ -102,8 +110,12 @@ class LibraryViewService:
         user: "UserRecord | None" = None,
     ) -> tuple[list[ViewAlbum], int]:
         items, total = await self._lm.get_albums_page(
-            page=page, page_size=page_size, sort=sort, q=q,
-            file_format=file_format, decade=decade,
+            page=page,
+            page_size=page_size,
+            sort=sort,
+            q=q,
+            file_format=file_format,
+            decade=decade,
         )
         albums = [self._album_from_summary(s) for s in items]
         await self._overlay_favorites(albums, "album", lambda a: a.rg_mbid, user)
@@ -132,7 +144,9 @@ class LibraryViewService:
             genre=genre,
         )
         albums = [self._album_from_summary(item) for item in items]
-        await self._overlay_favorites(albums, "album", lambda album: album.rg_mbid, user)
+        await self._overlay_favorites(
+            albums, "album", lambda album: album.rg_mbid, user
+        )
         await self._overlay_plays(albums, "album", lambda album: album.rg_mbid, user)
         return albums, total
 
@@ -141,7 +155,9 @@ class LibraryViewService:
     ) -> list[ViewAlbum]:
         items = await self._lm.get_albums_by_ids(release_group_mbids)
         albums = [self._album_from_summary(item) for item in items]
-        await self._overlay_favorites(albums, "album", lambda album: album.rg_mbid, user)
+        await self._overlay_favorites(
+            albums, "album", lambda album: album.rg_mbid, user
+        )
         await self._overlay_plays(albums, "album", lambda album: album.rg_mbid, user)
         return albums
 
@@ -165,7 +181,9 @@ class LibraryViewService:
                 year=r.get("year"),
                 track_count=r.get("track_count"),
                 cover_available=bool(r.get("cover_url")),
-                date_added=int(r["last_imported_at"]) if r.get("last_imported_at") else None,
+                date_added=int(r["last_imported_at"])
+                if r.get("last_imported_at")
+                else None,
                 is_compilation=bool(r.get("is_compilation")),
             )
             for r in rows
@@ -182,9 +200,7 @@ class LibraryViewService:
         if not albums:
             return None
         name = next((a.artist_name for a in albums if a.artist_name), "Unknown Artist")
-        artist = ViewArtist(
-            artist_mbid=artist_mbid, name=name, album_count=len(albums)
-        )
+        artist = ViewArtist(artist_mbid=artist_mbid, name=name, album_count=len(albums))
         await self._overlay_favorites([artist], "artist", lambda a: a.artist_mbid, user)
         await self._overlay_plays([artist], "artist", lambda a: a.name, user)
         return artist, albums
@@ -225,8 +241,12 @@ class LibraryViewService:
     ) -> dict[str, ViewTrack]:
         rows = await self._db.get_library_files_by_ids(file_ids)
         tracks = [self._track_from_row(row) for row in rows.values()]
-        await self._overlay_favorites(tracks, "track", lambda track: track.file_id, user)
-        await self._overlay_plays(tracks, "track", lambda track: track.recording_mbid, user)
+        await self._overlay_favorites(
+            tracks, "track", lambda track: track.file_id, user
+        )
+        await self._overlay_plays(
+            tracks, "track", lambda track: track.recording_mbid, user
+        )
         return {track.file_id: track for track in tracks}
 
     async def get_tracks_page(
@@ -258,7 +278,11 @@ class LibraryViewService:
         ]
 
     async def get_songs_by_genre(
-        self, genre: str, *, limit: int = 50, offset: int = 0,
+        self,
+        genre: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
         user: "UserRecord | None" = None,
     ) -> list[ViewTrack]:
         rows = await self._db.get_files_by_genre(genre, limit=limit, offset=offset)
@@ -294,6 +318,9 @@ class LibraryViewService:
             name=s.artist_name,
             album_count=s.album_count,
             date_added=int(s.date_added) if s.date_added is not None else None,
+            musicbrainz_artist_id=(
+                s.artist_mbid if s.artist_mbid and "-" in s.artist_mbid else None
+            ),
         )
 
     @staticmethod
@@ -305,11 +332,19 @@ class LibraryViewService:
             year=s.year,
             track_count=s.track_count,
             cover_available=bool(s.cover_url),
-            date_added=int(s.last_imported_at) if s.last_imported_at is not None else None,
+            date_added=int(s.last_imported_at)
+            if s.last_imported_at is not None
+            else None,
             is_compilation=s.is_compilation,
             artist_mbid=s.album_artist_mbid,
             sort_name=s.album_sort_name,
             original_release_date=s.original_release_date,
+            musicbrainz_release_group_id=s.release_group_mbid,
+            musicbrainz_artist_id=(
+                s.album_artist_mbid
+                if s.album_artist_mbid and "-" in s.album_artist_mbid
+                else None
+            ),
         )
 
     async def _album_from_rows(self, rg_mbid: str, rows: list[dict]) -> ViewAlbum:
@@ -337,6 +372,12 @@ class LibraryViewService:
                     for row in rows
                     if row.get("disc_subtitle")
                 )
+            ),
+            musicbrainz_release_group_id=rg_mbid,
+            musicbrainz_artist_id=(
+                first.get("album_artist_mbid")
+                if first.get("album_artist_mbid") and "-" in first["album_artist_mbid"]
+                else None
             ),
         )
 
@@ -375,6 +416,18 @@ class LibraryViewService:
             replaygain_album_gain=row.get("replaygain_album_gain"),
             replaygain_track_peak=row.get("replaygain_track_peak"),
             replaygain_album_peak=row.get("replaygain_album_peak"),
+            musicbrainz_recording_id=row.get("recording_mbid"),
+            musicbrainz_release_group_id=row.get("release_group_mbid"),
+            musicbrainz_artist_id=(
+                row.get("artist_mbid")
+                if row.get("artist_mbid") and "-" in row["artist_mbid"]
+                else None
+            ),
+            musicbrainz_album_artist_id=(
+                row.get("album_artist_mbid")
+                if row.get("album_artist_mbid") and "-" in row["album_artist_mbid"]
+                else None
+            ),
         )
 
     @staticmethod
@@ -403,6 +456,18 @@ class LibraryViewService:
             channels=item.channels,
             file_size_bytes=item.file_size_bytes,
             created_at=item.created_at,
+            musicbrainz_recording_id=item.recording_mbid,
+            musicbrainz_release_group_id=item.album_mbid,
+            musicbrainz_artist_id=(
+                item.artist_mbid
+                if item.artist_mbid and "-" in item.artist_mbid
+                else None
+            ),
+            musicbrainz_album_artist_id=(
+                item.album_artist_mbid
+                if item.album_artist_mbid and "-" in item.album_artist_mbid
+                else None
+            ),
         )
 
     async def _overlay_favorites(self, items, kind, key, user) -> None:

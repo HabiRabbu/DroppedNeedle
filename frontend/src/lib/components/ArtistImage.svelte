@@ -11,6 +11,8 @@
 		rounded?: 'none' | 'sm' | 'md' | 'lg' | 'xl' | 'full';
 		remoteUrl?: string | null;
 		onload?: () => void;
+		source?: 'provider' | 'local';
+		available?: boolean;
 	}
 
 	let {
@@ -22,7 +24,9 @@
 		className = '',
 		rounded = 'full',
 		remoteUrl = null,
-		onload = undefined
+		onload = undefined,
+		source = 'provider',
+		available = true
 	}: Props = $props();
 </script>
 
@@ -36,5 +40,7 @@
 	{rounded}
 	{remoteUrl}
 	{onload}
+	{source}
+	{available}
 	imageType="artist"
 />

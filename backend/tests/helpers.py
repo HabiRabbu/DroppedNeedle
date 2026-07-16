@@ -20,6 +20,8 @@ from core.exception_handlers import (
     resource_not_found_handler,
     source_resolution_error_handler,
     starlette_http_exception_handler,
+    revision_overflow_error_handler,
+    stale_revision_error_handler,
     validation_error_handler,
 )
 from core.exception_handlers import (
@@ -33,7 +35,9 @@ from core.exceptions import (
     ExternalServiceError,
     PermissionDeniedError,
     ResourceNotFoundError,
+    RevisionOverflowError,
     SourceResolutionError,
+    StaleRevisionError,
     ValidationError,
 )
 from infrastructure.resilience.retry import CircuitOpenError
@@ -66,13 +70,17 @@ def override_admin_auth(app: FastAPI) -> None:
     app.dependency_overrides[_get_current_admin] = mock_admin_user
 
 
-def override_user_auth(app: FastAPI, role: str = "user", user_id: str = "test-user-id") -> None:
+def override_user_auth(
+    app: FastAPI, role: str = "user", user_id: str = "test-user-id"
+) -> None:
     """Bypass the user-auth dependency (`_get_current_user`) with a chosen role/id.
 
     Used by the request-ownership tests (403 vs 200) - the route resolves
     ``CurrentUserDep`` via ``_get_current_user``.
     """
-    app.dependency_overrides[_get_current_user] = lambda: mock_user(role=role, user_id=user_id)
+    app.dependency_overrides[_get_current_user] = lambda: mock_user(
+        role=role, user_id=user_id
+    )
 
 
 def add_production_exception_handlers(app: FastAPI) -> FastAPI:
@@ -84,6 +92,8 @@ def add_production_exception_handlers(app: FastAPI) -> FastAPI:
     app.add_exception_handler(ConfigurationError, configuration_error_handler)
     app.add_exception_handler(PermissionDeniedError, permission_denied_handler)
     app.add_exception_handler(ConflictError, conflict_error_handler)
+    app.add_exception_handler(StaleRevisionError, stale_revision_error_handler)
+    app.add_exception_handler(RevisionOverflowError, revision_overflow_error_handler)
     app.add_exception_handler(SourceResolutionError, source_resolution_error_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handler)
@@ -138,12 +148,10 @@ def assert_log_fields(
         Minimum number of matching records expected (default 1).
     """
     matching = [r.message for r in records if r.message.startswith(prefix)]
-    assert len(matching) >= min_count, (
-        f"Expected >= {min_count} log(s) starting with '{prefix}', found {len(matching)}"
-    )
+    assert (
+        len(matching) >= min_count
+    ), f"Expected >= {min_count} log(s) starting with '{prefix}', found {len(matching)}"
     for msg in matching:
         for field in required_fields:
-            assert f"{field}=" in msg, (
-                f"Field '{field}=' missing in log: {msg}"
-            )
+            assert f"{field}=" in msg, f"Field '{field}=' missing in log: {msg}"
     return matching

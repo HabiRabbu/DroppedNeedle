@@ -103,7 +103,7 @@ HOME_SECTIONS: tuple[SectionDef, ...] = (
         description="Genre tiles built from your library.",
         zone="Browse Genres",
         requires="library",
-        fields=("genre_list", "genre_artists", "genre_artist_images"),
+        fields=("genre_list", "genre_artwork"),
     ),
 )
 
@@ -239,7 +239,7 @@ DISCOVER_SECTIONS: tuple[SectionDef, ...] = (
         description="Genre tiles built from your library.",
         zone="Browse Genres",
         requires="library",
-        fields=("genre_list", "genre_artist_images"),
+        fields=("genre_list", "genre_artwork"),
     ),
     SectionDef(
         key="globally_trending",
@@ -313,8 +313,7 @@ _FIELD_BLANKS: dict[str, Any] = {
     "because_you_listen_to": [],
     "daily_mixes": [],
     "radio_sections": [],
-    "genre_artists": {},
-    "genre_artist_images": {},
+    "genre_artwork": {},
     "discover_queue_enabled": False,
 }
 

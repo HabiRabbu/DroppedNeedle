@@ -1,7 +1,9 @@
 <script lang="ts">
-	import { CheckCircle2, CircleAlert, Loader2, RotateCw, Search, X } from 'lucide-svelte';
+	import { CheckCircle2, CircleAlert, Loader2, RotateCw, Search, Trash2, X } from 'lucide-svelte';
 	import {
 		cancelFreeMusicMutation,
+		clearFreeMusicHistoryMutation,
+		removeFreeMusicHistoryMutation,
 		retryFreeMusicMutation
 	} from '$lib/queries/free-music/FreeMusicMutations.svelte';
 	import { getFreeMusicTasksQuery } from '$lib/queries/free-music/FreeMusicQueries.svelte';
@@ -19,6 +21,8 @@
 	);
 	const cancel = cancelFreeMusicMutation();
 	const retry = retryFreeMusicMutation();
+	const removeHistory = removeFreeMusicHistoryMutation();
+	const clearHistory = clearFreeMusicHistoryMutation();
 	const tasks = $derived(tasksQuery.data?.tasks ?? []);
 
 	const labels: Record<FreeMusicStatus, string> = {
@@ -32,6 +36,11 @@
 
 	const isActive = (status: FreeMusicStatus) =>
 		status === 'searching' || status === 'downloading' || status === 'importing';
+	const isCancellable = (status: FreeMusicStatus) =>
+		status === 'searching' || status === 'downloading';
+	const isTerminal = (status: FreeMusicStatus) =>
+		status === 'completed' || status === 'failed' || status === 'cancelled';
+	const terminalCount = $derived(tasks.filter((task) => isTerminal(task.status)).length);
 
 	function percent(task: FreeMusicTask): number {
 		if (task.bytes_total > 0) {
@@ -54,7 +63,19 @@
 
 {#if tasks.length}
 	<div class="mb-6 space-y-2">
-		<h2 class="text-sm font-semibold text-base-content/70">Free Music</h2>
+		<div class="flex min-h-7 items-center justify-between gap-3">
+			<h2 class="text-sm font-semibold text-base-content/70">Free Music</h2>
+			{#if terminalCount > 0}
+				<button
+					class="btn btn-ghost btn-xs gap-1 text-base-content/60 hover:text-error"
+					onclick={() => clearHistory.mutate(showAll && authStore.isAdmin)}
+					disabled={clearHistory.isPending || removeHistory.isPending}
+					title="Remove finished Free Music entries. Library files stay in place."
+				>
+					<Trash2 class="h-3.5 w-3.5" aria-hidden="true" /> Clear history
+				</button>
+			{/if}
+		</div>
 		{#each tasks as task (task.id)}
 			<div class="rounded-2xl border border-base-content/10 bg-base-200/40 px-4 py-3">
 				<div class="flex flex-wrap items-center justify-between gap-2">
@@ -104,7 +125,7 @@
 					</div>
 
 					<div class="flex shrink-0 items-center gap-1">
-						{#if isActive(task.status)}
+						{#if isCancellable(task.status)}
 							<button
 								class="btn btn-ghost btn-xs"
 								onclick={() => cancel.mutate(task.id)}
@@ -117,10 +138,21 @@
 							<button
 								class="btn btn-ghost btn-xs gap-1"
 								onclick={() => retry.mutate(task.id)}
-								disabled={retry.isPending}
+								disabled={retry.isPending || removeHistory.isPending}
 							>
 								<RotateCw class="h-3.5 w-3.5" aria-hidden="true" />
 								Retry
+							</button>
+						{/if}
+						{#if isTerminal(task.status)}
+							<button
+								class="btn btn-ghost btn-xs text-base-content/50 hover:text-error"
+								onclick={() => removeHistory.mutate(task.id)}
+								disabled={removeHistory.isPending || retry.isPending || clearHistory.isPending}
+								aria-label="Remove {task.title} from history"
+								title="Remove this history entry. Library files stay in place."
+							>
+								<Trash2 class="h-3.5 w-3.5" aria-hidden="true" />
 							</button>
 						{/if}
 					</div>

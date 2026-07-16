@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import msgspec.structs
+
 if TYPE_CHECKING:
     from infrastructure.persistence.auth_store import UserRecord
+    from services.home.genre_artwork_service import GenreArtworkService
 
 from fastapi import HTTPException
 
@@ -41,7 +44,9 @@ from services.discover.queue_service import DiscoverQueueService
 from services.discover.radio_plan_service import RadioPlanService
 from services.preferences_service import PreferencesService
 from services.per_user_client_factory import PerUserClientFactory
-from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
+from infrastructure.persistence.user_listening_prefs_store import (
+    UserListeningPrefsStore,
+)
 
 
 class DiscoverService:
@@ -72,10 +77,13 @@ class DiscoverService:
         follow_service: Any = None,
         cover_repo: Any = None,
         preview_repo: Any = None,
+        ownership_service: Any = None,
+        genre_artwork_service: "GenreArtworkService | None" = None,
     ):
         self._integration = IntegrationHelpers(preferences_service)
         self._client_factory = client_factory
         self._prefs_store = listening_prefs_store
+        self._ownership = ownership_service
 
         self._mbid_resolution = MbidResolutionService(
             musicbrainz_repo=musicbrainz_repo,
@@ -106,6 +114,7 @@ class DiscoverService:
             lastfm_repo=lastfm_repo,
             client_factory=client_factory,
             listening_prefs_store=listening_prefs_store,
+            ownership_service=ownership_service,
         )
 
         self._homepage = DiscoverHomepageService(
@@ -125,6 +134,7 @@ class DiscoverService:
             library_db=library_db,
             follow_service=follow_service,
             cover_repo=cover_repo,
+            genre_artwork_service=genre_artwork_service,
         )
 
         self._radio = radio_service
@@ -140,7 +150,9 @@ class DiscoverService:
         )
 
     async def get_discover_data(self, user_id: str):
-        return await self._homepage.get_discover_data(user_id)
+        response = await self._homepage.get_discover_data(user_id)
+        await self._apply_album_ownership(response)
+        return response
 
     async def get_discover_preview(self, user_id: str) -> DiscoverPreview | None:
         return await self._homepage.get_discover_preview(user_id)
@@ -158,9 +170,59 @@ class DiscoverService:
         return await self._homepage.warm_cache_thorough(user_id)
 
     async def build_discover_data(self, user_id: str):
-        return await self._homepage.build_discover_data(user_id)
+        response = await self._homepage.build_discover_data(user_id)
+        await self._apply_album_ownership(response)
+        return response
 
-    async def build_radio_plan(self, user_id: str, request: RadioPlanRequest) -> RadioPlanResponse:
+    async def _apply_album_ownership(self, response: Any) -> None:
+        if self._ownership is None or response is None:
+            return
+        from api.v1.schemas.home import HomeAlbum, HomeSection
+        from services.native.library_ownership_service import AlbumOwnershipCandidate
+
+        sections = [
+            getattr(response, field.name)
+            for field in msgspec.structs.fields(type(response))
+            if (value := getattr(response, field.name)) is not None
+            if isinstance(value, HomeSection)
+        ]
+        sections.extend(getattr(response, "daily_mixes", []))
+        sections.extend(getattr(response, "radio_sections", []))
+        sections.extend(
+            item.section for item in getattr(response, "because_you_listen_to", [])
+        )
+        albums = [
+            item
+            for section in sections
+            for item in getattr(section, "items", [])
+            if isinstance(item, HomeAlbum)
+        ]
+        top_picks = getattr(response, "top_picks", None)
+        if top_picks is not None:
+            albums.extend(item.album for item in top_picks.items)
+        projections = await self._ownership.project_albums(
+            [
+                AlbumOwnershipCandidate(
+                    release_group_mbid=album.mbid,
+                    title=album.name,
+                    album_artist=album.artist_name or "",
+                    year=(
+                        int(album.release_date[:4])
+                        if album.release_date
+                        and len(album.release_date) >= 4
+                        and album.release_date[:4].isdigit()
+                        else None
+                    ),
+                )
+                for album in albums
+            ]
+        )
+        for album, projection in zip(albums, projections):
+            album.in_library = projection.owned
+
+    async def build_radio_plan(
+        self, user_id: str, request: RadioPlanRequest
+    ) -> RadioPlanResponse:
         return await self._radio_plan.build_plan(user_id, request)
 
     async def generate_radio(self, request: Any) -> HomeSection:
@@ -169,17 +231,26 @@ class DiscoverService:
         return await self._radio.generate_radio(request)
 
     async def get_playlist_suggestions(
-        self, request: PlaylistSuggestionsRequest, requesting: UserRecord,
+        self,
+        request: PlaylistSuggestionsRequest,
+        requesting: UserRecord,
     ) -> PlaylistSuggestionsResponse:
         profile = await self._playlist_service.analyse_playlist_profile(
-            request.playlist_id, requesting,
+            request.playlist_id,
+            requesting,
         )
         if profile is None:
             raise HTTPException(status_code=404, detail="Playlist not found")
         if not profile.artist_mbids:
-            raise HTTPException(status_code=422, detail="This playlist has no artist data to base suggestions on")
+            raise HTTPException(
+                status_code=422,
+                detail="This playlist has no artist data to base suggestions on",
+            )
         section = await self._homepage.build_playlist_suggestions(
-            requesting.id, profile, request.count, request.source,
+            requesting.id,
+            profile,
+            request.count,
+            request.source,
         )
         return PlaylistSuggestionsResponse(
             suggestions=section,
@@ -187,14 +258,21 @@ class DiscoverService:
             profile=profile,
         )
 
-    async def build_queue(self, user_id: str, count: int | None = None) -> DiscoverQueueResponse:
+    async def build_queue(
+        self, user_id: str, count: int | None = None
+    ) -> DiscoverQueueResponse:
         return await self._queue.build_queue(user_id, count)
 
     async def validate_queue_mbids(self, mbids: list[str]) -> list[str]:
         return await self._queue.validate_queue_mbids(mbids)
 
     async def ignore_release(
-        self, user_id: str, release_group_mbid: str, artist_mbid: str, release_name: str, artist_name: str
+        self,
+        user_id: str,
+        release_group_mbid: str,
+        artist_mbid: str,
+        release_name: str,
+        artist_name: str,
     ) -> None:
         return await self._queue.ignore_release(
             user_id, release_group_mbid, artist_mbid, release_name, artist_name
@@ -203,9 +281,10 @@ class DiscoverService:
     async def get_ignored_releases(self, user_id: str) -> list[DiscoverIgnoredRelease]:
         return await self._queue.get_ignored_releases(user_id)
 
-    async def enrich_queue_item(self, release_group_mbid: str) -> DiscoverQueueEnrichment:
+    async def enrich_queue_item(
+        self, release_group_mbid: str
+    ) -> DiscoverQueueEnrichment:
         return await self._enrichment.enrich_queue_item(release_group_mbid)
-
 
     def resolve_source(self, source: str | None) -> str:
         return self._integration.resolve_source(source)

@@ -9,7 +9,10 @@ from repositories.lastfm_models import (
     LastFmRecentTrack,
     LastFmSimilarArtist,
 )
-from repositories.listenbrainz_models import ListenBrainzFeedbackRecording, ListenBrainzListen
+from repositories.listenbrainz_models import (
+    ListenBrainzFeedbackRecording,
+    ListenBrainzListen,
+)
 from repositories.protocols import (
     ListenBrainzArtist,
     ListenBrainzReleaseGroup,
@@ -31,6 +34,7 @@ class HomeDataTransformers:
     def library_album_to_home(self, album: LibraryAlbum) -> HomeAlbum:
         return HomeAlbum(
             mbid=album.musicbrainz_id,
+            local_id=album.local_id,
             name=album.album or "Unknown Album",
             artist_name=album.artist,
             artist_mbid=album.artist_mbid,
@@ -41,10 +45,12 @@ class HomeDataTransformers:
 
     def library_artist_to_home(self, artist_data: dict) -> HomeArtist | None:
         mbid = artist_data.get("mbid")
-        if not mbid:
+        local_id = artist_data.get("local_id")
+        if not mbid and not local_id:
             return None
         return HomeArtist(
             mbid=mbid,
+            local_id=local_id,
             name=artist_data.get("name", "Unknown Artist"),
             image_url=None,
             listen_count=artist_data.get("album_count"),
@@ -52,9 +58,7 @@ class HomeDataTransformers:
         )
 
     def lb_artist_to_home(
-        self,
-        artist: ListenBrainzArtist,
-        library_mbids: set[str]
+        self, artist: ListenBrainzArtist, library_mbids: set[str]
     ) -> HomeArtist | None:
         mbid = artist.artist_mbids[0] if artist.artist_mbids else None
         if not mbid:
@@ -87,9 +91,7 @@ class HomeDataTransformers:
         )
 
     def jf_item_to_artist(
-        self,
-        item: JellyfinItem,
-        library_mbids: set[str]
+        self, item: JellyfinItem, library_mbids: set[str]
     ) -> HomeArtist | None:
         mbid = None
         if item.provider_ids:
@@ -220,7 +222,9 @@ class HomeDataTransformers:
             image_url=track.image_url or None,
         )
 
-    def lb_feedback_to_home_track(self, feedback: ListenBrainzFeedbackRecording) -> HomeTrack:
+    def lb_feedback_to_home_track(
+        self, feedback: ListenBrainzFeedbackRecording
+    ) -> HomeTrack:
         artist_mbid = feedback.artist_mbids[0] if feedback.artist_mbids else None
         image_url = self._cover_url(feedback.release_mbid)
         return HomeTrack(
@@ -235,9 +239,7 @@ class HomeDataTransformers:
         )
 
     def extract_genres_from_library(
-        self,
-        albums: list[LibraryAlbum],
-        lb_genres: list | None = None
+        self, albums: list[LibraryAlbum], lb_genres: list | None = None
     ) -> list[HomeGenre]:
         if lb_genres:
             return [
@@ -246,10 +248,26 @@ class HomeDataTransformers:
             ]
 
         default_genres = [
-            "Rock", "Pop", "Hip Hop", "Electronic", "Jazz",
-            "Classical", "R&B", "Country", "Metal", "Folk",
-            "Blues", "Reggae", "Soul", "Punk", "Indie",
-            "Alternative", "Dance", "Soundtrack", "World", "Latin"
+            "Rock",
+            "Pop",
+            "Hip Hop",
+            "Electronic",
+            "Jazz",
+            "Classical",
+            "R&B",
+            "Country",
+            "Metal",
+            "Folk",
+            "Blues",
+            "Reggae",
+            "Soul",
+            "Punk",
+            "Indie",
+            "Alternative",
+            "Dance",
+            "Soundtrack",
+            "World",
+            "Latin",
         ]
 
         return [HomeGenre(name=g) for g in default_genres]

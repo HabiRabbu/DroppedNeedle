@@ -10,7 +10,12 @@ from api.v1.schemas.discovery import (
     TopAlbum,
     TopAlbumsResponse,
 )
-from repositories.protocols import ListenBrainzRepositoryProtocol, LastFmRepositoryProtocol, MusicBrainzRepositoryProtocol, LibraryRepositoryProtocol
+from repositories.protocols import (
+    ListenBrainzRepositoryProtocol,
+    LastFmRepositoryProtocol,
+    MusicBrainzRepositoryProtocol,
+    LibraryRepositoryProtocol,
+)
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.persistence import LibraryDB
 from infrastructure.resilience.retry import CircuitOpenError
@@ -115,13 +120,19 @@ class ArtistDiscoveryService:
             return None
         try:
             if kind == "similar":
-                return await self._get_similar_artists_lastfm(lastfm_repo, artist_mbid, count)
+                return await self._get_similar_artists_lastfm(
+                    lastfm_repo, artist_mbid, count
+                )
             if kind == "top_songs":
                 return await self._get_top_songs_lastfm(lastfm_repo, artist_mbid, count)
             if kind == "top_albums":
-                return await self._get_top_albums_lastfm(lastfm_repo, artist_mbid, count)
+                return await self._get_top_albums_lastfm(
+                    lastfm_repo, artist_mbid, count
+                )
         except Exception as e:  # noqa: BLE001
-            logger.warning("Last.fm %s fallback failed for %s: %s", kind, artist_mbid[:8], e)
+            logger.warning(
+                "Last.fm %s fallback failed for %s: %s", kind, artist_mbid[:8], e
+            )
         return None
 
     def _resolve_source(
@@ -131,7 +142,9 @@ class ArtistDiscoveryService:
             resolved: Literal["listenbrainz", "lastfm"] = source
         elif self._preferences_service:
             preferred = self._preferences_service.get_primary_music_source().source
-            resolved = preferred if preferred in ("listenbrainz", "lastfm") else "listenbrainz"
+            resolved = (
+                preferred if preferred in ("listenbrainz", "lastfm") else "listenbrainz"
+            )
         else:
             resolved = "listenbrainz"
         return resolved
@@ -146,8 +159,14 @@ class ArtistDiscoveryService:
                     else advanced_settings.cache_ttl_artist_discovery_non_library
                 )
             except AttributeError:
-                logger.debug("Artist discovery advanced settings unavailable", exc_info=True)
-        return DISCOVERY_CACHE_TTL_LIBRARY if in_library else DISCOVERY_CACHE_TTL_NON_LIBRARY
+                logger.debug(
+                    "Artist discovery advanced settings unavailable", exc_info=True
+                )
+        return (
+            DISCOVERY_CACHE_TTL_LIBRARY
+            if in_library
+            else DISCOVERY_CACHE_TTL_NON_LIBRARY
+        )
 
     def _get_empty_discovery_ttl(self) -> int:
         return DISCOVERY_EMPTY_CACHE_TTL
@@ -169,7 +188,9 @@ class ArtistDiscoveryService:
         user_id: str | None = None,
     ) -> SimilarArtistsResponse:
         effective_source = self._resolve_source(source)
-        cache_key = self._build_cache_key("similar", artist_mbid, count, effective_source)
+        cache_key = self._build_cache_key(
+            "similar", artist_mbid, count, effective_source
+        )
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
@@ -178,16 +199,24 @@ class ArtistDiscoveryService:
         if effective_source == "lastfm":
             lastfm_repo = await self._resolve_lastfm(user_id)
             try:
-                result = await self._get_similar_artists_lastfm(lastfm_repo, artist_mbid, count)
+                result = await self._get_similar_artists_lastfm(
+                    lastfm_repo, artist_mbid, count
+                )
             except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to get Last.fm similar artists for %s: %s", artist_mbid[:8], e)
+                logger.warning(
+                    "Failed to get Last.fm similar artists for %s: %s",
+                    artist_mbid[:8],
+                    e,
+                )
                 result = SimilarArtistsResponse(similar_artists=[], source="lastfm")
         else:
             lb_repo = await self._resolve_listenbrainz(user_id)
             if lb_repo is None:
                 return SimilarArtistsResponse(configured=False)
             try:
-                similar = await lb_repo.get_similar_artists(artist_mbid, max_similar=count)
+                similar = await lb_repo.get_similar_artists(
+                    artist_mbid, max_similar=count
+                )
                 library_artist_mbids = await self._library_db.get_all_artist_mbids()
 
                 artists = [
@@ -205,15 +234,18 @@ class ArtistDiscoveryService:
                 result = SimilarArtistsResponse(similar_artists=[])
                 lb_unavailable = True
             except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to get similar artists for %s: %s(%s)", artist_mbid[:8], type(e).__name__, e)
+                logger.warning(
+                    "Failed to get similar artists for %s: %s(%s)",
+                    artist_mbid[:8],
+                    type(e).__name__,
+                    e,
+                )
                 result = SimilarArtistsResponse(similar_artists=[])
 
         # LB similar/popularity is intermittently disabled or breaker-tripped upstream
         # (2026-07); fall back to Last.fm so the section still fills
         if effective_source == "listenbrainz" and not result.similar_artists:
-            fb = await self._lastfm_fallback(
-                "similar", user_id, artist_mbid, count
-            )
+            fb = await self._lastfm_fallback("similar", user_id, artist_mbid, count)
             if fb is not None and fb.similar_artists:
                 result, lb_unavailable = fb, False
 
@@ -239,7 +271,9 @@ class ArtistDiscoveryService:
         user_id: str | None = None,
     ) -> TopSongsResponse:
         effective_source = self._resolve_source(source)
-        cache_key = self._build_cache_key("top_songs", artist_mbid, count, effective_source)
+        cache_key = self._build_cache_key(
+            "top_songs", artist_mbid, count, effective_source
+        )
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
@@ -248,16 +282,22 @@ class ArtistDiscoveryService:
         if effective_source == "lastfm":
             lastfm_repo = await self._resolve_lastfm(user_id)
             try:
-                result = await self._get_top_songs_lastfm(lastfm_repo, artist_mbid, count)
+                result = await self._get_top_songs_lastfm(
+                    lastfm_repo, artist_mbid, count
+                )
             except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to get Last.fm top songs for %s: %s", artist_mbid[:8], e)
+                logger.warning(
+                    "Failed to get Last.fm top songs for %s: %s", artist_mbid[:8], e
+                )
                 result = TopSongsResponse(songs=[], source="lastfm")
         else:
             lb_repo = await self._resolve_listenbrainz(user_id)
             if lb_repo is None:
                 return TopSongsResponse(configured=False)
             try:
-                recordings = await lb_repo.get_artist_top_recordings(artist_mbid, count=count)
+                recordings = await lb_repo.get_artist_top_recordings(
+                    artist_mbid, count=count
+                )
 
                 release_ids = [r.release_mbid for r in recordings if r.release_mbid]
 
@@ -274,24 +314,33 @@ class ArtistDiscoveryService:
                         if pos:
                             disc_number, track_number = pos
 
-                    songs.append(TopSong(
-                        recording_mbid=r.recording_mbid,
-                        title=r.track_name,
-                        artist_name=r.artist_name,
-                        release_group_mbid=rg_map.get(r.release_mbid) if r.release_mbid else None,
-                        original_release_mbid=r.release_mbid,
-                        release_name=r.release_name,
-                        listen_count=r.listen_count,
-                        disc_number=disc_number,
-                        track_number=track_number,
-                    ))
+                    songs.append(
+                        TopSong(
+                            recording_mbid=r.recording_mbid,
+                            title=r.track_name,
+                            artist_name=r.artist_name,
+                            release_group_mbid=rg_map.get(r.release_mbid)
+                            if r.release_mbid
+                            else None,
+                            original_release_mbid=r.release_mbid,
+                            release_name=r.release_name,
+                            listen_count=r.listen_count,
+                            disc_number=disc_number,
+                            track_number=track_number,
+                        )
+                    )
                 result = TopSongsResponse(songs=songs)
             except CircuitOpenError:
                 logger.warning("Circuit open for top songs %s", artist_mbid[:8])
                 result = TopSongsResponse(songs=[])
                 lb_unavailable = True
             except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to get top songs for %s: %s(%s)", artist_mbid[:8], type(e).__name__, e)
+                logger.warning(
+                    "Failed to get top songs for %s: %s(%s)",
+                    artist_mbid[:8],
+                    type(e).__name__,
+                    e,
+                )
                 result = TopSongsResponse(songs=[])
 
         # LB popularity (top-recordings) is disabled/auth-gated upstream (2026-07);
@@ -321,7 +370,9 @@ class ArtistDiscoveryService:
         user_id: str | None = None,
     ) -> TopAlbumsResponse:
         effective_source = self._resolve_source(source)
-        cache_key = self._build_cache_key("top_albums", artist_mbid, count, effective_source)
+        cache_key = self._build_cache_key(
+            "top_albums", artist_mbid, count, effective_source
+        )
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
@@ -330,24 +381,35 @@ class ArtistDiscoveryService:
         if effective_source == "lastfm":
             lastfm_repo = await self._resolve_lastfm(user_id)
             try:
-                result = await self._get_top_albums_lastfm(lastfm_repo, artist_mbid, count)
+                result = await self._get_top_albums_lastfm(
+                    lastfm_repo, artist_mbid, count
+                )
             except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to get Last.fm top albums for %s: %s", artist_mbid[:8], e)
+                logger.warning(
+                    "Failed to get Last.fm top albums for %s: %s", artist_mbid[:8], e
+                )
                 result = TopAlbumsResponse(albums=[], source="lastfm")
         else:
             lb_repo = await self._resolve_listenbrainz(user_id)
             if lb_repo is None:
                 return TopAlbumsResponse(configured=False)
             try:
-                release_groups = await lb_repo.get_artist_top_release_groups(artist_mbid, count=count)
+                release_groups = await lb_repo.get_artist_top_release_groups(
+                    artist_mbid, count=count
+                )
                 if not release_groups:
-                    fallback_albums = await self._get_top_albums_from_recordings_fallback(
-                        lb_repo, artist_mbid, count
+                    fallback_albums = (
+                        await self._get_top_albums_from_recordings_fallback(
+                            lb_repo, artist_mbid, count
+                        )
                     )
                     result = TopAlbumsResponse(albums=fallback_albums)
                 else:
                     try:
-                        library_album_mbids, requested_album_mbids = await asyncio.gather(
+                        (
+                            library_album_mbids,
+                            requested_album_mbids,
+                        ) = await asyncio.gather(
                             self._library_repo.get_library_mbids(),
                             self._library_repo.get_requested_mbids(),
                         )
@@ -361,10 +423,14 @@ class ArtistDiscoveryService:
                         library_album_mbids, requested_album_mbids = set(), set()
 
                     library_album_mbids = {
-                        mbid.lower() for mbid in library_album_mbids if isinstance(mbid, str)
+                        mbid.lower()
+                        for mbid in library_album_mbids
+                        if isinstance(mbid, str)
                     }
                     requested_album_mbids = {
-                        mbid.lower() for mbid in requested_album_mbids if isinstance(mbid, str)
+                        mbid.lower()
+                        for mbid in requested_album_mbids
+                        if isinstance(mbid, str)
                     }
 
                     albums = [
@@ -373,8 +439,14 @@ class ArtistDiscoveryService:
                             title=rg.release_group_name,
                             artist_name=rg.artist_name,
                             listen_count=rg.listen_count,
-                            in_library=rg.release_group_mbid.lower() in library_album_mbids if rg.release_group_mbid else False,
-                            requested=rg.release_group_mbid.lower() in requested_album_mbids if rg.release_group_mbid else False,
+                            in_library=rg.release_group_mbid.lower()
+                            in library_album_mbids
+                            if rg.release_group_mbid
+                            else False,
+                            requested=rg.release_group_mbid.lower()
+                            in requested_album_mbids
+                            if rg.release_group_mbid
+                            else False,
                         )
                         for rg in release_groups
                     ]
@@ -384,10 +456,17 @@ class ArtistDiscoveryService:
                 result = TopAlbumsResponse(albums=[])
                 lb_unavailable = True
             except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to get top albums for %s: %s(%s)", artist_mbid[:8], type(e).__name__, e)
+                logger.warning(
+                    "Failed to get top albums for %s: %s(%s)",
+                    artist_mbid[:8],
+                    type(e).__name__,
+                    e,
+                )
                 try:
-                    fallback_albums = await self._get_top_albums_from_recordings_fallback(
-                        lb_repo, artist_mbid, count
+                    fallback_albums = (
+                        await self._get_top_albums_from_recordings_fallback(
+                            lb_repo, artist_mbid, count
+                        )
                     )
                     result = TopAlbumsResponse(albums=fallback_albums)
                 except Exception as fallback_error:  # noqa: BLE001
@@ -415,11 +494,7 @@ class ArtistDiscoveryService:
             if effective_source == "listenbrainz"
             else self._get_empty_discovery_ttl()
         )
-        ttl = (
-            self._get_discovery_ttl(in_library)
-            if result.albums
-            else empty_ttl
-        )
+        ttl = self._get_discovery_ttl(in_library) if result.albums else empty_ttl
         await self._cache.set(cache_key, result, ttl_seconds=ttl)
         return result
 
@@ -469,10 +544,14 @@ class ArtistDiscoveryService:
                 else None
             )
             resolved_release_group_mbid = (
-                rg_map.get(raw_release_mbid, raw_release_mbid) if raw_release_mbid else None
+                rg_map.get(raw_release_mbid, raw_release_mbid)
+                if raw_release_mbid
+                else None
             )
 
-            key = resolved_release_group_mbid or (f"name:{release_title.lower()}" if release_title else None)
+            key = resolved_release_group_mbid or (
+                f"name:{release_title.lower()}" if release_title else None
+            )
             if not key:
                 continue
 
@@ -484,9 +563,9 @@ class ArtistDiscoveryService:
                     "release_group_mbid": resolved_release_group_mbid,
                 }
 
-            aggregated[key]["listen_count"] = int(aggregated[key]["listen_count"]) + int(
-                recording.listen_count
-            )
+            aggregated[key]["listen_count"] = int(
+                aggregated[key]["listen_count"]
+            ) + int(recording.listen_count)
 
         sorted_albums = sorted(
             aggregated.values(),
@@ -496,7 +575,9 @@ class ArtistDiscoveryService:
 
         return [
             TopAlbum(
-                release_group_mbid=album["release_group_mbid"] if isinstance(album["release_group_mbid"], str) else None,
+                release_group_mbid=album["release_group_mbid"]
+                if isinstance(album["release_group_mbid"], str)
+                else None,
                 title=str(album["title"]),
                 artist_name=str(album["artist_name"]),
                 listen_count=int(album["listen_count"]),
@@ -544,8 +625,10 @@ class ArtistDiscoveryService:
         _discovery_precache_running = True
         try:
             return await self._do_precache_artist_discovery(
-                artist_mbids, delay=delay,
-                status_service=status_service, mbid_to_name=mbid_to_name,
+                artist_mbids,
+                delay=delay,
+                status_service=status_service,
+                mbid_to_name=mbid_to_name,
                 generation=generation,
             )
         finally:
@@ -574,8 +657,16 @@ class ArtistDiscoveryService:
 
         cached_count = 0
         source_fetches = 0
-        advanced = self._preferences_service.get_advanced_settings() if self._preferences_service else None
-        discovery_concurrency = getattr(advanced, 'artist_discovery_precache_concurrency', 5) if advanced else 5
+        advanced = (
+            self._preferences_service.get_advanced_settings()
+            if self._preferences_service
+            else None
+        )
+        discovery_concurrency = (
+            getattr(advanced, "artist_discovery_precache_concurrency", 5)
+            if advanced
+            else 5
+        )
         sem = asyncio.Semaphore(discovery_concurrency)
         counter_lock = asyncio.Lock()
         progress_counter = 0
@@ -606,19 +697,30 @@ class ArtistDiscoveryService:
 
                         results = await asyncio.gather(
                             self.get_similar_artists(
-                                mbid, count=DEFAULT_SIMILAR_COUNT, source=source, user_id=user_id
+                                mbid,
+                                count=DEFAULT_SIMILAR_COUNT,
+                                source=source,
+                                user_id=user_id,
                             ),
                             self.get_top_songs(
-                                mbid, count=DEFAULT_TOP_SONGS_COUNT, source=source, user_id=user_id
+                                mbid,
+                                count=DEFAULT_TOP_SONGS_COUNT,
+                                source=source,
+                                user_id=user_id,
                             ),
                             self.get_top_albums(
-                                mbid, count=DEFAULT_TOP_ALBUMS_COUNT, source=source, user_id=user_id
+                                mbid,
+                                count=DEFAULT_TOP_ALBUMS_COUNT,
+                                source=source,
+                                user_id=user_id,
                             ),
                             return_exceptions=True,
                         )
                         errors = [r for r in results if isinstance(r, Exception)]
                         if errors:
-                            logger.debug("Discovery precache errors for %s: %s", mbid[:8], errors)
+                            logger.debug(
+                                "Discovery precache errors for %s: %s", mbid[:8], errors
+                            )
                         async with counter_lock:
                             source_fetches += 1
 
@@ -633,7 +735,9 @@ class ArtistDiscoveryService:
 
                 if status_service:
                     artist_name = (mbid_to_name or {}).get(mbid, mbid[:8])
-                    await status_service.update_progress(local_progress, current_item=artist_name, generation=generation)
+                    await status_service.update_progress(
+                        local_progress, current_item=artist_name, generation=generation
+                    )
 
                 return True
             except Exception as e:  # noqa: BLE001
@@ -644,7 +748,9 @@ class ArtistDiscoveryService:
                     counted_workers.add(idx)
                 if status_service:
                     artist_name = (mbid_to_name or {}).get(mbid, mbid[:8])
-                    await status_service.update_progress(local_progress, current_item=artist_name, generation=generation)
+                    await status_service.update_progress(
+                        local_progress, current_item=artist_name, generation=generation
+                    )
                 return False
 
         async def process_artist_with_timeout(idx: int, mbid: str) -> bool:
@@ -654,7 +760,11 @@ class ArtistDiscoveryService:
                     process_artist(idx, mbid), timeout=_DISCOVERY_WORKER_TIMEOUT
                 )
             except asyncio.TimeoutError:
-                logger.warning("Discovery timed out for %s after %ds", mbid[:8], _DISCOVERY_WORKER_TIMEOUT)
+                logger.warning(
+                    "Discovery timed out for %s after %ds",
+                    mbid[:8],
+                    _DISCOVERY_WORKER_TIMEOUT,
+                )
                 async with counter_lock:
                     if idx not in counted_workers:
                         progress_counter += 1
@@ -663,7 +773,8 @@ class ArtistDiscoveryService:
                 if status_service:
                     artist_name = (mbid_to_name or {}).get(mbid, mbid[:8])
                     await status_service.update_progress(
-                        local_progress, current_item=f"{artist_name} (timed out)",
+                        local_progress,
+                        current_item=f"{artist_name} (timed out)",
                         generation=generation,
                     )
                 return False
@@ -672,8 +783,11 @@ class ArtistDiscoveryService:
         for i in range(0, len(artist_mbids), chunk):
             if status_service and status_service.is_cancelled():
                 break
-            batch = artist_mbids[i:i + chunk]
-            batch_tasks = [asyncio.create_task(process_artist_with_timeout(i + j, mbid)) for j, mbid in enumerate(batch)]
+            batch = artist_mbids[i : i + chunk]
+            batch_tasks = [
+                asyncio.create_task(process_artist_with_timeout(i + j, mbid))
+                for j, mbid in enumerate(batch)
+            ]
             if batch_tasks:
                 await asyncio.gather(*batch_tasks, return_exceptions=True)
 
@@ -684,9 +798,11 @@ class ArtistDiscoveryService:
             return {}
 
         unique_ids = list(dict.fromkeys(release_ids))
-        tasks = [self._mb_repo.get_release_group_id_from_release(rid) for rid in unique_ids]
+        tasks = [
+            self._mb_repo.get_release_group_id_from_release(rid) for rid in unique_ids
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         rg_map = {}
         errors = 0
         for rid, rg_id in zip(unique_ids, results):
@@ -698,11 +814,14 @@ class ArtistDiscoveryService:
             else:
                 errors += 1
                 logger.warning(f"Resolution returned None/empty for {rid}")
-        
+
         return rg_map
 
     async def _get_similar_artists_lastfm(
-        self, lastfm_repo: Optional[LastFmRepositoryProtocol], artist_mbid: str, count: int
+        self,
+        lastfm_repo: Optional[LastFmRepositoryProtocol],
+        artist_mbid: str,
+        count: int,
     ) -> SimilarArtistsResponse:
         if lastfm_repo is None:
             return SimilarArtistsResponse(
@@ -725,9 +844,7 @@ class ArtistDiscoveryService:
                 for a in similar[:count]
                 if a.mbid
             ]
-            return SimilarArtistsResponse(
-                similar_artists=artists, source="lastfm"
-            )
+            return SimilarArtistsResponse(similar_artists=artists, source="lastfm")
         except Exception as e:
             logger.warning(
                 "Last.fm similar artists API error for %s: %s", artist_mbid[:8], e
@@ -735,7 +852,10 @@ class ArtistDiscoveryService:
             raise
 
     async def _get_top_songs_lastfm(
-        self, lastfm_repo: Optional[LastFmRepositoryProtocol], artist_mbid: str, count: int
+        self,
+        lastfm_repo: Optional[LastFmRepositoryProtocol],
+        artist_mbid: str,
+        count: int,
     ) -> TopSongsResponse:
         if lastfm_repo is None:
             return TopSongsResponse(songs=[], source="lastfm", configured=False)
@@ -760,13 +880,14 @@ class ArtistDiscoveryService:
             ]
             return TopSongsResponse(songs=songs, source="lastfm")
         except Exception as e:
-            logger.warning(
-                "Last.fm top songs API error for %s: %s", artist_mbid[:8], e
-            )
+            logger.warning("Last.fm top songs API error for %s: %s", artist_mbid[:8], e)
             raise
 
     async def _get_top_albums_lastfm(
-        self, lastfm_repo: Optional[LastFmRepositoryProtocol], artist_mbid: str, count: int
+        self,
+        lastfm_repo: Optional[LastFmRepositoryProtocol],
+        artist_mbid: str,
+        count: int,
     ) -> TopAlbumsResponse:
         if lastfm_repo is None:
             return TopAlbumsResponse(albums=[], source="lastfm", configured=False)
@@ -782,27 +903,78 @@ class ArtistDiscoveryService:
             )
 
             trimmed = lfm_albums[:count]
+            try:
+                release_groups = await self._mb_repo.get_release_groups_by_artist(
+                    artist_mbid, limit=100
+                )
+            except Exception as exc:  # noqa: BLE001 - optional canonicalization must degrade
+                logger.warning(
+                    "Could not canonicalize Last.fm albums for %s: %s",
+                    artist_mbid[:8],
+                    type(exc).__name__,
+                )
+                release_groups = []
+            release_group_ids = {
+                str(group.get("id", "")).strip().lower()
+                for group in release_groups
+                if group.get("id")
+            }
+            release_groups_by_title: dict[str, str | None] = {}
+            for group in release_groups:
+                release_group_mbid = str(group.get("id", "")).strip().lower()
+                title_key = self._normalized_album_title(group.get("title"))
+                if not release_group_mbid or not title_key:
+                    continue
+                previous = release_groups_by_title.get(title_key)
+                if previous is None and title_key not in release_groups_by_title:
+                    release_groups_by_title[title_key] = release_group_mbid
+                elif previous != release_group_mbid:
+                    release_groups_by_title[title_key] = None
 
-            # Last.fm usually returns release-group MBIDs here, so keep them as-is.
-            # When one is actually a *release* MBID, the album page recovers via the
-            # release->RG fallback in AlbumService._fetch_release_group (#78).
+            library_album_mbids = {
+                mbid.strip().lower()
+                for mbid in library_album_mbids
+                if isinstance(mbid, str) and mbid.strip()
+            }
+            requested_album_mbids = {
+                mbid.strip().lower()
+                for mbid in requested_album_mbids
+                if isinstance(mbid, str) and mbid.strip()
+            }
+
             albums = []
+            seen_release_groups: set[str] = set()
             for a in trimmed:
                 raw_mbid = a.mbid.strip().lower() if a.mbid and a.mbid.strip() else None
+                title_match = None
+                for title_key in self._album_title_candidates(a.name):
+                    if title_key not in release_groups_by_title:
+                        continue
+                    title_match = release_groups_by_title[title_key]
+                    break
+                release_group_mbid = (
+                    raw_mbid
+                    if raw_mbid in release_group_ids
+                    else title_match or raw_mbid
+                )
+                if release_group_mbid and release_group_mbid in seen_release_groups:
+                    continue
+                if release_group_mbid:
+                    seen_release_groups.add(release_group_mbid)
                 albums.append(
                     TopAlbum(
-                        release_group_mbid=raw_mbid,
+                        release_group_mbid=release_group_mbid,
                         title=a.name,
                         artist_name=a.artist_name,
                         listen_count=a.playcount,
                         in_library=(
-                            raw_mbid in library_album_mbids
-                            if raw_mbid
+                            release_group_mbid in library_album_mbids
+                            if release_group_mbid
                             else False
                         ),
                         requested=(
-                            raw_mbid in requested_album_mbids
-                            if raw_mbid
+                            release_group_mbid in requested_album_mbids
+                            if release_group_mbid
                             else False
                         ),
                     )
@@ -813,3 +985,26 @@ class ArtistDiscoveryService:
                 "Last.fm top albums API error for %s: %s", artist_mbid[:8], e
             )
             raise
+
+    @staticmethod
+    def _normalized_album_title(title: object) -> str:
+        if not isinstance(title, str):
+            return ""
+        return " ".join(title.casefold().split())
+
+    @classmethod
+    def _album_title_candidates(cls, title: object) -> list[str]:
+        normalized = cls._normalized_album_title(title)
+        if not normalized:
+            return []
+        candidates = [normalized]
+        for suffix in (
+            " (deluxe)",
+            " (deluxe edition)",
+            " [deluxe]",
+            " [deluxe edition]",
+        ):
+            if normalized.endswith(suffix):
+                candidates.append(normalized[: -len(suffix)].rstrip())
+                break
+        return candidates

@@ -68,7 +68,9 @@ class Ctx:
     def child(self, track) -> "m.SChild":
         if self.transcode_hint:
             ct, suffix = self.transcode_hint
-            return m.to_child(track, transcoded_content_type=ct, transcoded_suffix=suffix)
+            return m.to_child(
+                track, transcoded_content_type=ct, transcoded_suffix=suffix
+            )
         return m.to_child(track)
 
     def p(self, key: str, default: str | None = None) -> str | None:
@@ -85,9 +87,7 @@ class Ctx:
         minimum: int | None = None,
         maximum: int | None = None,
     ) -> int | None:
-        return self.decoded.integer(
-            key, default, minimum=minimum, maximum=maximum
-        )
+        return self.decoded.integer(key, default, minimum=minimum, maximum=maximum)
 
     def pfloat(
         self,
@@ -97,16 +97,16 @@ class Ctx:
         minimum: float | None = None,
         maximum: float | None = None,
     ) -> float | None:
-        return self.decoded.number(
-            key, default, minimum=minimum, maximum=maximum
-        )
+        return self.decoded.number(key, default, minimum=minimum, maximum=maximum)
 
     def pbool(self, key: str, default: bool) -> bool:
         return self.decoded.boolean(key, default)
 
     @property
     def server_name(self) -> str:
-        return self.services.preferences.get_connect_apps_settings().advertise_server_name
+        return (
+            self.services.preferences.get_connect_apps_settings().advertise_server_name
+        )
 
     @property
     def server_version(self) -> str:
@@ -114,7 +114,10 @@ class Ctx:
 
     def render(self, endpoint_key: str | None, payload: object) -> Response:
         return render(
-            endpoint_key, payload, fmt=self.fmt, callback=self.callback,
+            endpoint_key,
+            payload,
+            fmt=self.fmt,
+            callback=self.callback,
             server_name=self.server_name,
             server_version=self.server_version,
         )
@@ -128,6 +131,7 @@ def endpoint(*names: str) -> Callable[[Handler], Handler]:
         for n in names:
             _HANDLERS[n.casefold()] = fn
         return fn
+
     return deco
 
 
@@ -139,7 +143,9 @@ def _binary_error(code: int, message: str) -> Response:
 def _transcode_hint(settings) -> tuple[str, str] | None:
     """Transcode hint for song Child; None when transcoding off / ffmpeg absent (05 s4.4)."""
     from services.compat.transcode_service import (
-        ffmpeg_available, out_media_type, out_suffix,
+        ffmpeg_available,
+        out_media_type,
+        out_suffix,
     )
 
     if settings.transcoding_enabled and ffmpeg_available():
@@ -148,7 +154,9 @@ def _transcode_hint(settings) -> tuple[str, str] | None:
     return None
 
 
-async def _dispatch(request: Request, endpoint_name: str, services: CompatServices) -> Response:
+async def _dispatch(
+    request: Request, endpoint_name: str, services: CompatServices
+) -> Response:
     folded_name = endpoint_name.casefold()
     name = folded_name[:-5] if folded_name.endswith(".view") else folded_name
     params: dict[str, list[str]] = {}
@@ -170,7 +178,9 @@ async def _dispatch(request: Request, endpoint_name: str, services: CompatServic
     try:
         params = await parse_request_parameters(
             request,
-            json_fields=_PLAYBACK_REPORT_JSON_FIELDS if name == "reportplayback" else frozenset(),
+            json_fields=_PLAYBACK_REPORT_JSON_FIELDS
+            if name == "reportplayback"
+            else frozenset(),
         )
         decoded = SubsonicParameters(params)
         requested_format = decoded.string("f", "xml", max_length=16)
@@ -231,10 +241,17 @@ async def _dispatch(request: Request, endpoint_name: str, services: CompatServic
                         server_name=settings.advertise_server_name,
                         server_version=server_version,
                     )
-        ctx = Ctx(request=request, endpoint_name=name, params=params, decoded=decoded,
-                  user=user, fmt=fmt,
-                  callback=callback, services=services,
-                  transcode_hint=_transcode_hint(settings))
+        ctx = Ctx(
+            request=request,
+            endpoint_name=name,
+            params=params,
+            decoded=decoded,
+            user=user,
+            fmt=fmt,
+            callback=callback,
+            services=services,
+            transcode_hint=_transcode_hint(settings),
+        )
         return await handler(ctx)
     except Exception as exc:  # noqa: BLE001 - boundary: nothing reaches global handlers
         if not isinstance(exc, DroppedNeedleException):
@@ -244,7 +261,10 @@ async def _dispatch(request: Request, endpoint_name: str, services: CompatServic
         if is_binary and code not in _AUTH_CODES:
             return _binary_error(code, message)
         return render_error(
-            code, message, fmt=fmt, callback=callback,
+            code,
+            message,
+            fmt=fmt,
+            callback=callback,
             server_name=settings.advertise_server_name,
             server_version=services.version.get_current_version().version,
         )
@@ -261,7 +281,8 @@ async def subsonic_playback_report_json(
 
 @router.get("/rest/{endpoint_name}")
 async def subsonic_get(
-    endpoint_name: str, request: Request,
+    endpoint_name: str,
+    request: Request,
     services: CompatServices = Depends(get_compat_services),
 ) -> Response:
     return await _dispatch(request, endpoint_name, services)
@@ -269,7 +290,8 @@ async def subsonic_get(
 
 @router.post("/rest/{endpoint_name}")
 async def subsonic_post(
-    endpoint_name: str, request: Request,
+    endpoint_name: str,
+    request: Request,
     services: CompatServices = Depends(get_compat_services),
 ) -> Response:
     return await _dispatch(request, endpoint_name, services)
@@ -330,7 +352,7 @@ def _index_letter(name: str) -> str:
     low = n.lower()
     for art in _ARTICLES:
         if low.startswith(art):
-            n = n[len(art):].strip()
+            n = n[len(art) :].strip()
             break
     if not n:
         return "#"
@@ -499,8 +521,11 @@ async def _get_random_songs(c: Ctx) -> Response:
     _validate_music_folder(c)
     size = c.pint("size", 10, minimum=1, maximum=500) or 10
     tracks = await c.services.discover.get_random_songs(
-        count=size, genre=c.p("genre"),
-        from_year=c.pint("fromYear"), to_year=c.pint("toYear"), user=c.user,
+        count=size,
+        genre=c.p("genre"),
+        from_year=c.pint("fromYear"),
+        to_year=c.pint("toYear"),
+        user=c.user,
     )
     return c.render("randomSongs", {"song": [c.child(t) for t in tracks]})
 
@@ -534,7 +559,9 @@ async def _get_music_directory(c: Ctx) -> Response:
             raise SubsonicError(70, "Artist not found")
         artist, albums = result
         children = [m.to_album_child(a) for a in albums]
-        return c.render("directory", {"id": sid, "name": artist.name, "child": children})
+        return c.render(
+            "directory", {"id": sid, "name": artist.name, "child": children}
+        )
     if kind == "album":
         album = await c.services.view.get_album(internal, user=c.user)
         if album is None:
@@ -543,8 +570,12 @@ async def _get_music_directory(c: Ctx) -> Response:
         parent = encode("artist", album.artist_mbid) if album.artist_mbid else None
         return c.render(
             "directory",
-            {"id": sid, "parent": parent, "name": album.title,
-             "child": [c.child(t) for t in tracks]},
+            {
+                "id": sid,
+                "parent": parent,
+                "name": album.title,
+                "child": [c.child(t) for t in tracks],
+            },
         )
     raise SubsonicError(70, "Not a directory")
 
@@ -592,21 +623,27 @@ async def _search(c: Ctx):
 @endpoint("search3")
 async def _search3(c: Ctx) -> Response:
     artists, albums, songs = await _search(c)
-    return c.render("searchResult3", {
-        "artist": [m.to_artist_id3(a) for a in artists],
-        "album": [m.to_album_id3(a) for a in albums],
-        "song": [c.child(t) for t in songs],
-    })
+    return c.render(
+        "searchResult3",
+        {
+            "artist": [m.to_artist_id3(a) for a in artists],
+            "album": [m.to_album_id3(a) for a in albums],
+            "song": [c.child(t) for t in songs],
+        },
+    )
 
 
 @endpoint("search2")
 async def _search2(c: Ctx) -> Response:
     artists, albums, songs = await _search(c)
-    return c.render("searchResult2", {
-        "artist": [m.to_artist_file(a) for a in artists],
-        "album": [m.to_album_child(a) for a in albums],
-        "song": [c.child(t) for t in songs],
-    })
+    return c.render(
+        "searchResult2",
+        {
+            "artist": [m.to_artist_file(a) for a in artists],
+            "album": [m.to_album_child(a) for a in albums],
+            "song": [c.child(t) for t in songs],
+        },
+    )
 
 
 _PLACEHOLDER_SVG = (
@@ -629,7 +666,8 @@ def _cover_size(px: int | None) -> str:
 
 def _placeholder() -> Response:
     return Response(
-        content=_PLACEHOLDER_SVG, media_type="image/svg+xml",
+        content=_PLACEHOLDER_SVG,
+        media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
@@ -690,7 +728,8 @@ async def _get_cover_art(c: Ctx) -> Response:
     if result:
         data, content_type, _ = result
         return Response(
-            content=data, media_type=content_type,
+            content=data,
+            media_type=content_type,
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
     return _placeholder()
@@ -730,7 +769,9 @@ async def _serve_file(
         out_headers["Content-Disposition"] = content_disposition
     try:
         return StreamingResponse(
-            leased_chunks(chunks, lease), status_code=status, headers=out_headers,
+            leased_chunks(chunks, lease),
+            status_code=status,
+            headers=out_headers,
             media_type=headers.get("Content-Type", "application/octet-stream"),
             background=BackgroundTask(lease.release),
         )
@@ -756,16 +797,22 @@ async def _stream(c: Ctx) -> Response:
         raise SubsonicError(70, "Song not found")
     settings = c.services.preferences.get_connect_apps_settings()
     plan = decide(
-        track, requested_format=fmt, max_bitrate_kbps=max_bitrate,
-        force_original=False, start_seconds=time_offset,
-        settings=settings, ffmpeg_available=ffmpeg_available(),
+        track,
+        requested_format=fmt,
+        max_bitrate_kbps=max_bitrate,
+        force_original=False,
+        start_seconds=time_offset,
+        settings=settings,
+        ffmpeg_available=ffmpeg_available(),
     )
     if not plan.transcode:
         return await _serve_file(c, fid)
     path = await c.services.local_files.resolve_validated_path(fid)
     try:
         return await c.services.transcode.stream(
-            str(path), plan, principal=c.user.id,
+            str(path),
+            plan,
+            principal=c.user.id,
             is_disconnected=c.request.is_disconnected,
             estimate=estimate,
         )
@@ -812,7 +859,10 @@ async def _get_transcode_decision(c: Ctx) -> Response:
 
     if c.request.method != "POST":
         raise SubsonicError(10, "getTranscodeDecision requires POST")
-    if c.request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+    if (
+        c.request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        != "application/json"
+    ):
         raise SubsonicError(10, "getTranscodeDecision requires JSON")
     body = await c.request.body()
     if not body or len(body) > 64 * 1024:
@@ -953,9 +1003,15 @@ async def _build_playlist_detail(c: Ctx, pid: str):
         total += round(track.duration_seconds)
     owner = c.user.username if detail.is_owner else detail.owner_name
     return m.SPlaylist(
-        id=encode("playlist", r.id), name=r.name, owner=owner, public=r.is_public,
-        songCount=len(songs), duration=total,
-        created=r.created_at, changed=r.updated_at, coverArt=_playlist_cover(r),
+        id=encode("playlist", r.id),
+        name=r.name,
+        owner=owner,
+        public=r.is_public,
+        songCount=len(songs),
+        duration=total,
+        created=r.created_at,
+        changed=r.updated_at,
+        coverArt=_playlist_cover(r),
         entry=songs,
     )
 
@@ -973,12 +1029,19 @@ async def _get_playlists(c: Ctx) -> Response:
             continue
         owner = c.user.username if v.is_owner else v.owner_name
         song_count, duration = streamable.get(record.id, (0, 0))
-        playlists.append(m.SPlaylist(
-            id=encode("playlist", record.id), name=record.name, owner=owner,
-            public=record.is_public, songCount=song_count,
-            duration=duration, created=record.created_at,
-            changed=record.updated_at, coverArt=_playlist_cover(record),
-        ))
+        playlists.append(
+            m.SPlaylist(
+                id=encode("playlist", record.id),
+                name=record.name,
+                owner=owner,
+                public=record.is_public,
+                songCount=song_count,
+                duration=duration,
+                created=record.created_at,
+                changed=record.updated_at,
+                coverArt=_playlist_cover(record),
+            )
+        )
     return c.render("playlists", {"playlist": playlists})
 
 
@@ -1110,22 +1173,28 @@ async def _starred_lists(c: Ctx):
 async def _get_starred2(c: Ctx) -> Response:
     _validate_music_folder(c)
     artists, albums, songs = await _starred_lists(c)
-    return c.render("starred2", {
-        "artist": [m.to_artist_id3(a) for a in artists],
-        "album": [m.to_album_id3(a) for a in albums],
-        "song": [c.child(t) for t in songs],
-    })
+    return c.render(
+        "starred2",
+        {
+            "artist": [m.to_artist_id3(a) for a in artists],
+            "album": [m.to_album_id3(a) for a in albums],
+            "song": [c.child(t) for t in songs],
+        },
+    )
 
 
 @endpoint("getStarred")
 async def _get_starred(c: Ctx) -> Response:
     _validate_music_folder(c)
     artists, albums, songs = await _starred_lists(c)
-    return c.render("starred", {
-        "artist": [m.to_artist_file(a) for a in artists],
-        "album": [m.to_album_child(a) for a in albums],
-        "song": [c.child(t) for t in songs],
-    })
+    return c.render(
+        "starred",
+        {
+            "artist": [m.to_artist_file(a) for a in artists],
+            "album": [m.to_album_child(a) for a in albums],
+            "song": [c.child(t) for t in songs],
+        },
+    )
 
 
 @endpoint("setRating")
@@ -1134,7 +1203,9 @@ async def _set_rating(c: Ctx) -> Response:
     if rating is None:
         raise SubsonicError(10, "Required parameter 'rating' is missing")
     kind, internal = decode(c.p("id") or "")
-    if kind not in _FAV_KINDS or await c.services.view.missing_targets([(kind, internal)]):
+    if kind not in _FAV_KINDS or await c.services.view.missing_targets(
+        [(kind, internal)]
+    ):
         raise SubsonicError(70, "Rating target not found")
     # D11: validate target/range, then deliberately do not persist a rating.
     return c.render(None, None)
@@ -1171,7 +1242,10 @@ async def _scrobble(c: Ctx) -> Response:
         fid = _decode_expect(sid, "track")
         played_at = timestamps[i] / 1000.0 if timestamps else None
         await c.services.scrobble.scrobble(
-            fid, user_id=c.user.id, client=client, played_at=played_at,
+            fid,
+            user_id=c.user.id,
+            client=client,
+            played_at=played_at,
             user_name=getattr(c.user, "display_name", ""),
         )
     return c.render(None, None)
@@ -1181,18 +1255,22 @@ async def _scrobble(c: Ctx) -> Response:
 async def _get_now_playing(c: Ctx) -> Response:
     entries = []
     now = time.time()
-    for idx, (proj, fid, updated_at) in enumerate(c.services.now_playing.compat_now_playing()):
+    for idx, (proj, fid, updated_at) in enumerate(
+        c.services.now_playing.compat_now_playing()
+    ):
         track = await c.services.view.get_track(fid, user=c.user)
         if track is None:
             continue
         child = c.child(track)
-        entries.append(m.SNowPlayingEntry(
-            **msgspec.structs.asdict(child),
-            username=proj.user_name,
-            minutesAgo=max(int((now - updated_at) // 60), 0),
-            playerId=idx,
-            playerName=proj.source or proj.device_name or None,
-        ))
+        entries.append(
+            m.SNowPlayingEntry(
+                **msgspec.structs.asdict(child),
+                username=proj.user_name,
+                minutesAgo=max(int((now - updated_at) // 60), 0),
+                playerId=idx,
+                playerName=proj.source or proj.device_name or None,
+            )
+        )
     return c.render("nowPlaying", {"entry": entries})
 
 
@@ -1201,9 +1279,7 @@ async def _report_playback(c: Ctx) -> Response:
     if c.decoded.enum("mediaType", {"song", "podcast"}) != "song":
         raise SubsonicError(10, "Only song playback reports are supported")
     file_id = _decode_expect(c.p("mediaId") or "", "track")
-    position_ms = c.pint(
-        "positionMs", minimum=0, maximum=_MAX_MEDIA_POSITION_MS
-    )
+    position_ms = c.pint("positionMs", minimum=0, maximum=_MAX_MEDIA_POSITION_MS)
     if position_ms is None:
         raise SubsonicError(10, "Required parameter 'positionMs' is missing")
     state = c.decoded.enum("state", {"starting", "playing", "paused", "stopped"})
@@ -1281,9 +1357,7 @@ async def _get_play_queue(c: Ctx) -> Response:
 async def _save_play_queue(c: Ctx) -> Response:
     file_ids = await _validated_queue_ids(c)
     current = c.p("current")
-    position = c.pint(
-        "position", 0, minimum=0, maximum=_MAX_MEDIA_POSITION_MS
-    ) or 0
+    position = c.pint("position", 0, minimum=0, maximum=_MAX_MEDIA_POSITION_MS) or 0
     current_index = None
     if file_ids:
         if current is None:
@@ -1324,12 +1398,8 @@ async def _get_play_queue_by_index(c: Ctx) -> Response:
 @endpoint("savePlayQueueByIndex")
 async def _save_play_queue_by_index(c: Ctx) -> Response:
     file_ids = await _validated_queue_ids(c)
-    current_index = c.pint(
-        "currentIndex", minimum=0, maximum=_MAX_QUEUE_ITEMS - 1
-    )
-    position = c.pint(
-        "position", 0, minimum=0, maximum=_MAX_MEDIA_POSITION_MS
-    ) or 0
+    current_index = c.pint("currentIndex", minimum=0, maximum=_MAX_QUEUE_ITEMS - 1)
+    position = c.pint("position", 0, minimum=0, maximum=_MAX_MEDIA_POSITION_MS) or 0
     if file_ids and current_index is None:
         raise SubsonicError(10, "currentIndex is required for a non-empty play queue")
     if current_index is not None and current_index >= len(file_ids):
@@ -1371,9 +1441,7 @@ async def _get_bookmarks(c: Ctx) -> Response:
 @endpoint("createBookmark")
 async def _create_bookmark(c: Ctx) -> Response:
     file_id = _decode_expect(c.p("id") or "", "track")
-    position = c.pint(
-        "position", minimum=0, maximum=_MAX_MEDIA_POSITION_MS
-    )
+    position = c.pint("position", minimum=0, maximum=_MAX_MEDIA_POSITION_MS)
     if position is None:
         raise SubsonicError(10, "Required parameter 'position' is missing")
     comment = c.decoded.string("comment", "", max_length=4096) or ""
@@ -1397,15 +1465,22 @@ async def _get_artist_info(c: Ctx) -> Response:
     artist_mbid = _decode_expect(c.p("id") or "", "artist")
     c.pint("count", 20, minimum=0, maximum=500)
     c.pbool("includeNotPresent", False)
-    artist = await c.services.view.get_artist_with_albums(artist_mbid, user=c.user)
-    if artist is None:
+    result = await c.services.view.get_artist_with_albums(artist_mbid, user=c.user)
+    if result is None:
         raise SubsonicError(70, "Artist not found")
+    artist, _albums = result
     cover_id = encode("artist", artist_mbid)
-    cover_base = f"{str(c.request.base_url).rstrip('/')}/subsonic/rest/getCoverArt?id={cover_id}"
+    cover_base = (
+        f"{str(c.request.base_url).rstrip('/')}/subsonic/rest/getCoverArt?id={cover_id}"
+    )
     return c.render(
         "artistInfo2" if c.endpoint_name == "getartistinfo2" else "artistInfo",
         m.SArtistInfo(
-            musicBrainzId=artist_mbid if "-" in artist_mbid else None,
+            musicBrainzId=(
+                artist.musicbrainz_artist_id
+                if artist.provider_identity_projected
+                else (artist.artist_mbid if "-" in artist.artist_mbid else None)
+            ),
             smallImageUrl=f"{cover_base}&size=250",
             mediumImageUrl=f"{cover_base}&size=500",
             largeImageUrl=f"{cover_base}&size=1200",
@@ -1416,14 +1491,21 @@ async def _get_artist_info(c: Ctx) -> Response:
 @endpoint("getAlbumInfo2", "getAlbumInfo")
 async def _get_album_info(c: Ctx) -> Response:
     release_group_mbid = _decode_expect(c.p("id") or "", "album")
-    if await c.services.view.get_album(release_group_mbid, user=c.user) is None:
+    album = await c.services.view.get_album(release_group_mbid, user=c.user)
+    if album is None:
         raise SubsonicError(70, "Album not found")
     cover_id = encode("album", release_group_mbid)
-    cover_base = f"{str(c.request.base_url).rstrip('/')}/subsonic/rest/getCoverArt?id={cover_id}"
+    cover_base = (
+        f"{str(c.request.base_url).rstrip('/')}/subsonic/rest/getCoverArt?id={cover_id}"
+    )
     return c.render(
         "albumInfo" if c.endpoint_name == "getalbuminfo" else "albumInfo2",
         m.SAlbumInfo(
-            musicBrainzId=release_group_mbid,
+            musicBrainzId=(
+                album.musicbrainz_release_group_id
+                if album.provider_identity_projected
+                else album.rg_mbid
+            ),
             smallImageUrl=f"{cover_base}&size=250",
             mediumImageUrl=f"{cover_base}&size=500",
             largeImageUrl=f"{cover_base}&size=1200",
@@ -1459,7 +1541,10 @@ def _structured_lyrics(lyrics, track) -> m.SStructuredLyrics:
     return m.SStructuredLyrics(
         lang=lyrics.language,
         synced=lyrics.synced,
-        line=[m.SLyricsLine(value=line.value, start=line.start_ms) for line in lyrics.lines],
+        line=[
+            m.SLyricsLine(value=line.value, start=line.start_ms)
+            for line in lyrics.lines
+        ],
         displayArtist=track.artist_name or None,
         displayTitle=track.title or None,
     )
@@ -1485,10 +1570,14 @@ async def _get_lyrics(c: Ctx) -> Response:
     tracks, _ = await c.services.view.get_tracks_page(
         limit=100, offset=0, q=title, user=c.user
     )
-    candidates = [track for track in tracks if track.title.casefold() == title.casefold()]
+    candidates = [
+        track for track in tracks if track.title.casefold() == title.casefold()
+    ]
     if artist:
         candidates = [
-            track for track in candidates if track.artist_name.casefold() == artist.casefold()
+            track
+            for track in candidates
+            if track.artist_name.casefold() == artist.casefold()
         ]
     if not candidates:
         return c.render("lyrics", m.SLyrics(artist=artist or "", title=title, value=""))
@@ -1528,12 +1617,15 @@ async def _get_user(c: Ctx) -> Response:
         raise SubsonicError(10, "Required parameter 'username' is missing")
     is_admin = c.user.role == "admin"
     settings = c.services.preferences.get_connect_apps_settings()
-    return c.render("user", m.SUser(
-        username=c.user.username or c.user.display_name,
-        adminRole=is_admin,
-        settingsRole=is_admin,
-        maxBitRate=settings.transcode_max_bitrate_kbps,
-    ))
+    return c.render(
+        "user",
+        m.SUser(
+            username=c.user.username or c.user.display_name,
+            adminRole=is_admin,
+            settingsRole=is_admin,
+            maxBitRate=settings.transcode_max_bitrate_kbps,
+        ),
+    )
 
 
 @endpoint("getScanStatus")
@@ -1556,9 +1648,7 @@ async def _get_top_songs(c: Ctx) -> Response:
     if not artist:
         raise SubsonicError(10, "Required parameter 'artist' is missing")
     count = c.pint("count", 50, minimum=1, maximum=500) or 50
-    artists, _ = await c.services.view.get_artists(
-        limit=10, q=artist, user=c.user
-    )
+    artists, _ = await c.services.view.get_artists(limit=10, q=artist, user=c.user)
     if not any(item.name.casefold() == artist.casefold() for item in artists):
         raise SubsonicError(70, "Artist not found")
     tracks = await c.services.discover.get_top_songs(

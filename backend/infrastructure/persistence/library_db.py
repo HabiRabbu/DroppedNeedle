@@ -157,7 +157,9 @@ def _safe_delete(conn: sqlite3.Connection, table: str) -> None:
         conn.execute(f'DELETE FROM "{table}"')
     except sqlite3.OperationalError as exc:
         if "no such table" not in str(exc):
-            logger.warning("Unexpected error clearing cross-domain table %s: %s", table, exc)
+            logger.warning(
+                "Unexpected error clearing cross-domain table %s: %s", table, exc
+            )
 
 
 class LibraryDB(PersistenceBase):
@@ -255,13 +257,13 @@ class LibraryDB(PersistenceBase):
         album_ids: list[str],
         track_ids: list[str],
     ) -> dict[str, set[str]]:
-        def selected(
-            conn: sqlite3.Connection, sql: str, values: list[str]
-        ) -> set[str]:
+        def selected(conn: sqlite3.Connection, sql: str, values: list[str]) -> set[str]:
             if not values:
                 return set()
             placeholders = ", ".join("?" for _ in values)
-            rows = conn.execute(sql.format(placeholders=placeholders), values).fetchall()
+            rows = conn.execute(
+                sql.format(placeholders=placeholders), values
+            ).fetchall()
             return {str(row[0]) for row in rows}
 
         def operation(conn: sqlite3.Connection) -> dict[str, set[str]]:
@@ -378,8 +380,12 @@ class LibraryDB(PersistenceBase):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_manual_review_created ON manual_review_queue(created_at DESC)"
         )
-        _safe_alter(conn, "ALTER TABLE manual_review_queue ADD COLUMN track_number INTEGER")
-        _safe_alter(conn, "ALTER TABLE manual_review_queue ADD COLUMN disc_number INTEGER")
+        _safe_alter(
+            conn, "ALTER TABLE manual_review_queue ADD COLUMN track_number INTEGER"
+        )
+        _safe_alter(
+            conn, "ALTER TABLE manual_review_queue ADD COLUMN disc_number INTEGER"
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS library_album_meta (
@@ -461,14 +467,16 @@ class LibraryDB(PersistenceBase):
                 mbid = artist.get("mbid")
                 if not isinstance(mbid, str) or not mbid:
                     continue
-                artist_rows.append((
-                    _normalize(mbid),
-                    mbid,
-                    str(artist.get("name") or "Unknown"),
-                    int(artist.get("album_count") or 0),
-                    artist.get("date_added"),
-                    _encode_json(artist),
-                ))
+                artist_rows.append(
+                    (
+                        _normalize(mbid),
+                        mbid,
+                        str(artist.get("name") or "Unknown"),
+                        int(artist.get("album_count") or 0),
+                        artist.get("date_added"),
+                        _encode_json(artist),
+                    )
+                )
             if artist_rows:
                 conn.executemany(
                     "INSERT INTO library_artists (mbid_lower, mbid, name, album_count, date_added, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
@@ -483,18 +491,22 @@ class LibraryDB(PersistenceBase):
                 if not isinstance(mbid, str) or not mbid:
                     continue
                 artist_mbid = album.get("artist_mbid")
-                album_rows.append((
-                    _normalize(mbid),
-                    mbid,
-                    artist_mbid,
-                    _normalize(artist_mbid if isinstance(artist_mbid, str) else None),
-                    album.get("artist_name"),
-                    str(album.get("title") or "Unknown Album"),
-                    album.get("year"),
-                    album.get("cover_url"),
-                    album.get("date_added"),
-                    _encode_json(album),
-                ))
+                album_rows.append(
+                    (
+                        _normalize(mbid),
+                        mbid,
+                        artist_mbid,
+                        _normalize(
+                            artist_mbid if isinstance(artist_mbid, str) else None
+                        ),
+                        album.get("artist_name"),
+                        str(album.get("title") or "Unknown Album"),
+                        album.get("year"),
+                        album.get("cover_url"),
+                        album.get("date_added"),
+                        _encode_json(album),
+                    )
+                )
             if album_rows:
                 conn.executemany(
                     """
@@ -731,7 +743,12 @@ class LibraryDB(PersistenceBase):
                 "SELECT title, artist_name, mbid, COALESCE(artist_mbid, '') AS artist_mbid FROM library_albums"
             ).fetchall()
             return [
-                (str(row["title"]), str(row["artist_name"] or ""), str(row["mbid"]), str(row["artist_mbid"]))
+                (
+                    str(row["title"]),
+                    str(row["artist_name"] or ""),
+                    str(row["mbid"]),
+                    str(row["artist_mbid"]),
+                )
                 for row in rows
                 if row["title"] and row["mbid"]
             ]
@@ -740,9 +757,15 @@ class LibraryDB(PersistenceBase):
 
     async def get_stats(self) -> dict[str, Any]:
         def operation(conn: sqlite3.Connection) -> dict[str, Any]:
-            artist_row = conn.execute("SELECT COUNT(*) AS count FROM library_artists").fetchone()
-            album_row = conn.execute("SELECT COUNT(*) AS count FROM library_albums").fetchone()
-            sync_row = conn.execute("SELECT value FROM cache_meta WHERE key = 'last_library_sync'").fetchone()
+            artist_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM library_artists"
+            ).fetchone()
+            album_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM library_albums"
+            ).fetchone()
+            sync_row = conn.execute(
+                "SELECT value FROM cache_meta WHERE key = 'last_library_sync'"
+            ).fetchone()
             last_sync = None
             if sync_row is not None:
                 try:
@@ -751,7 +774,9 @@ class LibraryDB(PersistenceBase):
                     last_sync = None
             db_size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
             return {
-                "artist_count": int(artist_row["count"] if artist_row is not None else 0),
+                "artist_count": int(
+                    artist_row["count"] if artist_row is not None else 0
+                ),
                 "album_count": int(album_row["count"] if album_row is not None else 0),
                 "db_size_bytes": db_size_bytes,
                 "last_sync": last_sync,
@@ -778,9 +803,13 @@ class LibraryDB(PersistenceBase):
             value_params = [row.get(col) for col in _LIBRARY_FILE_VALUE_COLUMNS]
             # folded mirrors are written via SQL fold() - the same function used at
             # search time - so the stored values never drift from the query side
-            folded_params = [row.get(src) for src in _LIBRARY_FILE_FOLDED_COLUMNS.values()]
+            folded_params = [
+                row.get(src) for src in _LIBRARY_FILE_FOLDED_COLUMNS.values()
+            ]
             if existing is not None:
-                set_clause = ", ".join(f"{col} = ?" for col in _LIBRARY_FILE_VALUE_COLUMNS)
+                set_clause = ", ".join(
+                    f"{col} = ?" for col in _LIBRARY_FILE_VALUE_COLUMNS
+                )
                 folded_clause = ", ".join(
                     f"{col} = fold(?)" for col in _LIBRARY_FILE_FOLDED_COLUMNS
                 )
@@ -977,9 +1006,10 @@ class LibraryDB(PersistenceBase):
         """Individual tracks (with album context + cover) for the Listening Room
         crate. order: 'recent' (newest imports), 'oldest', else random. decade
         filters to a 10-year window."""
-        order_sql = {"recent": "lf.imported_at DESC", "oldest": "lf.imported_at ASC"}.get(
-            order, "RANDOM()"
-        )
+        order_sql = {
+            "recent": "lf.imported_at DESC",
+            "oldest": "lf.imported_at ASC",
+        }.get(order, "RANDOM()")
         filters = ["lf.deleted_at IS NULL", "lf.release_group_mbid IS NOT NULL"]
         params: list[object] = []
         if decade is not None:
@@ -1006,9 +1036,7 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
-    async def search_tracks(
-        self, q: str, *, limit: int = 30
-    ) -> list[dict[str, Any]]:
+    async def search_tracks(self, q: str, *, limit: int = 30) -> list[dict[str, Any]]:
         """Individual tracks (with album context + cover) matching q on track
         title, artist, album artist, or album title (LIKE, accent- and
         case-insensitive via fold()).
@@ -1276,7 +1304,9 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
-    async def get_library_files_for_album(self, release_group_mbid: str) -> list[dict[str, Any]]:
+    async def get_library_files_for_album(
+        self, release_group_mbid: str
+    ) -> list[dict[str, Any]]:
         # stored lower-cased (see upsert_library_file / has_album_files), so normalize
         # the input the same way or a mixed-case MBID silently returns no rows
         normalized = _normalize(release_group_mbid)
@@ -1354,7 +1384,9 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
-    async def get_library_files_for_task(self, download_task_id: str) -> list[dict[str, Any]]:
+    async def get_library_files_for_task(
+        self, download_task_id: str
+    ) -> list[dict[str, Any]]:
         """Active rows imported by one download task (crash-idempotency reconcile)."""
 
         def operation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -1455,7 +1487,9 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
-    async def get_library_files_for_recording(self, recording_mbid: str) -> list[dict[str, Any]]:
+    async def get_library_files_for_recording(
+        self, recording_mbid: str
+    ) -> list[dict[str, Any]]:
         def operation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             rows = conn.execute(
                 "SELECT * FROM library_files WHERE recording_mbid = ? AND deleted_at IS NULL",
@@ -1709,7 +1743,9 @@ class LibraryDB(PersistenceBase):
         file_path is UNIQUE, so a re-scan refreshes the row in place rather than
         duplicating."""
         now = time.time()
-        candidates_encoded = _encode_json(to_jsonable(entry.get("candidate_mbids") or []))
+        candidates_encoded = _encode_json(
+            to_jsonable(entry.get("candidate_mbids") or [])
+        )
 
         def operation(conn: sqlite3.Connection) -> None:
             conn.execute(
@@ -1845,6 +1881,25 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
+    async def get_library_path_mapping_sources(self) -> list[tuple[str, str, str]]:
+        """All catalog and review paths required by the typed-root dry run."""
+
+        def operation(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+            rows = conn.execute(
+                "SELECT 'library_file' AS source_kind, id AS source_id, file_path "
+                "FROM library_files "
+                "UNION ALL "
+                "SELECT 'review_row' AS source_kind, CAST(id AS TEXT) AS source_id, "
+                "file_path FROM manual_review_queue "
+                "ORDER BY source_kind, source_id"
+            ).fetchall()
+            return [
+                (str(row["source_kind"]), str(row["source_id"]), str(row["file_path"]))
+                for row in rows
+            ]
+
+        return await self._read(operation)
+
     async def upsert_artist(self, mbid: str, name: str) -> None:
         """Idempotent insert of a (possibly synthetic) artist row (Q14, 06 s7.5).
 
@@ -1948,7 +2003,9 @@ class LibraryDB(PersistenceBase):
                 "total_artists": int(agg["artists"] or 0) if agg else 0,
                 "total_tracks": int(agg["tracks"] or 0) if agg else 0,
                 "total_size_bytes": int(agg["size"] or 0) if agg else 0,
-                "format_breakdown": {str(r["file_format"]): int(r["cnt"]) for r in fmt_rows},
+                "format_breakdown": {
+                    str(r["file_format"]): int(r["cnt"]) for r in fmt_rows
+                },
                 "unmatched_count": int(unmatched["cnt"]) if unmatched else 0,
                 "last_scan_at": last_scan_at,
             }

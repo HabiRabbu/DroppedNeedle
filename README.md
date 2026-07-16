@@ -69,7 +69,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
       interval: 30s
       timeout: 10s
-      start_period: 15s
+      start_period: 10m
       retries: 3
 ```
 
@@ -80,6 +80,41 @@ services:
 ```bash
 docker compose up -d
 ```
+
+### Updating
+
+Update DroppedNeedle the same way as any other container:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The first start of a version with library changes may take longer. DroppedNeedle keeps
+the health endpoint available and saves the database and settings under
+`/app/cache/upgrade-backups`. It upgrades a working copy, checks the result, puts the
+checked files into place, and validates the new app before any scanner, download worker,
+or other background task starts. It does not rewrite or move music files. Fresh
+installations create the new database directly, and later restarts skip completed
+upgrades.
+
+If the copied migration or pre-worker startup validation fails, DroppedNeedle restores
+the database and settings from the backup and does not start against a partial upgrade.
+Once validation is recorded and background work is allowed to start, automatic rollback
+ends because newer catalog or settings changes may exist. Check the container log before
+trying a newer image. Restoring the retained backup after that point can discard those
+newer changes.
+
+A previously upgraded installation will refuse to start if its database is later
+missing, empty, or incomplete. Restore a verified backup rather than treating that state
+as a fresh install.
+
+Keep the image's default command and entrypoint; overriding either bypasses the startup
+upgrade and is unsupported. The `/app/config` and `/app/cache` mounts must be writable and
+support SQLite WAL locking, `fsync`, and atomic file replacement. This includes ordinary
+Docker bind mounts and named volumes, plus local Unraid shares and TrueNAS datasets with
+the usual container permissions. NFS, SMB, and other network mounts are safe only when
+they provide those SQLite filesystem guarantees.
 
 ### 3. First-run setup
 
@@ -543,7 +578,11 @@ DroppedNeedle stores its config in `config/config.json` inside the mapped config
 
 Run `id` on your host to find your PUID and PGID values.
 
-> **Unraid / NAS users:** Unraid defaults to `nobody:users` (PUID=99, PGID=100). If you see `chown: Operation not permitted` at startup, your volume mount is on a filesystem that rejects ownership changes (FUSE/shfs, NFS, CIFS). The container skips `chown` when the directories and their contents are already writable, so this is usually fine as long as the host paths are owned by the correct UID:GID.
+> **Unraid, TrueNAS, and other NAS users:** Unraid commonly uses `nobody:users`
+> (PUID=99, PGID=100). Set PUID and PGID to the account that owns the mounted config and
+> cache paths. The container works without `chown` when those paths are already writable,
+> which covers FUSE/shfs, NFS, CIFS, and non-root containers that reject ownership
+> changes. A read-only config or cache mount is refused before an upgrade changes data.
 
 ### In-App Settings
 

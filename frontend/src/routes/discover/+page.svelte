@@ -465,7 +465,7 @@
 											<GenreGrid
 												title={discoverData.genre_list.title}
 												genres={discoverData.genre_list.items}
-												genreArtistImages={discoverData.genre_artist_images}
+												genreArtwork={discoverData.genre_artwork}
 											/>
 										</div>
 									{/if}

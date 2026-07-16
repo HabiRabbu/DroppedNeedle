@@ -8,7 +8,6 @@ from api.v1.schemas.settings import (
     ListenBrainzConnectionSettings,
     LastFmConnectionSettings,
     PrimaryMusicSourceSettings,
-    HomeSettings,
 )
 from api.v1.schemas.search import SearchResult
 from repositories.listenbrainz_models import (
@@ -20,7 +19,9 @@ from repositories.listenbrainz_models import (
 from services.discover_service import DiscoverService
 
 
-def _make_lb_settings(enabled: bool = True, username: str = "lbuser") -> ListenBrainzConnectionSettings:
+def _make_lb_settings(
+    enabled: bool = True, username: str = "lbuser"
+) -> ListenBrainzConnectionSettings:
     return ListenBrainzConnectionSettings(
         user_token="tok",
         username=username,
@@ -46,10 +47,14 @@ def _make_prefs(
     primary_source: str = "listenbrainz",
 ) -> MagicMock:
     prefs = MagicMock()
-    prefs.get_listenbrainz_connection.return_value = _make_lb_settings(enabled=lb_enabled)
+    prefs.get_listenbrainz_connection.return_value = _make_lb_settings(
+        enabled=lb_enabled
+    )
     prefs.get_lastfm_connection.return_value = _make_lfm_settings(enabled=lfm_enabled)
     prefs.is_lastfm_enabled.return_value = lfm_enabled
-    prefs.get_primary_music_source.return_value = PrimaryMusicSourceSettings(source=primary_source)
+    prefs.get_primary_music_source.return_value = PrimaryMusicSourceSettings(
+        source=primary_source
+    )
 
     jf_settings = MagicMock()
     jf_settings.enabled = False
@@ -117,14 +122,22 @@ def _make_service(
 
     # discover resolves the user's client via the factory; reuse the same mock repos so existing assertions hold
     factory = MagicMock()
-    factory.resolve_listenbrainz = AsyncMock(return_value=lb_repo if lb_enabled else None)
+    factory.resolve_listenbrainz = AsyncMock(
+        return_value=lb_repo if lb_enabled else None
+    )
     factory.resolve_lastfm = AsyncMock(return_value=lfm_repo if lfm_enabled else None)
-    factory.resolve_listenbrainz_username = AsyncMock(return_value="lbuser" if lb_enabled else None)
-    factory.resolve_lastfm_username = AsyncMock(return_value="lfmuser" if lfm_enabled else None)
+    factory.resolve_listenbrainz_username = AsyncMock(
+        return_value="lbuser" if lb_enabled else None
+    )
+    factory.resolve_lastfm_username = AsyncMock(
+        return_value="lfmuser" if lfm_enabled else None
+    )
     factory.is_listenbrainz_linked = AsyncMock(return_value=lb_enabled)
     factory.is_lastfm_linked = AsyncMock(return_value=lfm_enabled)
     prefs_store = MagicMock()
-    prefs_store.get = AsyncMock(return_value=SimpleNamespace(primary_music_source=primary_source))
+    prefs_store.get = AsyncMock(
+        return_value=SimpleNamespace(primary_music_source=primary_source)
+    )
 
     service = DiscoverService(
         listenbrainz_repo=lb_repo,
@@ -252,30 +265,40 @@ class TestBuildServicePrompts:
     def test_lastfm_prompt_shown_when_disabled(self):
         # LB/last.fm prompts are per-user: driven by the passed flags, not service config
         service = self._make_all_enabled()
-        prompts = service._homepage._build_service_prompts(lb_enabled=True, lfm_enabled=False)
+        prompts = service._homepage._build_service_prompts(
+            lb_enabled=True, lfm_enabled=False
+        )
         services = [p.service for p in prompts]
         assert "lastfm" in services
 
     def test_lastfm_prompt_hidden_when_enabled(self):
         service = self._make_all_enabled()
-        prompts = service._homepage._build_service_prompts(lb_enabled=True, lfm_enabled=True)
+        prompts = service._homepage._build_service_prompts(
+            lb_enabled=True, lfm_enabled=True
+        )
         services = [p.service for p in prompts]
         assert "lastfm" not in services
 
     def test_no_prompts_when_all_enabled(self):
         service = self._make_all_enabled()
-        prompts = service._homepage._build_service_prompts(lb_enabled=True, lfm_enabled=True)
+        prompts = service._homepage._build_service_prompts(
+            lb_enabled=True, lfm_enabled=True
+        )
         assert prompts == []
 
     def test_all_prompts_when_nothing_enabled(self):
         service, _, _, _ = _make_service(lb_enabled=False, lfm_enabled=False)
-        prompts = service._homepage._build_service_prompts(lb_enabled=False, lfm_enabled=False)
+        prompts = service._homepage._build_service_prompts(
+            lb_enabled=False, lfm_enabled=False
+        )
         services = {p.service for p in prompts}
         assert services == {"download-client", "listenbrainz", "jellyfin", "lastfm"}
 
     def test_lb_prompt_mentions_lastfm(self):
         service = self._make_all_enabled()
-        prompts = service._homepage._build_service_prompts(lb_enabled=False, lfm_enabled=True)
+        prompts = service._homepage._build_service_prompts(
+            lb_enabled=False, lfm_enabled=True
+        )
         lb_prompt = next(p for p in prompts if p.service == "listenbrainz")
         assert "last.fm" in lb_prompt.description.lower()
 
@@ -412,7 +435,9 @@ class TestDiscoverQueuePersonalization:
                 )
             ]
 
-        lb_repo.get_user_top_release_groups = AsyncMock(side_effect=top_release_groups_side_effect)
+        lb_repo.get_user_top_release_groups = AsyncMock(
+            side_effect=top_release_groups_side_effect
+        )
 
         async def artist_release_groups_side_effect(
             artist_mbid: str,
@@ -438,7 +463,9 @@ class TestDiscoverQueuePersonalization:
                 ]
             return []
 
-        lb_repo.get_artist_top_release_groups = AsyncMock(side_effect=artist_release_groups_side_effect)
+        lb_repo.get_artist_top_release_groups = AsyncMock(
+            side_effect=artist_release_groups_side_effect
+        )
 
         lb_repo.get_sitewide_top_release_groups = AsyncMock(
             return_value=[
@@ -490,7 +517,9 @@ class TestDiscoverQueuePersonalization:
         ) -> list[ListenBrainzReleaseGroup]:
             return []
 
-        lb_repo.get_user_top_release_groups = AsyncMock(side_effect=no_top_release_groups)
+        lb_repo.get_user_top_release_groups = AsyncMock(
+            side_effect=no_top_release_groups
+        )
         lb_repo.get_artist_top_release_groups = AsyncMock(return_value=[])
         lb_repo.get_sitewide_top_release_groups = AsyncMock(
             return_value=[
@@ -555,7 +584,9 @@ class TestDiscoverQueuePersonalization:
                 ]
             return []
 
-        lb_repo.get_user_top_release_groups = AsyncMock(side_effect=top_release_groups_side_effect)
+        lb_repo.get_user_top_release_groups = AsyncMock(
+            side_effect=top_release_groups_side_effect
+        )
 
         async def artist_release_groups_side_effect(
             artist_mbid: str,
@@ -578,7 +609,9 @@ class TestDiscoverQueuePersonalization:
                 ]
             return []
 
-        lb_repo.get_artist_top_release_groups = AsyncMock(side_effect=artist_release_groups_side_effect)
+        lb_repo.get_artist_top_release_groups = AsyncMock(
+            side_effect=artist_release_groups_side_effect
+        )
         lb_repo.get_sitewide_top_release_groups = AsyncMock(
             return_value=[
                 ListenBrainzReleaseGroup(
@@ -595,7 +628,9 @@ class TestDiscoverQueuePersonalization:
         queue = await service.build_queue(_UID, count=10)
         mbids = {item.release_group_mbid.lower() for item in queue.items}
 
-        assert "listened-rg-1" not in mbids, "Deep cuts should exclude listened release groups"
+        assert (
+            "listened-rg-1" not in mbids
+        ), "Deep cuts should exclude listened release groups"
         assert "deep-cut-new" in mbids, "Unheard deep cuts should be included"
 
 
@@ -605,7 +640,9 @@ class TestDiscoverPerformanceHotpaths:
         service, lb_repo, _, _ = _make_service(lb_enabled=True, lfm_enabled=False)
 
         sleep_mock = AsyncMock()
-        monkeypatch.setattr("services.discover.homepage_service.asyncio.sleep", sleep_mock)
+        monkeypatch.setattr(
+            "services.discover.homepage_service.asyncio.sleep", sleep_mock
+        )
 
         library_albums = [
             MagicMock(artist_mbid="artist-1", musicbrainz_id="in-lib-1"),
@@ -632,7 +669,9 @@ class TestDiscoverPerformanceHotpaths:
         )
 
         sleep_mock.assert_not_awaited()
-        lb_repo.get_artist_top_release_groups.assert_awaited_once_with("artist-1", count=10)
+        lb_repo.get_artist_top_release_groups.assert_awaited_once_with(
+            "artist-1", count=10
+        )
         assert section is not None
         assert section.items[0].mbid == "new-rg-1"
 
@@ -651,14 +690,22 @@ class TestDiscoverPerformanceHotpaths:
             tags=[SimpleNamespace(name="Rock"), SimpleNamespace(name="Indie")]
         )
         info_3 = SimpleNamespace(tags=[SimpleNamespace(name="Shoegaze")])
-        lfm_repo.get_artist_info = AsyncMock(side_effect=[info_1, Exception("boom"), info_3])
+        lfm_repo.get_artist_info = AsyncMock(
+            side_effect=[info_1, Exception("boom"), info_3]
+        )
 
         async def _tag_side_effect(genre_name: str, limit: int = 10):
             if genre_name.lower() == "rock":
-                return [SimpleNamespace(mbid="artist-rock", name="Rock Artist", playcount=42)]
+                return [
+                    SimpleNamespace(
+                        mbid="artist-rock", name="Rock Artist", playcount=42
+                    )
+                ]
             if genre_name.lower() == "indie":
                 raise Exception("tag fail")
-            return [SimpleNamespace(mbid="artist-shoe", name="Shoe Artist", playcount=30)]
+            return [
+                SimpleNamespace(mbid="artist-shoe", name="Shoe Artist", playcount=30)
+            ]
 
         lfm_repo.get_tag_top_artists = AsyncMock(side_effect=_tag_side_effect)
 
@@ -709,11 +756,17 @@ class TestDailyMixesWiring:
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
         stub_sections = [
-            HomeSection(title="Your Rock Mix", type="albums", items=[], source="listenbrainz"),
-            HomeSection(title="Your Pop Mix", type="albums", items=[], source="listenbrainz"),
+            HomeSection(
+                title="Your Rock Mix", type="albums", items=[], source="listenbrainz"
+            ),
+            HomeSection(
+                title="Your Pop Mix", type="albums", items=[], source="listenbrainz"
+            ),
         ]
 
-        async def fake_daily_mix(user_id, resolved_source, library_mbids=None, lfm_enabled=False):
+        async def fake_daily_mix(
+            user_id, resolved_source, library_mbids=None, lfm_enabled=False
+        ):
             assert resolved_source == "listenbrainz"
             return stub_sections
 
@@ -731,7 +784,9 @@ class TestDailyMixesWiring:
             lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
         )
 
-        async def fake_daily_mix(user_id, resolved_source, library_mbids=None, lfm_enabled=False):
+        async def fake_daily_mix(
+            user_id, resolved_source, library_mbids=None, lfm_enabled=False
+        ):
             return None
 
         monkeypatch.setattr(
@@ -741,3 +796,37 @@ class TestDailyMixesWiring:
         response = await service.build_discover_data(_UID)
 
         assert response.daily_mixes == []
+
+    @pytest.mark.asyncio
+    async def test_daily_mix_keeps_local_only_familiar_album(self, monkeypatch):
+        service, lb_repo, _lfm, _prefs = _make_service(
+            lb_enabled=True, lfm_enabled=True, primary_source="listenbrainz"
+        )
+        lb_repo.get_artist_top_release_groups.return_value = []
+        service._homepage._genre_index = AsyncMock()
+        service._homepage._genre_index.get_albums_by_genre.return_value = [
+            {
+                "local_id": "local-album-1",
+                "mbid": None,
+                "title": "Local Only",
+                "artist_name": "Local Artist",
+            }
+        ]
+        monkeypatch.setattr(
+            service._homepage,
+            "_similar_artist_album_pools",
+            AsyncMock(return_value=[]),
+        )
+
+        section = await service._homepage._build_single_daily_mix(
+            0,
+            "ambient",
+            ["60000000-0000-4000-8000-000000000001"],
+            "listenbrainz",
+            set(),
+        )
+
+        assert section is not None
+        assert [(item.local_id, item.mbid) for item in section.items] == [
+            ("local-album-1", None)
+        ]

@@ -25,6 +25,7 @@ FROM python:3.13.5-slim
 
 ARG COMMIT_TAG
 ARG BUILD_DATE
+ARG DROPPEDNEEDLE_SOURCE_REVISION=unknown
 
 LABEL org.opencontainers.image.title="DroppedNeedle" \
       org.opencontainers.image.description="Music request and discovery app with a built-in native library + download engine" \
@@ -32,14 +33,16 @@ LABEL org.opencontainers.image.title="DroppedNeedle" \
       org.opencontainers.image.source="https://github.com/DroppedNeedle/DroppedNeedle" \
       org.opencontainers.image.version="${COMMIT_TAG}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
-      org.opencontainers.image.licenses="AGPL-3.0"
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.droppedneedle.source-revision="${DROPPEDNEEDLE_SOURCE_REVISION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MALLOC_ARENA_MAX=2 \
     PORT=8688 \
     COMMIT_TAG=${COMMIT_TAG} \
-    BUILD_DATE=${BUILD_DATE}
+    BUILD_DATE=${BUILD_DATE} \
+    DROPPEDNEEDLE_SOURCE_REVISION=${DROPPEDNEEDLE_SOURCE_REVISION}
 
 WORKDIR /app
 
@@ -61,14 +64,21 @@ COPY backend/ .
 COPY --from=frontend-build /app/frontend/build ./static
 COPY entrypoint.sh /entrypoint.sh
 
+RUN find /app -type f -print0 \
+      | sort -z \
+      | xargs -0 sha256sum \
+      | sha256sum \
+      | cut -d' ' -f1 > /app/.droppedneedle-source-revision \
+    && test -s /app/.droppedneedle-source-revision
+
 RUN mkdir -p /app/cache /app/config \
     && chown -R droppedneedle:droppedneedle /app \
     && chmod +x /entrypoint.sh
 
 EXPOSE ${PORT}
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10m --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
-CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT} --loop uvloop --http httptools --workers 1"]
+CMD ["python", "-m", "maintenance.automatic_upgrade", "--start-target"]

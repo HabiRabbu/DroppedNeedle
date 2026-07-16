@@ -207,6 +207,12 @@ describe('+layout.svelte sidebar', () => {
 		await expect.element(page.getByText('Library').first()).toBeInTheDocument();
 	});
 
+	it('uses the sole shipped dark theme', async () => {
+		renderLayout();
+
+		await expect.element(page.getByTestId('app-shell')).toHaveAttribute('data-theme', 'dark');
+	});
+
 	it('Playlists link navigates to /playlists', async () => {
 		integrationState.download_client = true;
 		renderLayout();

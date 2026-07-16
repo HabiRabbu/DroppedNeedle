@@ -317,16 +317,33 @@ describe('buildQueueItemsFromLocal', () => {
 
 describe('buildDiscoveryQueueFromLocal', () => {
 	const nativeTrack: NativeTrackListItem = {
-		track_file_id: 'file-7',
+		id: 'file-7',
 		title: 'Flat Song',
-		album_name: 'Cross Album',
+		album_id: 'local-album-9',
+		album_title: 'Cross Album',
+		artist_id: 'local-artist-9',
 		artist_name: 'Flat Artist',
-		album_mbid: 'rg-9',
-		cover_url: '/art.jpg',
+		album_artist_id: 'local-artist-9',
+		album_artist_name: 'Flat Artist',
+		musicbrainz_recording_id: null,
+		musicbrainz_release_group_id: 'rg-9',
+		musicbrainz_artist_id: null,
+		musicbrainz_album_artist_id: null,
 		format: 'FLAC',
 		track_number: 3,
 		disc_number: 2,
-		duration_seconds: 200
+		year: null,
+		genre: null,
+		duration_seconds: 200,
+		bit_rate: null,
+		sample_rate: null,
+		bit_depth: null,
+		channels: null,
+		file_size_bytes: 1,
+		date_added: 1,
+		cover_available: true,
+		current_tier: null,
+		below_cutoff: false
 	};
 
 	it('carries per-row album/artist/cover context and a local stream url', () => {
@@ -336,24 +353,21 @@ describe('buildDiscoveryQueueFromLocal', () => {
 		expect(item.trackName).toBe('Flat Song');
 		expect(item.artistName).toBe('Flat Artist');
 		expect(item.albumName).toBe('Cross Album');
-		expect(item.albumId).toBe('rg-9');
+		expect(item.albumId).toBe('local-album-9');
 		expect(item.sourceType).toBe('local');
 		expect(item.streamUrl).toBe('/api/v1/stream/local/file-7');
-		expect(item.coverUrl).toBe('/art.jpg');
+		expect(item.coverUrl).toBe('/cover/local-album-9');
 		expect(item.format).toBe('flac');
 		expect(item.discNumber).toBe(2);
 		expect(item.duration).toBe(200);
 	});
 
-	it('falls back to a generated cover, empty albumId and disc 1 when fields are missing', () => {
-		expect.assertions(4);
-		const [item] = buildDiscoveryQueueFromLocal([
-			{ ...nativeTrack, album_mbid: null, cover_url: null, disc_number: 0, duration_seconds: null }
-		]);
-		expect(item.albumId).toBe('');
-		expect(item.coverUrl).toBe('/cover/'); // mock getCoverUrl(null, '')
+	it('keeps the local album ID and normalizes an invalid disc number', () => {
+		expect.assertions(3);
+		const [item] = buildDiscoveryQueueFromLocal([{ ...nativeTrack, disc_number: 0 }]);
+		expect(item.albumId).toBe('local-album-9');
+		expect(item.coverUrl).toBe('/cover/local-album-9');
 		expect(item.discNumber).toBe(1);
-		expect(item.duration).toBeUndefined();
 	});
 });
 

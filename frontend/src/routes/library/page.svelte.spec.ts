@@ -52,11 +52,11 @@ describe('library route page', () => {
 			.toHaveAttribute('href', '/profile#connect-apps');
 	});
 
-	it('points an admin to the server-setup tab for Connect Apps', async () => {
+	it('points an admin to their Profile for Connect Apps', async () => {
 		authStore.setUser(user('admin'));
 		render(LibraryPage);
 		await expect
 			.element(page.getByRole('link', { name: 'Connect Apps' }))
-			.toHaveAttribute('href', '/settings?tab=connect-apps');
+			.toHaveAttribute('href', '/profile#connect-apps');
 	});
 });

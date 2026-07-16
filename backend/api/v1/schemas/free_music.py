@@ -28,6 +28,10 @@ class FreeMusicTasksResponse(AppStruct):
     tasks: list[FreeMusicTaskResponse] = []
 
 
+class FreeMusicHistoryClearResponse(AppStruct):
+    cleared: int = 0
+
+
 def task_to_response(task: FreeMusicTask) -> FreeMusicTaskResponse:
     return FreeMusicTaskResponse(
         id=task.id,

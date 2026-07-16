@@ -4,10 +4,7 @@
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { Headphones, SlidersHorizontal, Waypoints, X } from 'lucide-svelte';
 
-	// admins land on the server-setup toggles; everyone else on their self-service Profile
-	const CONNECT_APPS_HREF = $derived(
-		authStore.isAdmin ? '/settings?tab=connect-apps' : '/profile#connect-apps'
-	);
+	const CONNECT_APPS_HREF = '/profile#connect-apps';
 	const BANNER_KEY = 'droppedneedle_connect_apps_banner_dismissed';
 
 	let bannerDismissed = $state(true); // assume dismissed until we read storage (no SSR flash)
@@ -26,9 +23,7 @@
 	}
 
 	function scrollToControls() {
-		document
-			.getElementById('library-controls')
-			?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		document.getElementById('operations')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 </script>
 

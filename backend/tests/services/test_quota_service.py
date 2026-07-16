@@ -18,23 +18,28 @@ from core.exceptions import ValidationError
 from infrastructure.persistence.auth_store import AuthStore
 from infrastructure.persistence.download_store import DownloadStore
 from infrastructure.persistence.library_db import LibraryDB
+from infrastructure.persistence.native_library_store import NativeLibraryStore
 from infrastructure.persistence.request_history import RequestHistoryStore
 from infrastructure.persistence.user_quota_store import UserQuotaStore
 from models.audio import AudioInfo, AudioTag
+from models.local_catalog import CatalogMembership, LocalAlbum, LocalArtist, LocalTrack
 from services.native.library_manager import LibraryManager
+from services.native.target_library_repository import TargetLibraryRepository
 from services.preferences_service import PreferencesService
 from services.quota_service import QuotaService
 
 
 class _Env:
     def __init__(self, tmp_path: Path):
-        lock = threading.Lock()
-        db = tmp_path / "library.db"
-        self.auth = AuthStore(db_path=db, write_lock=lock)
-        self.download_store = DownloadStore(db_path=db, write_lock=lock)
-        self.library_db = LibraryDB(db_path=db, write_lock=lock)
-        self.request_history = RequestHistoryStore(db_path=db, write_lock=lock)
-        self.user_quotas = UserQuotaStore(db_path=db, write_lock=lock)
+        self.lock = threading.Lock()
+        self.db = tmp_path / "library.db"
+        self.auth = AuthStore(db_path=self.db, write_lock=self.lock)
+        self.download_store = DownloadStore(db_path=self.db, write_lock=self.lock)
+        self.library_db = LibraryDB(db_path=self.db, write_lock=self.lock)
+        self.request_history = RequestHistoryStore(
+            db_path=self.db, write_lock=self.lock
+        )
+        self.user_quotas = UserQuotaStore(db_path=self.db, write_lock=self.lock)
         self.library = LibraryManager(self.library_db)
         settings = Settings()
         settings.config_file_path = tmp_path / "config.json"
@@ -58,30 +63,53 @@ class _Env:
 
     async def record_album_ask(self, user_id: str, mbid: str) -> None:
         await self.request_history.async_record_request(
-            musicbrainz_id=mbid, artist_name="A", album_title="B",
-            user_id=user_id, initial_status="awaiting_approval",
+            musicbrainz_id=mbid,
+            artist_name="A",
+            album_title="B",
+            user_id=user_id,
+            initial_status="awaiting_approval",
         )
 
-    async def add_track_task(self, user_id: str, rec: str, origin: str = "user") -> None:
+    async def add_track_task(
+        self, user_id: str, rec: str, origin: str = "user"
+    ) -> None:
         await self.download_store.create_task(
-            user_id=user_id, download_type="track", release_group_mbid="rg-t",
-            recording_mbid=rec, artist_name="A", album_title="B", origin=origin,
+            user_id=user_id,
+            download_type="track",
+            release_group_mbid="rg-t",
+            recording_mbid=rec,
+            artist_name="A",
+            album_title="B",
+            origin=origin,
         )
 
     async def add_library_file(
         self, path: str, *, size: int, rg: str, track: int, task_id: str | None = None
     ) -> None:
         tag = AudioTag(
-            title=f"T{track}", artist="A", album="B", album_artist="A",
-            track_number=track, disc_number=1, musicbrainz_release_group_id=rg,
+            title=f"T{track}",
+            artist="A",
+            album="B",
+            album_artist="A",
+            track_number=track,
+            disc_number=1,
+            musicbrainz_release_group_id=rg,
         )
         info = AudioInfo(
-            duration_seconds=100.0, bitrate=320, sample_rate=44100, channels=2,
-            file_format="mp3", file_size_bytes=size,
+            duration_seconds=100.0,
+            bitrate=320,
+            sample_rate=44100,
+            channels=2,
+            file_format="mp3",
+            file_size_bytes=size,
         )
         await self.library.upsert_file(
-            Path(path), tag, info, release_group_mbid=rg,
-            recording_mbid=f"rec-{rg}-{track}", download_task_id=task_id,
+            Path(path),
+            tag,
+            info,
+            release_group_mbid=rg,
+            recording_mbid=f"rec-{rg}-{track}",
+            download_task_id=task_id,
             source="download" if task_id else "scan",
         )
 
@@ -218,7 +246,9 @@ async def test_user_storage_quota_counts_only_owned_downloads(env: _Env):
         user_id="u1", release_group_mbid="rg-1", artist_name="A", album_title="B"
     )
     # 1 GiB owned by u1's download + 5 GiB of scanned (unowned) files
-    await env.add_library_file("/m/a/01.mp3", size=1024**3, rg="rg-1", track=1, task_id=task.id)
+    await env.add_library_file(
+        "/m/a/01.mp3", size=1024**3, rg="rg-1", track=1, task_id=task.id
+    )
     await env.add_library_file("/m/b/01.mp3", size=5 * 1024**3, rg="rg-2", track=1)
 
     assert await env.library_db.get_user_library_bytes("u1") == 1024**3
@@ -229,6 +259,95 @@ async def test_user_storage_quota_counts_only_owned_downloads(env: _Env):
 
 
 @pytest.mark.asyncio
+async def test_target_quota_uses_target_owned_and_scan_discovered_bytes(env: _Env):
+    await env.add_user("u1")
+    task = await env.download_store.create_task(
+        user_id="u1", release_group_mbid="target-rg", artist_name="A", album_title="B"
+    )
+    # Deliberately divergent source and target catalogs: the retained source is
+    # under the global cap, while the active target catalog is over it.
+    await env.add_library_file(
+        "/legacy/only.mp3", size=1024**3, rg="legacy-rg", track=1
+    )
+    native_store = NativeLibraryStore(env.db, env.lock)
+    artist = LocalArtist(
+        id="target-artist",
+        display_name="Target Artist",
+        folded_name="target artist",
+        kind="person",
+        created_at=1,
+        updated_at=1,
+    )
+    album = LocalAlbum(
+        id="target-album",
+        root_id="root-1",
+        grouping_key="target-group",
+        title="Target Album",
+        album_artist_id=artist.id,
+        album_artist_name=artist.display_name,
+        created_at=1,
+        updated_at=1,
+    )
+    tracks = [
+        LocalTrack(
+            id="target-owned",
+            local_album_id=album.id,
+            root_id="root-1",
+            file_path="/target/owned.flac",
+            relative_path="owned.flac",
+            path_hash="owned",
+            file_size_bytes=1024**3,
+            file_mtime_ns=1,
+            stat_revision="owned",
+            title="Owned",
+            artist_name=artist.display_name,
+            album_title=album.title,
+            album_artist_name=artist.display_name,
+            file_format="flac",
+            download_task_id=task.id,
+            imported_at=1,
+        ),
+        LocalTrack(
+            id="target-scanned",
+            local_album_id=album.id,
+            root_id="root-1",
+            file_path="/target/scanned.flac",
+            relative_path="scanned.flac",
+            path_hash="scanned",
+            file_size_bytes=5 * 1024**3,
+            file_mtime_ns=1,
+            stat_revision="scanned",
+            title="Scanned",
+            artist_name=artist.display_name,
+            album_title=album.title,
+            album_artist_name=artist.display_name,
+            file_format="flac",
+            imported_at=1,
+        ),
+    ]
+    await native_store.create_catalog_membership(
+        CatalogMembership(album=album, artists=[artist], tracks=tracks)
+    )
+    target_repo = TargetLibraryRepository(native_store)
+    target_quota = QuotaService(
+        preferences=env.preferences,
+        user_quotas=env.user_quotas,
+        request_history=env.request_history,
+        download_store=env.download_store,
+        library_db=target_repo,
+        auth_store=env.auth,
+    )
+
+    assert await target_repo.get_total_library_bytes() == 6 * 1024**3
+    assert await target_repo.get_user_library_bytes("u1") == 1024**3
+    assert (await target_quota.usage_for("u1")).storage_bytes == 1024**3
+    env.set_policy(max_library_size_gb=5)
+    await env.quota.check_storage_admission("u1", "user")
+    with pytest.raises(ValidationError, match="Library storage limit reached"):
+        await target_quota.check_storage_admission("u1", "user")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["admin", "trusted"])
 async def test_user_storage_quota_exempts_curators(env: _Env, role: str):
     await env.add_user("u1", role=role)
@@ -236,7 +355,9 @@ async def test_user_storage_quota_exempts_curators(env: _Env, role: str):
     task = await env.download_store.create_task(
         user_id="u1", release_group_mbid="rg-1", artist_name="A", album_title="B"
     )
-    await env.add_library_file("/m/a/01.mp3", size=2 * 1024**3, rg="rg-1", track=1, task_id=task.id)
+    await env.add_library_file(
+        "/m/a/01.mp3", size=2 * 1024**3, rg="rg-1", track=1, task_id=task.id
+    )
 
     await env.quota.check_storage_admission("u1", "user")  # exempt via role lookup
 

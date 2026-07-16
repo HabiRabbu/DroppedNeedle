@@ -40,6 +40,8 @@ def _client(role: str = "user"):
     service.get_task = AsyncMock(return_value=_task())
     service.cancel = AsyncMock(return_value=_task())
     service.retry = AsyncMock(return_value=_task())
+    service.remove = AsyncMock(return_value=None)
+    service.clear_history = AsyncMock(return_value=2)
 
     app = FastAPI()
     v1 = APIRouter(prefix="/api/v1")
@@ -83,6 +85,34 @@ def test_cancel_and_retry_reach_the_service():
     service.cancel.assert_awaited_once()
     assert client.post("/api/v1/free-music/tasks/t1/retry").status_code == 200
     service.retry.assert_awaited_once()
+
+
+def test_remove_forwards_ownership_and_returns_count():
+    client, service = _client()
+
+    response = client.delete("/api/v1/free-music/tasks/t1")
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared": 1}
+    service.remove.assert_awaited_once_with(
+        "t1", user_id="test-user-id", is_admin=False
+    )
+
+
+def test_clear_history_is_user_scoped_unless_an_admin_requests_all():
+    client, service = _client(role="user")
+    response = client.delete("/api/v1/free-music/tasks?all=true")
+
+    assert response.json() == {"cleared": 2}
+    service.clear_history.assert_awaited_once_with(
+        user_id="test-user-id", include_all=False
+    )
+
+    admin_client, admin_service = _client(role="admin")
+    admin_client.delete("/api/v1/free-music/tasks?all=true")
+    admin_service.clear_history.assert_awaited_once_with(
+        user_id="test-user-id", include_all=True
+    )
 
 
 def test_plain_user_is_forbidden_from_cancel():

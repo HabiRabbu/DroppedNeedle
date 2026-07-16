@@ -76,17 +76,29 @@ class MusicBrainzVerifyResult(msgspec.Struct):
 
 
 class SettingsService:
-    def __init__(self, preferences_service, cache: CacheInterface):
+    def __init__(
+        self,
+        preferences_service,
+        cache: CacheInterface,
+        *,
+        navidrome_library_getter=None,
+        plex_library_getter=None,
+    ):
         self._preferences_service = preferences_service
         self._cache = cache
+        self._navidrome_library_getter = navidrome_library_getter
+        self._plex_library_getter = plex_library_getter
 
-    async def verify_jellyfin(self, settings: JellyfinConnectionSettings) -> JellyfinVerifyResult:
+    async def verify_jellyfin(
+        self, settings: JellyfinConnectionSettings
+    ) -> JellyfinVerifyResult:
         try:
             from infrastructure.validators import validate_service_url
+
             validate_service_url(settings.jellyfin_url, label="Jellyfin URL")
 
             from repositories.jellyfin_repository import JellyfinRepository
-            
+
             JellyfinRepository.reset_circuit_breaker()
 
             app_settings = get_settings()
@@ -97,38 +109,40 @@ class SettingsService:
             temp_repo.configure(
                 base_url=settings.jellyfin_url,
                 api_key=settings.api_key,
-                user_id=settings.user_id
+                user_id=settings.user_id,
             )
 
             success, message = await temp_repo.validate_connection()
-            
+
             users = []
             if success:
                 jf_users = await temp_repo.fetch_users_direct()
                 users = [JellyfinUser(id=u.id, name=u.name) for u in jf_users]
-            
+
             return JellyfinVerifyResult(success=success, message=message, users=users)
         except Exception as e:  # noqa: BLE001
             logger.exception(f"Failed to verify Jellyfin connection: {e}")
             return JellyfinVerifyResult(
-                success=False,
-                message="Couldn't finish the connection test"
+                success=False, message="Couldn't finish the connection test"
             )
 
-    async def verify_listenbrainz(self, settings: ListenBrainzConnectionSettings) -> ListenBrainzVerifyResult:
+    async def verify_listenbrainz(
+        self, settings: ListenBrainzConnectionSettings
+    ) -> ListenBrainzVerifyResult:
         try:
             from repositories.listenbrainz_repository import ListenBrainzRepository
-            
+
             ListenBrainzRepository.reset_circuit_breaker()
 
             app_settings = get_settings()
             http_client = get_http_client(app_settings)
             temp_cache = InMemoryCache(max_entries=100)
 
-            temp_repo = ListenBrainzRepository(http_client=http_client, cache=temp_cache)
+            temp_repo = ListenBrainzRepository(
+                http_client=http_client, cache=temp_cache
+            )
             temp_repo.configure(
-                username=settings.username,
-                user_token=settings.user_token
+                username=settings.username, user_token=settings.user_token
             )
 
             if settings.user_token:
@@ -140,8 +154,7 @@ class SettingsService:
         except Exception as e:  # noqa: BLE001
             logger.exception(f"Failed to verify ListenBrainz connection: {e}")
             return ListenBrainzVerifyResult(
-                valid=False,
-                message="Couldn't finish the connection test"
+                valid=False, message="Couldn't finish the connection test"
             )
 
     async def clear_caches_for_preference_change(self) -> int:
@@ -179,19 +192,44 @@ class SettingsService:
     async def on_jellyfin_settings_changed(self) -> None:
         from repositories.jellyfin_repository import JellyfinRepository
         from core.dependencies import (
-            get_jellyfin_repository, get_jellyfin_playback_service,
-            get_jellyfin_library_service, get_home_service,
-            get_home_charts_service, get_mbid_store,
+            get_jellyfin_repository,
+            get_jellyfin_playback_service,
+            get_jellyfin_library_service,
+            get_home_service,
+            get_home_charts_service,
+            get_mbid_store,
+            get_target_coverart_repository,
+            get_target_consumer_composition,
+            get_target_compat_services,
+            get_target_discover_queue_manager,
+            get_target_discover_service,
+            get_target_genre_cover_prewarm_service,
+            get_target_home_charts_service,
+            get_target_home_service,
+            get_target_search_service,
+            get_target_wrapped_service,
         )
         from core.dependencies.auth_providers import (
-            get_user_import_service, get_jellyfin_user_auth_service,
+            get_user_import_service,
+            get_jellyfin_user_auth_service,
         )
+
         JellyfinRepository.reset_circuit_breaker()
         get_jellyfin_repository.cache_clear()
         get_jellyfin_playback_service.cache_clear()
         get_jellyfin_library_service.cache_clear()
         get_home_service.cache_clear()
         get_home_charts_service.cache_clear()
+        get_target_coverart_repository.cache_clear()
+        get_target_consumer_composition.cache_clear()
+        get_target_compat_services.cache_clear()
+        get_target_search_service.cache_clear()
+        get_target_genre_cover_prewarm_service.cache_clear()
+        get_target_home_service.cache_clear()
+        get_target_home_charts_service.cache_clear()
+        get_target_wrapped_service.cache_clear()
+        get_target_discover_service.cache_clear()
+        get_target_discover_queue_manager.cache_clear()
         # The import + SSO-login services capture the jellyfin repo singleton;
         # rebuild them so a newly-configured Jellyfin is enumerable and usable for
         # login without an app restart.
@@ -206,14 +244,21 @@ class SettingsService:
     async def on_navidrome_settings_changed(self, enabled: bool = False) -> None:
         from repositories.navidrome_repository import NavidromeRepository
         from core.dependencies import (
-            get_navidrome_repository, get_navidrome_library_service,
-            get_navidrome_folder_scope_service, get_navidrome_playback_service,
-            get_library_service, get_home_service,
-            get_home_charts_service, get_mbid_store,
+            get_navidrome_repository,
+            get_navidrome_library_service,
+            get_target_navidrome_library_service,
+            get_navidrome_folder_scope_service,
+            get_navidrome_playback_service,
+            get_library_service,
+            get_home_service,
+            get_home_charts_service,
+            get_mbid_store,
         )
+
         NavidromeRepository.reset_circuit_breaker()
         get_navidrome_repository.cache_clear()
         get_navidrome_library_service.cache_clear()
+        get_target_navidrome_library_service.cache_clear()
         get_navidrome_folder_scope_service.cache_clear()
         get_navidrome_playback_service.cache_clear()
         get_library_service.cache_clear()
@@ -229,9 +274,12 @@ class SettingsService:
             import asyncio
             from core.tasks import warm_navidrome_mbid_cache
             from core.task_registry import TaskRegistry
+
             registry = TaskRegistry.get_instance()
             if not registry.is_running("navidrome-mbid-warmup"):
-                _nav_task = asyncio.create_task(warm_navidrome_mbid_cache())
+                _nav_task = asyncio.create_task(
+                    warm_navidrome_mbid_cache(self._navidrome_library_getter)
+                )
                 try:
                     registry.register("navidrome-mbid-warmup", _nav_task)
                 except RuntimeError:
@@ -241,9 +289,11 @@ class SettingsService:
     async def on_lastfm_settings_changed(self) -> None:
         from repositories.lastfm_repository import LastFmRepository
         from core.dependencies import (
-            get_lastfm_repository, get_lastfm_auth_service,
+            get_lastfm_repository,
+            get_lastfm_auth_service,
             clear_lastfm_dependent_caches,
         )
+
         LastFmRepository.reset_circuit_breaker()
         get_lastfm_repository.cache_clear()
         get_lastfm_auth_service.cache_clear()
@@ -254,6 +304,7 @@ class SettingsService:
     async def on_listenbrainz_settings_changed(self) -> None:
         from repositories.listenbrainz_repository import ListenBrainzRepository
         from core.dependencies import clear_listenbrainz_dependent_caches
+
         ListenBrainzRepository.reset_circuit_breaker()
         clear_listenbrainz_dependent_caches()
         await self.clear_home_cache()
@@ -261,13 +312,35 @@ class SettingsService:
 
     async def on_youtube_settings_changed(self) -> None:
         from core.dependencies import get_youtube_repo
+
         get_youtube_repo.cache_clear()
         await self.clear_home_cache()
         logger.info("YouTube settings change: singleton reset, home caches cleared")
 
     async def on_coverart_settings_changed(self) -> None:
-        from core.dependencies import get_coverart_repository
+        from core.dependencies import (
+            get_coverart_repository,
+            get_target_consumer_composition,
+            get_target_compat_services,
+            get_target_coverart_repository,
+            get_target_discover_queue_manager,
+            get_target_discover_service,
+            get_target_genre_cover_prewarm_service,
+            get_target_home_charts_service,
+            get_target_search_service,
+            get_target_wrapped_service,
+        )
+
         get_coverart_repository.cache_clear()
+        get_target_coverart_repository.cache_clear()
+        get_target_consumer_composition.cache_clear()
+        get_target_compat_services.cache_clear()
+        get_target_search_service.cache_clear()
+        get_target_genre_cover_prewarm_service.cache_clear()
+        get_target_home_charts_service.cache_clear()
+        get_target_wrapped_service.cache_clear()
+        get_target_discover_service.cache_clear()
+        get_target_discover_queue_manager.cache_clear()
         logger.info("Coverart settings change: singleton reset")
 
     async def verify_navidrome(
@@ -275,6 +348,7 @@ class SettingsService:
     ) -> NavidromeVerifyResult:
         try:
             from infrastructure.validators import validate_service_url
+
             validate_service_url(settings.navidrome_url, label="Navidrome URL")
 
             from repositories.navidrome_repository import NavidromeRepository
@@ -381,11 +455,10 @@ class SettingsService:
                 valid=False, message="Couldn't finish the Last.fm connection test"
             )
 
-    async def verify_plex(
-        self, settings: PlexConnectionSettings
-    ) -> PlexVerifyResult:
+    async def verify_plex(self, settings: PlexConnectionSettings) -> PlexVerifyResult:
         try:
             from infrastructure.validators import validate_service_url
+
             validate_service_url(settings.plex_url, label="Plex URL")
 
             from repositories.plex_repository import PlexRepository
@@ -439,7 +512,9 @@ class SettingsService:
 
             api_key = settings.api_key
             if api_key == DOWNLOAD_CLIENT_API_KEY_MASK:
-                api_key = self._preferences_service.get_download_client_settings_raw().api_key
+                api_key = (
+                    self._preferences_service.get_download_client_settings_raw().api_key
+                )
 
             from core.dependencies import build_slskd_repository
 
@@ -449,21 +524,30 @@ class SettingsService:
             return ServiceStatus(status="error", message=str(e))
         except Exception as e:  # noqa: BLE001
             logger.exception("Failed to verify download client connection: %s", e)
-            return ServiceStatus(status="error", message="Couldn't finish the connection test")
+            return ServiceStatus(
+                status="error", message="Couldn't finish the connection test"
+            )
 
     async def on_plex_settings_changed(self, enabled: bool = False) -> None:
         from repositories.plex_repository import PlexRepository
         from core.dependencies import (
-            get_plex_repository, get_plex_library_service,
-            get_plex_playback_service, get_home_service,
-            get_home_charts_service, get_mbid_store,
+            get_plex_repository,
+            get_plex_library_service,
+            get_target_plex_library_service,
+            get_plex_playback_service,
+            get_home_service,
+            get_home_charts_service,
+            get_mbid_store,
         )
         from core.dependencies.auth_providers import (
-            get_user_import_service, get_plex_user_auth_service,
+            get_user_import_service,
+            get_plex_user_auth_service,
         )
+
         PlexRepository.reset_circuit_breaker()
         get_plex_repository.cache_clear()
         get_plex_library_service.cache_clear()
+        get_target_plex_library_service.cache_clear()
         get_plex_playback_service.cache_clear()
         get_home_service.cache_clear()
         get_home_charts_service.cache_clear()
@@ -482,9 +566,12 @@ class SettingsService:
             import asyncio
             from core.tasks import warm_plex_mbid_cache
             from core.task_registry import TaskRegistry
+
             registry = TaskRegistry.get_instance()
             if not registry.is_running("plex-mbid-warmup"):
-                _plex_task = asyncio.create_task(warm_plex_mbid_cache())
+                _plex_task = asyncio.create_task(
+                    warm_plex_mbid_cache(self._plex_library_getter)
+                )
                 try:
                     registry.register("plex-mbid-warmup", _plex_task)
                 except RuntimeError:
@@ -554,15 +641,22 @@ class SettingsService:
         self, settings: MusicBrainzConnectionSettings
     ) -> None:
         from repositories.musicbrainz_base import (
-            set_mb_api_base, mb_rate_limiter, mb_circuit_breaker, mb_deduplicator,
+            set_mb_api_base,
+            mb_rate_limiter,
+            mb_circuit_breaker,
+            mb_deduplicator,
         )
         from api.v1.schemas.settings import (
-            is_official_musicbrainz, _OFFICIAL_MB_RATE_LIMIT, _OFFICIAL_MB_CONCURRENT_SEARCHES,
+            is_official_musicbrainz,
+            _OFFICIAL_MB_RATE_LIMIT,
+            _OFFICIAL_MB_CONCURRENT_SEARCHES,
         )
 
         if is_official_musicbrainz(settings.api_url):
             settings.rate_limit = min(settings.rate_limit, _OFFICIAL_MB_RATE_LIMIT)
-            settings.concurrent_searches = min(settings.concurrent_searches, _OFFICIAL_MB_CONCURRENT_SEARCHES)
+            settings.concurrent_searches = min(
+                settings.concurrent_searches, _OFFICIAL_MB_CONCURRENT_SEARCHES
+            )
 
         set_mb_api_base(settings.api_url)
         mb_rate_limiter.update_rate(settings.rate_limit)
@@ -574,4 +668,6 @@ class SettingsService:
         for prefix in musicbrainz_prefixes():
             total += await self._cache.clear_prefix(prefix)
         if total:
-            logger.info(f"Cleared {total} MusicBrainz cache entries after settings change")
+            logger.info(
+                f"Cleared {total} MusicBrainz cache entries after settings change"
+            )

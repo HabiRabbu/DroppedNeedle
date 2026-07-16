@@ -23,7 +23,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
       interval: 30s
       timeout: 10s
-      start_period: 15s
+      start_period: 10m
       retries: 3
 
 volumes:

@@ -34,3 +34,41 @@ export const retryFreeMusicMutation = () =>
 			toastStore.show({ message: error.message || 'Retrying failed.', type: 'error' });
 		}
 	}));
+
+export const removeFreeMusicHistoryMutation = () =>
+	createMutation(() => ({
+		mutationFn: (taskId: string) =>
+			api.global.delete<{ cleared: number }>(API.freeMusic.remove(taskId)),
+		onSuccess: async () => {
+			toastStore.show({ message: 'Removed from Free Music history.', type: 'info' });
+			await invalidateTasks();
+		},
+		onError: (error: Error) => {
+			toastStore.show({
+				message: error.message || "Couldn't remove this history entry.",
+				type: 'error'
+			});
+		}
+	}));
+
+export const clearFreeMusicHistoryMutation = () =>
+	createMutation(() => ({
+		mutationFn: (all: boolean) =>
+			api.global.delete<{ cleared: number }>(API.freeMusic.clearHistory(all)),
+		onSuccess: async ({ cleared }) => {
+			toastStore.show({
+				message:
+					cleared === 0
+						? 'Nothing to clear.'
+						: `Removed ${cleared} ${cleared === 1 ? 'item' : 'items'} from Free Music history.`,
+				type: 'info'
+			});
+			await invalidateTasks();
+		},
+		onError: (error: Error) => {
+			toastStore.show({
+				message: error.message || "Couldn't clear Free Music history.",
+				type: 'error'
+			});
+		}
+	}));

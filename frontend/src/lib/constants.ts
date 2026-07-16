@@ -62,8 +62,6 @@ const CACHE_TTL_GROUPS = {
 		DEFAULT: 5 * 60 * 1000,
 		LIBRARY: 5 * 60 * 1000,
 		LIBRARY_NATIVE: 60 * 1000,
-		SCAN_STATUS: 2 * 1000,
-		SCAN_STATUS_IDLE: 15 * 1000,
 		RECENTLY_ADDED: 5 * 60 * 1000,
 		HOME: 5 * 60 * 1000,
 		DISCOVER: 30 * 60 * 1000,
@@ -195,7 +193,13 @@ export const API = {
 			return url;
 		},
 		album: (mbid: string) => `/api/v1/library/albums/${mbid}/status`,
-		albumTracks: (mbid: string) => `/api/v1/library/albums/${mbid}/tracks`,
+		albumDetail: (albumId: string) => `/api/v1/library/albums/${albumId}`,
+		albumTracks: (albumId: string) => `/api/v1/library/albums/${albumId}/tracks`,
+		cachedAlbumArtwork: (albumId: string, coverVersion: number) =>
+			`/api/v1/library/albums/${encodeURIComponent(albumId)}/artwork/cached?v=${coverVersion}`,
+		artistDetail: (artistId: string) => `/api/v1/library/artists/${artistId}`,
+		artistAlbums: (artistId: string) => `/api/v1/library/artists/${artistId}/albums`,
+		recentlyAdded: (limit = 20) => `/api/v1/library/recently-added?limit=${limit}`,
 		stats: () => '/api/v1/library/stats',
 		scanSchedule: () => '/api/v1/settings/library/schedule',
 		rescanAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/rescan`,
@@ -203,14 +207,122 @@ export const API = {
 		updateTrackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}`,
 		trackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}/tags`,
 		removeTrack: (fileId: string) => `/api/v1/library/tracks/${fileId}`,
-		scanStart: () => '/api/v1/library/scan/start',
 		scanCancel: () => '/api/v1/library/scan/cancel',
-		scanStatus: () => '/api/v1/library/scan/status',
 		scanStream: () => '/api/v1/library/scan/stream',
+		activity: () => '/api/v1/library/activity',
+		activityStream: () => '/api/v1/library/activity/stream',
+		operationsStream: () => '/api/v1/library/operations/stream',
+		pauseIdentification: () => '/api/v1/library/identification/pause',
+		resumeIdentification: () => '/api/v1/library/identification/resume',
+		scanRuns: (limit?: number, cursor?: string) => {
+			const query = new URLSearchParams();
+			if (limit !== undefined) query.set('limit', String(limit));
+			if (cursor) query.set('cursor', cursor);
+			let url = '/api/v1/library/scan-runs';
+			if (query.size) url += `?${query.toString()}`;
+			return url;
+		},
+		currentScanRuns: () => '/api/v1/library/scan-runs/current',
+		scanRunEstimate: (scopeIds: string[] = []) => {
+			const query = scopeIds.map((id) => `scope_ids=${encodeURIComponent(id)}`).join('&');
+			return `/api/v1/library/scan-runs/estimate${query ? `?${query}` : ''}`;
+		},
+		scanRun: (runId: string) => `/api/v1/library/scan-runs/${runId}`,
+		pauseScanRun: (runId: string) => `/api/v1/library/scan-runs/${runId}/pause`,
+		resumeScanRun: (runId: string) => `/api/v1/library/scan-runs/${runId}/resume`,
+		stopScanRun: (runId: string) => `/api/v1/library/scan-runs/${runId}/stop`,
+		reviews: (
+			params: {
+				cursor?: string;
+				limit?: number;
+				state?: string;
+				reasonCode?: string;
+				rootId?: string;
+				policy?: string;
+				search?: string;
+				sort?: string;
+			} = {}
+		) => {
+			const query = new URLSearchParams();
+			if (params.cursor) query.set('cursor', params.cursor);
+			if (params.limit !== undefined) query.set('limit', String(params.limit));
+			if (params.state) query.set('state', params.state);
+			if (params.reasonCode) query.set('reason_code', params.reasonCode);
+			if (params.rootId) query.set('root_id', params.rootId);
+			if (params.policy) query.set('policy', params.policy);
+			if (params.search) query.set('search', params.search);
+			if (params.sort) query.set('sort', params.sort);
+			return `/api/v1/library/reviews${query.size ? `?${query.toString()}` : ''}`;
+		},
+		review: (reviewId: string) => `/api/v1/library/reviews/${reviewId}`,
+		reviewKeepTagged: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/keep-tagged`,
+		reviewDetachKeepTagged: (reviewId: string) =>
+			`/api/v1/library/reviews/${reviewId}/detach-and-keep-tagged`,
+		reviewExclude: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/exclude`,
+		reviewRestore: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/restore`,
+		reviewCandidate: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/candidate`,
+		reviewRetry: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/retry`,
+		bulkReviewPreview: () => '/api/v1/library/reviews/bulk-preview',
+		bulkReviewApply: () => '/api/v1/library/reviews/bulk-apply',
+		operation: (jobId: string) => `/api/v1/library/operations/${jobId}`,
+		pauseOperation: (jobId: string) => `/api/v1/library/operations/${jobId}/pause`,
+		resumeOperation: (jobId: string) => `/api/v1/library/operations/${jobId}/resume`,
+		stopOperation: (jobId: string) => `/api/v1/library/operations/${jobId}/stop`,
+		operationCandidate: (jobId: string) => `/api/v1/library/operations/${jobId}/candidate`,
+		previewAlbumSplit: (albumId: string) => `/api/v1/library/albums/${albumId}/split-preview`,
+		splitAlbum: (albumId: string) => `/api/v1/library/albums/${albumId}/split`,
+		previewAlbumMerge: () => '/api/v1/library/albums/merge-preview',
+		mergeAlbums: () => '/api/v1/library/albums/merge',
+		previewTrackMove: () => '/api/v1/library/tracks/move-preview',
+		moveTracks: () => '/api/v1/library/tracks/move',
+		previewResetAlbumGrouping: (albumId: string) =>
+			`/api/v1/library/albums/${albumId}/reset-grouping-preview`,
+		resetAlbumGrouping: (albumId: string) => `/api/v1/library/albums/${albumId}/reset-grouping`,
+		previewArtistMerge: () => '/api/v1/library/artists/merge-preview',
+		mergeArtists: () => '/api/v1/library/artists/merge',
+		identityRepairs: (limit?: number, cursor?: string) => {
+			const query = new URLSearchParams();
+			if (limit !== undefined) query.set('limit', String(limit));
+			if (cursor) query.set('cursor', cursor);
+			let url = '/api/v1/library/identity-repairs';
+			if (query.size) url += `?${query.toString()}`;
+			return url;
+		},
+		identityRepairEstimate: (rootIds: string[]) => {
+			const query = new URLSearchParams();
+			for (const rootId of rootIds) query.append('root_id', rootId);
+			const suffix = query.size ? `?${query.toString()}` : '';
+			return `/api/v1/library/identity-repairs/estimate${suffix}`;
+		},
+		identityRepair: (jobId: string) => `/api/v1/library/identity-repairs/${jobId}`,
+		identityRepairFindings: (
+			jobId: string,
+			limit?: number,
+			cursor?: string,
+			findingCategory?: string
+		) => {
+			const query = new URLSearchParams();
+			if (limit !== undefined) query.set('limit', String(limit));
+			if (cursor) query.set('cursor', cursor);
+			if (findingCategory) query.set('finding_category', findingCategory);
+			let url = `/api/v1/library/identity-repairs/${jobId}/findings`;
+			if (query.size) url += `?${query.toString()}`;
+			return url;
+		},
+		applyIdentityRepair: (jobId: string) => `/api/v1/library/identity-repairs/${jobId}/apply`,
+		pauseIdentityRepair: (jobId: string) => `/api/v1/library/identity-repairs/${jobId}/pause`,
+		resumeIdentityRepair: (jobId: string) => `/api/v1/library/identity-repairs/${jobId}/resume`,
+		stopIdentityRepair: (jobId: string) => `/api/v1/library/identity-repairs/${jobId}/stop`,
+		scanDiagnostics: (runId: string) => `/api/v1/library/scan-runs/${runId}/diagnostics`,
 		unmatched: () => '/api/v1/library/scan/unmatched',
 		resolveUnmatched: (id: number) => `/api/v1/library/scan/unmatched/${id}/resolve`,
 		resolveUnmatchedBatch: () => '/api/v1/library/scan/unmatched/resolve-batch',
 		settings: () => '/api/v1/settings/library',
+		typedSettings: () => '/api/v1/settings/library/roots',
+		policyTree: () => '/api/v1/settings/library/policy-tree',
+		policyImpact: () => '/api/v1/settings/library/policy-impact',
+		policyApplyPreview: () => '/api/v1/settings/library/policy-apply-preview',
+		pathMapping: () => '/api/v1/settings/library/path-mapping',
 		addPath: () => '/api/v1/settings/library/paths',
 		removePath: (path: string) => `/api/v1/settings/library/paths?path=${encodeURIComponent(path)}`,
 		removeAlbum: (mbid: string) => `/api/v1/library/album/${mbid}`,
@@ -226,6 +338,14 @@ export const API = {
 		health: () => '/api/v1/system/health'
 	},
 	home: () => '/api/v1/home',
+	homeGenre: (genre: string, limit = 50, artistOffset = 0, albumOffset = 0) => {
+		const params = new URLSearchParams({
+			limit: String(limit),
+			artist_offset: String(artistOffset),
+			album_offset: String(albumOffset)
+		});
+		return `/api/v1/home/genre/${encodeURIComponent(genre)}?${params.toString()}`;
+	},
 	homeIntegrationStatus: () => '/api/v1/home/integration-status',
 	discover: () => '/api/v1/discover',
 	discoverRefresh: () => '/api/v1/discover/refresh',
@@ -381,6 +501,8 @@ export const API = {
 	freeMusic: {
 		tasks: (all: boolean = false) => `/api/v1/free-music/tasks${all ? '?all=true' : ''}`,
 		task: (id: string) => `/api/v1/free-music/tasks/${id}`,
+		remove: (id: string) => `/api/v1/free-music/tasks/${id}`,
+		clearHistory: (all: boolean = false) => `/api/v1/free-music/tasks${all ? '?all=true' : ''}`,
 		cancel: (id: string) => `/api/v1/free-music/tasks/${id}/cancel`,
 		retry: (id: string) => `/api/v1/free-music/tasks/${id}/retry`
 	},

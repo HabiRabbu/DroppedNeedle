@@ -4,8 +4,6 @@ from api.v1.schemas.home import (
     HomeResponse,
     HomeIntegrationStatus,
     GenreDetailResponse,
-    GenreArtistResponse,
-    GenreArtistsBatchResponse,
     TrendingArtistsResponse,
     TrendingArtistsRangeResponse,
     PopularAlbumsResponse,
@@ -48,9 +46,7 @@ async def get_home_data(
 
 
 @router.get("/integration-status", response_model=HomeIntegrationStatus)
-async def get_integration_status(
-    home_service: HomeService = Depends(get_home_service)
-):
+async def get_integration_status(home_service: HomeService = Depends(get_home_service)):
     status = home_service.get_integration_status()
     # Refine localfiles via async lib check; never blank gating-critical status, so fall back on error.
     try:
@@ -67,7 +63,7 @@ async def get_genre_detail(
     limit: int = Query(default=50, ge=1, le=200),
     artist_offset: int = Query(default=0, ge=0),
     album_offset: int = Query(default=0, ge=0),
-    charts_service: HomeChartsService = Depends(get_home_charts_service)
+    charts_service: HomeChartsService = Depends(get_home_charts_service),
 ):
     return await charts_service.get_genre_artists(
         genre=genre_name,
@@ -81,18 +77,20 @@ async def get_genre_detail(
 async def get_trending_artists(
     limit: int = Query(default=10, ge=1, le=25),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
-    charts_service: HomeChartsService = Depends(get_home_charts_service)
+    charts_service: HomeChartsService = Depends(get_home_charts_service),
 ):
     return await charts_service.get_trending_artists(limit=limit, source=source)
 
 
-@router.get("/trending/artists/{range_key}", response_model=TrendingArtistsRangeResponse)
+@router.get(
+    "/trending/artists/{range_key}", response_model=TrendingArtistsRangeResponse
+)
 async def get_trending_artists_by_range(
     range_key: str,
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
-    charts_service: HomeChartsService = Depends(get_home_charts_service)
+    charts_service: HomeChartsService = Depends(get_home_charts_service),
 ):
     return await charts_service.get_trending_artists_by_range(
         range_key=range_key, limit=limit, offset=offset, source=source
@@ -103,7 +101,7 @@ async def get_trending_artists_by_range(
 async def get_popular_albums(
     limit: int = Query(default=10, ge=1, le=25),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
-    charts_service: HomeChartsService = Depends(get_home_charts_service)
+    charts_service: HomeChartsService = Depends(get_home_charts_service),
 ):
     return await charts_service.get_popular_albums(limit=limit, source=source)
 
@@ -114,7 +112,7 @@ async def get_popular_albums_by_range(
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
-    charts_service: HomeChartsService = Depends(get_home_charts_service)
+    charts_service: HomeChartsService = Depends(get_home_charts_service),
 ):
     return await charts_service.get_popular_albums_by_range(
         range_key=range_key, limit=limit, offset=offset, source=source
@@ -126,7 +124,7 @@ async def get_your_top_albums(
     current_user: CurrentUserDep,
     limit: int = Query(default=10, ge=1, le=25),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
-    charts_service: HomeChartsService = Depends(get_home_charts_service)
+    charts_service: HomeChartsService = Depends(get_home_charts_service),
 ):
     return await charts_service.get_your_top_albums(
         user_id=current_user.id, limit=limit, source=source
@@ -140,26 +138,12 @@ async def get_your_top_albums_by_range(
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     source: Literal["listenbrainz", "lastfm"] | None = Query(default=None),
-    charts_service: HomeChartsService = Depends(get_home_charts_service)
+    charts_service: HomeChartsService = Depends(get_home_charts_service),
 ):
     return await charts_service.get_your_top_albums_by_range(
-        user_id=current_user.id, range_key=range_key, limit=limit, offset=offset, source=source
+        user_id=current_user.id,
+        range_key=range_key,
+        limit=limit,
+        offset=offset,
+        source=source,
     )
-
-
-@router.get("/genre-artist/{genre_name}", response_model=GenreArtistResponse)
-async def get_genre_artist(
-    genre_name: str,
-    home_service: HomeService = Depends(get_home_service)
-):
-    artist_mbid = await home_service.get_genre_artist(genre_name)
-    return GenreArtistResponse(artist_mbid=artist_mbid)
-
-
-@router.post("/genre-artists", response_model=GenreArtistsBatchResponse)
-async def get_genre_artists_batch(
-    genres: list[str],
-    home_service: HomeService = Depends(get_home_service)
-):
-    results = await home_service.get_genre_artists_batch(genres)
-    return GenreArtistsBatchResponse(genre_artists=results)

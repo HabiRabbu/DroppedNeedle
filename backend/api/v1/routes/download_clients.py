@@ -24,7 +24,9 @@ from middleware import CurrentAdminDep
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(route_class=MsgSpecRoute, prefix="/download-clients", tags=["download-clients"])
+router = APIRouter(
+    route_class=MsgSpecRoute, prefix="/download-clients", tags=["download-clients"]
+)
 
 
 def _clear_download_client_cache() -> None:
@@ -40,6 +42,9 @@ def _clear_download_client_cache() -> None:
         get_sabnzbd_client,
         get_sabnzbd_download_client,
         get_track_matcher,
+        get_target_download_orchestrator,
+        get_target_download_service,
+        get_target_file_processor,
     )
 
     for provider in (
@@ -53,6 +58,9 @@ def _clear_download_client_cache() -> None:
         get_file_processor,
         get_download_orchestrator,
         get_download_service,
+        get_target_file_processor,
+        get_target_download_orchestrator,
+        get_target_download_service,
     ):
         provider.cache_clear()
 
@@ -89,7 +97,9 @@ async def test_sabnzbd(
     try:
         status = await client.health_check()
         if status.status != "ok":
-            return SabnzbdTestResponse(valid=False, message=status.message or "SABnzbd unreachable")
+            return SabnzbdTestResponse(
+                valid=False, message=status.message or "SABnzbd unreachable"
+            )
         cats = await client.get_categories()
         complete_dir = await client.get_complete_dir()
     except ExternalServiceError as exc:
@@ -104,7 +114,9 @@ async def test_sabnzbd(
 
 
 @router.get("/source-priority", response_model=SourcePriority)
-async def get_source_priority(_: CurrentAdminDep, preferences=Depends(get_preferences_service)):
+async def get_source_priority(
+    _: CurrentAdminDep, preferences=Depends(get_preferences_service)
+):
     return SourcePriority(order=preferences.get_source_priority())
 
 

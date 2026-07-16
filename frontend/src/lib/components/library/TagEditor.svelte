@@ -3,10 +3,10 @@
 	import { API } from '$lib/constants';
 	import { updateTrackTags } from '$lib/queries/library/LibraryMutations.svelte';
 	import { toastStore } from '$lib/stores/toast';
-	import type { LibraryTrack, TrackTagUpdate } from '$lib/types';
+	import type { LibraryFileMeta, TrackTagUpdate } from '$lib/types';
 
 	interface Props {
-		track: LibraryTrack;
+		track: LibraryFileMeta;
 		releaseGroupMbid: string;
 		open: boolean;
 		onClose?: () => void;

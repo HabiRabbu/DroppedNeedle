@@ -10,7 +10,12 @@ from services.requests_page_service import RequestsPageService
 from tests.helpers import make_builtin_dispatcher
 
 
-def _make(record_status="awaiting_approval", *, request_album_result="task-9", download_task_id=None):
+def _make(
+    record_status="awaiting_approval",
+    *,
+    request_album_result="task-9",
+    download_task_id=None,
+):
     request_history = MagicMock()
     request_history.async_get_record = AsyncMock(
         return_value=SimpleNamespace(
@@ -21,6 +26,7 @@ def _make(record_status="awaiting_approval", *, request_album_result="task-9", d
             year=1997,
             user_id="u1",
             download_task_id=download_task_id,
+            release_mbid="release-edition",
         )
     )
     request_history.async_record_review = AsyncMock()
@@ -52,12 +58,18 @@ async def test_approve_dispatches_download_and_links_task():
 
     assert resp.success is True
     download_service.request_album.assert_awaited_once()
+    assert (
+        download_service.request_album.await_args.kwargs["release_mbid"]
+        == "release-edition"
+    )
     history.async_update_download_task_id.assert_awaited_once_with("mbid-1", "task-9")
 
 
 @pytest.mark.asyncio
 async def test_approve_already_in_library_not_linked():
-    service, history, download_service = _make(request_album_result="already_in_library")
+    service, history, download_service = _make(
+        request_album_result="already_in_library"
+    )
 
     resp = await service.approve_request("mbid-1", "admin-id", "Admin")
 
@@ -99,6 +111,10 @@ async def test_retry_request_redispatches_native_and_links():
 
     assert resp.success is True
     download_service.request_album.assert_awaited_once()
+    assert (
+        download_service.request_album.await_args.kwargs["release_mbid"]
+        == "release-edition"
+    )
     history.async_update_download_task_id.assert_awaited_once_with("mbid-1", "task-9")
 
 

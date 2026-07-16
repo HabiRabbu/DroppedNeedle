@@ -32,6 +32,9 @@ class DownloadSearchResult(AppStruct):
     duration: float | None = None
     has_free_slot: bool = False
     upload_speed: int = 0
+    # slskd's current queue depth for this peer. Optional so persisted candidate
+    # blobs written before this signal was carried still decode safely.
+    queue_length: int | None = None
 
 
 class DownloadFileRef(AppStruct):

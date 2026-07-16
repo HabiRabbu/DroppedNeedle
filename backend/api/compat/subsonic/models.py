@@ -16,9 +16,14 @@ from api.compat.subsonic.ids import encode
 from services.compat.view_models import ViewAlbum, ViewArtist, ViewGenre, ViewTrack
 
 _MIME = {
-    "flac": "audio/flac", "mp3": "audio/mpeg", "ogg": "audio/ogg",
-    "opus": "audio/opus", "m4a": "audio/mp4", "aac": "audio/aac",
-    "wav": "audio/wav", "wma": "audio/x-ms-wma",
+    "flac": "audio/flac",
+    "mp3": "audio/mpeg",
+    "ogg": "audio/ogg",
+    "opus": "audio/opus",
+    "m4a": "audio/mp4",
+    "aac": "audio/aac",
+    "wav": "audio/wav",
+    "wma": "audio/x-ms-wma",
 }
 
 
@@ -38,9 +43,11 @@ def played_iso(value: str | None) -> str | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
-            timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return (
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+            .astimezone(timezone.utc)
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
     except ValueError:
         return None
 
@@ -389,9 +396,6 @@ class SUser(msgspec.Struct, kw_only=True):
     folder: list[int] = msgspec.field(default_factory=lambda: [1])
 
 
-# ----- View DTO -> Subsonic object formatters -----
-
-
 def to_artist_id3(v: ViewArtist) -> SArtistID3:
     aid = encode("artist", v.artist_mbid)
     return SArtistID3(
@@ -400,7 +404,8 @@ def to_artist_id3(v: ViewArtist) -> SArtistID3:
         coverArt=aid,
         albumCount=v.album_count,
         starred=iso(v.starred_at),
-        musicBrainzId=v.artist_mbid if "-" in v.artist_mbid else None,
+        musicBrainzId=v.musicbrainz_artist_id
+        or (v.artist_mbid if not v.provider_identity_projected else None),
         sortName=v.name,
     )
 
@@ -428,21 +433,26 @@ def to_album_id3(v: ViewAlbum) -> SAlbumID3:
         year=v.year,
         genre=v.genre,
         isCompilation=v.is_compilation,
-        musicBrainzId=v.rg_mbid,
+        musicBrainzId=v.musicbrainz_release_group_id
+        or (v.rg_mbid if not v.provider_identity_projected else None),
         played=played_iso(v.played_at),
         genres=[SItemGenre(name=v.genre)] if v.genre else None,
         artists=[
             SArtistID3(
                 id=encode("artist", v.artist_mbid),
                 name=v.artist_name or "Unknown Artist",
-                musicBrainzId=v.artist_mbid if v.artist_mbid and "-" in v.artist_mbid else None,
+                musicBrainzId=v.musicbrainz_artist_id
+                or (v.artist_mbid if not v.provider_identity_projected else None),
             )
-        ] if v.artist_mbid else None,
+        ]
+        if v.artist_mbid
+        else None,
         displayArtist=v.artist_name,
         releaseTypes=["Compilation"] if v.is_compilation else None,
         sortName=v.sort_name or v.title,
         originalReleaseDate=_item_date(v.original_release_date),
-        discTitles=[SDiscTitle(disc=disc, title=title) for disc, title in v.disc_titles] or None,
+        discTitles=[SDiscTitle(disc=disc, title=title) for disc, title in v.disc_titles]
+        or None,
     )
 
 
@@ -457,7 +467,8 @@ def to_child(
         SArtistID3(
             id=encode("artist", v.artist_mbid),
             name=v.artist_name,
-            musicBrainzId=v.artist_mbid if "-" in v.artist_mbid else None,
+            musicBrainzId=v.musicbrainz_artist_id
+            or (v.artist_mbid if not v.provider_identity_projected else None),
         )
         if v.artist_mbid
         else None
@@ -466,9 +477,8 @@ def to_child(
         SArtistID3(
             id=encode("artist", v.album_artist_mbid),
             name=v.album_artist_name or "Unknown Artist",
-            musicBrainzId=(
-                v.album_artist_mbid if "-" in v.album_artist_mbid else None
-            ),
+            musicBrainzId=v.musicbrainz_album_artist_id
+            or (v.album_artist_mbid if not v.provider_identity_projected else None),
         )
         if v.album_artist_mbid
         else None
@@ -502,10 +512,16 @@ def to_child(
         bitDepth=v.bit_depth,
         samplingRate=v.sample_rate,
         channelCount=v.channels if v.channels is not None else 2,
-        musicBrainzId=v.recording_mbid,
+        musicBrainzId=v.musicbrainz_recording_id
+        or (v.recording_mbid if not v.provider_identity_projected else None),
         played=played_iso(v.played_at),
         sortName=v.sort_name or v.title,
-        genres=[SItemGenre(name=name.strip()) for name in (v.genre or "").split(";") if name.strip()] or None,
+        genres=[
+            SItemGenre(name=name.strip())
+            for name in (v.genre or "").split(";")
+            if name.strip()
+        ]
+        or None,
         artists=[track_artist] if track_artist else None,
         displayArtist=v.artist_name or None,
         albumArtists=[album_artist] if album_artist else None,

@@ -40,7 +40,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
       interval: 30s
       timeout: 10s
-      start_period: 15s
+      # The first start after an upgrade may migrate a large library before the API opens.
+      start_period: 10m
       retries: 3
 
 # Optional: run slskd alongside DroppedNeedle (you manage slskd and its shares).

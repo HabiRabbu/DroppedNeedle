@@ -6,7 +6,7 @@ to manual."""
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -27,8 +27,8 @@ class _Prefs:
     def save_library_scan_schedule(self, schedule) -> None:
         self.saved.append(schedule)
 
-    def get_library_settings_raw(self):
-        return SimpleNamespace(library_paths=["/music"])
+    def get_typed_library_settings_raw(self):
+        return SimpleNamespace(library_roots=[SimpleNamespace(path="/music")])
 
 
 def _break_after(n: int):
@@ -57,6 +57,34 @@ def _scan_state(started_at=None, status="idle"):
     return state, get_state, scan
 
 
+@pytest.mark.asyncio
+async def test_artist_cache_warmer_resolves_rebuilt_service_each_cycle(monkeypatch):
+    sleeps = 0
+
+    async def stop_after_first_cycle(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError
+
+    service = SimpleNamespace(precache_artist_discovery=AsyncMock())
+    service_getter = MagicMock(return_value=service)
+    library = SimpleNamespace(
+        get_artists=AsyncMock(
+            return_value=[{"mbid": "60000000-0000-4000-8000-000000000001"}]
+        )
+    )
+    monkeypatch.setattr(tasks.asyncio, "sleep", stop_after_first_cycle)
+
+    with pytest.raises(asyncio.CancelledError):
+        await tasks.warm_artist_discovery_cache_periodically(
+            service_getter, library, interval=10, delay=0
+        )
+
+    service_getter.assert_called_once_with()
+    service.precache_artist_discovery.assert_awaited_once()
+
+
 def test_interval_overdue_runs_immediately():
     now = datetime(2026, 6, 22, 12, 0, 0)
     last = now.timestamp() - 2 * 3600  # two intervals ago -> overdue
@@ -66,7 +94,9 @@ def test_interval_overdue_runs_immediately():
 def test_interval_future_waits_remaining_gap():
     now = datetime(2026, 6, 22, 12, 0, 0)
     last = now.timestamp() - 600  # 10 min into a 1hr interval
-    assert tasks._seconds_until_next_scan("1hr", "03:00", last, now) == pytest.approx(3000.0)
+    assert tasks._seconds_until_next_scan("1hr", "03:00", last, now) == pytest.approx(
+        3000.0
+    )
 
 
 def test_interval_never_scanned_runs_immediately():
@@ -89,7 +119,10 @@ def test_daily_after_target_unscanned_runs_immediately():
 def test_daily_after_target_already_scanned_waits_until_tomorrow():
     now = datetime(2026, 6, 22, 9, 0, 0)
     scanned_today = datetime(2026, 6, 22, 3, 0, 5).timestamp()
-    assert tasks._seconds_until_next_scan("daily", "03:00", scanned_today, now) == 18 * 3600
+    assert (
+        tasks._seconds_until_next_scan("daily", "03:00", scanned_today, now)
+        == 18 * 3600
+    )
 
 
 def test_parse_daily_time_falls_back_on_garbage():
@@ -122,7 +155,9 @@ async def test_auto_scan_skips_when_already_scanning(monkeypatch):
     _, fake_sleep = _break_after(2)
     monkeypatch.setattr(tasks.asyncio, "sleep", fake_sleep)
     scanner = SimpleNamespace(scan=AsyncMock())
-    scan_state = SimpleNamespace(get_state=AsyncMock(return_value={"status": "scanning"}))
+    scan_state = SimpleNamespace(
+        get_state=AsyncMock(return_value={"status": "scanning"})
+    )
     prefs = _Prefs("30min")
 
     await tasks.auto_scan_library_periodically(scanner, scan_state, prefs)

@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 
 from core.config import get_settings
 from infrastructure.cache.memory_cache import InMemoryCache, CacheInterface
 from infrastructure.cache.disk_cache import DiskMetadataCache
+from infrastructure.cache.cache_keys import library_identification_prefixes
 from infrastructure.persistence import (
     LibraryDB,
     GenreIndex,
     YouTubeStore,
     MBIDStore,
+    NativeLibraryStore,
     ScanStateStore,
     SyncStateStore,
 )
 
 from ._registry import singleton
+
 
 @singleton
 def get_cache() -> CacheInterface:
@@ -40,8 +44,6 @@ def get_disk_cache() -> DiskMetadataCache:
     )
 
 
-# -- Persistence store providers (shared write lock + DB path) --
-
 @singleton
 def get_persistence_write_lock() -> threading.Lock:
     return threading.Lock()
@@ -52,6 +54,32 @@ def get_library_db() -> LibraryDB:
     settings = get_settings()
     lock = get_persistence_write_lock()
     return LibraryDB(db_path=settings.library_db_path, write_lock=lock)
+
+
+@singleton
+def get_native_library_store() -> NativeLibraryStore:
+    from core.dependencies.auth_providers import get_auth_store
+
+    settings = get_settings()
+    get_auth_store()
+
+    async def invalidate() -> None:
+        from services.search_service import SearchService
+
+        SearchService.clear_cached_results()
+        cache = get_cache()
+        await asyncio.gather(
+            *(
+                cache.clear_prefix(prefix)
+                for prefix in library_identification_prefixes()
+            )
+        )
+
+    return NativeLibraryStore(
+        db_path=settings.library_db_path,
+        write_lock=get_persistence_write_lock(),
+        invalidator=invalidate,
+    )
 
 
 @singleton
@@ -105,6 +133,16 @@ def get_cache_service() -> "CacheService":
     library_db = get_library_db()
     disk_cache = get_disk_cache()
     return CacheService(cache, library_db, disk_cache)
+
+
+@singleton
+def get_target_cache_service() -> "CacheService":
+    from services.native.target_cache_service import TargetCacheService
+    from .service_providers import get_target_library_repository
+
+    return TargetCacheService(
+        get_cache(), get_target_library_repository(), get_disk_cache()
+    )
 
 
 def get_cache_status_service() -> "CacheStatusService":

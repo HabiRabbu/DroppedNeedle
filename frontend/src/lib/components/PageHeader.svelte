@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { RefreshCw } from 'lucide-svelte';
+	import { ChevronLeft, RefreshCw } from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 	import { formatLastUpdated } from '$lib/utils/formatting';
 	import LiveUpdatingBadge from './LiveUpdatingBadge.svelte';
@@ -19,6 +19,8 @@
 		lastUpdated?: Date | null;
 		refreshLabel?: string;
 		breadcrumbs?: Breadcrumb[];
+		backHref?: string;
+		backLabel?: string;
 		// when provided, replaces the default refresh button entirely
 		actions?: Snippet;
 		onRefresh?: () => void;
@@ -34,6 +36,8 @@
 		lastUpdated = null,
 		refreshLabel = 'Refresh',
 		breadcrumbs = [],
+		backHref,
+		backLabel = 'Back',
 		actions,
 		onRefresh
 	}: Props = $props();
@@ -49,6 +53,11 @@
 		class="absolute left-0 top-1/2 -translate-y-1/2 w-96 h-48 rounded-full bg-primary/10 blur-3xl pointer-events-none"
 	></div>
 	<div class="relative px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
+		{#if backHref}
+			<a href={backHref} class="btn btn-ghost btn-circle -ml-2 mb-3" aria-label={backLabel}>
+				<ChevronLeft class="h-6 w-6" aria-hidden="true" />
+			</a>
+		{/if}
 		<div class="flex items-start justify-between">
 			<div>
 				{#if breadcrumbs.length}

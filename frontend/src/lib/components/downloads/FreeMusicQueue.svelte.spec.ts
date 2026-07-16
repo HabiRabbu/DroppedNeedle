@@ -6,6 +6,8 @@ import type { FreeMusicTask } from '$lib/queries/free-music/types';
 
 const cancelMutate = vi.fn();
 const retryMutate = vi.fn();
+const removeMutate = vi.fn();
+const clearMutate = vi.fn();
 
 let tasks: FreeMusicTask[] = [];
 
@@ -19,7 +21,9 @@ vi.mock('$lib/queries/free-music/FreeMusicQueries.svelte', () => ({
 
 vi.mock('$lib/queries/free-music/FreeMusicMutations.svelte', () => ({
 	cancelFreeMusicMutation: () => ({ mutate: cancelMutate, isPending: false }),
-	retryFreeMusicMutation: () => ({ mutate: retryMutate, isPending: false })
+	retryFreeMusicMutation: () => ({ mutate: retryMutate, isPending: false }),
+	removeFreeMusicHistoryMutation: () => ({ mutate: removeMutate, isPending: false }),
+	clearFreeMusicHistoryMutation: () => ({ mutate: clearMutate, isPending: false })
 }));
 
 vi.mock('$lib/stores/authStore.svelte', () => ({ authStore: { isAdmin: false } }));
@@ -53,6 +57,8 @@ describe('FreeMusicQueue.svelte', () => {
 	beforeEach(() => {
 		cancelMutate.mockClear();
 		retryMutate.mockClear();
+		removeMutate.mockClear();
+		clearMutate.mockClear();
 	});
 
 	it('renders nothing when there are no tasks', async () => {
@@ -95,5 +101,27 @@ describe('FreeMusicQueue.svelte', () => {
 		await expect.element(page.getByText('In your library')).toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: /Cancel/ })).not.toBeInTheDocument();
+	});
+
+	it('removes one finished task without offering removal for active work', async () => {
+		tasks = [
+			task({ id: 'done', status: 'completed' }),
+			task({ id: 'active', title: 'Active download' })
+		];
+		render(FreeMusicQueue);
+
+		await page.getByRole('button', { name: /Remove Guess Who's a Mess from history/ }).click();
+		expect(removeMutate).toHaveBeenCalledWith('done');
+		await expect
+			.element(page.getByRole('button', { name: 'Remove Active download from history' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('clears terminal history in the current view', async () => {
+		tasks = [task({ status: 'failed' }), task({ id: 'active' })];
+		render(FreeMusicQueue);
+
+		await page.getByRole('button', { name: 'Clear history' }).click();
+		expect(clearMutate).toHaveBeenCalledWith(false);
 	});
 });

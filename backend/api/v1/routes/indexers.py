@@ -38,6 +38,8 @@ def _clear_indexer_cache() -> None:
         get_download_service,
         get_newznab_indexer,
         get_newznab_release_scorer,
+        get_target_download_orchestrator,
+        get_target_download_service,
     )
 
     for provider in (
@@ -45,6 +47,8 @@ def _clear_indexer_cache() -> None:
         get_newznab_release_scorer,
         get_download_orchestrator,
         get_download_service,
+        get_target_download_orchestrator,
+        get_target_download_service,
     ):
         provider.cache_clear()
 
@@ -72,7 +76,9 @@ async def _reaches_newznab(url: str, api_key: str) -> bool:
 
 
 @router.get("", response_model=list[NewznabIndexerSettings])
-async def list_indexers(_: CurrentAdminDep, preferences=Depends(get_preferences_service)):
+async def list_indexers(
+    _: CurrentAdminDep, preferences=Depends(get_preferences_service)
+):
     return preferences.get_indexers()
 
 
@@ -132,7 +138,9 @@ async def test_indexer(
     works before the first save. A masked key resolves to the stored one."""
     api_key = settings.api_key
     if api_key == INDEXER_API_KEY_MASK:
-        stored = next((i for i in preferences.get_indexers_raw() if i.id == settings.id), None)
+        stored = next(
+            (i for i in preferences.get_indexers_raw() if i.id == settings.id), None
+        )
         api_key = stored.api_key if stored else ""
 
     client = build_newznab_client(settings.url, api_key)
@@ -152,7 +160,11 @@ async def test_indexer(
         version=caps.server_version,
         message=(
             f"{caps.server_title or 'Indexer'} OK - "
-            + ("structured music search" if caps.supports_audio_search else "text search (no audio-search)")
+            + (
+                "structured music search"
+                if caps.supports_audio_search
+                else "text search (no audio-search)"
+            )
         ),
         supports_audio_search=caps.supports_audio_search,
         category_count=len(caps.categories),

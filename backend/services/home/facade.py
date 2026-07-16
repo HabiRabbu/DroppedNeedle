@@ -6,14 +6,16 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TYPE_CHECKING
 
 import msgspec.structs
 
 from api.v1.schemas.home import (
     HomeResponse,
+    HomeSection,
     HomeGenre,
     HomeArtist,
+    HomeAlbum,
     DiscoverPreview,
     HomeIntegrationStatus,
 )
@@ -28,19 +30,27 @@ from repositories.protocols import (
 from services.preferences_service import PreferencesService
 from services.home_transformers import HomeDataTransformers
 from services.per_user_client_factory import PerUserClientFactory
-from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
+from infrastructure.persistence.user_listening_prefs_store import (
+    UserListeningPrefsStore,
+)
 from infrastructure.persistence.play_history_store import PlayHistoryStore
-from infrastructure.cache.cache_keys import DISCOVER_RESPONSE_PREFIX, HOME_RESPONSE_PREFIX
+from infrastructure.cache.cache_keys import (
+    DISCOVER_RESPONSE_PREFIX,
+    HOME_RESPONSE_PREFIX,
+)
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.http.deduplication import deduplicate
 from infrastructure.serialization import clone_with_updates
 
 from .integration_helpers import HomeIntegrationHelpers, resolve_source_value
 from .section_builders import HomeSectionBuilders
-from .genre_service import GenreService
 from services.weekly_exploration_service import WeeklyExplorationService
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from services.native.library_ownership_service import LibraryOwnershipService
+    from services.home.genre_artwork_service import GenreArtworkService
 
 # full cache entries live long; freshness is governed by the SWR window below so an
 # expired-but-present copy is still served instantly while a rebuild runs behind it
@@ -74,6 +84,8 @@ class HomeService:
         client_factory: PerUserClientFactory | None = None,
         listening_prefs_store: UserListeningPrefsStore | None = None,
         play_history_store: PlayHistoryStore | None = None,
+        ownership_service: "LibraryOwnershipService | None" = None,
+        genre_artwork_service: "GenreArtworkService | None" = None,
     ):
         self._lb_repo = listenbrainz_repo
         self._jf_repo = jellyfin_repo
@@ -86,6 +98,8 @@ class HomeService:
         self._client_factory = client_factory
         self._prefs_store = listening_prefs_store
         self._play_history_store = play_history_store
+        self._ownership = ownership_service
+        self._genre_artwork = genre_artwork_service
         self._transformers = HomeDataTransformers(jellyfin_repo)
 
         self._helpers = HomeIntegrationHelpers(preferences_service)
@@ -93,20 +107,49 @@ class HomeService:
         self._building: set[str] = set()
         self._built_at: dict[str, float] = {}
         self._builders = HomeSectionBuilders(self._transformers)
-        self._genre = GenreService(
-            musicbrainz_repo, memory_cache, audiodb_image_service,
-            cache_dir=cache_dir, preferences_service=preferences_service,
+        self._weekly_exploration = WeeklyExplorationService(
+            listenbrainz_repo, musicbrainz_repo
         )
-        self._weekly_exploration = WeeklyExplorationService(listenbrainz_repo, musicbrainz_repo)
 
-    def clear_genre_disk_cache(self) -> int:
-        return self._genre.clear_disk_cache()
+    async def _apply_album_ownership(self, response: HomeResponse) -> None:
+        if self._ownership is None:
+            return
+        from services.native.library_ownership_service import AlbumOwnershipCandidate
+
+        albums: list[HomeAlbum] = []
+        for field in msgspec.structs.fields(HomeResponse):
+            section = getattr(response, field.name)
+            if not isinstance(section, HomeSection):
+                continue
+            albums.extend(item for item in section.items if isinstance(item, HomeAlbum))
+        candidates = []
+        for album in albums:
+            year = None
+            if album.release_date and album.release_date[:4].isdigit():
+                year = int(album.release_date[:4])
+            candidates.append(
+                AlbumOwnershipCandidate(
+                    release_group_mbid=album.mbid,
+                    title=album.name,
+                    album_artist=album.artist_name or "",
+                    year=year,
+                )
+            )
+        projections = await self._ownership.project_albums(candidates)
+        for album, projection in zip(albums, projections):
+            album.in_library = projection.owned
+            if projection.local_album_id is not None:
+                album.local_id = projection.local_album_id
 
     def _resolve_source(self, source: str | None = None) -> str:
         return self._helpers.resolve_source(source)
 
-    def _build_service_prompts(self, lb_enabled, download_client_configured, lfm_enabled):
-        return self._builders.build_service_prompts(lb_enabled, download_client_configured, lfm_enabled)
+    def _build_service_prompts(
+        self, lb_enabled, download_client_configured, lfm_enabled
+    ):
+        return self._builders.build_service_prompts(
+            lb_enabled, download_client_configured, lfm_enabled
+        )
 
     def get_integration_status(self) -> HomeIntegrationStatus:
         return HomeIntegrationStatus(
@@ -126,34 +169,24 @@ class HomeService:
         # the engine is always present; affordances only light up once music exists
         return await self._library_repo.has_any_files()
 
-    async def get_genre_artist(
-        self, genre_name: str, exclude_mbids: set[str] | None = None
-    ) -> str | None:
-        return await self._genre.get_genre_artist(genre_name, exclude_mbids)
-
-    async def get_genre_artists_batch(self, genres: list[str]) -> dict[str, str | None]:
-        return await self._genre.get_genre_artists_batch(genres)
-
-    async def get_library_genre_names(self, limit: int = 20) -> list[str]:
-        # account-less top genres from the shared library, for the genre-cover warmer
-        library_albums = await self._library_repo.get_library(include_unmonitored=True)
-        genre_list = self._builders.build_genre_list_section(library_albums, None)
-        if not genre_list or not genre_list.items:
-            return []
-        return [g.name for g in genre_list.items[:limit] if isinstance(g, HomeGenre)]
-
-    def _get_home_cache_key(self, user_id: str, lb_enabled: bool, lfm_enabled: bool) -> str:
+    def _get_home_cache_key(
+        self, user_id: str, lb_enabled: bool, lfm_enabled: bool
+    ) -> str:
         # lb/lfm enable flags keep a user's connect/disconnect busting their own key.
         # No source dimension: the page is unified, both services build into one response.
         return f"{HOME_RESPONSE_PREFIX}{user_id}:{lb_enabled}:{lfm_enabled}"
 
-    async def _resolve_user_music(self, user_id: str, source: str | None) -> _HomeUserMusic:
+    async def _resolve_user_music(
+        self, user_id: str, source: str | None
+    ) -> _HomeUserMusic:
         lb_client = lfm_client = None
         lb_username = lfm_username = None
         if self._client_factory:
             lb_client = await self._client_factory.resolve_listenbrainz(user_id)
             lfm_client = await self._client_factory.resolve_lastfm(user_id)
-            lb_username = await self._client_factory.resolve_listenbrainz_username(user_id)
+            lb_username = await self._client_factory.resolve_listenbrainz_username(
+                user_id
+            )
             lfm_username = await self._client_factory.resolve_lastfm_username(user_id)
         primary_source = "listenbrainz"
         if self._prefs_store:
@@ -163,7 +196,13 @@ class HomeService:
         lfm_enabled = lfm_client is not None
         resolved = resolve_source_value(source, primary_source, lb_enabled, lfm_enabled)
         return _HomeUserMusic(
-            lb_client, lfm_client, lb_username, lfm_username, lb_enabled, lfm_enabled, resolved
+            lb_client,
+            lfm_client,
+            lb_username,
+            lfm_username,
+            lb_enabled,
+            lfm_enabled,
+            resolved,
         )
 
     def _integration_status_for_user(
@@ -178,8 +217,25 @@ class HomeService:
         if not self._memory_cache:
             return None
         music = await self._resolve_user_music(user_id, None)
-        cache_key = self._get_home_cache_key(user_id, music.lb_enabled, music.lfm_enabled)
-        return await self._memory_cache.get(cache_key)
+        cache_key = self._get_home_cache_key(
+            user_id, music.lb_enabled, music.lfm_enabled
+        )
+        cached = await self._memory_cache.get(cache_key)
+        if isinstance(cached, HomeResponse):
+            await self._apply_genre_artwork(cached)
+        return cached
+
+    async def _apply_genre_artwork(self, response: HomeResponse) -> None:
+        if self._genre_artwork is None or not response.genre_list:
+            return
+        genre_names = [
+            item.name
+            for item in response.genre_list.items[:20]
+            if isinstance(item, HomeGenre)
+        ]
+        response.genre_artwork = await self._genre_artwork.get_artwork_batch(
+            genre_names
+        )
 
     def _trigger_warm(self, user_id: str) -> None:
         """Background full rebuild for the user if one isn't already running."""
@@ -205,7 +261,9 @@ class HomeService:
             # here must still clear the building flag, or the user is stranded in a
             # permanent refreshing state (every later poll sees building=True)
             music = await self._resolve_user_music(user_id, None)
-            cache_key = self._get_home_cache_key(user_id, music.lb_enabled, music.lfm_enabled)
+            cache_key = self._get_home_cache_key(
+                user_id, music.lb_enabled, music.lfm_enabled
+            )
             response = await self._build_full(user_id, music)
             if self._memory_cache:
                 await self._memory_cache.set(cache_key, response, HOME_CACHE_TTL)
@@ -230,7 +288,9 @@ class HomeService:
             # no cache to hand off through (unit tests): build inline
             return await self._build_full(user_id, music)
 
-        cache_key = self._get_home_cache_key(user_id, music.lb_enabled, music.lfm_enabled)
+        cache_key = self._get_home_cache_key(
+            user_id, music.lb_enabled, music.lfm_enabled
+        )
         building = user_id in self._building
         cached = await self._memory_cache.get(cache_key)
         if cached is not None:
@@ -238,10 +298,13 @@ class HomeService:
             if not building and age > HOME_STALE_REVALIDATE_SECONDS:
                 self._trigger_warm(user_id)
                 building = True
-            return clone_with_updates(cached, {"refreshing": building})
+            response = clone_with_updates(cached, {"refreshing": building})
+            await self._apply_genre_artwork(response)
+            return response
 
         attempted_recently = (
-            time.time() - self._built_at.get(cache_key, 0.0) <= HOME_STALE_REVALIDATE_SECONDS
+            time.time() - self._built_at.get(cache_key, 0.0)
+            <= HOME_STALE_REVALIDATE_SECONDS
         )
         if not building and not attempted_recently:
             self._trigger_warm(user_id)
@@ -258,12 +321,20 @@ class HomeService:
         )
         tasks: dict[str, Any] = {}
         if integration_status.library:
-            tasks["library_albums"] = self._library_repo.get_library(include_unmonitored=True)
-            tasks["library_artists"] = self._library_repo.get_artists_from_library(include_unmonitored=True)
-            tasks["recently_imported"] = self._library_repo.get_recently_imported(limit=15)
+            tasks["library_albums"] = self._library_repo.get_library(
+                include_unmonitored=True
+            )
+            tasks["library_artists"] = self._library_repo.get_artists_from_library(
+                include_unmonitored=True
+            )
+            tasks["recently_imported"] = self._library_repo.get_recently_imported(
+                limit=15
+            )
         results = await self._helpers.execute_tasks(tasks)
 
-        response = HomeResponse(integration_status=integration_status, refreshing=refreshing)
+        response = HomeResponse(
+            integration_status=integration_status, refreshing=refreshing
+        )
         library_albums: list[LibraryAlbum] = results.get("library_albums") or []
         response.recently_added = self._builders.build_recently_added_section(
             results.get("recently_imported") or []
@@ -271,11 +342,18 @@ class HomeService:
         response.library_artists = self._builders.build_library_artists_section(
             results.get("library_artists") or []
         )
-        response.library_albums = self._builders.build_library_albums_section(library_albums)
+        response.library_albums = self._builders.build_library_albums_section(
+            library_albums
+        )
         if self._play_history_store:
             recent_records = await self._play_history_store.recent(user_id, limit=15)
-            response.recently_played = self._builders.build_play_history_recent_section(recent_records)
-        response.genre_list = self._builders.build_genre_list_section(library_albums, None)
+            response.recently_played = self._builders.build_play_history_recent_section(
+                recent_records
+            )
+        response.genre_list = self._builders.build_genre_list_section(
+            library_albums, None
+        )
+        await self._apply_genre_artwork(response)
         response.service_prompts = self._builders.build_service_prompts(
             music.lb_enabled,
             integration_status.download_client,
@@ -284,6 +362,7 @@ class HomeService:
         response.discover_preview = await self._build_discover_preview(
             user_id, music.lb_enabled, music.lfm_enabled
         )
+        await self._apply_album_ownership(response)
         return response
 
     async def _build_full(self, user_id: str, music: _HomeUserMusic) -> HomeResponse:
@@ -304,19 +383,27 @@ class HomeService:
 
         # sitewide trending/popular need no account; keep the global singleton repos
         if primary == "lastfm" and self._lfm_repo:
-            tasks["lfm_global_top_artists"] = self._lfm_repo.get_global_top_artists(limit=20)
+            tasks["lfm_global_top_artists"] = self._lfm_repo.get_global_top_artists(
+                limit=20
+            )
             if lfm_client and lfm_username:
                 tasks["lfm_top_albums"] = lfm_client.get_user_top_albums(
                     lfm_username, period="1month", limit=20
                 )
         else:
-            tasks["lb_trending_artists"] = self._lb_repo.get_sitewide_top_artists(count=20)
-            tasks["lb_trending_albums"] = self._lb_repo.get_sitewide_top_release_groups(count=20)
+            tasks["lb_trending_artists"] = self._lb_repo.get_sitewide_top_artists(
+                count=20
+            )
+            tasks["lb_trending_albums"] = self._lb_repo.get_sitewide_top_release_groups(
+                count=20
+            )
 
         # library home sections are driven by the native library (the scanner is
         # always present, D8), not by whether a download client is configured
         if integration_status.library:
-            tasks["library_albums"] = self._library_repo.get_library(include_unmonitored=True)
+            tasks["library_albums"] = self._library_repo.get_library(
+                include_unmonitored=True
+            )
             # get_library() is an empty stub on native installs, so the album-membership
             # set must come from get_library_mbids() (the authoritative native set the
             # frontend's /library/mbids also uses) - otherwise chart albums already in the
@@ -324,8 +411,12 @@ class HomeService:
             tasks["library_album_mbids"] = self._library_repo.get_library_mbids(
                 include_release_ids=False
             )
-            tasks["library_artists"] = self._library_repo.get_artists_from_library(include_unmonitored=True)
-            tasks["recently_imported"] = self._library_repo.get_recently_imported(limit=15)
+            tasks["library_artists"] = self._library_repo.get_artists_from_library(
+                include_unmonitored=True
+            )
+            tasks["recently_imported"] = self._library_repo.get_recently_imported(
+                limit=15
+            )
 
         # personalized sections use the requesting user's request-scoped client;
         # omitted entirely for unlinked users (D1). Weekly exploration and genre
@@ -342,7 +433,9 @@ class HomeService:
                     username=username, range_="this_month", count=20
                 )
         if primary == "lastfm" and lfm_client and lfm_username:
-            tasks["lfm_loved"] = lfm_client.get_user_loved_tracks(lfm_username, limit=20)
+            tasks["lfm_loved"] = lfm_client.get_user_loved_tracks(
+                lfm_username, limit=20
+            )
 
         results = await self._helpers.execute_tasks(tasks)
 
@@ -358,19 +451,29 @@ class HomeService:
 
         response = HomeResponse(integration_status=integration_status)
 
-        response.recently_added = self._builders.build_recently_added_section(recently_imported)
-        response.library_artists = self._builders.build_library_artists_section(library_artists)
-        response.library_albums = self._builders.build_library_albums_section(library_albums)
+        response.recently_added = self._builders.build_recently_added_section(
+            recently_imported
+        )
+        response.library_artists = self._builders.build_library_artists_section(
+            library_artists
+        )
+        response.library_albums = self._builders.build_library_albums_section(
+            library_albums
+        )
 
         if primary == "lastfm":
             response.trending_artists = self._builders.build_lastfm_trending_section(
                 results, library_artist_mbids
             )
             if lfm_client:
-                response.your_top_albums = self._builders.build_lastfm_top_albums_section(
-                    results, library_album_mbids
+                response.your_top_albums = (
+                    self._builders.build_lastfm_top_albums_section(
+                        results, library_album_mbids
+                    )
                 )
-                response.favorite_artists = self._builders.build_lastfm_favorites_section(results)
+                response.favorite_artists = (
+                    self._builders.build_lastfm_favorites_section(results)
+                )
         else:
             response.trending_artists = self._builders.build_trending_artists_section(
                 results, library_artist_mbids
@@ -379,10 +482,14 @@ class HomeService:
                 results, library_album_mbids
             )
             if lb_client:
-                response.your_top_albums = self._builders.build_lb_user_top_albums_section(
-                    results, library_album_mbids
+                response.your_top_albums = (
+                    self._builders.build_lb_user_top_albums_section(
+                        results, library_album_mbids
+                    )
                 )
-                response.favorite_artists = self._builders.build_listenbrainz_favorites_section(results)
+                response.favorite_artists = (
+                    self._builders.build_listenbrainz_favorites_section(results)
+                )
         # LB-specific sections render whenever LB is linked, regardless of primary
         if lb_client:
             response.weekly_exploration = results.get("lb_weekly_exploration")
@@ -391,27 +498,16 @@ class HomeService:
         # linked or not, not from external listens
         if self._play_history_store:
             recent_records = await self._play_history_store.recent(user_id, limit=15)
-            response.recently_played = self._builders.build_play_history_recent_section(recent_records)
+            response.recently_played = self._builders.build_play_history_recent_section(
+                recent_records
+            )
 
         response.genre_list = self._builders.build_genre_list_section(
             library_albums,
             results.get("lb_genres"),
         )
 
-        if response.genre_list and response.genre_list.items:
-            genre_names = [
-                g.name for g in response.genre_list.items[:20]
-                if isinstance(g, HomeGenre)
-            ]
-            if genre_names:
-                # Resolve art for the exact genre names being shown (not a separately
-                # warmed default set) so the frontend's by-name lookup always hits. The
-                # per-name artist cache and per-MBID AudioDB cache keep this fast once warm.
-                genre_artists = await self._genre.get_genre_artists_batch(genre_names)
-                response.genre_artists = genre_artists
-                response.genre_artist_images = await self._genre.resolve_genre_artist_images(
-                    genre_artists
-                )
+        await self._apply_genre_artwork(response)
 
         response.service_prompts = self._builders.build_service_prompts(
             lb_enabled,
@@ -423,6 +519,8 @@ class HomeService:
             user_id, lb_enabled, lfm_enabled
         )
 
+        await self._apply_album_ownership(response)
+
         return response
 
     async def _build_discover_preview(
@@ -432,9 +530,12 @@ class HomeService:
             return None
         try:
             from api.v1.schemas.discover import DiscoverResponse as DR
+
             # read the user-dimensioned discover key (incl. enable flags) so it tracks
             # the live discover cache entry
-            cache_key = f"{DISCOVER_RESPONSE_PREFIX}{user_id}:{lb_enabled}:{lfm_enabled}"
+            cache_key = (
+                f"{DISCOVER_RESPONSE_PREFIX}{user_id}:{lb_enabled}:{lfm_enabled}"
+            )
             cached = await self._memory_cache.get(cache_key)
             if not cached or not isinstance(cached, DR):
                 return None
@@ -442,7 +543,8 @@ class HomeService:
                 return None
             first = cached.because_you_listen_to[0]
             preview_items = [
-                item for item in first.section.items[:15]
+                item
+                for item in first.section.items[:15]
                 if isinstance(item, HomeArtist)
             ]
             return DiscoverPreview(
@@ -457,7 +559,10 @@ class HomeService:
         if not release_ids:
             return {}
         import asyncio as _asyncio
-        tasks = [self._mb_repo.get_release_group_id_from_release(rid) for rid in release_ids]
+
+        tasks = [
+            self._mb_repo.get_release_group_id_from_release(rid) for rid in release_ids
+        ]
         results = await _asyncio.gather(*tasks, return_exceptions=True)
         rg_map: dict[str, str] = {}
         for rid, rg_id in zip(release_ids, results):

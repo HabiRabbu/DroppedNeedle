@@ -1,4 +1,6 @@
-from api.v1.schemas.common import GenreArtistMap, IntegrationStatus
+from typing import Literal
+
+from api.v1.schemas.common import IntegrationStatus
 from api.v1.schemas.weekly_exploration import WeeklyExplorationSection
 from infrastructure.msgspec_fastapi import AppStruct
 
@@ -6,6 +8,7 @@ from infrastructure.msgspec_fastapi import AppStruct
 class HomeArtist(AppStruct):
     name: str
     mbid: str | None = None
+    local_id: str | None = None
     image_url: str | None = None
     listen_count: int | None = None
     in_library: bool = False
@@ -15,6 +18,7 @@ class HomeArtist(AppStruct):
 class HomeAlbum(AppStruct):
     name: str
     mbid: str | None = None
+    local_id: str | None = None
     artist_name: str | None = None
     artist_mbid: str | None = None
     image_url: str | None = None
@@ -73,6 +77,19 @@ class DiscoverPreview(AppStruct):
     items: list[HomeArtist] = []
 
 
+class GenreArtworkAlbum(AppStruct):
+    album_id: str
+    album_title: str
+    cover_version: int
+    album_artist_name: str | None = None
+
+
+class GenreArtwork(AppStruct):
+    kind: Literal["collage", "gradient"]
+    version: str
+    albums: list[GenreArtworkAlbum] = []
+
+
 class HomeResponse(AppStruct):
     recently_added: HomeSection | None = None
     library_artists: HomeSection | None = None
@@ -89,8 +106,8 @@ class HomeResponse(AppStruct):
     weekly_exploration: WeeklyExplorationSection | None = None
     service_prompts: list[ServicePrompt] = []
     integration_status: HomeIntegrationStatus | None = None
-    genre_artists: GenreArtistMap = {}
-    genre_artist_images: GenreArtistMap = {}
+    genre_artwork: dict[str, GenreArtwork] = {}
+    genre_artwork_schema_version: str = "v2"
     discover_preview: DiscoverPreview | None = None
     service_status: dict[str, str] | None = None
     # true while a fuller build is running in the background (frontend polls)
@@ -113,6 +130,7 @@ class GenrePopularSection(AppStruct):
 
 class GenreDetailResponse(AppStruct):
     genre: str
+    genre_artwork: GenreArtwork
     library: GenreLibrarySection | None = None
     popular: GenrePopularSection | None = None
     artists: list[HomeArtist] = []
@@ -165,11 +183,3 @@ class PopularAlbumsRangeResponse(AppStruct):
     offset: int = 0
     limit: int = 25
     has_more: bool = False
-
-
-class GenreArtistResponse(AppStruct):
-    artist_mbid: str | None = None
-
-
-class GenreArtistsBatchResponse(AppStruct):
-    genre_artists: dict[str, str | None] = {}

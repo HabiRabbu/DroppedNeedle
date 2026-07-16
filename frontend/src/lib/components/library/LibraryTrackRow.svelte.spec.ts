@@ -6,18 +6,30 @@ import type { LibraryFileMeta } from '$lib/types';
 
 const meta: LibraryFileMeta = {
 	id: 'file-1',
-	recording_mbid: 'rec-airbag-0001',
+	title: 'Airbag',
+	album_id: 'album-1',
+	album_title: 'OK Computer',
+	artist_id: 'artist-1',
+	artist_name: 'Radiohead',
+	album_artist_id: 'artist-1',
+	album_artist_name: 'Radiohead',
+	musicbrainz_recording_id: 'rec-airbag-0001',
+	musicbrainz_release_group_id: null,
+	musicbrainz_artist_id: null,
+	musicbrainz_album_artist_id: null,
 	disc_number: 1,
 	track_number: 1,
-	track_title: 'Airbag',
-	artist_name: 'Radiohead',
-	file_path: '/music/Radiohead/OK Computer/01 Airbag.flac',
-	file_format: 'flac',
+	year: 1997,
+	genre: 'Rock',
+	format: 'flac',
 	bit_rate: 900,
 	sample_rate: 44100,
 	bit_depth: 16,
+	channels: 2,
 	duration_seconds: 260,
 	file_size_bytes: 1048576,
+	date_added: 1,
+	cover_available: false,
 	current_tier: 'lossless',
 	below_cutoff: false
 };
@@ -29,9 +41,9 @@ function renderComponent() {
 }
 
 describe('LibraryTrackRow.svelte', () => {
-	it('shows the file path', async () => {
+	it('shows the stable local track ID without exposing a path', async () => {
 		renderComponent();
-		await expect.element(page.getByText(meta.file_path)).toBeInTheDocument();
+		await expect.element(page.getByText(meta.id)).toBeInTheDocument();
 	});
 
 	it('shows the recording MBID', async () => {

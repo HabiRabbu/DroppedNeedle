@@ -13,6 +13,7 @@ interface LibraryArtist {
 interface LibraryAlbum {
 	album: string;
 	artist: string;
+	local_id: string | null;
 	artist_mbid: string | null;
 	musicbrainz_id: string | null;
 	year: number | null;

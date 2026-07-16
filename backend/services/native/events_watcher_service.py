@@ -22,6 +22,7 @@ import asyncio
 import logging
 import math
 import re
+from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
 
 import httpx
@@ -81,7 +82,10 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     d_phi = math.radians(lat2 - lat1)
     d_lambda = math.radians(lon2 - lon1)
-    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    )
     # float error can push a past 1 for near-antipodal pairs; asin would raise
     return 2 * radius * math.asin(math.sqrt(min(1.0, max(0.0, a))))
 
@@ -134,7 +138,9 @@ def map_tm_event(
     local_date = start.local_date if start else None
     if not local_date:
         return None  # dateless events (TBA) are unusable for a city/date feed
-    status_code = ((event.dates.status.code if event.dates.status else None) or "").lower()
+    status_code = (
+        (event.dates.status.code if event.dates.status else None) or ""
+    ).lower()
     venue = (event.embedded.venues if event.embedded else None) or []
     first_venue = venue[0] if venue else None
     location = first_venue.location if first_venue else None
@@ -151,7 +157,9 @@ def map_tm_event(
         city=first_venue.city.name if first_venue and first_venue.city else None,
         region=first_venue.state.name if first_venue and first_venue.state else None,
         country_code=(
-            first_venue.country.country_code if first_venue and first_venue.country else None
+            first_venue.country.country_code
+            if first_venue and first_venue.country
+            else None
         ),
         latitude=_parse_coord(location.latitude) if location else None,
         longitude=_parse_coord(location.longitude) if location else None,
@@ -197,7 +205,10 @@ def _same_gig(a: LiveEventInput, b: LiveEventInput) -> bool:
     OR venue coordinates within ~1 km)."""
     if a.local_date != b.local_date:
         return False
-    name_a, name_b = normalize_name(a.venue_name or ""), normalize_name(b.venue_name or "")
+    name_a, name_b = (
+        normalize_name(a.venue_name or ""),
+        normalize_name(b.venue_name or ""),
+    )
     if name_a and name_a == name_b:
         return True
     if (
@@ -206,7 +217,9 @@ def _same_gig(a: LiveEventInput, b: LiveEventInput) -> bool:
         and b.latitude is not None
         and b.longitude is not None
     ):
-        return haversine_km(a.latitude, a.longitude, b.latitude, b.longitude) <= _DEDUPE_KM
+        return (
+            haversine_km(a.latitude, a.longitude, b.latitude, b.longitude) <= _DEDUPE_KM
+        )
     return False
 
 
@@ -235,6 +248,7 @@ class EventsWatcherService:
         sse_publisher,
         inter_artist_delay: float = 1.0,
         now_fn=None,
+        library_artist_getter: Callable[[], Awaitable[list[SweepArtist]]] | None = None,
     ) -> None:
         self._store = events_store
         self._follows = follow_store
@@ -243,6 +257,9 @@ class EventsWatcherService:
         self._preferences = preferences
         self._sse = sse_publisher
         self._inter_artist_delay = inter_artist_delay
+        self._library_artist_getter = (
+            library_artist_getter or self._store.list_library_artists
+        )
         import time as _time
 
         self._now = now_fn or _time.time
@@ -273,7 +290,9 @@ class EventsWatcherService:
                 httpx.HTTPError,
                 asyncio.TimeoutError,
             ) as exc:
-                await self._store.update_cursor(artist.artist_mbid_lower, "error", str(exc))
+                await self._store.update_cursor(
+                    artist.artist_mbid_lower, "error", str(exc)
+                )
                 logger.warning(
                     "Events sweep: source unavailable for %s: %s",
                     artist.artist_mbid_lower,
@@ -316,7 +335,7 @@ class EventsWatcherService:
             for f in followed
         }
         if scope == "library":
-            for artist in await self._store.list_library_artists():
+            for artist in await self._library_artist_getter():
                 by_mbid.setdefault(artist.artist_mbid_lower, artist)
         ages = await self._store.cursor_ages()
         artists = sorted(
@@ -343,13 +362,17 @@ class EventsWatcherService:
     ) -> int:
         collected: list[LiveEventInput] = []
         if tm_on:
-            collected.extend(await asyncio.wait_for(
-                self._fetch_ticketmaster(artist), timeout=_FETCH_TIMEOUT
-            ))
+            collected.extend(
+                await asyncio.wait_for(
+                    self._fetch_ticketmaster(artist), timeout=_FETCH_TIMEOUT
+                )
+            )
         if skiddle_on:
-            collected.extend(await asyncio.wait_for(
-                self._fetch_skiddle(artist), timeout=_FETCH_TIMEOUT
-            ))
+            collected.extend(
+                await asyncio.wait_for(
+                    self._fetch_skiddle(artist), timeout=_FETCH_TIMEOUT
+                )
+            )
 
         horizon = (date.today() + timedelta(days=_HORIZON_DAYS)).isoformat()
         collected = [e for e in collected if e.local_date <= horizon]
@@ -364,9 +387,7 @@ class EventsWatcherService:
             {"skiddle"} if skiddle_on else set()
         )
         delete_keys = [
-            key
-            for key in existing_keys - collected_keys
-            if key[0] in swept_sources
+            key for key in existing_keys - collected_keys if key[0] in swept_sources
         ]
         await self._store.apply_sweep_result(
             artist.artist_mbid_lower, collected, delete_keys, now=self._now()
@@ -380,7 +401,10 @@ class EventsWatcherService:
 
     async def _fetch_ticketmaster(self, artist: SweepArtist) -> list[LiveEventInput]:
         resolution = await self._store.get_tm_resolution(artist.artist_mbid_lower)
-        if resolution is None or self._now() - resolution.resolved_at > RESOLUTION_TTL_SECONDS:
+        if (
+            resolution is None
+            or self._now() - resolution.resolved_at > RESOLUTION_TTL_SECONDS
+        ):
             attractions = await self._tm.search_attractions(artist.artist_name)
             attraction_id, basis = pick_tm_attraction(
                 attractions, artist.artist_name, artist.artist_mbid_lower
@@ -399,7 +423,10 @@ class EventsWatcherService:
 
     async def _fetch_skiddle(self, artist: SweepArtist) -> list[LiveEventInput]:
         resolution = await self._store.get_skiddle_resolution(artist.artist_mbid_lower)
-        if resolution is None or self._now() - resolution.resolved_at > RESOLUTION_TTL_SECONDS:
+        if (
+            resolution is None
+            or self._now() - resolution.resolved_at > RESOLUTION_TTL_SECONDS
+        ):
             artists = await self._skiddle.search_artists(artist.artist_name)
             ids = pick_skiddle_ids(artists, artist.artist_name)
             await self._store.set_skiddle_resolution(
@@ -416,9 +443,7 @@ class EventsWatcherService:
                     collected[mapped.source_event_id] = mapped
         return list(collected.values())
 
-    async def _publish_new_events(
-        self, artist: SweepArtist, new_count: int
-    ) -> None:
+    async def _publish_new_events(self, artist: SweepArtist, new_count: int) -> None:
         try:
             followers = await self._follows.list_followers(artist.artist_mbid_lower)
             for user_id in followers:

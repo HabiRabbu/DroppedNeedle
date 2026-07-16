@@ -47,7 +47,8 @@ class CompatScanService:
             raise ConflictError("A library scan is already running")
         paths = [
             Path(path)
-            for path in self._preferences.get_library_settings_raw().library_paths
+            for root in self._preferences.get_typed_library_settings_raw().library_roots
+            for path in [root.path]
         ]
         if not paths:
             raise ConfigurationError("No native library paths are configured")

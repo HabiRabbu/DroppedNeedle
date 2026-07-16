@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import ArtistCard from '$lib/components/ArtistCard.svelte';
 	import ArtistCardSkeleton from '$lib/components/ArtistCardSkeleton.svelte';
+	import ArtistImage from '$lib/components/ArtistImage.svelte';
 	import { getLibraryArtistsInfiniteQuery } from '$lib/queries/library/LibraryQueries.svelte';
-	import type { Artist, ArtistSort, LibraryArtistSummary } from '$lib/types';
+	import type { ArtistSort, LibraryArtistSummary } from '$lib/types';
+	import { artistHref } from '$lib/utils/entityRoutes';
 	import { ChevronLeft, Mic, Search, X } from 'lucide-svelte';
 
 	const SEARCH_DEBOUNCE_MS = 300;
@@ -25,7 +26,7 @@
 		const out: LibraryArtistSummary[] = [];
 		for (const page of artistsQuery.data?.pages ?? []) {
 			for (const item of page.items) {
-				const key = item.artist_mbid || item.artist_name;
+				const key = item.id;
 				if (seen[key]) continue;
 				seen[key] = true;
 				out.push(item);
@@ -53,14 +54,6 @@
 		const [newSortBy, newSortOrder] = value.split(':') as [ArtistSort, 'asc' | 'desc'];
 		sortBy = newSortBy;
 		sortOrder = newSortOrder;
-	}
-
-	function convertToArtist(libArtist: LibraryArtistSummary): Artist {
-		return {
-			title: libArtist.artist_name,
-			musicbrainz_id: libArtist.artist_mbid ?? '',
-			in_library: true
-		};
 	}
 </script>
 
@@ -144,8 +137,30 @@
 		</div>
 	{:else}
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-			{#each artists as artist (artist.artist_mbid || artist.artist_name)}
-				<ArtistCard artist={convertToArtist(artist)} />
+			{#each artists as artist (artist.id)}
+				<a
+					href={artistHref(artist.musicbrainz_artist_id ?? artist.id)}
+					class="card group bg-base-100 shadow-sm transition-all hover:-translate-y-1 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
+					aria-label={`Open ${artist.name}`}
+				>
+					<figure class="aspect-square overflow-hidden p-3">
+						<ArtistImage
+							mbid={artist.id}
+							source="local"
+							alt={artist.name}
+							size="full"
+							className="h-full w-full transition-transform duration-300 group-hover:scale-105"
+						/>
+					</figure>
+					<div class="card-body gap-1 p-3 pt-0 text-center">
+						<h2 class="truncate font-semibold">{artist.name}</h2>
+						<p class="text-xs text-base-content/55">
+							{artist.album_count}
+							{artist.album_count === 1 ? 'album' : 'albums'} · {artist.track_count}
+							{artist.track_count === 1 ? 'track' : 'tracks'}
+						</p>
+					</div>
+				</a>
 			{/each}
 		</div>
 		{#if artistsQuery.hasNextPage}

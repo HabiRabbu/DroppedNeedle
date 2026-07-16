@@ -56,6 +56,17 @@ def get_musicbrainz_repository() -> "MusicBrainzRepository":
 
 
 @singleton
+def get_musicbrainz_identification_repository() -> (
+    "MusicBrainzIdentificationRepository"
+):
+    from repositories.musicbrainz_identification_repository import (
+        MusicBrainzIdentificationRepository,
+    )
+
+    return MusicBrainzIdentificationRepository(get_musicbrainz_repository())
+
+
+@singleton
 def get_wikidata_repository() -> "WikidataRepository":
     from repositories.wikidata_repository import WikidataRepository
 
@@ -72,7 +83,9 @@ def get_listenbrainz_repository() -> "ListenBrainzRepository":
     http_client = get_listenbrainz_http_client(
         settings=get_settings(),
         timeout=float(get_preferences_service().get_advanced_settings().http_timeout),
-        connect_timeout=float(get_preferences_service().get_advanced_settings().http_connect_timeout),
+        connect_timeout=float(
+            get_preferences_service().get_advanced_settings().http_connect_timeout
+        ),
     )
     preferences = get_preferences_service()
     lb_settings = preferences.get_listenbrainz_connection()
@@ -194,7 +207,15 @@ def get_youtube_repo() -> "YouTubeRepository":
     http_client = _get_configured_http_client()
     preferences_service = get_preferences_service()
     yt_settings = preferences_service.get_youtube_connection()
-    api_key = yt_settings.api_key.strip() if (yt_settings.enabled and yt_settings.api_enabled and yt_settings.has_valid_api_key()) else ""
+    api_key = (
+        yt_settings.api_key.strip()
+        if (
+            yt_settings.enabled
+            and yt_settings.api_enabled
+            and yt_settings.has_valid_api_key()
+        )
+        else ""
+    )
     return YouTubeRepository(
         http_client=http_client,
         api_key=api_key,
@@ -264,7 +285,8 @@ def get_playlist_repository() -> "PlaylistRepository":
 
     settings = get_settings()
     return PlaylistRepository(
-        db_path=settings.library_db_path, write_lock=get_persistence_write_lock(),
+        db_path=settings.library_db_path,
+        write_lock=get_persistence_write_lock(),
     )
 
 
@@ -274,7 +296,9 @@ def get_request_history_store() -> "RequestHistoryStore":
     from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
-    return RequestHistoryStore(db_path=settings.library_db_path, write_lock=get_persistence_write_lock())
+    return RequestHistoryStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
 
 
 @singleton
@@ -283,7 +307,9 @@ def get_wanted_store() -> "WantedStore":
     from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
-    return WantedStore(db_path=settings.library_db_path, write_lock=get_persistence_write_lock())
+    return WantedStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
 
 
 @singleton
@@ -303,7 +329,9 @@ def get_free_music_store() -> "FreeMusicStore":
     from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
-    return FreeMusicStore(db_path=settings.library_db_path, write_lock=get_persistence_write_lock())
+    return FreeMusicStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
 
 
 @singleton
@@ -323,7 +351,9 @@ def get_drop_import_store() -> "DropImportStore":
     from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
-    return DropImportStore(db_path=settings.library_db_path, write_lock=get_persistence_write_lock())
+    return DropImportStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
 
 
 @singleton
@@ -332,7 +362,9 @@ def get_events_store() -> "EventsStore":
     from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
-    return EventsStore(db_path=settings.library_db_path, write_lock=get_persistence_write_lock())
+    return EventsStore(
+        db_path=settings.library_db_path, write_lock=get_persistence_write_lock()
+    )
 
 
 @singleton
@@ -378,7 +410,9 @@ def get_user_connections_store() -> "UserConnectionsStore":
 
 @singleton
 def get_user_listening_prefs_store() -> "UserListeningPrefsStore":
-    from infrastructure.persistence.user_listening_prefs_store import UserListeningPrefsStore
+    from infrastructure.persistence.user_listening_prefs_store import (
+        UserListeningPrefsStore,
+    )
     from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
@@ -407,7 +441,9 @@ def get_preview_repository() -> "PreviewRepository":
 
 @singleton
 def get_user_section_prefs_store() -> "UserSectionPrefsStore":
-    from infrastructure.persistence.user_section_prefs_store import UserSectionPrefsStore
+    from infrastructure.persistence.user_section_prefs_store import (
+        UserSectionPrefsStore,
+    )
     from .cache_providers import get_persistence_write_lock
 
     settings = get_settings()
@@ -438,15 +474,13 @@ def get_follow_store() -> "FollowStore":
     )
 
 
-@singleton
-def get_coverart_repository() -> "CoverArtRepository":
+def _build_coverart_repository(*, library_repo=None, library_db=None):
     from repositories.coverart_repository import CoverArtRepository
 
     settings = get_settings()
     advanced = get_preferences_service().get_advanced_settings()
     cache = get_cache()
     mb_repo = get_musicbrainz_repository()
-    library_repo = get_library_repository()
     jellyfin_repo = get_jellyfin_repository()
     audiodb_service = get_audiodb_image_service()
     audiodb_browse_queue = get_audiodb_browse_queue()
@@ -466,10 +500,26 @@ def get_coverart_repository() -> "CoverArtRepository":
         cache_dir=cache_dir,
         cover_cache_max_size_mb=settings.cover_cache_max_size_mb,
         cover_memory_cache_max_entries=advanced.cover_memory_cache_max_entries,
-        cover_memory_cache_max_bytes=advanced.cover_memory_cache_max_size_mb * 1024 * 1024,
+        cover_memory_cache_max_bytes=advanced.cover_memory_cache_max_size_mb
+        * 1024
+        * 1024,
         cover_non_monitored_ttl_seconds=advanced.cache_ttl_recently_viewed_bytes,
-        library_db=get_library_db(),
+        library_db=library_db,
     )
+
+
+@singleton
+def get_coverart_repository() -> "CoverArtRepository":
+    return _build_coverart_repository(
+        library_repo=get_library_repository(), library_db=get_library_db()
+    )
+
+
+@singleton
+def get_target_coverart_repository() -> "CoverArtRepository":
+    """Provider-only cover lookup with no retained legacy catalog authority."""
+
+    return _build_coverart_repository()
 
 
 @singleton
@@ -548,8 +598,6 @@ def _mount_with_subpath(mount_path: str, subpath: str):
 
 @singleton
 def get_slskd_repository() -> "SlskdRepository":
-    from pathlib import Path
-
     from repositories.slskd.slskd_repository import SlskdRepository
 
     settings = get_settings()
@@ -558,7 +606,9 @@ def get_slskd_repository() -> "SlskdRepository":
         client=get_slskd_client(),
         url=dc.url,
         api_key=dc.api_key,
-        downloads_mount=_mount_with_subpath(settings.slskd_downloads_path, dc.downloads_subpath),
+        downloads_mount=_mount_with_subpath(
+            settings.slskd_downloads_path, dc.downloads_subpath
+        ),
         concurrent_searches=settings.download_client_concurrent_searches,
         concurrent_enqueues=settings.download_client_concurrent_enqueues,
     )
@@ -583,10 +633,14 @@ def get_newznab_indexer() -> "NewznabIndexer":
 
     prefs = get_preferences_service()
     raw = prefs.get_indexers_raw()
-    http = HttpClientFactory.get_client(name="newznab", timeout=30.0, connect_timeout=5.0)
+    http = HttpClientFactory.get_client(
+        name="newznab", timeout=30.0, connect_timeout=5.0
+    )
     entries = [
         NewznabIndexerEntry(
-            NewznabClient(http, s.url, s.api_key, indexer_id=s.id, indexer_name=s.name or s.url),
+            NewznabClient(
+                http, s.url, s.api_key, indexer_id=s.id, indexer_name=s.name or s.url
+            ),
             indexer_id=s.id,
             name=s.name or s.url,
             categories=s.categories,
@@ -598,7 +652,9 @@ def get_newznab_indexer() -> "NewznabIndexer":
     # Keep the search cache TTL BELOW the auto-retry interval (02-… §Rate-limiting) so a
     # delayed re-search actually re-hits the indexer instead of serving a stale result -
     # honoured even when the admin sets a sub-5-minute retry interval.
-    retry_interval_s = prefs.get_download_policy().auto_retry_base_interval_minutes * 60.0
+    retry_interval_s = (
+        prefs.get_download_policy().auto_retry_base_interval_minutes * 60.0
+    )
     search_cache_ttl = max(30.0, min(300.0, retry_interval_s * 0.5))
     return NewznabIndexer(entries, search_cache_ttl=search_cache_ttl)
 
@@ -608,7 +664,9 @@ def build_newznab_client(url: str, api_key: str) -> "NewznabClient":
     indexer Test-connection route - validates what the admin typed before saving."""
     from repositories.newznab.newznab_client import NewznabClient
 
-    http = HttpClientFactory.get_client(name="newznab-verify", timeout=30.0, connect_timeout=5.0)
+    http = HttpClientFactory.get_client(
+        name="newznab-verify", timeout=30.0, connect_timeout=5.0
+    )
     return NewznabClient(http, url, api_key, indexer_name=url)
 
 
@@ -625,7 +683,9 @@ def build_slskd_repository(url: str, api_key: str) -> "SlskdRepository":
     from repositories.slskd.slskd_repository import SlskdRepository
 
     settings = get_settings()
-    http = HttpClientFactory.get_client(name="slskd-verify", timeout=30.0, connect_timeout=5.0)
+    http = HttpClientFactory.get_client(
+        name="slskd-verify", timeout=30.0, connect_timeout=5.0
+    )
     return SlskdRepository(
         client=SlskdClient(http, url, api_key),
         url=url,
@@ -644,7 +704,9 @@ def get_lidarr_import_repository() -> "LidarrImportRepository":
     first-caller-wins timeout doesn't leak from another repo."""
     from repositories.lidarr_import import LidarrImportRepository
 
-    http = HttpClientFactory.get_client(name="lidarr_import", timeout=30.0, connect_timeout=5.0)
+    http = HttpClientFactory.get_client(
+        name="lidarr_import", timeout=30.0, connect_timeout=5.0
+    )
     return LidarrImportRepository(http)
 
 
@@ -653,7 +715,9 @@ def get_sabnzbd_client() -> "SabnzbdClient":
     from repositories.sabnzbd.sabnzbd_client import SabnzbdClient
 
     sab = get_preferences_service().get_sabnzbd_connection_raw()
-    http = HttpClientFactory.get_client(name="sabnzbd", timeout=60.0, connect_timeout=5.0)
+    http = HttpClientFactory.get_client(
+        name="sabnzbd", timeout=60.0, connect_timeout=5.0
+    )
     return SabnzbdClient(http, sab.url, sab.api_key)
 
 
@@ -676,8 +740,12 @@ def build_sabnzbd_download_client(url: str, api_key: str) -> "SabnzbdDownloadCli
     from repositories.sabnzbd.sabnzbd_client import SabnzbdClient
     from repositories.sabnzbd.sabnzbd_download_client import SabnzbdDownloadClient
 
-    http = HttpClientFactory.get_client(name="sabnzbd-verify", timeout=60.0, connect_timeout=5.0)
-    return SabnzbdDownloadClient(SabnzbdClient(http, url, api_key), url, api_key, Path("/tmp"))
+    http = HttpClientFactory.get_client(
+        name="sabnzbd-verify", timeout=60.0, connect_timeout=5.0
+    )
+    return SabnzbdDownloadClient(
+        SabnzbdClient(http, url, api_key), url, api_key, Path("/tmp")
+    )
 
 
 @singleton

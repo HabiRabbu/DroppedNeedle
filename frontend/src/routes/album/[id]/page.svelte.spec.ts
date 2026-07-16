@@ -2,6 +2,12 @@ import { page } from '@vitest/browser/context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 
+type HydrateOptions = {
+	cache: unknown;
+	cacheKey?: string;
+	onHydrate: (value: unknown) => void;
+};
+
 const {
 	mockGoto,
 	mockPageFetch,
@@ -170,7 +176,6 @@ vi.mock('$lib/queries/downloads/DownloadSSE.svelte', () => ({
 vi.mock('$lib/queries/library/LibraryMutations.svelte', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/queries/library/LibraryMutations.svelte')>()),
 	rescanAlbum: () => ({ mutateAsync: vi.fn(), isPending: false }),
-	reidentifyAlbum: () => ({ mutateAsync: vi.fn(), isPending: false }),
 	// the orphan-review section (P5) creates its removal mutation at init - stub it
 	// so the page renders without a QueryClientProvider
 	removeLibraryTrack: () => ({ mutate: vi.fn(), isPending: false })
@@ -250,7 +255,7 @@ vi.mock('$lib/player/launchJellyfinPlayback', () => ({ launchJellyfinPlayback: v
 vi.mock('$lib/player/launchLocalPlayback', () => ({ launchLocalPlayback: vi.fn() }));
 vi.mock('$lib/player/launchNavidromePlayback', () => ({ launchNavidromePlayback: vi.fn() }));
 
-import AlbumPage from './+page.svelte';
+import AlbumPage from './ProviderAlbumPage.svelte';
 import type { DownloadTask } from '$lib/types';
 
 const albumId = '3f3a6d95-326e-4384-80b0-0744f20f24ff';
@@ -304,8 +309,7 @@ describe('album detail page track rendering', () => {
 		mockHydrateDetailCacheEntry.mockReset();
 		mockDownloadsData.value = undefined;
 		mockLibraryStatusData.value = undefined;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock with generic cache type
-		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: any) => {
+		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: HydrateOptions) => {
 			if (cache === mockAlbumBasicCache) {
 				onHydrate({
 					title: 'Visions',
@@ -537,6 +541,38 @@ describe('album detail page track rendering', () => {
 		await expect.element(page.getByText('In Library', { exact: true })).not.toBeInTheDocument();
 	});
 
+	it('replaces a release alias URL with the canonical release-group URL', async () => {
+		const canonicalId = '886755e5-6c76-4181-9a16-0b167ee7bfc3';
+		const originalHydrator = mockHydrateDetailCacheEntry.getMockImplementation();
+		mockHydrateDetailCacheEntry.mockImplementation(
+			(options: { cache: unknown; onHydrate: (value: unknown) => void }) => {
+				if (options.cache === mockAlbumBasicCache) {
+					options.onHydrate({
+						title: 'Pixie Queen',
+						musicbrainz_id: canonicalId,
+						artist_name: 'Anthony Green',
+						artist_id: 'artist-1',
+						in_library: true,
+						requested: false,
+						cover_url: null
+					});
+					return false;
+				}
+				return originalHydrator?.(options);
+			}
+		);
+
+		render(AlbumPage, {
+			props: { data: { albumId } }
+		} as Parameters<typeof render<typeof AlbumPage>>[1]);
+
+		await vi.waitFor(() => {
+			expect(mockGoto).toHaveBeenCalledWith(`/album/${canonicalId}`, {
+				replaceState: true
+			});
+		});
+	});
+
 	it('renders visible grouped track rows alongside source bars', async () => {
 		expect.assertions(6);
 		render(AlbumPage, {
@@ -553,8 +589,7 @@ describe('album detail page track rendering', () => {
 
 	it('does not refetch tracks when the tracks cache is fresh but basic metadata is stale', async () => {
 		expect.assertions(2);
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock with generic cache type
-		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: any) => {
+		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: HydrateOptions) => {
 			if (cache === mockAlbumBasicCache) {
 				onHydrate({
 					title: 'Visions',
@@ -629,8 +664,7 @@ describe('album detail page track rendering', () => {
 	it('shows the per-track pressing vinyl for a downloading track', async () => {
 		expect.assertions(1);
 		// tracks need a recording_id for the per-track task to match
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock with generic cache type
-		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: any) => {
+		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: HydrateOptions) => {
 			if (cache === mockAlbumBasicCache) {
 				onHydrate({
 					title: 'Visions',

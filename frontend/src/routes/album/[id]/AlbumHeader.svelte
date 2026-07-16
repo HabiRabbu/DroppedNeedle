@@ -12,7 +12,6 @@
 		Clock,
 		Plus,
 		RefreshCw,
-		ScanSearch,
 		Disc3,
 		Square,
 		TrendingUp,
@@ -20,7 +19,7 @@
 		ChevronDown,
 		Pin
 	} from 'lucide-svelte';
-	import { rescanAlbum, reidentifyAlbum } from '$lib/queries/library/LibraryMutations.svelte';
+	import { rescanAlbum } from '$lib/queries/library/LibraryMutations.svelte';
 	import { requestUpgradeAlbum } from '$lib/queries/downloads/UpgradeQueries.svelte';
 	import {
 		acquireEdition,
@@ -232,21 +231,6 @@
 		}
 	}
 
-	const reidentify = reidentifyAlbum();
-	// Re-decide which album these files are (correction path), vs Rescan which only
-	// refreshes their tags. Non-destructive - it re-attributes, never deletes.
-	async function handleReidentify() {
-		try {
-			await reidentify.mutateAsync(releaseGroupMbid);
-			toastStore.show({ message: 'Re-identify started.', type: 'success' });
-		} catch (e) {
-			toastStore.show({
-				message: e instanceof Error ? e.message : 'Re-identify failed',
-				type: 'error'
-			});
-		}
-	}
-
 	let backdropUrl = $derived(
 		album.cover_url ||
 			album.album_thumb_url ||
@@ -424,15 +408,6 @@
 						>
 							<RefreshCw class="h-3.5 w-3.5 {rescan.isPending ? 'animate-spin' : ''}" />
 							Rescan
-						</button>
-						<button
-							class="btn btn-ghost btn-xs gap-1"
-							onclick={handleReidentify}
-							disabled={reidentify.isPending}
-							title="Re-match this album's files from scratch (fixes a wrong release)"
-						>
-							<ScanSearch class="h-3.5 w-3.5 {reidentify.isPending ? 'animate-spin' : ''}" />
-							Re-identify
 						</button>
 					{/if}
 					{#if authStore.isTrusted && libraryBelowCutoff && downloadClientConfigured}

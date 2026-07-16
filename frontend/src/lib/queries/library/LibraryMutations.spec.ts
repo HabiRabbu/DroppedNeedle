@@ -20,12 +20,7 @@ vi.mock('../QueryClient', () => ({
 }));
 
 import { api } from '$lib/api/client';
-import {
-	removeLibraryAlbum,
-	startLibraryScan,
-	startForceLibraryScan,
-	saveLibraryScanSchedule
-} from './LibraryMutations.svelte';
+import { removeLibraryAlbum, saveLibraryScanSchedule } from './LibraryMutations.svelte';
 import { invalidateQueriesWithPersister, setQueryDataWithPersister } from '../QueryClient';
 
 const mockPost = vi.mocked(api.global.post);
@@ -93,21 +88,7 @@ describe('album removal mutation', () => {
 	});
 });
 
-async function runMutation(m: unknown) {
-	await (m as { mutationFn: () => Promise<unknown> }).mutationFn();
-}
-
 describe('library scan mutations', () => {
-	it('startLibraryScan posts to scan/start without the force flag', async () => {
-		await runMutation(startLibraryScan());
-		expect(mockPost.mock.calls[0][0]).toBe('/api/v1/library/scan/start');
-	});
-
-	it('startForceLibraryScan posts to scan/start with force=true', async () => {
-		await runMutation(startForceLibraryScan());
-		expect(mockPost.mock.calls[0][0]).toBe('/api/v1/library/scan/start?force=true');
-	});
-
 	it('saveLibraryScanSchedule puts to the schedule endpoint', async () => {
 		const m = saveLibraryScanSchedule();
 		await (m as unknown as { mutationFn: (s: unknown) => Promise<unknown> }).mutationFn({

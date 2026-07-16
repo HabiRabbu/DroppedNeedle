@@ -1,7 +1,7 @@
 from typing import Literal
 
-from api.v1.schemas.home import HomeAlbum, HomeSection, ServicePrompt
-from api.v1.schemas.common import GenreArtistMap, IntegrationStatus
+from api.v1.schemas.home import GenreArtwork, HomeAlbum, HomeSection, ServicePrompt
+from api.v1.schemas.common import IntegrationStatus
 from api.v1.schemas.weekly_exploration import WeeklyExplorationSection
 from models.youtube import YouTubeQuotaResponse as YouTubeQuotaResponse
 from infrastructure.msgspec_fastapi import AppStruct
@@ -248,8 +248,8 @@ class DiscoverResponse(AppStruct):
     weekly_exploration: WeeklyExplorationSection | None = None
     integration_status: DiscoverIntegrationStatus | None = None
     service_prompts: list[ServicePrompt] = []
-    genre_artists: GenreArtistMap = {}
-    genre_artist_images: GenreArtistMap = {}
+    genre_artwork: dict[str, GenreArtwork] = {}
+    genre_artwork_schema_version: str = "v2"
     lastfm_weekly_artist_chart: HomeSection | None = None
     lastfm_weekly_album_chart: HomeSection | None = None
     lastfm_recent_scrobbles: HomeSection | None = None

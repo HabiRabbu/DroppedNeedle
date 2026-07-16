@@ -11,6 +11,7 @@ from infrastructure.cache.cache_keys import (
     ARTIST_INFO_PREFIX,
     LIBRARY_PREFIX,
     LIBRARY_ALBUM_DETAILS_PREFIX,
+    library_identification_prefixes,
 )
 from infrastructure.persistence.request_history import RequestHistoryRecord
 
@@ -30,12 +31,14 @@ from .repo_providers import (
     get_preview_repository,
     get_library_repository,
     get_musicbrainz_repository,
+    get_musicbrainz_identification_repository,
     get_wikidata_repository,
     get_listenbrainz_repository,
     get_jellyfin_repository,
     get_navidrome_repository,
     get_plex_repository,
     get_coverart_repository,
+    get_target_coverart_repository,
     get_youtube_repo,
     get_audiodb_image_service,
     get_audiodb_browse_queue,
@@ -50,6 +53,359 @@ from .repo_providers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@singleton
+def get_cached_local_artwork_service() -> "CachedLocalArtworkService":
+    from core.config import get_settings
+    from services.home.cached_local_artwork_service import CachedLocalArtworkService
+
+    from .cache_providers import get_native_library_store
+
+    return CachedLocalArtworkService(
+        get_native_library_store(), get_settings().cache_dir / "covers"
+    )
+
+
+@singleton
+def get_genre_artwork_service() -> "GenreArtworkService":
+    from core.config import get_settings
+    from services.home.genre_artwork_service import GenreArtworkService
+
+    from .cache_providers import get_native_library_store
+
+    return GenreArtworkService(
+        get_native_library_store(),
+        get_cache(),
+        get_cached_local_artwork_service(),
+        get_settings().cache_dir / "genre_sections",
+    )
+
+
+@singleton
+def get_target_library_repository() -> "TargetLibraryRepository":
+    from services.native.target_library_repository import TargetLibraryRepository
+
+    from .cache_providers import get_native_library_store
+    from .repo_providers import get_request_history_store
+
+    return TargetLibraryRepository(
+        get_native_library_store(), get_request_history_store()
+    )
+
+
+@singleton
+def get_target_genre_index() -> "TargetGenreIndex":
+    from services.native.target_reference_adapters import TargetGenreIndex
+
+    from .cache_providers import get_native_library_store
+
+    return TargetGenreIndex(get_native_library_store())
+
+
+@singleton
+def get_target_album_release_pin_store() -> "TargetAlbumReleasePinStore":
+    from services.native.target_reference_adapters import TargetAlbumReleasePinStore
+
+    from .cache_providers import get_native_library_store
+
+    return TargetAlbumReleasePinStore(get_native_library_store())
+
+
+@singleton
+def get_target_library_ownership_service() -> "LibraryOwnershipService":
+    from services.native.library_ownership_service import LibraryOwnershipService
+
+    from .cache_providers import get_native_library_store
+
+    return LibraryOwnershipService(get_native_library_store())
+
+
+@singleton
+def get_target_native_library_service() -> "TargetNativeLibraryService":
+    from services.native.target_native_library_service import TargetNativeLibraryService
+
+    from .cache_providers import get_native_library_store
+
+    return TargetNativeLibraryService(get_native_library_store())
+
+
+@singleton
+def get_target_local_files_service() -> "LocalFilesService":
+    from services.local_files_service import LocalFilesService
+
+    return LocalFilesService(
+        get_target_library_repository(), get_preferences_service(), get_cache()
+    )
+
+
+@singleton
+def get_target_catalog_writer_service() -> "TargetCatalogWriterService":
+    from services.native.target_catalog_writer_service import TargetCatalogWriterService
+
+    from .cache_providers import get_native_library_store
+
+    return TargetCatalogWriterService(
+        get_native_library_store(),
+        get_target_local_files_service(),
+        get_target_native_library_service(),
+        get_audio_tagger(),
+    )
+
+
+@singleton
+def get_library_policy_resolver() -> "LibraryPolicyResolver":
+    from services.native.library_policy_resolver import LibraryPolicyResolver
+
+    return LibraryPolicyResolver(get_preferences_service().get_typed_library_settings())
+
+
+@singleton
+def get_library_policy_service() -> "LibraryPolicyService":
+    from services.native.library_policy_service import LibraryPolicyService
+
+    return LibraryPolicyService(
+        preferences=get_preferences_service(),
+        library_db=get_library_db(),
+        resolver_getter=get_library_policy_resolver,
+        resolver_clearer=get_library_policy_resolver.cache_clear,
+    )
+
+
+@singleton
+def get_target_library_policy_reconciliation_service() -> (
+    "LibraryPolicyReconciliationService"
+):
+    from services.native.library_policy_reconciliation_service import (
+        LibraryPolicyReconciliationService,
+    )
+
+    from .cache_providers import get_native_library_store
+
+    return LibraryPolicyReconciliationService(
+        get_native_library_store(),
+        get_library_policy_resolver,
+        get_target_library_scan_coordinator(),
+    )
+
+
+@singleton
+def get_target_library_policy_service() -> "TargetLibraryPolicyService":
+    from core.dependencies.cleanup import clear_library_policy_dependent_caches
+    from services.native.target_library_policy_service import TargetLibraryPolicyService
+    from services.native.library_policy_service import LibraryPolicyService
+
+    from .cache_providers import get_native_library_store
+
+    return TargetLibraryPolicyService(
+        LibraryPolicyService(
+            preferences=get_preferences_service(),
+            library_db=None,
+            resolver_getter=get_library_policy_resolver,
+            resolver_clearer=get_library_policy_resolver.cache_clear,
+        ),
+        get_target_library_policy_reconciliation_service(),
+        get_native_library_store(),
+        on_settings_saved=clear_library_policy_dependent_caches,
+        transition_lock=get_library_policy_transition_lock(),
+    )
+
+
+@singleton
+def get_library_policy_transition_lock():
+    import asyncio
+
+    return asyncio.Lock()
+
+
+@singleton
+def get_legacy_catalog_importer() -> "LegacyCatalogImporter":
+    from services.native.legacy_catalog_importer import LegacyCatalogImporter
+
+    from .cache_providers import get_native_library_store
+
+    return LegacyCatalogImporter(
+        get_native_library_store(),
+        get_library_policy_resolver(),
+        get_audio_tagger(),
+    )
+
+
+@singleton
+def get_target_library_scan_coordinator() -> "LibraryScanCoordinator":
+    from services.native.library_indexer import LibraryIndexer
+    from services.native.library_inventory_scanner import LibraryInventoryScanner
+    from services.native.library_reconciler import LibraryReconciler
+    from services.native.library_scan_coordinator import LibraryScanCoordinator
+    from services.native.library_scan_events import LibraryScanEventPublisher
+
+    from .cache_providers import get_native_library_store
+
+    store = get_native_library_store()
+    return LibraryScanCoordinator(
+        store,
+        LibraryInventoryScanner(store),
+        LibraryIndexer(store, get_audio_tagger()),
+        LibraryReconciler(store),
+        get_library_policy_resolver,
+        LibraryScanEventPublisher(store, get_sse_publisher()),
+    )
+
+
+@singleton
+def get_target_library_scan_scheduler() -> "LibraryAutomaticScanScheduler":
+    from services.native.library_scan_scheduler import LibraryAutomaticScanScheduler
+
+    return LibraryAutomaticScanScheduler()
+
+
+@singleton
+def get_target_identification_queue() -> "IdentificationQueueService":
+    from services.native.identification_queue_service import IdentificationQueueService
+
+    from .cache_providers import get_native_library_store
+
+    return IdentificationQueueService(get_native_library_store())
+
+
+@singleton
+def get_target_album_identification_service() -> "AlbumIdentificationService":
+    from services.native.album_candidate_service import AlbumCandidateService
+    from services.native.album_evidence_engine import AlbumEvidenceEngine
+    from services.native.album_identification_service import AlbumIdentificationService
+    from services.native.conditional_fingerprint_service import (
+        ConditionalFingerprintService,
+    )
+
+    from .cache_providers import get_native_library_store
+
+    store = get_native_library_store()
+    cache = get_cache()
+
+    async def invalidate(_domains: set[str]) -> None:
+        await asyncio.gather(
+            *(
+                cache.clear_prefix(prefix)
+                for prefix in library_identification_prefixes()
+            )
+        )
+
+    return AlbumIdentificationService(
+        store,
+        get_target_identification_queue(),
+        AlbumCandidateService(get_musicbrainz_identification_repository()),
+        AlbumEvidenceEngine(),
+        ConditionalFingerprintService(store, get_audio_fingerprinter()),
+        invalidate,
+    )
+
+
+@singleton
+def get_target_album_coverage_service() -> "AlbumCoverageService":
+    from services.native.album_coverage_service import AlbumCoverageService
+
+    from .cache_providers import get_native_library_store
+
+    return AlbumCoverageService(
+        get_native_library_store(), get_target_identification_queue()
+    )
+
+
+@singleton
+def get_target_reidentification_service() -> "ReidentificationService":
+    from services.native.reidentification_service import ReidentificationService
+
+    from .cache_providers import get_native_library_store
+
+    return ReidentificationService(get_native_library_store())
+
+
+@singleton
+def get_target_library_review_service() -> "LibraryReviewService":
+    from services.native.library_review_service import LibraryReviewService
+
+    from .cache_providers import get_native_library_store
+
+    return LibraryReviewService(
+        get_native_library_store(), resolver_getter=get_library_policy_resolver
+    )
+
+
+@singleton
+def get_target_library_operation_service() -> "LibraryOperationService":
+    from services.native.library_operation_service import LibraryOperationService
+
+    from .cache_providers import get_native_library_store
+
+    return LibraryOperationService(get_native_library_store())
+
+
+@singleton
+def get_target_catalog_correction_service() -> "CatalogCorrectionService":
+    from services.native.catalog_correction_service import CatalogCorrectionService
+
+    from .cache_providers import get_native_library_store
+
+    return CatalogCorrectionService(get_native_library_store())
+
+
+@singleton
+def get_target_identity_repair_service() -> "IdentityRepairService":
+    from services.native.album_evidence_engine import AlbumEvidenceEngine
+    from services.native.identity_repair_service import IdentityRepairService
+
+    from .cache_providers import get_native_library_store
+
+    return IdentityRepairService(
+        get_native_library_store(),
+        get_musicbrainz_identification_repository(),
+        AlbumEvidenceEngine(),
+    )
+
+
+@singleton
+def get_target_library_diagnostics_service() -> "LibraryDiagnosticsService":
+    from services.native.library_diagnostics_service import LibraryDiagnosticsService
+
+    from .cache_providers import get_native_library_store
+
+    return LibraryDiagnosticsService(get_native_library_store())
+
+
+@singleton
+def get_target_explicit_reidentification_worker() -> "ExplicitReidentificationWorker":
+    from services.native.album_candidate_service import AlbumCandidateService
+    from services.native.album_evidence_engine import AlbumEvidenceEngine
+    from services.native.conditional_fingerprint_service import (
+        ConditionalFingerprintService,
+    )
+    from services.native.explicit_reidentification_worker import (
+        ExplicitReidentificationWorker,
+    )
+
+    from .cache_providers import get_native_library_store
+
+    store = get_native_library_store()
+    return ExplicitReidentificationWorker(
+        store,
+        AlbumCandidateService(get_musicbrainz_identification_repository()),
+        AlbumEvidenceEngine(),
+        ConditionalFingerprintService(store, get_audio_fingerprinter()),
+    )
+
+
+@singleton
+def get_target_library_operation_supervisor() -> "LibraryOperationSupervisor":
+    from services.native.library_operation_supervisor import LibraryOperationSupervisor
+
+    from .cache_providers import get_native_library_store
+
+    return LibraryOperationSupervisor(
+        get_native_library_store(),
+        get_target_library_operation_service(),
+        get_target_identity_repair_service(),
+        get_target_explicit_reidentification_worker(),
+    )
 
 
 @singleton
@@ -92,7 +448,7 @@ def get_audio_fingerprinter() -> "AudioFingerprinter":
     preferences_service = get_preferences_service()
 
     def _acoustid_api_key() -> str:
-        return preferences_service.get_library_settings_raw().acoustid_api_key
+        return preferences_service.get_typed_library_settings_raw().acoustid_api_key
 
     rate_limiter = TokenBucketRateLimiter(rate=3.0, capacity=3)
     return AudioFingerprinter(http, _acoustid_api_key, rate_limiter)
@@ -121,8 +477,7 @@ def get_library_scanner() -> "LibraryScanner":
     )
 
 
-@singleton
-def get_file_processor() -> "FileProcessor":
+def _build_file_processor(library_manager, library_paths) -> "FileProcessor":
     from pathlib import Path
 
     from core.config import get_settings
@@ -131,20 +486,50 @@ def get_file_processor() -> "FileProcessor":
 
     from .repo_providers import get_download_client_repository, get_download_store
 
-    lib = get_preferences_service().get_library_settings_raw()
     policy = get_preferences_service().get_download_policy()
     return FileProcessor(
         get_audio_tagger(),
         naming_engine=get_naming_template_engine(),
-        library_manager=get_library_manager(),
-        library_paths=[Path(p) for p in lib.library_paths],
+        library_manager=library_manager,
+        library_paths=[Path(path) for path in library_paths],
         client=get_download_client_repository(),
         slskd_downloads_path=Path(get_settings().slskd_downloads_path),
         fingerprinter=get_audio_fingerprinter(),
         verify_downloads=policy.verify_downloads,
         download_store=get_download_store(),
         held_dir=Path(get_settings().cache_dir) / "held",
-        recycle_bin=resolve_bin_path(policy.recycle_bin_path, lib.library_paths),
+        recycle_bin=resolve_bin_path(policy.recycle_bin_path, library_paths),
+    )
+
+
+@singleton
+def get_file_processor() -> "FileProcessor":
+    lib = get_preferences_service().get_typed_library_settings_raw()
+    return _build_file_processor(
+        get_library_manager(), [root.path for root in lib.library_roots]
+    )
+
+
+@singleton
+def get_target_import_library_service() -> "TargetImportLibraryService":
+    from services.native.target_import_library_service import TargetImportLibraryService
+
+    from .cache_providers import get_native_library_store
+
+    return TargetImportLibraryService(
+        get_native_library_store(),
+        get_library_policy_resolver,
+        get_target_identification_queue(),
+        policy_transition_lock=get_library_policy_transition_lock(),
+    )
+
+
+@singleton
+def get_target_file_processor() -> "FileProcessor":
+    resolver = get_library_policy_resolver()
+    return _build_file_processor(
+        get_target_import_library_service(),
+        [root.path for root in resolver.settings.library_roots],
     )
 
 
@@ -166,8 +551,7 @@ def get_plugin_host() -> "PluginHost":
     )
 
 
-@singleton
-def get_free_music_service() -> "FreeMusicService":
+def _build_free_music_service(drop_import) -> "FreeMusicService":
     from services.native.free_music_service import FreeMusicService
 
     from .repo_providers import get_archive_repository, get_free_music_store
@@ -175,10 +559,20 @@ def get_free_music_service() -> "FreeMusicService":
     return FreeMusicService(
         store=get_free_music_store(),
         archive=get_archive_repository(),
-        drop_import=get_drop_import_service(),
+        drop_import=drop_import,
         preferences_service=get_preferences_service(),
         sse_publisher=get_sse_publisher(),
     )
+
+
+@singleton
+def get_free_music_service() -> "FreeMusicService":
+    return _build_free_music_service(get_drop_import_service())
+
+
+@singleton
+def get_target_free_music_service() -> "FreeMusicService":
+    return _build_free_music_service(get_target_drop_import_service())
 
 
 @singleton
@@ -192,6 +586,18 @@ def get_acquisition_dispatcher() -> "AcquisitionDispatcher":
         get_download_service=get_download_service,
         get_free_music_service=get_free_music_service,
         preferences_service=get_preferences_service(),
+    )
+
+
+@singleton
+def get_target_acquisition_dispatcher() -> "AcquisitionDispatcher":
+    from services.acquisition_dispatcher import AcquisitionDispatcher
+
+    return AcquisitionDispatcher(
+        get_download_service=get_target_download_service,
+        get_free_music_service=get_target_free_music_service,
+        preferences_service=get_preferences_service(),
+        ownership_service=get_target_library_ownership_service(),
     )
 
 
@@ -210,8 +616,7 @@ def get_get_it_service() -> "GetItService":
     )
 
 
-@singleton
-def get_drop_import_service() -> "DropImportService":
+def _build_drop_import_service(library_manager, on_import) -> "DropImportService":
     from core.config import get_settings
     from services.native.drop_import_service import DropImportService
 
@@ -221,11 +626,25 @@ def get_drop_import_service() -> "DropImportService":
         get_wanted_store,
     )
 
-    canonical = _build_import_invalidation(get_cache(), get_disk_cache(), get_library_db())
+    return DropImportService(
+        store=get_drop_import_store(),
+        tagger=get_audio_tagger(),
+        fingerprinter=get_audio_fingerprinter(),
+        album_identifier=get_album_identifier(),
+        mb_matcher=get_musicbrainz_matcher(),
+        naming_engine=get_naming_template_engine(),
+        library_manager=library_manager,
+        preferences_service=get_preferences_service(),
+        request_history=get_request_history_store(),
+        wanted_store=get_wanted_store(),
+        sse_publisher=get_sse_publisher(),
+        on_import=on_import,
+        staging_root=get_settings().root_app_dir / "imports",
+    )
 
+
+def _drop_import_callback(canonical):
     async def on_drop_import(*, mbid, artist_mbid, artist_name, title, year):  # noqa: ANN001, ANN202
-        # the canonical invalidator takes a request record; a drop needs no
-        # request to exist, so synthesize the album-shaped subset it reads
         record = RequestHistoryRecord(
             musicbrainz_id=mbid,
             artist_name=artist_name or "",
@@ -237,20 +656,24 @@ def get_drop_import_service() -> "DropImportService":
         )
         await canonical(record)
 
-    return DropImportService(
-        store=get_drop_import_store(),
-        tagger=get_audio_tagger(),
-        fingerprinter=get_audio_fingerprinter(),
-        album_identifier=get_album_identifier(),
-        mb_matcher=get_musicbrainz_matcher(),
-        naming_engine=get_naming_template_engine(),
-        library_manager=get_library_manager(),
-        preferences_service=get_preferences_service(),
-        request_history=get_request_history_store(),
-        wanted_store=get_wanted_store(),
-        sse_publisher=get_sse_publisher(),
-        on_import=on_drop_import,
-        staging_root=get_settings().root_app_dir / "imports",
+    return on_drop_import
+
+
+@singleton
+def get_drop_import_service() -> "DropImportService":
+    canonical = _build_import_invalidation(
+        get_cache(), get_disk_cache(), get_library_db()
+    )
+    return _build_drop_import_service(
+        get_library_manager(), _drop_import_callback(canonical)
+    )
+
+
+@singleton
+def get_target_drop_import_service() -> "DropImportService":
+    canonical = _build_target_import_invalidation(get_cache(), get_disk_cache())
+    return _build_drop_import_service(
+        get_target_import_library_service(), _drop_import_callback(canonical)
     )
 
 
@@ -261,33 +684,72 @@ def get_now_playing_service() -> "NowPlayingService":
     return NowPlayingService(get_sse_publisher(), get_user_listening_prefs_store())
 
 
-@singleton
-def get_search_service() -> "SearchService":
+def _build_search_service(
+    library_repo, ownership_service=None, coverart_repo=None
+) -> "SearchService":
     from services.search_service import SearchService
 
     mb_repo = get_musicbrainz_repository()
-    library_repo = get_library_repository()
-    coverart_repo = get_coverart_repository()
+    coverart_repo = coverart_repo or get_coverart_repository()
     preferences_service = get_preferences_service()
     audiodb_image_service = get_audiodb_image_service()
     browse_queue = get_audiodb_browse_queue()
-    return SearchService(mb_repo, library_repo, coverart_repo, preferences_service, audiodb_image_service, browse_queue)
+    return SearchService(
+        mb_repo,
+        library_repo,
+        coverart_repo,
+        preferences_service,
+        audiodb_image_service,
+        browse_queue,
+        ownership_service,
+    )
 
 
 @singleton
-def get_artist_service() -> "ArtistService":
+def get_search_service() -> "SearchService":
+    return _build_search_service(get_library_repository())
+
+
+@singleton
+def get_target_search_service() -> "SearchService":
+    return _build_search_service(
+        get_target_library_repository(),
+        get_target_library_ownership_service(),
+        get_target_coverart_repository(),
+    )
+
+
+def _build_artist_service(library_repo, library_db=None) -> "ArtistService":
     from services.artist_service import ArtistService
 
     mb_repo = get_musicbrainz_repository()
-    library_repo = get_library_repository()
     wikidata_repo = get_wikidata_repository()
     preferences_service = get_preferences_service()
     memory_cache = get_cache()
     disk_cache = get_disk_cache()
     audiodb_image_service = get_audiodb_image_service()
     browse_queue = get_audiodb_browse_queue()
-    library_db = get_library_db()
-    return ArtistService(mb_repo, library_repo, wikidata_repo, preferences_service, memory_cache, disk_cache, audiodb_image_service, browse_queue, library_db)
+    return ArtistService(
+        mb_repo,
+        library_repo,
+        wikidata_repo,
+        preferences_service,
+        memory_cache,
+        disk_cache,
+        audiodb_image_service,
+        browse_queue,
+        library_db,
+    )
+
+
+@singleton
+def get_artist_service() -> "ArtistService":
+    return _build_artist_service(get_library_repository(), get_library_db())
+
+
+@singleton
+def get_target_artist_service() -> "ArtistService":
+    return _build_artist_service(get_target_library_repository())
 
 
 @singleton
@@ -311,8 +773,7 @@ def get_lidarr_import_service() -> "LidarrImportService":
     )
 
 
-@singleton
-def get_new_release_service() -> "NewReleaseService":
+def _build_new_release_service(*, library_repo, acquisition) -> "NewReleaseService":
     from services.native.new_release_service import NewReleaseService
 
     from .repo_providers import get_download_store
@@ -320,15 +781,32 @@ def get_new_release_service() -> "NewReleaseService":
     return NewReleaseService(
         follow_store=get_follow_store(),
         mb_repo=get_musicbrainz_repository(),
-        acquisition=get_acquisition_dispatcher(),
+        acquisition=acquisition,
         download_store=get_download_store(),
-        library_repo=get_library_repository(),
+        library_repo=library_repo,
         sse_publisher=get_sse_publisher(),
     )
 
 
 @singleton
-def get_wanted_watcher_service() -> "WantedWatcherService":
+def get_new_release_service() -> "NewReleaseService":
+    return _build_new_release_service(
+        library_repo=get_library_repository(),
+        acquisition=get_acquisition_dispatcher(),
+    )
+
+
+@singleton
+def get_target_new_release_service() -> "NewReleaseService":
+    return _build_new_release_service(
+        library_repo=get_target_library_repository(),
+        acquisition=get_target_acquisition_dispatcher(),
+    )
+
+
+def _build_wanted_watcher_service(
+    *, download_service_getter, library_manager, album_service
+) -> "WantedWatcherService":
     from services.native.wanted_watcher_service import WantedWatcherService
 
     from .repo_providers import (
@@ -343,12 +821,30 @@ def get_wanted_watcher_service() -> "WantedWatcherService":
         download_store=get_download_store(),
         # provider, not an instance: a settings save rebuilds the DownloadService
         # singleton and the watcher must always dispatch through the current one
-        get_download_service=get_download_service,
-        library_manager=get_library_repository(),
-        album_service=get_album_service(),
+        get_download_service=download_service_getter,
+        library_manager=library_manager,
+        album_service=album_service,
         mb_repo=get_musicbrainz_repository(),
         sse_publisher=get_sse_publisher(),
         preferences=get_preferences_service(),
+    )
+
+
+@singleton
+def get_wanted_watcher_service() -> "WantedWatcherService":
+    return _build_wanted_watcher_service(
+        download_service_getter=get_download_service,
+        library_manager=get_library_repository(),
+        album_service=get_album_service(),
+    )
+
+
+@singleton
+def get_target_wanted_watcher_service() -> "WantedWatcherService":
+    return _build_wanted_watcher_service(
+        download_service_getter=get_target_download_service,
+        library_manager=get_target_library_repository(),
+        album_service=get_target_album_service(),
     )
 
 
@@ -387,17 +883,55 @@ def get_events_watcher_service() -> "EventsWatcherService":
     )
 
 
+def get_events_watcher_getter():
+    return get_events_watcher_service
+
+
 @singleton
-def get_personal_mix_service() -> "PersonalMixService":
+def get_target_events_watcher_service() -> "EventsWatcherService":
+    from models.events import SweepArtist
+    from services.native.events_watcher_service import EventsWatcherService
+
+    from .repo_providers import (
+        get_events_store,
+        get_skiddle_repository,
+        get_ticketmaster_repository,
+    )
+
+    async def target_library_artists() -> list[SweepArtist]:
+        artists = await get_target_library_repository().get_artists()
+        return [
+            SweepArtist(
+                artist_mbid=str(artist["mbid"]),
+                artist_mbid_lower=str(artist["mbid"]).lower(),
+                artist_name=str(artist["name"]),
+            )
+            for artist in artists
+        ]
+
+    return EventsWatcherService(
+        events_store=get_events_store(),
+        follow_store=get_follow_store(),
+        ticketmaster_repo=get_ticketmaster_repository(),
+        skiddle_repo=get_skiddle_repository(),
+        preferences=get_preferences_service(),
+        sse_publisher=get_sse_publisher(),
+        library_artist_getter=target_library_artists,
+    )
+
+
+def _build_personal_mix_service(
+    *, library_repo, playlist_service, acquisition
+) -> "PersonalMixService":
     from services.personal_mix_service import PersonalMixService
     from core.dependencies.auth_providers import get_auth_store
 
     return PersonalMixService(
         client_factory=get_per_user_client_factory(),
         mb_repo=get_musicbrainz_repository(),
-        library_repo=get_library_repository(),
-        playlist_service=get_playlist_service(),
-        acquisition=get_acquisition_dispatcher(),
+        library_repo=library_repo,
+        playlist_service=playlist_service,
+        acquisition=acquisition,
         listening_prefs_store=get_user_listening_prefs_store(),
         connections_store=get_user_connections_store(),
         auth_store=get_auth_store(),
@@ -405,12 +939,31 @@ def get_personal_mix_service() -> "PersonalMixService":
 
 
 @singleton
-def get_album_service() -> "AlbumService":
+def get_personal_mix_service() -> "PersonalMixService":
+    return _build_personal_mix_service(
+        library_repo=get_library_repository(),
+        playlist_service=get_playlist_service(),
+        acquisition=get_acquisition_dispatcher(),
+    )
+
+
+@singleton
+def get_target_personal_mix_service() -> "PersonalMixService":
+    from .compat_providers import get_target_consumer_composition
+
+    return _build_personal_mix_service(
+        library_repo=get_target_library_repository(),
+        playlist_service=get_target_consumer_composition().playlists,
+        acquisition=get_target_acquisition_dispatcher(),
+    )
+
+
+def _build_album_service(
+    library_repo, library_db, ownership_service=None, release_pin_store=None
+) -> "AlbumService":
     from services.album_service import AlbumService
 
-    library_repo = get_library_repository()
     mb_repo = get_musicbrainz_repository()
-    library_db = get_library_db()
     memory_cache = get_cache()
     disk_cache = get_disk_cache()
     from .repo_providers import get_album_release_pin_store
@@ -419,18 +972,39 @@ def get_album_service() -> "AlbumService":
     audiodb_image_service = get_audiodb_image_service()
     browse_queue = get_audiodb_browse_queue()
     return AlbumService(
-        library_repo, mb_repo, library_db, memory_cache, disk_cache, preferences_service,
-        audiodb_image_service, browse_queue,
-        release_pin_store=get_album_release_pin_store(),
+        library_repo,
+        mb_repo,
+        library_db,
+        memory_cache,
+        disk_cache,
+        preferences_service,
+        audiodb_image_service,
+        browse_queue,
+        release_pin_store=release_pin_store or get_album_release_pin_store(),
+        ownership_service=ownership_service,
     )
 
 
 @singleton
-def get_quota_service() -> "QuotaService":
+def get_album_service() -> "AlbumService":
+    return _build_album_service(get_library_repository(), get_library_db())
+
+
+@singleton
+def get_target_album_service() -> "AlbumService":
+    target = get_target_library_repository()
+    return _build_album_service(
+        target,
+        target,
+        get_target_library_ownership_service(),
+        get_target_album_release_pin_store(),
+    )
+
+
+def _build_quota_service(library_db) -> "QuotaService":
     from services.quota_service import QuotaService
 
     from .auth_providers import get_auth_store
-    from .cache_providers import get_library_db
     from .repo_providers import get_download_store, get_user_quota_store
 
     return QuotaService(
@@ -438,21 +1012,59 @@ def get_quota_service() -> "QuotaService":
         user_quotas=get_user_quota_store(),
         request_history=get_request_history_store(),
         download_store=get_download_store(),
-        library_db=get_library_db(),
+        library_db=library_db,
         auth_store=get_auth_store(),
     )
 
 
 @singleton
-def get_request_service() -> "RequestService":
+def get_quota_service() -> "QuotaService":
+    return _build_quota_service(get_library_db())
+
+
+@singleton
+def get_target_quota_service() -> "QuotaService":
+    return _build_quota_service(get_target_library_repository())
+
+
+def _build_request_service(
+    download_service_getter,
+    acquisition,
+    ownership_service=None,
+    quota_service=None,
+    album_service=None,
+) -> "RequestService":
     from services.request_service import RequestService
 
     request_history = get_request_history_store()
     return RequestService(
         request_history,
-        get_download_service=get_download_service,
-        quota_service=get_quota_service(),
-        acquisition=get_acquisition_dispatcher(),
+        get_download_service=download_service_getter,
+        quota_service=quota_service or get_quota_service(),
+        acquisition=acquisition,
+        ownership_service=ownership_service,
+        album_service=album_service,
+        mbid_store=get_mbid_store(),
+    )
+
+
+@singleton
+def get_request_service() -> "RequestService":
+    return _build_request_service(
+        get_download_service,
+        get_acquisition_dispatcher(),
+        album_service=get_album_service(),
+    )
+
+
+@singleton
+def get_target_request_service() -> "RequestService":
+    return _build_request_service(
+        get_target_download_service,
+        get_target_acquisition_dispatcher(),
+        get_target_library_ownership_service(),
+        get_target_quota_service(),
+        get_target_album_service(),
     )
 
 
@@ -482,12 +1094,7 @@ def _build_scan_invalidation(memory_cache, disk_cache):
     return invalidate
 
 
-def _build_import_invalidation(memory_cache, disk_cache, library_db):
-    """The canonical 'an album just landed in the library' invalidation: bust the
-    album/library/home caches and materialise the album row. Shared by the requests
-    reconciler and the download orchestrator's terminal-state bridge so a completed
-    download surfaces in the UI immediately."""
-
+def _build_target_import_invalidation(memory_cache, disk_cache):
     async def on_import(record: RequestHistoryRecord) -> None:
         invalidations = [
             memory_cache.delete(library_raw_albums_key()),
@@ -495,7 +1102,9 @@ def _build_import_invalidation(memory_cache, disk_cache, library_db):
             memory_cache.delete(library_requested_mbids_key()),
             memory_cache.clear_prefix(HOME_RESPONSE_PREFIX),
             memory_cache.delete(f"{ALBUM_INFO_PREFIX}{record.musicbrainz_id}"),
-            memory_cache.delete(f"{LIBRARY_ALBUM_DETAILS_PREFIX}{record.musicbrainz_id}"),
+            memory_cache.delete(
+                f"{LIBRARY_ALBUM_DETAILS_PREFIX}{record.musicbrainz_id}"
+            ),
         ]
         if record.artist_mbid:
             invalidations.append(
@@ -517,37 +1126,43 @@ def _build_import_invalidation(memory_cache, disk_cache, library_db):
                     record.musicbrainz_id,
                     exc,
                 )
+
+    return on_import
+
+
+def _build_import_invalidation(memory_cache, disk_cache, library_db):
+    """Invalidate shared caches and retain the legacy album materialization."""
+
+    invalidate = _build_target_import_invalidation(memory_cache, disk_cache)
+
+    async def on_import(record: RequestHistoryRecord) -> None:
+        await invalidate(record)
         try:
-            await library_db.upsert_album({
-                "mbid": record.musicbrainz_id,
-                "artist_mbid": record.artist_mbid or "",
-                "artist_name": record.artist_name or "",
-                "title": record.album_title or "",
-                "year": record.year,
-                "cover_url": record.cover_url or "",
-            })
+            await library_db.upsert_album(
+                {
+                    "mbid": record.musicbrainz_id,
+                    "artist_mbid": record.artist_mbid or "",
+                    "artist_name": record.artist_name or "",
+                    "title": record.album_title or "",
+                    "year": record.year,
+                    "cover_url": record.cover_url or "",
+                }
+            )
         except Exception as ex:  # noqa: BLE001
             logger.warning("Failed to upsert album into library cache: %s", ex)
 
     return on_import
 
 
-@singleton
-def get_requests_page_service() -> "RequestsPageService":
+def _build_requests_page_service(
+    *, library_repo, on_import, download_service_getter, acquisition
+) -> "RequestsPageService":
     from services.requests_page_service import RequestsPageService
 
-    library_repo = get_library_repository()
     request_history = get_request_history_store()
-    memory_cache = get_cache()
-    disk_cache = get_disk_cache()
-    library_db = get_library_db()
-
-    on_import = _build_import_invalidation(memory_cache, disk_cache, library_db)
-
-    library_service = get_library_service()
 
     async def merged_library_mbids() -> set[str]:
-        return set(await library_service.get_library_mbids())
+        return set(await library_repo.get_library_mbids())
 
     from .repo_providers import get_download_store
 
@@ -556,9 +1171,31 @@ def get_requests_page_service() -> "RequestsPageService":
         request_history=request_history,
         library_mbids_fn=merged_library_mbids,
         on_import_callback=on_import,
-        get_download_service=get_download_service,
+        get_download_service=download_service_getter,
         download_store=get_download_store(),
+        acquisition=acquisition,
+    )
+
+
+@singleton
+def get_requests_page_service() -> "RequestsPageService":
+    return _build_requests_page_service(
+        library_repo=get_library_repository(),
+        on_import=_build_import_invalidation(
+            get_cache(), get_disk_cache(), get_library_db()
+        ),
+        download_service_getter=get_download_service,
         acquisition=get_acquisition_dispatcher(),
+    )
+
+
+@singleton
+def get_target_requests_page_service() -> "RequestsPageService":
+    return _build_requests_page_service(
+        library_repo=get_target_library_repository(),
+        on_import=_build_target_import_invalidation(get_cache(), get_disk_cache()),
+        download_service_getter=get_target_download_service,
+        acquisition=get_target_acquisition_dispatcher(),
     )
 
 
@@ -598,8 +1235,12 @@ def get_library_service() -> "LibraryService":
     sync_state_store = get_sync_state_store()
     genre_index = get_genre_index()
     return LibraryService(
-        library_repo, library_db, cover_repo, preferences_service,
-        memory_cache, disk_cache,
+        library_repo,
+        library_db,
+        cover_repo,
+        preferences_service,
+        memory_cache,
+        disk_cache,
         artist_discovery_service=artist_discovery_service,
         audiodb_image_service=audiodb_image_service,
         local_files_service=local_files_service,
@@ -621,14 +1262,26 @@ def get_status_service() -> "StatusService":
 
 
 @singleton
-def get_home_service() -> "HomeService":
+def get_target_status_service() -> "StatusService":
+    from services.status_service import StatusService
+
+    from .repo_providers import get_download_client_repository
+
+    return StatusService(
+        get_download_client_repository(),
+        get_target_import_library_service(),
+    )
+
+
+def _build_home_service(
+    library_repo, play_history_store, ownership_service=None, genre_artwork_service=None
+) -> "HomeService":
     from services.home_service import HomeService
     from core.config import get_settings
 
     settings = get_settings()
     listenbrainz_repo = get_listenbrainz_repository()
     jellyfin_repo = get_jellyfin_repository()
-    library_repo = get_library_repository()
     musicbrainz_repo = get_musicbrainz_repository()
     preferences_service = get_preferences_service()
     memory_cache = get_cache()
@@ -646,29 +1299,60 @@ def get_home_service() -> "HomeService":
         cache_dir=settings.cache_dir,
         client_factory=get_per_user_client_factory(),
         listening_prefs_store=get_user_listening_prefs_store(),
-        play_history_store=get_play_history_store(),
+        play_history_store=play_history_store,
+        ownership_service=ownership_service,
+        genre_artwork_service=genre_artwork_service,
+    )
+
+
+@singleton
+def get_home_service() -> "HomeService":
+    return _build_home_service(get_library_repository(), get_play_history_store())
+
+
+@singleton
+def get_target_home_service() -> "HomeService":
+    from .compat_providers import get_target_consumer_composition
+
+    target = get_target_consumer_composition()
+    return _build_home_service(
+        target.repository,
+        target.history,
+        target.ownership,
+        get_genre_artwork_service(),
     )
 
 
 @singleton
 def get_genre_cover_prewarm_service() -> "GenreCoverPrewarmService":
+    return _build_genre_cover_prewarm_service(get_coverart_repository())
+
+
+def _build_genre_cover_prewarm_service(cover_repo) -> "GenreCoverPrewarmService":
     from services.genre_cover_prewarm_service import GenreCoverPrewarmService
 
-    cover_repo = get_coverart_repository()
     return GenreCoverPrewarmService(cover_repo=cover_repo)
 
 
 @singleton
-def get_home_charts_service() -> "HomeChartsService":
+def get_target_genre_cover_prewarm_service() -> "GenreCoverPrewarmService":
+    return _build_genre_cover_prewarm_service(get_target_coverart_repository())
+
+
+def _build_home_charts_service(
+    library_repo,
+    genre_artwork_service=None,
+    genre_index=None,
+    prewarm_service=None,
+) -> "HomeChartsService":
     from services.home_charts_service import HomeChartsService
 
     listenbrainz_repo = get_listenbrainz_repository()
-    library_repo = get_library_repository()
     musicbrainz_repo = get_musicbrainz_repository()
-    genre_index = get_genre_index()
+    genre_index = genre_index or get_genre_index()
     lastfm_repo = get_lastfm_repository()
     preferences_service = get_preferences_service()
-    prewarm_service = get_genre_cover_prewarm_service()
+    prewarm_service = prewarm_service or get_genre_cover_prewarm_service()
     return HomeChartsService(
         listenbrainz_repo=listenbrainz_repo,
         library_repo=library_repo,
@@ -679,19 +1363,44 @@ def get_home_charts_service() -> "HomeChartsService":
         prewarm_service=prewarm_service,
         client_factory=get_per_user_client_factory(),
         listening_prefs_store=get_user_listening_prefs_store(),
+        genre_artwork_service=genre_artwork_service,
     )
 
 
 @singleton
-def get_wrapped_service() -> "WrappedService":
+def get_home_charts_service() -> "HomeChartsService":
+    return _build_home_charts_service(get_library_repository())
+
+
+@singleton
+def get_target_home_charts_service() -> "HomeChartsService":
+    return _build_home_charts_service(
+        get_target_library_repository(),
+        get_genre_artwork_service(),
+        get_target_genre_index(),
+        get_target_genre_cover_prewarm_service(),
+    )
+
+
+def _build_wrapped_service(charts_service) -> "WrappedService":
     from services.wrapped_service import WrappedService
     from core.dependencies.auth_providers import get_auth_store
 
     return WrappedService(
         auth_store=get_auth_store(),
         client_factory=get_per_user_client_factory(),
-        charts_service=get_home_charts_service(),
+        charts_service=charts_service,
     )
+
+
+@singleton
+def get_wrapped_service() -> "WrappedService":
+    return _build_wrapped_service(get_home_charts_service())
+
+
+@singleton
+def get_target_wrapped_service() -> "WrappedService":
+    return _build_wrapped_service(get_target_home_charts_service())
 
 
 @singleton
@@ -704,14 +1413,25 @@ def get_settings_service() -> "SettingsService":
 
 
 @singleton
-def get_artist_discovery_service() -> "ArtistDiscoveryService":
+def get_target_settings_service() -> "SettingsService":
+    from services.settings_service import SettingsService
+
+    return SettingsService(
+        get_preferences_service(),
+        get_cache(),
+        navidrome_library_getter=get_target_navidrome_library_service,
+        plex_library_getter=get_target_plex_library_service,
+    )
+
+
+def _build_artist_discovery_service(
+    library_repo, library_db
+) -> "ArtistDiscoveryService":
     from services.artist_discovery_service import ArtistDiscoveryService
     from core.dependencies.auth_providers import get_auth_store
 
     listenbrainz_repo = get_listenbrainz_repository()
     musicbrainz_repo = get_musicbrainz_repository()
-    library_db = get_library_db()
-    library_repo = get_library_repository()
     lastfm_repo = get_lastfm_repository()
     preferences_service = get_preferences_service()
     memory_cache = get_cache()
@@ -726,6 +1446,17 @@ def get_artist_discovery_service() -> "ArtistDiscoveryService":
         client_factory=get_per_user_client_factory(),
         auth_store=get_auth_store(),
     )
+
+
+@singleton
+def get_artist_discovery_service() -> "ArtistDiscoveryService":
+    return _build_artist_discovery_service(get_library_repository(), get_library_db())
+
+
+@singleton
+def get_target_artist_discovery_service() -> "ArtistDiscoveryService":
+    target = get_target_library_repository()
+    return _build_artist_discovery_service(target, target)
 
 
 @singleton
@@ -752,15 +1483,13 @@ def get_album_enrichment_service() -> "AlbumEnrichmentService":
     )
 
 
-@singleton
-def get_album_discovery_service() -> "AlbumDiscoveryService":
+def _build_album_discovery_service(library_repo, library_db) -> "AlbumDiscoveryService":
     from services.album_discovery_service import AlbumDiscoveryService
 
     listenbrainz_repo = get_listenbrainz_repository()
     musicbrainz_repo = get_musicbrainz_repository()
-    library_db = get_library_db()
-    library_repo = get_library_repository()
     from services.discover.mbid_resolution_service import MbidResolutionService
+
     album_disc_mbid_svc = MbidResolutionService(
         musicbrainz_repo=musicbrainz_repo,
         library_repo=library_repo,
@@ -777,6 +1506,17 @@ def get_album_discovery_service() -> "AlbumDiscoveryService":
         lastfm_repo=get_lastfm_repository(),
         mbid_svc=album_disc_mbid_svc,
     )
+
+
+@singleton
+def get_album_discovery_service() -> "AlbumDiscoveryService":
+    return _build_album_discovery_service(get_library_repository(), get_library_db())
+
+
+@singleton
+def get_target_album_discovery_service() -> "AlbumDiscoveryService":
+    target = get_target_library_repository()
+    return _build_album_discovery_service(target, target)
 
 
 @singleton
@@ -833,6 +1573,21 @@ def get_spotify_import_service() -> "SpotifyImportService":
 
 
 @singleton
+def get_target_spotify_import_service() -> "SpotifyImportService":
+    from services.spotify_import_service import SpotifyImportService
+    from .compat_providers import get_target_consumer_composition
+
+    target = get_target_consumer_composition()
+    return SpotifyImportService(
+        client_factory=get_per_user_client_factory(),
+        playlist_repo=None,
+        mb_repo=get_musicbrainz_repository(),
+        playlist_service=target.playlists,
+        async_playlist_repo=target.playlist_repository,
+    )
+
+
+@singleton
 def get_scrobble_service() -> "ScrobbleService":
     from services.scrobble_service import ScrobbleService
 
@@ -844,8 +1599,17 @@ def get_scrobble_service() -> "ScrobbleService":
     )
 
 
-@singleton
-def get_discover_service() -> "DiscoverService":
+def _build_discover_service(
+    library_repo,
+    library_db,
+    playlist_service,
+    ownership_service=None,
+    artist_discovery=None,
+    album_discovery=None,
+    cover_repo=None,
+    genre_artwork_service=None,
+    genre_index=None,
+) -> "DiscoverService":
     from services.discover_service import DiscoverService
     from services.discover.radio_service import DiscoverRadioService
     from services.discover.mbid_resolution_service import MbidResolutionService
@@ -854,16 +1618,14 @@ def get_discover_service() -> "DiscoverService":
 
     listenbrainz_repo = get_listenbrainz_repository()
     jellyfin_repo = get_jellyfin_repository()
-    library_repo = get_library_repository()
     musicbrainz_repo = get_musicbrainz_repository()
     preferences_service = get_preferences_service()
     memory_cache = get_cache()
-    library_db = get_library_db()
     mbid_store = get_mbid_store()
     wikidata_repo = get_wikidata_repository()
     lastfm_repo = get_lastfm_repository()
     audiodb_image_service = get_audiodb_image_service()
-    genre_index = get_genre_index()
+    genre_index = genre_index or get_genre_index()
 
     radio_mbid_svc = MbidResolutionService(
         musicbrainz_repo=musicbrainz_repo,
@@ -878,8 +1640,8 @@ def get_discover_service() -> "DiscoverService":
         mb_repo=musicbrainz_repo,
         mbid_svc=radio_mbid_svc,
         lfm_repo=lastfm_repo,
-        artist_discovery=get_artist_discovery_service(),
-        album_discovery=get_album_discovery_service(),
+        artist_discovery=artist_discovery or get_artist_discovery_service(),
+        album_discovery=album_discovery or get_album_discovery_service(),
         genre_index=genre_index,
         integration=radio_integration,
         transformers=HomeDataTransformers(jellyfin_repo),
@@ -899,12 +1661,39 @@ def get_discover_service() -> "DiscoverService":
         audiodb_image_service=audiodb_image_service,
         genre_index=genre_index,
         radio_service=radio_service,
-        playlist_service=get_playlist_service(),
+        playlist_service=playlist_service,
         client_factory=get_per_user_client_factory(),
         listening_prefs_store=get_user_listening_prefs_store(),
         follow_service=get_follow_service(),
-        cover_repo=get_coverart_repository(),
+        cover_repo=cover_repo or get_coverart_repository(),
         preview_repo=get_preview_repository(),
+        ownership_service=ownership_service,
+        genre_artwork_service=genre_artwork_service,
+    )
+
+
+@singleton
+def get_discover_service() -> "DiscoverService":
+    return _build_discover_service(
+        get_library_repository(), get_library_db(), get_playlist_service()
+    )
+
+
+@singleton
+def get_target_discover_service() -> "DiscoverService":
+    from .compat_providers import get_target_consumer_composition
+
+    target = get_target_consumer_composition()
+    return _build_discover_service(
+        target.repository,
+        target.repository,
+        target.playlists,
+        target.ownership,
+        get_target_artist_discovery_service(),
+        get_target_album_discovery_service(),
+        target.covers,
+        get_genre_artwork_service(),
+        get_target_genre_index(),
     )
 
 
@@ -924,13 +1713,47 @@ def get_discovery_batch_service() -> "DiscoveryBatchService":
 
 
 @singleton
-def get_discover_queue_manager() -> "DiscoverQueueManager":
+def get_target_discovery_batch_service() -> "DiscoveryBatchService":
+    from services.discovery_batch_service import DiscoveryBatchService
+    from .compat_providers import get_target_consumer_composition
+    from .repo_providers import get_discovery_batch_store, get_request_history_store
+
+    target = get_target_consumer_composition()
+    return DiscoveryBatchService(
+        batch_store=get_discovery_batch_store(),
+        request_service=get_target_request_service(),
+        request_history=get_request_history_store(),
+        library_service=target.discovery_batch_library,
+        library_db=target.repository,
+        get_download_service=get_target_download_service,
+    )
+
+
+def _build_discover_queue_manager(
+    discover_service, cover_repo
+) -> "DiscoverQueueManager":
     from services.discover_queue_manager import DiscoverQueueManager
 
-    discover_service = get_discover_service()
     preferences_service = get_preferences_service()
-    cover_repo = get_coverart_repository()
-    return DiscoverQueueManager(discover_service, preferences_service, cover_repo=cover_repo)
+    return DiscoverQueueManager(
+        discover_service, preferences_service, cover_repo=cover_repo
+    )
+
+
+@singleton
+def get_discover_queue_manager() -> "DiscoverQueueManager":
+    return _build_discover_queue_manager(
+        get_discover_service(), get_coverart_repository()
+    )
+
+
+@singleton
+def get_target_discover_queue_manager() -> "DiscoverQueueManager":
+    from .compat_providers import get_target_consumer_composition
+
+    return _build_discover_queue_manager(
+        get_target_discover_service(), get_target_consumer_composition().covers
+    )
 
 
 @singleton
@@ -969,7 +1792,21 @@ def get_navidrome_library_service() -> "NavidromeLibraryService":
     preferences_service = get_preferences_service()
     library_db = get_library_db()
     mbid_store = get_mbid_store()
-    return NavidromeLibraryService(navidrome_repo, preferences_service, library_db, mbid_store)
+    return NavidromeLibraryService(
+        navidrome_repo, preferences_service, library_db, mbid_store
+    )
+
+
+@singleton
+def get_target_navidrome_library_service() -> "NavidromeLibraryService":
+    from services.navidrome_library_service import NavidromeLibraryService
+
+    return NavidromeLibraryService(
+        get_navidrome_repository(),
+        get_preferences_service(),
+        get_target_library_repository(),
+        get_mbid_store(),
+    )
 
 
 @singleton
@@ -992,7 +1829,9 @@ def get_navidrome_playback_service() -> "NavidromePlaybackService":
 
     navidrome_repo = get_navidrome_repository()
     cache = get_cache()
-    return NavidromePlaybackService(navidrome_repo, cache, get_per_user_client_factory())
+    return NavidromePlaybackService(
+        navidrome_repo, cache, get_per_user_client_factory()
+    )
 
 
 @singleton
@@ -1004,6 +1843,18 @@ def get_plex_library_service() -> "PlexLibraryService":
     library_db = get_library_db()
     mbid_store = get_mbid_store()
     return PlexLibraryService(plex_repo, preferences_service, library_db, mbid_store)
+
+
+@singleton
+def get_target_plex_library_service() -> "PlexLibraryService":
+    from services.plex_library_service import PlexLibraryService
+
+    return PlexLibraryService(
+        get_plex_repository(),
+        get_preferences_service(),
+        get_target_library_repository(),
+        get_mbid_store(),
+    )
 
 
 @singleton
@@ -1090,8 +1941,9 @@ def get_download_manifest_codec() -> "ManifestCodec":
     return ManifestCodec()
 
 
-@singleton
-def get_download_orchestrator() -> "DownloadOrchestrator":
+def _build_download_orchestrator(
+    *, file_processor, library_manager, album_service, on_import_callback
+) -> "DownloadOrchestrator":
     from pathlib import Path
 
     from core.config import get_settings
@@ -1106,7 +1958,7 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
     )
 
     prefs = get_preferences_service()
-    lib = prefs.get_library_settings_raw()
+    lib = prefs.get_typed_library_settings_raw()
     policy = prefs.get_download_policy()
     dc = prefs.get_download_client_settings_raw()
     sab = prefs.get_sabnzbd_connection_raw()
@@ -1114,15 +1966,16 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
     # manifest is metadata only (audio lands in the client's dir), so staging need not be
     # on the library filesystem; default it under cache_dir
     staging_path = (
-        Path(lib.staging_path) if lib.staging_path
+        Path(lib.staging_path)
+        if lib.staging_path
         else Path(get_settings().cache_dir) / "download-staging"
     )
     return DownloadOrchestrator(
         client=get_download_client_repository(),
         indexer=get_slskd_indexer(),
         download_store=get_download_store(),
-        file_processor=get_file_processor(),
-        library_manager=get_library_manager(),
+        file_processor=file_processor,
+        library_manager=library_manager,
         scorer=get_album_preflight_scorer(),
         track_matcher=get_track_matcher(),
         manifest_codec=get_download_manifest_codec(),
@@ -1139,16 +1992,14 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
         auto_retry_max_attempts=policy.auto_retry_max_attempts,
         auto_retry_base_interval_minutes=policy.auto_retry_base_interval_minutes,
         request_history=get_request_history_store(),
-        on_import_callback=_build_import_invalidation(
-            get_cache(), get_disk_cache(), get_library_db()
-        ),
+        on_import_callback=on_import_callback,
         usenet_indexer=get_newznab_indexer(),
         usenet_client=get_sabnzbd_download_client(),
         usenet_scorer=get_newznab_release_scorer(),
         usenet_enabled=usenet_enabled,
         soulseek_enabled=dc.enabled,
         source_priority=prefs.get_source_priority(),
-        album_service=get_album_service(),
+        album_service=album_service,
         usenet_category=sab.category,
         usenet_priority=sab.priority,
         usenet_post_processing=sab.post_processing,
@@ -1160,7 +2011,40 @@ def get_download_orchestrator() -> "DownloadOrchestrator":
 
 
 @singleton
-def get_download_service() -> "DownloadService":
+def get_download_orchestrator() -> "DownloadOrchestrator":
+    return _build_download_orchestrator(
+        file_processor=get_file_processor(),
+        library_manager=get_library_manager(),
+        album_service=get_album_service(),
+        on_import_callback=_build_import_invalidation(
+            get_cache(), get_disk_cache(), get_library_db()
+        ),
+    )
+
+
+@singleton
+def get_target_download_orchestrator() -> "DownloadOrchestrator":
+    return _build_download_orchestrator(
+        file_processor=get_target_file_processor(),
+        library_manager=get_target_library_repository(),
+        album_service=get_target_album_service(),
+        on_import_callback=_build_target_import_invalidation(
+            get_cache(), get_disk_cache()
+        ),
+    )
+
+
+def _build_download_service(
+    library_repository,
+    ownership_service=None,
+    *,
+    orchestrator=None,
+    file_processor=None,
+    album_service=None,
+    library_reconciler=None,
+    quota_service=None,
+    release_pin_store=None,
+) -> "DownloadService":
     from services.native.download_service import DownloadService
 
     from .repo_providers import (
@@ -1181,14 +2065,14 @@ def get_download_service() -> "DownloadService":
         download_client=get_download_client_repository(),
         indexer=get_slskd_indexer(),
         scorer=get_album_preflight_scorer(),
-        library_manager=get_library_repository(),
+        library_manager=library_repository,
         download_store=get_download_store(),
         event_bus=get_sse_publisher(),
-        orchestrator=get_download_orchestrator(),
-        file_processor=get_file_processor(),
+        orchestrator=orchestrator or get_download_orchestrator(),
+        file_processor=file_processor or get_file_processor(),
         matcher=get_musicbrainz_matcher(),
         musicbrainz=get_musicbrainz_repository(),
-        album_service=get_album_service(),
+        album_service=album_service or get_album_service(),
         track_matcher=get_track_matcher(),
         auto_accept_threshold=policy.preflight_score_auto_accept,
         manual_threshold=policy.preflight_score_manual_min,
@@ -1199,6 +2083,27 @@ def get_download_service() -> "DownloadService":
         soulseek_enabled=dc.enabled,
         upgrade_allowed=policy.upgrade_allowed,
         quality_cutoff=policy.quality_cutoff,
-        quota_service=get_quota_service(),
-        release_pin_store=get_album_release_pin_store(),
+        quota_service=quota_service or get_quota_service(),
+        release_pin_store=release_pin_store or get_album_release_pin_store(),
+        ownership_service=ownership_service,
+        library_reconciler=library_reconciler,
+    )
+
+
+@singleton
+def get_download_service() -> "DownloadService":
+    return _build_download_service(get_library_repository())
+
+
+@singleton
+def get_target_download_service() -> "DownloadService":
+    return _build_download_service(
+        get_target_library_repository(),
+        get_target_library_ownership_service(),
+        orchestrator=get_target_download_orchestrator(),
+        file_processor=get_target_file_processor(),
+        album_service=get_target_album_service(),
+        library_reconciler=get_target_import_library_service(),
+        quota_service=get_target_quota_service(),
+        release_pin_store=get_target_album_release_pin_store(),
     )

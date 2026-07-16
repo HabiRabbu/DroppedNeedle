@@ -83,19 +83,39 @@ class AudioFingerprinter:
         self._rate_limiter = rate_limiter
         # Gate concurrent fpcalc subprocesses so a scan can't fork-bomb the host; core-scaled
         # (see _MAX_FPCALC_CONCURRENCY).
-        self._fpcalc_semaphore = asyncio.Semaphore(min(os.cpu_count() or 2, _MAX_FPCALC_CONCURRENCY))
+        self._fpcalc_semaphore = asyncio.Semaphore(
+            min(os.cpu_count() or 2, _MAX_FPCALC_CONCURRENCY)
+        )
 
     async def fingerprint(self, path: Path) -> FingerprintResult:
-        api_key = self._api_key_provider()
-        if not api_key:
+        if not self.is_enabled():
             return FingerprintResult(status=FingerprintStatus.DISABLED)
 
         try:
-            fingerprint, duration = await self._run_fpcalc(path)
-        except (OSError, subprocess.SubprocessError, asyncio.TimeoutError, ValueError) as exc:
+            fingerprint, duration = await self.generate_fingerprint(path)
+        except (
+            OSError,
+            subprocess.SubprocessError,
+            asyncio.TimeoutError,
+            ValueError,
+        ) as exc:
             logger.warning("fpcalc failed for %s: %s", path, exc)
             return FingerprintResult(status=FingerprintStatus.ERROR, error=str(exc))
 
+        return await self.lookup_fingerprint(fingerprint, duration)
+
+    def is_enabled(self) -> bool:
+        return bool(self._api_key_provider())
+
+    async def generate_fingerprint(self, path: Path) -> tuple[str, int]:
+        return await self._run_fpcalc(path)
+
+    async def lookup_fingerprint(
+        self, fingerprint: str, duration: int
+    ) -> FingerprintResult:
+        api_key = self._api_key_provider()
+        if not api_key:
+            return FingerprintResult(status=FingerprintStatus.DISABLED)
         await self._rate_limiter.acquire()
         try:
             response = await self._http.post(
@@ -110,7 +130,7 @@ class AudioFingerprinter:
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("AcoustID lookup failed for %s: %s", path, exc)
+            logger.warning("AcoustID lookup failed: %s", exc)
             return FingerprintResult(status=FingerprintStatus.ERROR, error=str(exc))
 
         return self._parse_response(payload)
@@ -121,7 +141,10 @@ class AudioFingerprinter:
             # fingerprint that plain fpcalc emits. ``-raw`` emits comma-separated integers,
             # which the API rejects with HTTP 400 (every lookup was silently failing).
             proc = await asyncio.create_subprocess_exec(
-                "fpcalc", "-length", _FPCALC_LENGTH, str(path),
+                "fpcalc",
+                "-length",
+                _FPCALC_LENGTH,
+                str(path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

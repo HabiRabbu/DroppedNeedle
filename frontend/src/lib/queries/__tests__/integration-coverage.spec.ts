@@ -40,19 +40,176 @@ const COVERAGE: Array<[string, string, string]> = [
 	// track request (user-scoped)
 	['track request', API.tracks.request('R1'), '/api/v1/tracks/R1/request'],
 	// library reads (user)
+	[
+		'library albums',
+		API.library.albums(),
+		'/api/v1/library/albums?page=1&page_size=50&sort=recent'
+	],
+	['library tracks', API.library.tracks(), '/api/v1/library/tracks?limit=48&offset=0&sort=recent'],
+	[
+		'library artists',
+		API.library.artists(),
+		'/api/v1/library/artists?limit=50&offset=0&sort_by=name&sort_order=asc'
+	],
 	['library stats', API.library.stats(), '/api/v1/library/stats'],
+	['library provider IDs', API.library.mbids(), '/api/v1/library/mbids'],
+	['recently added albums', API.library.recentlyAdded(), '/api/v1/library/recently-added?limit=20'],
+	['local album detail', API.library.albumDetail('A1'), '/api/v1/library/albums/A1'],
+	['local artist detail', API.library.artistDetail('R1'), '/api/v1/library/artists/R1'],
+	['local artist albums', API.library.artistAlbums('R1'), '/api/v1/library/artists/R1/albums'],
 	['album status', API.library.album('M1'), '/api/v1/library/albums/M1/status'],
 	['album tracks', API.library.albumTracks('M1'), '/api/v1/library/albums/M1/tracks'],
+	[
+		'cached local album artwork',
+		API.library.cachedAlbumArtwork('A1', 3),
+		'/api/v1/library/albums/A1/artwork/cached?v=3'
+	],
+	['resolve local tracks', API.library.resolveTracks(), '/api/v1/library/resolve-tracks'],
 	// library admin (tags + scan control)
 	['track tags', API.library.trackTags('F1'), '/api/v1/library/tracks/F1/tags'],
 	['update track tags', API.library.updateTrackTags('F1'), '/api/v1/library/tracks/F1'],
 	['remove library track', API.library.removeTrack('F1'), '/api/v1/library/tracks/F1'],
 	['remove library album', API.library.removeAlbum('M1'), '/api/v1/library/album/M1'],
 	['rescan album', API.library.rescanAlbum('M1'), '/api/v1/library/albums/M1/rescan'],
-	['scan start', API.library.scanStart(), '/api/v1/library/scan/start'],
 	['scan cancel', API.library.scanCancel(), '/api/v1/library/scan/cancel'],
-	['scan status', API.library.scanStatus(), '/api/v1/library/scan/status'],
+	['library activity', API.library.activity(), '/api/v1/library/activity'],
+	['library activity stream', API.library.activityStream(), '/api/v1/library/activity/stream'],
+	[
+		'library operations stream',
+		API.library.operationsStream(),
+		'/api/v1/library/operations/stream'
+	],
+	[
+		'pause identification',
+		API.library.pauseIdentification(),
+		'/api/v1/library/identification/pause'
+	],
+	[
+		'resume identification',
+		API.library.resumeIdentification(),
+		'/api/v1/library/identification/resume'
+	],
+	['scan runs', API.library.scanRuns(), '/api/v1/library/scan-runs'],
+	['current scan runs', API.library.currentScanRuns(), '/api/v1/library/scan-runs/current'],
+	['scan run estimate', API.library.scanRunEstimate(), '/api/v1/library/scan-runs/estimate'],
+	['scan run detail', API.library.scanRun('R1'), '/api/v1/library/scan-runs/R1'],
+	['pause scan run', API.library.pauseScanRun('R1'), '/api/v1/library/scan-runs/R1/pause'],
+	['resume scan run', API.library.resumeScanRun('R1'), '/api/v1/library/scan-runs/R1/resume'],
+	['stop scan run', API.library.stopScanRun('R1'), '/api/v1/library/scan-runs/R1/stop'],
+	['library reviews', API.library.reviews(), '/api/v1/library/reviews'],
+	['library review detail', API.library.review('V1'), '/api/v1/library/reviews/V1'],
+	[
+		'keep review tagged',
+		API.library.reviewKeepTagged('V1'),
+		'/api/v1/library/reviews/V1/keep-tagged'
+	],
+	[
+		'detach and keep review tagged',
+		API.library.reviewDetachKeepTagged('V1'),
+		'/api/v1/library/reviews/V1/detach-and-keep-tagged'
+	],
+	['exclude review', API.library.reviewExclude('V1'), '/api/v1/library/reviews/V1/exclude'],
+	['restore review', API.library.reviewRestore('V1'), '/api/v1/library/reviews/V1/restore'],
+	[
+		'accept review candidate',
+		API.library.reviewCandidate('V1'),
+		'/api/v1/library/reviews/V1/candidate'
+	],
+	['retry review', API.library.reviewRetry('V1'), '/api/v1/library/reviews/V1/retry'],
+	['bulk review preview', API.library.bulkReviewPreview(), '/api/v1/library/reviews/bulk-preview'],
+	['bulk review apply', API.library.bulkReviewApply(), '/api/v1/library/reviews/bulk-apply'],
+	['library operation', API.library.operation('J1'), '/api/v1/library/operations/J1'],
+	[
+		'pause library operation',
+		API.library.pauseOperation('J1'),
+		'/api/v1/library/operations/J1/pause'
+	],
+	[
+		'resume library operation',
+		API.library.resumeOperation('J1'),
+		'/api/v1/library/operations/J1/resume'
+	],
+	['stop library operation', API.library.stopOperation('J1'), '/api/v1/library/operations/J1/stop'],
+	[
+		'select operation candidate',
+		API.library.operationCandidate('J1'),
+		'/api/v1/library/operations/J1/candidate'
+	],
+	['reidentify album', API.library.reidentifyAlbum('A1'), '/api/v1/library/albums/A1/reidentify'],
+	[
+		'preview album split',
+		API.library.previewAlbumSplit('A1'),
+		'/api/v1/library/albums/A1/split-preview'
+	],
+	['split album', API.library.splitAlbum('A1'), '/api/v1/library/albums/A1/split'],
+	['preview album merge', API.library.previewAlbumMerge(), '/api/v1/library/albums/merge-preview'],
+	['merge albums', API.library.mergeAlbums(), '/api/v1/library/albums/merge'],
+	['preview track move', API.library.previewTrackMove(), '/api/v1/library/tracks/move-preview'],
+	['move tracks', API.library.moveTracks(), '/api/v1/library/tracks/move'],
+	[
+		'preview reset album grouping',
+		API.library.previewResetAlbumGrouping('A1'),
+		'/api/v1/library/albums/A1/reset-grouping-preview'
+	],
+	[
+		'reset album grouping',
+		API.library.resetAlbumGrouping('A1'),
+		'/api/v1/library/albums/A1/reset-grouping'
+	],
+	[
+		'preview artist merge',
+		API.library.previewArtistMerge(),
+		'/api/v1/library/artists/merge-preview'
+	],
+	['merge artists', API.library.mergeArtists(), '/api/v1/library/artists/merge'],
+	['identity repairs', API.library.identityRepairs(), '/api/v1/library/identity-repairs'],
+	[
+		'identity repair estimate',
+		API.library.identityRepairEstimate([]),
+		'/api/v1/library/identity-repairs/estimate'
+	],
+	['identity repair', API.library.identityRepair('J1'), '/api/v1/library/identity-repairs/J1'],
+	[
+		'identity repair findings',
+		API.library.identityRepairFindings('J1'),
+		'/api/v1/library/identity-repairs/J1/findings'
+	],
+	[
+		'apply identity repair',
+		API.library.applyIdentityRepair('J1'),
+		'/api/v1/library/identity-repairs/J1/apply'
+	],
+	[
+		'pause identity repair',
+		API.library.pauseIdentityRepair('J1'),
+		'/api/v1/library/identity-repairs/J1/pause'
+	],
+	[
+		'resume identity repair',
+		API.library.resumeIdentityRepair('J1'),
+		'/api/v1/library/identity-repairs/J1/resume'
+	],
+	[
+		'stop identity repair',
+		API.library.stopIdentityRepair('J1'),
+		'/api/v1/library/identity-repairs/J1/stop'
+	],
+	[
+		'scan diagnostics',
+		API.library.scanDiagnostics('R1'),
+		'/api/v1/library/scan-runs/R1/diagnostics'
+	],
 	['scan unmatched', API.library.unmatched(), '/api/v1/library/scan/unmatched'],
+	['typed library settings', API.library.typedSettings(), '/api/v1/settings/library/roots'],
+	['target library settings', API.library.settings(), '/api/v1/settings/library'],
+	['library policy tree', API.library.policyTree(), '/api/v1/settings/library/policy-tree'],
+	['library policy impact', API.library.policyImpact(), '/api/v1/settings/library/policy-impact'],
+	[
+		'library policy apply preview',
+		API.library.policyApplyPreview(),
+		'/api/v1/settings/library/policy-apply-preview'
+	],
+	['library path mapping', API.library.pathMapping(), '/api/v1/settings/library/path-mapping'],
 	[
 		'resolve unmatched',
 		API.library.resolveUnmatched(1),
@@ -65,6 +222,11 @@ const COVERAGE: Array<[string, string, string]> = [
 	],
 	// per-user section visibility (user-scoped)
 	['section prefs', API.me.sectionPrefs(), '/api/v1/me/section-prefs'],
+	[
+		'genre detail',
+		API.homeGenre('Latin'),
+		'/api/v1/home/genre/Latin?limit=50&artist_offset=0&album_offset=0'
+	],
 	// external-service health for the header status indicator
 	['system health', API.system.health(), '/api/v1/system/health'],
 	// keyless 30s previews (user-scoped)
@@ -194,6 +356,13 @@ const COVERAGE: Array<[string, string, string]> = [
 	['free-music tasks', API.freeMusic.tasks(), '/api/v1/free-music/tasks'],
 	['free-music tasks (all)', API.freeMusic.tasks(true), '/api/v1/free-music/tasks?all=true'],
 	['free-music task', API.freeMusic.task('T1'), '/api/v1/free-music/tasks/T1'],
+	['free-music remove', API.freeMusic.remove('T1'), '/api/v1/free-music/tasks/T1'],
+	['free-music clear history', API.freeMusic.clearHistory(), '/api/v1/free-music/tasks'],
+	[
+		'free-music clear all history',
+		API.freeMusic.clearHistory(true),
+		'/api/v1/free-music/tasks?all=true'
+	],
 	['free-music cancel', API.freeMusic.cancel('T1'), '/api/v1/free-music/tasks/T1/cancel'],
 	['free-music retry', API.freeMusic.retry('T1'), '/api/v1/free-music/tasks/T1/retry'],
 	// Bulk auto-download approval batches (admin, requests router)
@@ -246,7 +415,6 @@ describe('native engine: backend routes have a frontend API surface', () => {
 	it('exposes a builder for every native endpoint group', () => {
 		expect(typeof API.downloadClient.config).toBe('function');
 		expect(typeof API.downloads.searchAlbum).toBe('function');
-		expect(typeof API.library.scanStart).toBe('function');
 		expect(typeof API.tracks.request).toBe('function');
 	});
 });

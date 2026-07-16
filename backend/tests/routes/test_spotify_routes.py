@@ -5,6 +5,7 @@ exercise it directly (no HTTP) and confirm it signals completion over SSE so the
 frontend refreshes the imported playlist without a manual reload.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,20 +17,42 @@ from api.v1.routes import spotify as spotify_routes
 async def test_background_import_signals_completion_over_sse(monkeypatch):
     publisher = AsyncMock()
     monkeypatch.setattr(spotify_routes, "get_sse_publisher", lambda: publisher)
-    # Auto-link is best-effort; stub the source services so the task reaches the signal.
+    playlist_service = AsyncMock()
+    playlist_service.resolve_track_sources.return_value = {}
+    local_service = AsyncMock()
+    # The active catalog services are injected. Only external media sources retain
+    # process-global getters because they are shared by both application entrypoints.
     for getter in (
-        "get_playlist_service",
         "get_jellyfin_library_service",
-        "get_local_files_service",
         "get_navidrome_library_service",
         "get_plex_library_service",
     ):
         monkeypatch.setattr(spotify_routes, getter, lambda: AsyncMock())
+    folder_scope = AsyncMock()
+    folder_scope.resolve.return_value = SimpleNamespace(
+        scope=SimpleNamespace(mode="all", folder_ids=[])
+    )
+    monkeypatch.setattr(
+        spotify_routes, "get_navidrome_folder_scope_service", lambda: folder_scope
+    )
 
     svc = AsyncMock()
-    await spotify_routes._background_import(svc, "user-1", "spot-1", "int-1", object())
+    await spotify_routes._background_import(
+        svc,
+        "user-1",
+        "spot-1",
+        "int-1",
+        object(),
+        playlist_service,
+        local_service,
+    )
 
     svc.populate_playlist.assert_awaited_once_with("user-1", "spot-1", "int-1")
+    playlist_service.resolve_track_sources.assert_awaited_once()
+    assert (
+        playlist_service.resolve_track_sources.await_args.kwargs["local_service"]
+        is local_service
+    )
     publisher.publish.assert_awaited_once()
     channel, event, data = publisher.publish.await_args.args
     assert channel == "user:user-1"
@@ -47,6 +70,14 @@ async def test_background_import_does_not_signal_when_populate_fails(monkeypatch
     svc.populate_playlist = AsyncMock(side_effect=RuntimeError("populate blew up"))
 
     # Must not raise (fire-and-forget task) and must not claim completion.
-    await spotify_routes._background_import(svc, "user-1", "spot-1", "int-1", object())
+    await spotify_routes._background_import(
+        svc,
+        "user-1",
+        "spot-1",
+        "int-1",
+        object(),
+        AsyncMock(),
+        AsyncMock(),
+    )
 
     publisher.publish.assert_not_awaited()

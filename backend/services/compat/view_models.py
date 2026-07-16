@@ -15,10 +15,12 @@ class ViewArtist(AppStruct):
     artist_mbid: str
     name: str
     album_count: int | None = None
-    date_added: int | None = None      # unix seconds
-    starred_at: float | None = None    # per-user
+    date_added: int | None = None  # unix seconds
+    starred_at: float | None = None  # per-user
     play_count: int | None = None
     played_at: str | None = None
+    musicbrainz_artist_id: str | None = None
+    provider_identity_projected: bool = False
 
 
 class ViewAlbum(AppStruct):
@@ -27,18 +29,21 @@ class ViewAlbum(AppStruct):
     artist_name: str | None = None
     artist_mbid: str | None = None
     year: int | None = None
-    genre: str | None = None           # dominant genre across tracks
+    genre: str | None = None  # dominant genre across tracks
     track_count: int | None = None
     total_duration_seconds: float | None = None
     cover_available: bool = False
     date_added: int | None = None
     is_compilation: bool = False
-    starred_at: float | None = None    # per-user
-    play_count: int | None = None      # per-user (optional)
+    starred_at: float | None = None  # per-user
+    play_count: int | None = None  # per-user (optional)
     played_at: str | None = None
     sort_name: str | None = None
     original_release_date: str | None = None
     disc_titles: list[tuple[int, str]] = msgspec.field(default_factory=list)
+    musicbrainz_release_group_id: str | None = None
+    musicbrainz_artist_id: str | None = None
+    provider_identity_projected: bool = False
 
 
 class ViewTrack(AppStruct):
@@ -56,16 +61,16 @@ class ViewTrack(AppStruct):
     genre: str | None = None
     duration_seconds: float = 0.0
     file_format: str = ""
-    bitrate: int | None = None         # kbps
-    sample_rate: int | None = None     # Hz
+    bitrate: int | None = None  # kbps
+    sample_rate: int | None = None  # Hz
     bit_depth: int | None = None
     channels: int | None = None
     file_size_bytes: int = 0
     recording_mbid: str | None = None
-    file_path: str = ""                # NEVER serialized to clients - stream use only
-    created_at: float | None = None    # unix seconds (imported_at)
-    starred_at: float | None = None    # per-user
-    play_count: int | None = None      # per-user
+    file_path: str = ""  # NEVER serialized to clients - stream use only
+    created_at: float | None = None  # unix seconds (imported_at)
+    starred_at: float | None = None  # per-user
+    play_count: int | None = None  # per-user
     played_at: str | None = None
     sort_name: str | None = None
     artist_sort_name: str | None = None
@@ -77,6 +82,11 @@ class ViewTrack(AppStruct):
     replaygain_album_gain: float | None = None
     replaygain_track_peak: float | None = None
     replaygain_album_peak: float | None = None
+    musicbrainz_recording_id: str | None = None
+    musicbrainz_release_group_id: str | None = None
+    musicbrainz_artist_id: str | None = None
+    musicbrainz_album_artist_id: str | None = None
+    provider_identity_projected: bool = False
 
 
 class ViewPlaylist(AppStruct):

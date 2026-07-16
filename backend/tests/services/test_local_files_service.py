@@ -19,9 +19,10 @@ def _make_mock_cache() -> AsyncMock:
 
 def _make_preferences(library_paths: list[str] | None = None) -> MagicMock:
     prefs = MagicMock()
-    lib = MagicMock()
-    lib.library_paths = library_paths if library_paths is not None else ["/music"]
-    prefs.get_library_settings.return_value = lib
+    paths = library_paths if library_paths is not None else ["/music"]
+    prefs.get_typed_library_settings.return_value = SimpleNamespace(
+        library_roots=[SimpleNamespace(path=path) for path in paths]
+    )
     advanced = MagicMock()
     advanced.cache_ttl_local_files_recently_added = 120
     prefs.get_advanced_settings.return_value = advanced
@@ -86,7 +87,9 @@ async def test_stream_track_validates_audio_format(service):
     bad_file = music_dir / "test.txt"
     bad_file.write_text("not audio")
 
-    library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(bad_file)})
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": str(bad_file)}
+    )
 
     with pytest.raises(ExternalServiceError, match="Unsupported audio format"):
         await svc.stream_track("f1")
@@ -98,7 +101,9 @@ async def test_stream_track_serves_valid_file(service):
     audio_file = music_dir / "song.flac"
     audio_file.write_bytes(b"fLaC" + b"\x00" * 100)
 
-    library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(audio_file)})
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": str(audio_file)}
+    )
 
     chunks_iter, headers, status = await svc.stream_track("f1")
     assert status == 200
@@ -116,9 +121,13 @@ async def test_stream_track_handles_range_request(service):
     audio_file = music_dir / "song.mp3"
     audio_file.write_bytes(b"\xff\xfb" + b"\x00" * 998)
 
-    library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(audio_file)})
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": str(audio_file)}
+    )
 
-    chunks_iter, headers, status = await svc.stream_track("f1", range_header="bytes=0-99")
+    chunks_iter, headers, status = await svc.stream_track(
+        "f1", range_header="bytes=0-99"
+    )
     assert status == 206
     assert "Content-Range" in headers
 
@@ -152,7 +161,9 @@ async def test_stream_track_raises_on_unknown_file_id(service):
 async def test_stream_track_raises_on_path_traversal(service):
     svc, library_repo, music_dir, cache = service
     traversal_path = str(music_dir / ".." / ".." / "etc" / "passwd")
-    library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": traversal_path})
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": traversal_path}
+    )
 
     with pytest.raises(PermissionError, match="outside library directories"):
         await svc.stream_track("f1")
@@ -164,9 +175,13 @@ async def test_stream_track_handles_suffix_range(service):
     audio_file = music_dir / "song.mp3"
     audio_file.write_bytes(b"\xff\xfb" + b"\x00" * 998)
 
-    library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(audio_file)})
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": str(audio_file)}
+    )
 
-    chunks_iter, headers, status = await svc.stream_track("f1", range_header="bytes=-200")
+    chunks_iter, headers, status = await svc.stream_track(
+        "f1", range_header="bytes=-200"
+    )
     assert status == 206
     assert "Content-Range" in headers
 
@@ -182,7 +197,9 @@ async def test_stream_track_rejects_malformed_range(service):
     audio_file = music_dir / "song.mp3"
     audio_file.write_bytes(b"\xff\xfb" + b"\x00" * 998)
 
-    library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(audio_file)})
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": str(audio_file)}
+    )
 
     with pytest.raises(RangeNotSatisfiableError) as exc:
         await svc.stream_track("f1", range_header="bytes=abc-xyz")
@@ -195,7 +212,9 @@ async def test_stream_track_rejects_invalid_range(service):
     audio_file = music_dir / "song.mp3"
     audio_file.write_bytes(b"\xff\xfb" + b"\x00" * 98)
 
-    library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(audio_file)})
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": str(audio_file)}
+    )
 
     with pytest.raises(RangeNotSatisfiableError) as exc:
         await svc.stream_track("f1", range_header="bytes=5000-6000")
@@ -247,7 +266,10 @@ async def test_get_albums_translates_pagination_and_sort(service):
 async def test_match_album_by_mbid_maps_native_tracks(service):
     svc, library_repo, music_dir, cache = service
     library_repo.get_tracks = AsyncMock(
-        return_value=[_native_track(id="t1", file_size_bytes=100), _native_track(id="t2", file_size_bytes=200)]
+        return_value=[
+            _native_track(id="t1", file_size_bytes=100),
+            _native_track(id="t2", file_size_bytes=200),
+        ]
     )
 
     match = await svc.match_album_by_mbid("rg-1")
@@ -280,20 +302,22 @@ async def test_get_album_tracks_by_id_uses_native_tracks(service):
 @pytest.mark.asyncio
 async def test_get_recently_added_uses_cache(service):
     svc, library_repo, music_dir, cache = service
-    cache.get = AsyncMock(return_value=[
-        {
-            "musicbrainz_id": "mbid-10",
-            "name": "Cached Album",
-            "artist_name": "Cached Artist",
-            "track_count": 12,
-            "total_size_bytes": 123456,
-            "artist_mbid": None,
-            "year": 2024,
-            "primary_format": "flac",
-            "cover_url": None,
-            "date_added": "2026-02-17T00:00:00Z",
-        }
-    ])
+    cache.get = AsyncMock(
+        return_value=[
+            {
+                "musicbrainz_id": "mbid-10",
+                "name": "Cached Album",
+                "artist_name": "Cached Artist",
+                "track_count": 12,
+                "total_size_bytes": 123456,
+                "artist_mbid": None,
+                "year": 2024,
+                "primary_format": "flac",
+                "cover_url": None,
+                "date_added": "2026-02-17T00:00:00Z",
+            }
+        ]
+    )
     library_repo.get_albums_page = AsyncMock(return_value=([], 0))
 
     result = await svc.get_recently_added(limit=20)
@@ -308,7 +332,14 @@ async def test_get_recently_added_caches_result(service):
     svc, library_repo, music_dir, cache = service
     cache.get = AsyncMock(return_value=None)
     library_repo.get_albums_page = AsyncMock(
-        return_value=([_native_album(release_group_mbid="mbid-123", album_title="Album From Library")], 1)
+        return_value=(
+            [
+                _native_album(
+                    release_group_mbid="mbid-123", album_title="Album From Library"
+                )
+            ],
+            1,
+        )
     )
 
     result = await svc.get_recently_added(limit=20)
@@ -327,13 +358,15 @@ async def test_get_recently_added_caches_result(service):
 async def test_get_storage_stats_sources_counts_from_library(service):
     # Counts come from the library aggregate (get_stats); only disk-free is a real fs read.
     svc, library_repo, music_dir, cache = service
-    library_repo.get_stats = AsyncMock(return_value=SimpleNamespace(
-        total_tracks=1685,
-        total_albums=177,
-        total_artists=85,
-        total_size_bytes=1_000_000,
-        format_breakdown={"flac": 1092, "mp3": 544},
-    ))
+    library_repo.get_stats = AsyncMock(
+        return_value=SimpleNamespace(
+            total_tracks=1685,
+            total_albums=177,
+            total_artists=85,
+            total_size_bytes=1_000_000,
+            format_breakdown={"flac": 1092, "mp3": 544},
+        )
+    )
 
     stats = await svc.get_storage_stats()
 
@@ -354,7 +387,9 @@ async def test_get_storage_stats_empty_when_no_roots(service):
     _, _, _, cache = service
     library_repo = AsyncMock()
     prefs = _make_preferences([])
-    svc = LocalFilesService(library_repo=library_repo, preferences_service=prefs, cache=cache)
+    svc = LocalFilesService(
+        library_repo=library_repo, preferences_service=prefs, cache=cache
+    )
 
     stats = await svc.get_storage_stats()
 
@@ -365,9 +400,16 @@ async def test_get_storage_stats_empty_when_no_roots(service):
 
 def _crate_row(fid: str, **o) -> dict:
     base = dict(
-        id=fid, track_title=f"T{fid}", album_title=f"Alb{fid}", album_artist_name=f"Art{fid}",
-        artist_name=f"Art{fid}", release_group_mbid=f"rg{fid}", file_format="flac",
-        year=2000, duration_seconds=120.0, cover_url=None,
+        id=fid,
+        track_title=f"T{fid}",
+        album_title=f"Alb{fid}",
+        album_artist_name=f"Art{fid}",
+        artist_name=f"Art{fid}",
+        release_group_mbid=f"rg{fid}",
+        file_format="flac",
+        year=2000,
+        duration_seconds=120.0,
+        cover_url=None,
     )
     base.update(o)
     return base
@@ -377,14 +419,16 @@ def _crate_row(fid: str, **o) -> dict:
 async def test_get_crate_suggestions_tags_reasons_and_dedupes(service):
     svc, library_repo, music_dir, cache = service
     # 'a' repeats in the surprise pool to exercise dedup.
-    pools = iter([[_crate_row("a")], [_crate_row("b")], [_crate_row("a"), _crate_row("c")]])
+    pools = iter(
+        [[_crate_row("a")], [_crate_row("b")], [_crate_row("a"), _crate_row("c")]]
+    )
     library_repo.get_crate_tracks = AsyncMock(side_effect=lambda **kw: next(pools))
 
     items = await svc.get_crate_suggestions(limit=12)
 
     by_id = {i.track_file_id: i for i in items}
     assert sorted(by_id) == ["a", "b", "c"]
-    assert by_id["a"].reason == "recent"      # first pool to claim the id wins
+    assert by_id["a"].reason == "recent"  # first pool to claim the id wins
     assert by_id["b"].reason == "rediscover"
     assert by_id["c"].reason == "surprise"
 
@@ -411,11 +455,13 @@ async def test_get_crate_suggestions_adds_same_era_pool_when_decade_given(servic
 @pytest.mark.asyncio
 async def test_get_decades_builds_shelves_and_filters_empty(service):
     svc, library_repo, music_dir, cache = service
-    library_repo.get_decades = AsyncMock(return_value=[
-        {"decade": 2010, "album_count": 5},
-        {"decade": 0, "album_count": 3},     # junk decade, expect filtered out
-        {"decade": 1990, "album_count": 0},  # empty, expect filtered out
-    ])
+    library_repo.get_decades = AsyncMock(
+        return_value=[
+            {"decade": 2010, "album_count": 5},
+            {"decade": 0, "album_count": 3},  # junk decade, expect filtered out
+            {"decade": 1990, "album_count": 0},  # empty, expect filtered out
+        ]
+    )
     library_repo.get_albums_page = AsyncMock(
         return_value=([_native_album(release_group_mbid="x", album_title="T")], 1)
     )
@@ -432,7 +478,10 @@ async def test_get_decades_builds_shelves_and_filters_empty(service):
 async def test_search_returns_albums_and_tracks(service):
     svc, library_repo, music_dir, cache = service
     library_repo.get_albums_page = AsyncMock(
-        return_value=([_native_album(release_group_mbid="rg-x", album_title="Abbey Road")], 1)
+        return_value=(
+            [_native_album(release_group_mbid="rg-x", album_title="Abbey Road")],
+            1,
+        )
     )
     library_repo.search_tracks = AsyncMock(
         return_value=[_crate_row("t1"), _crate_row("t2")]

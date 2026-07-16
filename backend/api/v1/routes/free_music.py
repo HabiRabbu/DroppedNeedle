@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, Depends
 
 from api.v1.schemas.free_music import (
+    FreeMusicHistoryClearResponse,
     FreeMusicTaskResponse,
     FreeMusicTasksResponse,
     task_to_response,
@@ -44,6 +45,32 @@ async def get_task(
         task_id, user_id=current_user.id, is_admin=current_user.role == "admin"
     )
     return task_to_response(task)
+
+
+@router.delete("/tasks", response_model=FreeMusicHistoryClearResponse)
+async def clear_history(
+    current_user: CurrentUserDep,
+    all: bool = False,  # noqa: A002 - query-param name is the API surface
+    service=Depends(get_free_music_service),
+):
+    """Remove terminal history; admins may pass ``all=true`` for everyone's."""
+    include_all = all and current_user.role == "admin"
+    cleared = await service.clear_history(
+        user_id=current_user.id, include_all=include_all
+    )
+    return FreeMusicHistoryClearResponse(cleared=cleared)
+
+
+@router.delete("/tasks/{task_id}", response_model=FreeMusicHistoryClearResponse)
+async def remove_task(
+    task_id: str,
+    current_user: CurrentUserDep,
+    service=Depends(get_free_music_service),
+):
+    await service.remove(
+        task_id, user_id=current_user.id, is_admin=current_user.role == "admin"
+    )
+    return FreeMusicHistoryClearResponse(cleared=1)
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=FreeMusicTaskResponse)

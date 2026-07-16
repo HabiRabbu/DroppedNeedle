@@ -78,7 +78,9 @@ class Candidate(msgspec.Struct, frozen=True, kw_only=True):
     - ``identity`` - the per-source quarantine identity string (see
       ``models.download_identity``); ``""`` when the unit carries none (a Soulseek
       folder, whose quarantine is applied per-file before grouping).
-    - ``match_text`` - the folder/title text the name-based specs read.
+    - ``match_text`` - the folder/title text the general name-based specs read.
+    - ``album_identity_text`` - an optional artist-qualified title used only by
+      the wrong-album discriminator when the source proved that artist context.
     - ``tier`` - the quality tier (``""`` / ``"unknown"`` when undetermined).
     - ``size_bytes`` - the unit's total byte size (folder audio sum / release size).
     - ``usenet_date`` - release post time (unix); ``None`` for Soulseek (no age concept).
@@ -88,6 +90,7 @@ class Candidate(msgspec.Struct, frozen=True, kw_only=True):
     source: str
     identity: str = ""
     match_text: str = ""
+    album_identity_text: str = ""
     tier: str = ""
     size_bytes: int = 0
     usenet_date: float | None = None

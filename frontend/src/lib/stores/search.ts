@@ -2,7 +2,7 @@ import { writable, get } from 'svelte/store';
 import type { Artist, Album } from '$lib/types';
 import type { EnrichmentSource } from '$lib/types';
 import { CACHE_KEYS, CACHE_TTL } from '$lib/constants';
-import { createLocalStorageCache } from '$lib/utils/localStorageCache';
+import { clearLocalStorageNamespace, createLocalStorageCache } from '$lib/utils/localStorageCache';
 
 interface SearchCache {
 	query: string;
@@ -167,6 +167,7 @@ function createSearchStore() {
 		},
 		clear() {
 			set(null);
+			clearLocalStorageNamespace(CACHE_KEYS.SEARCH);
 		}
 	};
 }

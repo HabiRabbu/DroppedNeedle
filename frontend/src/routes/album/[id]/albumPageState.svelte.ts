@@ -213,7 +213,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 	const libraryTracksByRecording = $derived.by(() => {
 		const m = new SvelteMap<string, LibraryFileMeta>();
 		for (const t of libraryStatus?.tracks ?? []) {
-			if (t.recording_mbid) m.set(t.recording_mbid, t);
+			if (t.musicbrainz_recording_id) m.set(t.musicbrainz_recording_id, t);
 		}
 		return m;
 	});
@@ -983,7 +983,9 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		},
 		jellyfinCallbacks,
 		localCallbacks,
-		localDownloadCallback,
+		get localDownloadCallback() {
+			return localDownloadCallback;
+		},
 		navidromeCallbacks,
 		plexCallbacks,
 		...eventHandlers,

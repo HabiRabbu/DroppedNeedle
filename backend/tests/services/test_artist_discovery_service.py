@@ -1,11 +1,17 @@
 import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 from api.v1.schemas.discovery import SimilarArtist
 from repositories.lastfm_models import LastFmAlbum, LastFmSimilarArtist, LastFmTrack
-from repositories.listenbrainz_models import ListenBrainzRecording, ListenBrainzReleaseGroup
-from services.artist_discovery_service import ArtistDiscoveryService, _dedupe_similar_artists
+from repositories.listenbrainz_models import (
+    ListenBrainzRecording,
+    ListenBrainzReleaseGroup,
+)
+from services.artist_discovery_service import (
+    ArtistDiscoveryService,
+    _dedupe_similar_artists,
+)
 
 
 def _make_lb_repo(configured: bool = True) -> MagicMock:
@@ -54,6 +60,7 @@ def _make_service(
     library_db = _make_library_db()
     memory_cache = _make_memory_cache()
     mb_repo = AsyncMock()
+    mb_repo.get_release_groups_by_artist = AsyncMock(return_value=[])
     library_repo = AsyncMock()
 
     svc = ArtistDiscoveryService(
@@ -75,7 +82,9 @@ class TestGetSimilarArtistsSource:
         # LB returns data -> Last.fm is never consulted
         lb_repo.get_similar_artists = AsyncMock(
             return_value=[
-                SimpleNamespace(artist_mbid="mbid-a", artist_name="Artist A", listen_count=10)
+                SimpleNamespace(
+                    artist_mbid="mbid-a", artist_name="Artist A", listen_count=10
+                )
             ]
         )
 
@@ -94,7 +103,9 @@ class TestGetSimilarArtistsSource:
         lb_repo.get_similar_artists = AsyncMock(return_value=[])
         lastfm_repo.get_similar_artists = AsyncMock(
             return_value=[
-                LastFmSimilarArtist(name="Fallback Artist", mbid="mbid-fb", match=0.9, url="")
+                LastFmSimilarArtist(
+                    name="Fallback Artist", mbid="mbid-fb", match=0.9, url=""
+                )
             ]
         )
 
@@ -186,7 +197,9 @@ class TestGetSimilarArtistsSource:
     async def test_source_lastfm_marks_in_library(self):
         lastfm_similar = [
             LastFmSimilarArtist(name="In Lib", mbid="lib-mbid", match=0.9, url=""),
-            LastFmSimilarArtist(name="Not In Lib", mbid="other-mbid", match=0.8, url=""),
+            LastFmSimilarArtist(
+                name="Not In Lib", mbid="other-mbid", match=0.8, url=""
+            ),
         ]
         svc, _, lastfm_repo, _ = _make_service()
         lastfm_repo.get_similar_artists.return_value = lastfm_similar
@@ -224,8 +237,12 @@ class TestGetTopSongsSource:
     @pytest.mark.asyncio
     async def test_source_lastfm_returns_tracks(self):
         lastfm_tracks = [
-            LastFmTrack(name="Song A", artist_name="Artist", mbid="rec-a", playcount=5000),
-            LastFmTrack(name="Song B", artist_name="Artist", mbid="rec-b", playcount=3000),
+            LastFmTrack(
+                name="Song A", artist_name="Artist", mbid="rec-a", playcount=5000
+            ),
+            LastFmTrack(
+                name="Song B", artist_name="Artist", mbid="rec-b", playcount=3000
+            ),
         ]
         svc, lb_repo, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_tracks.return_value = lastfm_tracks
@@ -284,8 +301,12 @@ class TestGetTopAlbumsSource:
     @pytest.mark.asyncio
     async def test_source_lastfm_returns_albums(self):
         lastfm_albums = [
-            LastFmAlbum(name="Album X", artist_name="Artist", mbid="alb-x", playcount=8000),
-            LastFmAlbum(name="Album Y", artist_name="Artist", mbid="alb-y", playcount=4000),
+            LastFmAlbum(
+                name="Album X", artist_name="Artist", mbid="alb-x", playcount=8000
+            ),
+            LastFmAlbum(
+                name="Album Y", artist_name="Artist", mbid="alb-y", playcount=4000
+            ),
         ]
         svc, lb_repo, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_albums.return_value = lastfm_albums
@@ -409,7 +430,9 @@ class TestGetTopAlbumsSource:
                 release_group_mbid="rg-1",
             )
         ]
-        svc._library_repo.get_library_mbids = AsyncMock(side_effect=Exception("library down"))
+        svc._library_repo.get_library_mbids = AsyncMock(
+            side_effect=Exception("library down")
+        )
         svc._library_repo.get_requested_mbids = AsyncMock(return_value=set())
 
         result = await svc.get_top_albums("mbid-123", count=10)
@@ -422,8 +445,12 @@ class TestGetTopAlbumsSource:
     @pytest.mark.asyncio
     async def test_source_lastfm_normalizes_mbids(self):
         lastfm_albums = [
-            LastFmAlbum(name="Upper", artist_name="Artist", mbid="ALB-UPPER", playcount=100),
-            LastFmAlbum(name="Spaced", artist_name="Artist", mbid=" alb-spaced ", playcount=50),
+            LastFmAlbum(
+                name="Upper", artist_name="Artist", mbid="ALB-UPPER", playcount=100
+            ),
+            LastFmAlbum(
+                name="Spaced", artist_name="Artist", mbid=" alb-spaced ", playcount=50
+            ),
             LastFmAlbum(name="No MBID", artist_name="Artist", mbid=None, playcount=10),
         ]
         svc, _, lastfm_repo, _ = _make_service()
@@ -444,8 +471,18 @@ class TestGetTopAlbumsSource:
     @pytest.mark.asyncio
     async def test_source_lastfm_uses_raw_mbids_without_resolution(self):
         lastfm_albums = [
-            LastFmAlbum(name="Album A", artist_name="Artist", mbid="release-mbid-a", playcount=100),
-            LastFmAlbum(name="Album B", artist_name="Artist", mbid="release-mbid-b", playcount=50),
+            LastFmAlbum(
+                name="Album A",
+                artist_name="Artist",
+                mbid="release-mbid-a",
+                playcount=100,
+            ),
+            LastFmAlbum(
+                name="Album B",
+                artist_name="Artist",
+                mbid="release-mbid-b",
+                playcount=50,
+            ),
         ]
         svc, _, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_albums.return_value = lastfm_albums
@@ -466,7 +503,12 @@ class TestGetTopAlbumsSource:
     @pytest.mark.asyncio
     async def test_source_lastfm_keeps_raw_mbid_directly(self):
         lastfm_albums = [
-            LastFmAlbum(name="Album A", artist_name="Artist", mbid="already-rg-mbid", playcount=100),
+            LastFmAlbum(
+                name="Album A",
+                artist_name="Artist",
+                mbid="already-rg-mbid",
+                playcount=100,
+            ),
         ]
         svc, _, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_albums.return_value = lastfm_albums
@@ -482,8 +524,12 @@ class TestGetTopSongsLastFmNoAlbumResolution:
     @pytest.mark.asyncio
     async def test_source_lastfm_returns_null_album_fields(self):
         lastfm_tracks = [
-            LastFmTrack(name="Song A", artist_name="Artist", mbid="rec-a", playcount=5000),
-            LastFmTrack(name="Song B", artist_name="Artist", mbid="rec-b", playcount=3000),
+            LastFmTrack(
+                name="Song A", artist_name="Artist", mbid="rec-a", playcount=5000
+            ),
+            LastFmTrack(
+                name="Song B", artist_name="Artist", mbid="rec-b", playcount=3000
+            ),
         ]
         svc, _, lastfm_repo, _ = _make_service()
         lastfm_repo.get_artist_top_tracks.return_value = lastfm_tracks
@@ -499,7 +545,9 @@ class TestGetTopSongsLastFmNoAlbumResolution:
     @pytest.mark.asyncio
     async def test_source_lastfm_preserves_track_metadata(self):
         lastfm_tracks = [
-            LastFmTrack(name="Song A", artist_name="Artist", mbid="rec-a", playcount=5000),
+            LastFmTrack(
+                name="Song A", artist_name="Artist", mbid="rec-a", playcount=5000
+            ),
             LastFmTrack(name="Song B", artist_name="Artist", mbid=None, playcount=3000),
         ]
         svc, _, lastfm_repo, _ = _make_service()
@@ -613,23 +661,33 @@ class TestPerUserResolution:
         linked = _make_peruser_service(lb_repo=_make_lb_repo())
         unlinked = _make_peruser_service(lb_repo=None)
 
-        assert (await linked.get_top_songs("mbid-123", count=5, user_id="user-1")).configured is True
-        assert (await unlinked.get_top_songs("mbid-123", count=5, user_id="user-1")).configured is False
+        assert (
+            await linked.get_top_songs("mbid-123", count=5, user_id="user-1")
+        ).configured is True
+        assert (
+            await unlinked.get_top_songs("mbid-123", count=5, user_id="user-1")
+        ).configured is False
 
     @pytest.mark.asyncio
     async def test_top_albums_follow_user_link(self):
         linked = _make_peruser_service(lb_repo=_make_lb_repo())
         unlinked = _make_peruser_service(lb_repo=None)
 
-        assert (await linked.get_top_albums("mbid-123", count=5, user_id="user-1")).configured is True
-        assert (await unlinked.get_top_albums("mbid-123", count=5, user_id="user-1")).configured is False
+        assert (
+            await linked.get_top_albums("mbid-123", count=5, user_id="user-1")
+        ).configured is True
+        assert (
+            await unlinked.get_top_albums("mbid-123", count=5, user_id="user-1")
+        ).configured is False
 
     @pytest.mark.asyncio
     async def test_linked_lastfm_admits(self):
         lastfm_repo = _make_lastfm_repo()
         svc = _make_peruser_service(lastfm_repo=lastfm_repo)
 
-        result = await svc.get_similar_artists("mbid-123", count=5, source="lastfm", user_id="user-1")
+        result = await svc.get_similar_artists(
+            "mbid-123", count=5, source="lastfm", user_id="user-1"
+        )
 
         assert result.source == "lastfm"
         assert result.configured is True
@@ -639,7 +697,9 @@ class TestPerUserResolution:
     async def test_unlinked_lastfm_returns_not_configured(self):
         svc = _make_peruser_service(lastfm_repo=None)
 
-        result = await svc.get_similar_artists("mbid-123", count=5, source="lastfm", user_id="user-1")
+        result = await svc.get_similar_artists(
+            "mbid-123", count=5, source="lastfm", user_id="user-1"
+        )
 
         assert result.source == "lastfm"
         assert result.configured is False

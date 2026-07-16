@@ -151,7 +151,7 @@
 		</div>
 	{:else}
 		<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-			{#each albumsQuery.data.items as album (album.release_group_mbid)}
+			{#each albumsQuery.data.items as album (album.id)}
 				<LibraryAlbumCard {album} />
 			{/each}
 		</div>

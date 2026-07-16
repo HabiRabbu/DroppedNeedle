@@ -10,14 +10,36 @@ from core.dependencies import (
     get_cache,
     get_library_service,
     get_preferences_service,
-    init_app_state, 
-    cleanup_app_state
+    init_app_state,
+    cleanup_app_state,
 )
-from core.tasks import start_cache_cleanup_task, start_library_auto_scan_task, start_disk_cache_cleanup_task, start_genre_cache_warming_task, start_artist_discovery_cache_warming_task, start_audiodb_sweep_task, start_request_status_sync_task, start_memory_maintenance_task, start_poll_new_releases_task, start_discover_home_warmer_task, start_personal_mix_refresh_task
+from core.tasks import (
+    start_cache_cleanup_task,
+    start_library_auto_scan_task,
+    start_disk_cache_cleanup_task,
+    start_artist_discovery_cache_warming_task,
+    start_audiodb_sweep_task,
+    start_request_status_sync_task,
+    start_memory_maintenance_task,
+    start_poll_new_releases_task,
+    start_discover_home_warmer_task,
+    start_personal_mix_refresh_task,
+)
 from core.task_registry import TaskRegistry
 from core.config import get_settings
 from core.dependencies.auth_providers import get_auth_service, get_auth_store
-from core.exceptions import ResourceNotFoundError, ExternalServiceError, SourceResolutionError, ValidationError, ConfigurationError, ClientDisconnectedError, PermissionDeniedError, ConflictError
+from core.exceptions import (
+    ResourceNotFoundError,
+    ExternalServiceError,
+    SourceResolutionError,
+    ValidationError,
+    ConfigurationError,
+    ClientDisconnectedError,
+    PermissionDeniedError,
+    ConflictError,
+    RevisionOverflowError,
+    StaleRevisionError,
+)
 from core.exception_handlers import (
     resource_not_found_handler,
     external_service_error_handler,
@@ -32,18 +54,38 @@ from core.exception_handlers import (
     starlette_http_exception_handler,
     request_validation_error_handler,
     client_disconnected_handler,
+    revision_overflow_error_handler,
+    stale_revision_error_handler,
 )
 from infrastructure.resilience.retry import CircuitOpenError
 from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
-from middleware import DegradationMiddleware, HSTSMiddleware, PerformanceMiddleware, RateLimitMiddleware, AuthMiddleware
+from middleware import (
+    DegradationMiddleware,
+    HSTSMiddleware,
+    PerformanceMiddleware,
+    RateLimitMiddleware,
+    AuthMiddleware,
+)
 from static_server import mount_frontend
 from api.v1.routes import (
-    search, requests, library, status, covers, artists, albums, settings, home, discover, profile, playlists, following, wrapped
+    search,
+    requests,
+    library,
+    status,
+    covers,
+    artists,
+    albums,
+    settings,
+    home,
+    discover,
+    profile,
+    playlists,
+    following,
+    wrapped,
 )
-from api.v1.routes import (
-    discovery_batches as discovery_batches_routes
-)
+from api.v1.routes import discovery_batches as discovery_batches_routes
 from api.v1.routes import library_scan as library_scan_routes
+from api.v1.routes import library_policies as library_policy_routes
 from api.v1.routes import cache as cache_routes
 from api.v1.routes import cache_status as cache_status_routes
 from api.v1.routes import youtube as youtube_routes
@@ -76,43 +118,9 @@ from api.v1.routes import downloads as downloads_routes
 from api.v1.routes import tracks as tracks_routes
 from api.v1.routes import quarantine as quarantine_routes
 
-class _ExtraFieldFormatter(logging.Formatter):
-    """Append structured ``extra={...}`` fields to the console line.
+from core.logging_config import configure_logging  # noqa: E402
 
-    The format string below renders only ``%(message)s``; without this, every
-    ``extra`` value (e.g. a download's verify-failure ``reason``) is silently
-    dropped, leaving failures undiagnosable from logs alone. Messages are left
-    untouched, so the bare event-name log contract (``download.failed`` etc.)
-    still holds. Framework-injected attributes (``taskName``, uvicorn's
-    ``color_message``) are filtered out to keep lines clean."""
-
-    _RESERVED = frozenset(
-        logging.LogRecord("", 0, "", 0, "", (), None).__dict__
-    ) | {"message", "asctime", "taskName", "color_message"}
-
-    def format(self, record: logging.LogRecord) -> str:
-        base = super().format(record)
-        extras = " ".join(
-            f"{key}={value}"
-            for key, value in record.__dict__.items()
-            if key not in self._RESERVED and not key.startswith("_")
-        )
-        return f"{base} | {extras}" if extras else base
-
-
-_log_handler = logging.StreamHandler()
-_log_handler.setFormatter(
-    _ExtraFieldFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-)
-logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
-# httpx logs every request URL at INFO, and several providers (Ticketmaster,
-# Skiddle, Last.fm, AudioDB) carry their API key as a query param - at INFO
-# those secrets land in the container logs on every call. WARNING keeps
-# transport errors visible without the URL lines.
-logging.getLogger("httpx").setLevel(logging.WARNING)
-from api.compat.common.redact import install_uvicorn_access_credential_filter  # noqa: E402
-
-install_uvicorn_access_credential_filter()
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _ORPHAN_STAGING_MAX_AGE_SECONDS = 7 * 24 * 3600
@@ -142,7 +150,9 @@ async def _cleanup_orphan_staging(store, staging_path) -> None:
             await asyncio.to_thread(_shutil.rmtree, entry, ignore_errors=True)
             removed += 1
         except OSError as exc:  # noqa: BLE001 - one bad dir must not abort the sweep
-            logger.warning("startup.orphan_sweep_entry_failed", extra={"error": str(exc)})
+            logger.warning(
+                "startup.orphan_sweep_entry_failed", extra={"error": str(exc)}
+            )
     if removed:
         logger.info("startup.orphan_staging_swept", extra={"removed": removed})
 
@@ -188,7 +198,11 @@ async def _migrate_playlists_owner_to_admin(auth_store, playlist_repo) -> None:
             return
         count = await asyncio.to_thread(playlist_repo.assign_unowned_to, admin.id)
         if count:
-            logger.info("Backfilled %d ownerless playlist(s) to first admin %s", count, admin.id[:8])
+            logger.info(
+                "Backfilled %d ownerless playlist(s) to first admin %s",
+                count,
+                admin.id[:8],
+            )
     except Exception as exc:  # noqa: BLE001 - migration must never block startup
         logger.warning("Playlist owner backfill skipped: %s", exc)
 
@@ -204,20 +218,26 @@ async def _migrate_global_connection_to_first_admin(
         admin = await auth_store.get_first_admin()
         if admin is None:
             return
-        existing = {r.service for r in await user_connections_store.list_for_user(admin.id)}
+        existing = {
+            r.service for r in await user_connections_store.list_for_user(admin.id)
+        }
         seeded: list[str] = []
 
         lb = preferences_service.get_listenbrainz_connection()
         if "listenbrainz" not in existing and lb.enabled and lb.user_token:
             await user_connections_store.upsert(
-                admin.id, "listenbrainz", {"user_token": lb.user_token, "username": lb.username}
+                admin.id,
+                "listenbrainz",
+                {"user_token": lb.user_token, "username": lb.username},
             )
             seeded.append("listenbrainz")
 
         lf = preferences_service.get_lastfm_connection()
         if "lastfm" not in existing and lf.session_key:
             await user_connections_store.upsert(
-                admin.id, "lastfm", {"session_key": lf.session_key, "username": lf.username}
+                admin.id,
+                "lastfm",
+                {"session_key": lf.session_key, "username": lf.username},
             )
             seeded.append("lastfm")
 
@@ -239,7 +259,11 @@ async def _migrate_global_connection_to_first_admin(
                     primary_music_source=source,
                 )
         if seeded:
-            logger.info("Backfilled global connection(s) %s to first admin %s", seeded, admin.id[:8])
+            logger.info(
+                "Backfilled global connection(s) %s to first admin %s",
+                seeded,
+                admin.id[:8],
+            )
     except Exception as exc:  # noqa: BLE001 - migration must never block startup
         logger.warning("Global-connection backfill skipped: %s", exc)
 
@@ -247,12 +271,13 @@ async def _migrate_global_connection_to_first_admin(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting DroppedNeedle...")
-    
+
     settings = get_settings()
     configured_level = getattr(logging, settings.log_level, logging.INFO)
     logging.getLogger().setLevel(configured_level)
 
     from core.config import migrate_legacy_config
+
     migrate_legacy_config()
 
     await init_app_state(app)
@@ -265,11 +290,13 @@ async def lifespan(app: FastAPI):
     await _auth_store.migrate_local_provider_to_username()
     await _migrate_shared_avatar_to_first_admin(_auth_store, settings.cache_dir)
     from core.dependencies.repo_providers import get_playlist_repository
+
     await _migrate_playlists_owner_to_admin(_auth_store, get_playlist_repository())
     from core.dependencies import (
         get_user_connections_store,
         get_user_listening_prefs_store,
     )
+
     await _migrate_global_connection_to_first_admin(
         _auth_store,
         get_preferences_service(),
@@ -281,9 +308,15 @@ async def lifespan(app: FastAPI):
     _first_admin = await _auth_store.get_first_admin()
     if _first_admin is not None:
         from core.dependencies import get_mbid_store
-        _ignored_migrated = await get_mbid_store().migrate_ignored_releases_to_user(_first_admin.id)
+
+        _ignored_migrated = await get_mbid_store().migrate_ignored_releases_to_user(
+            _first_admin.id
+        )
         if _ignored_migrated:
-            logger.info("Migrated %d legacy ignored releases to the first admin", _ignored_migrated)
+            logger.info(
+                "Migrated %d legacy ignored releases to the first admin",
+                _ignored_migrated,
+            )
 
     preferences_service = get_preferences_service()
     settings.instance_id = preferences_service.get_instance_id()
@@ -296,19 +329,21 @@ async def lifespan(app: FastAPI):
     from core.exceptions import ConfigurationError
     from core.startup_validator import StartupValidator
 
-    _library_settings = preferences_service.get_library_settings()
+    _library_settings = preferences_service.get_typed_library_settings()
     try:
         await asyncio.to_thread(
             StartupValidator(
-                [_Path(p) for p in _library_settings.library_paths],
-                _Path(_library_settings.staging_path) if _library_settings.staging_path else None,
+                [_Path(root.path) for root in _library_settings.library_roots],
+                _Path(_library_settings.staging_path)
+                if _library_settings.staging_path
+                else None,
                 slskd_downloads_path=_Path(get_settings().slskd_downloads_path),
             ).validate
         )
         logger.info(
             "startup.library_validated",
             extra={
-                "library_path_count": len(_library_settings.library_paths),
+                "library_path_count": len(_library_settings.library_roots),
                 "staging_configured": bool(_library_settings.staging_path),
                 "slskd_downloads_path": str(get_settings().slskd_downloads_path),
             },
@@ -327,7 +362,7 @@ async def lifespan(app: FastAPI):
 
     start_library_scan_resume_task(
         get_library_scanner(),
-        [_Path(p) for p in _library_settings.library_paths],
+        [_Path(root.path) for root in _library_settings.library_roots],
     )
 
     start_download_resume_task(get_download_orchestrator())
@@ -335,6 +370,7 @@ async def lifespan(app: FastAPI):
     # drop-import housekeeping: jobs whose task died with the process are failed,
     # and staging dirs with nothing left to review are removed. Never blocks startup.
     from core.dependencies import get_drop_import_service
+
     try:
         await get_drop_import_service().sweep_stale()
     except Exception as exc:  # noqa: BLE001 - housekeeping must not block startup
@@ -342,6 +378,7 @@ async def lifespan(app: FastAPI):
 
     # Free Music (D24): a task whose coroutine died with the process can never finish.
     from core.dependencies import get_free_music_service
+
     try:
         await get_free_music_service().sweep_stale()
     except Exception as exc:  # noqa: BLE001 - housekeeping must not block startup
@@ -350,6 +387,7 @@ async def lifespan(app: FastAPI):
     # plugin host (01b): discover + load admin-enabled plugins. Module imports are
     # blocking work; a broken plugin is isolated by the host and never blocks startup.
     from core.dependencies import get_plugin_host
+
     try:
         await asyncio.to_thread(get_plugin_host().load_all)
     except Exception as exc:  # noqa: BLE001 - plugins must never block startup
@@ -360,10 +398,13 @@ async def lifespan(app: FastAPI):
     start_download_auto_retry_task(get_download_orchestrator)
 
     from core.dependencies import get_download_store as _get_download_store
+
     _orphan_task = asyncio.create_task(
         _cleanup_orphan_staging(
             _get_download_store(),
-            _Path(_library_settings.staging_path) if _library_settings.staging_path else None,
+            _Path(_library_settings.staging_path)
+            if _library_settings.staging_path
+            else None,
         )
     )
     TaskRegistry.get_instance().register("orphan-staging-cleanup", _orphan_task)
@@ -382,36 +423,42 @@ async def lifespan(app: FastAPI):
     _now_playing_task = asyncio.create_task(
         run_now_playing_presence_loop(
             get_now_playing_service(),
-            get_home_service(),
-            get_jellyfin_library_service(),
-            get_navidrome_library_service(),
-            get_plex_library_service(),
+            get_home_service,
+            get_jellyfin_library_service,
+            get_navidrome_library_service,
+            get_plex_library_service,
         )
     )
     TaskRegistry.get_instance().register("now-playing-presence", _now_playing_task)
 
     cache = get_cache()
-    start_cache_cleanup_task(cache, interval=advanced_settings.memory_cache_cleanup_interval)
+    start_cache_cleanup_task(
+        cache, interval=advanced_settings.memory_cache_cleanup_interval
+    )
     start_memory_maintenance_task(cache)
-    
+
     from core.dependencies import get_disk_cache
+
     disk_cache = get_disk_cache()
     from core.dependencies import get_coverart_repository
+
     cover_disk_cache = get_coverart_repository().disk_cache
     start_disk_cache_cleanup_task(
         disk_cache,
         interval=advanced_settings.disk_cache_cleanup_interval,
         cover_disk_cache=cover_disk_cache,
     )
-    
+
     library_service = get_library_service()
     from core.dependencies import get_scan_state_store
+
     start_library_auto_scan_task(
         get_library_scanner(), get_scan_state_store(), preferences_service
     )
 
     # warn (non-fatal) if the download client is unconfigured/unreachable
     from core.dependencies import get_download_client_repository, get_download_store
+
     try:
         await get_download_store().delete_expired_search_jobs()
     except Exception as exc:  # noqa: BLE001
@@ -431,16 +478,22 @@ async def lifespan(app: FastAPI):
                     extra={"status": _dl_health.status, "detail": _dl_health.message},
                 )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("startup.download_client_check_skipped", extra={"error": str(exc)})
+        logger.warning(
+            "startup.download_client_check_skipped", extra={"error": str(exc)}
+        )
 
     from core.tasks import warm_library_cache
-    from core.dependencies import get_album_service, get_library_db, get_sync_state_store
-    
+    from core.dependencies import (
+        get_album_service,
+        get_library_db,
+        get_sync_state_store,
+    )
+
     def handle_cache_warming_error(task: asyncio.Task):
         try:
             if task.cancelled():
                 return
-            
+
             exc = task.exception()
             if exc:
                 logger.error("Cache warming failed: %s", exc, exc_info=exc)
@@ -448,7 +501,7 @@ async def lifespan(app: FastAPI):
             pass
         except Exception as e:  # noqa: BLE001
             logger.error("Error checking cache warming task: %s", e)
-    
+
     cache_task = asyncio.create_task(
         warm_library_cache(library_service, get_album_service(), get_library_db())
     )
@@ -456,6 +509,7 @@ async def lifespan(app: FastAPI):
     TaskRegistry.get_instance().register("library-cache-warmup", cache_task)
 
     from services.cache_status_service import CacheStatusService
+
     sync_state_store = get_sync_state_store()
     library_db = get_library_db()
     status_service = CacheStatusService(sync_state_store)
@@ -469,43 +523,54 @@ async def lifespan(app: FastAPI):
                 artists = await library_db.get_artists()
                 albums = await library_db.get_albums()
                 if artists or albums:
-                    artists_dicts = [{'mbid': a['mbid'], 'name': a['name']} for a in artists]
+                    artists_dicts = [
+                        {"mbid": a["mbid"], "name": a["name"]} for a in artists
+                    ]
                     await library_service._precache_service.precache_library_resources(
                         artists_dicts, albums, resume=True
                     )
                 else:
-                    logger.warning("No cached artists/albums to resume sync with, clearing state")
+                    logger.warning(
+                        "No cached artists/albums to resume sync with, clearing state"
+                    )
                     await sync_state_store.clear_sync_state()
             except Exception as e:  # noqa: BLE001
                 logger.error("Failed to resume interrupted sync: %s", e)
                 await status_service.complete_sync(str(e))
 
         resume_task = asyncio.create_task(resume_sync())
-        resume_task.add_done_callback(lambda t: logger.error("Resume sync failed: %s", t.exception()) if t.exception() else None)
+        resume_task.add_done_callback(
+            lambda t: logger.error("Resume sync failed: %s", t.exception())
+            if t.exception()
+            else None
+        )
         TaskRegistry.get_instance().register("library-sync-resume", resume_task)
 
     # Phase 5: Home/Discover are per-user. Served on-demand (stale-while-revalidate) on the
     # first request, AND kept warm/converged in the background through the day by the per-user
-    # warmer below (one user at a time, yields to active users) plus the account-less genre
-    # warm. This is what lets discovery "update as the day goes along" instead of only when a
+    # warmer below (one user at a time, yields to active users). This is what lets discovery
+    # "update as the day goes along" instead of only when a
     # user opens the page - and gives the rate-limited personalisation time to converge.
-    from core.dependencies import get_home_service
-    start_genre_cache_warming_task(get_home_service())
-
     from core.dependencies import get_discover_service, get_per_user_client_factory
+
     start_discover_home_warmer_task(
-        get_discover_service, get_home_service, get_auth_store, get_per_user_client_factory,
+        get_discover_service,
+        get_home_service,
+        get_auth_store,
+        get_per_user_client_factory,
     )
 
     from core.dependencies import get_artist_discovery_service
+
     start_artist_discovery_cache_warming_task(
-        get_artist_discovery_service(),
+        get_artist_discovery_service,
         get_library_db(),
         interval=advanced_settings.artist_discovery_warm_interval,
         delay=advanced_settings.artist_discovery_warm_delay,
     )
 
     from core.dependencies import get_audiodb_image_service
+
     start_audiodb_sweep_task(
         get_audiodb_image_service(),
         get_library_db(),
@@ -514,6 +579,7 @@ async def lifespan(app: FastAPI):
     )
 
     from core.dependencies import get_audiodb_browse_queue
+
     browse_queue = get_audiodb_browse_queue()
     browse_queue.start_consumer(
         get_audiodb_image_service(),
@@ -522,12 +588,19 @@ async def lifespan(app: FastAPI):
 
     from core.tasks import warm_jellyfin_mbid_index
     from core.dependencies import get_jellyfin_repository
+
     jellyfin_settings = preferences_service.get_jellyfin_connection()
     if jellyfin_settings.enabled:
-        mbid_task = asyncio.create_task(warm_jellyfin_mbid_index(get_jellyfin_repository()))
+        mbid_task = asyncio.create_task(
+            warm_jellyfin_mbid_index(get_jellyfin_repository())
+        )
         mbid_task.add_done_callback(
-            lambda t: None if t.cancelled() else (
-                logger.error("Jellyfin MBID index warming failed: %s", t.exception()) if t.exception() else None
+            lambda t: None
+            if t.cancelled()
+            else (
+                logger.error("Jellyfin MBID index warming failed: %s", t.exception())
+                if t.exception()
+                else None
             )
         )
         TaskRegistry.get_instance().register("jellyfin-mbid-warmup", mbid_task)
@@ -535,10 +608,15 @@ async def lifespan(app: FastAPI):
     navidrome_settings = preferences_service.get_navidrome_connection()
     if navidrome_settings.enabled:
         from core.tasks import warm_navidrome_mbid_cache
+
         nav_mbid_task = asyncio.create_task(warm_navidrome_mbid_cache())
         nav_mbid_task.add_done_callback(
-            lambda t: None if t.cancelled() else (
-                logger.error("Navidrome MBID cache warming failed: %s", t.exception()) if t.exception() else None
+            lambda t: None
+            if t.cancelled()
+            else (
+                logger.error("Navidrome MBID cache warming failed: %s", t.exception())
+                if t.exception()
+                else None
             )
         )
         TaskRegistry.get_instance().register("navidrome-mbid-warmup", nav_mbid_task)
@@ -546,23 +624,31 @@ async def lifespan(app: FastAPI):
     plex_settings = preferences_service.get_plex_connection()
     if plex_settings.enabled:
         from core.tasks import warm_plex_mbid_cache
+
         plex_mbid_task = asyncio.create_task(warm_plex_mbid_cache())
         plex_mbid_task.add_done_callback(
-            lambda t: None if t.cancelled() else (
-                logger.error("Plex MBID cache warming failed: %s", t.exception()) if t.exception() else None
+            lambda t: None
+            if t.cancelled()
+            else (
+                logger.error("Plex MBID cache warming failed: %s", t.exception())
+                if t.exception()
+                else None
             )
         )
         TaskRegistry.get_instance().register("plex-mbid-warmup", plex_mbid_task)
 
     from core.dependencies import get_requests_page_service
+
     requests_page_service = get_requests_page_service()
 
     start_request_status_sync_task(requests_page_service)
 
     from core.dependencies import get_new_release_service
+
     start_poll_new_releases_task(get_new_release_service())
 
     from core.dependencies import get_personal_mix_service
+
     start_personal_mix_refresh_task(get_personal_mix_service())
 
     from core.tasks import start_orphan_cover_demotion_task, start_store_prune_task
@@ -592,7 +678,10 @@ async def lifespan(app: FastAPI):
         wanted_store=get_wanted_store(),
     )
 
-    from core.tasks import start_background_upgrade_scan_task, start_recycle_bin_prune_task
+    from core.tasks import (
+        start_background_upgrade_scan_task,
+        start_recycle_bin_prune_task,
+    )
 
     start_recycle_bin_prune_task(preferences_service)
 
@@ -621,9 +710,9 @@ async def lifespan(app: FastAPI):
     # provider + time callable: settings saves rebuild the watcher chain and
     # move the daily slot without a restart (re-read every scheduler tick)
     start_events_watcher_task(get_events_watcher_service, _events_poll_time)
-    
+
     logger.info("DroppedNeedle started successfully")
-    
+
     try:
         yield
     finally:
@@ -637,7 +726,7 @@ async def lifespan(app: FastAPI):
             await cleanup_app_state()
         except Exception as e:  # noqa: BLE001
             logger.error("Error during cleanup: %s", e)
-        
+
         logger.info("DroppedNeedle shut down successfully")
 
 
@@ -660,6 +749,8 @@ app.add_exception_handler(ValidationError, validation_error_handler)
 app.add_exception_handler(ConfigurationError, configuration_error_handler)
 app.add_exception_handler(PermissionDeniedError, permission_denied_handler)
 app.add_exception_handler(ConflictError, conflict_error_handler)
+app.add_exception_handler(StaleRevisionError, stale_revision_error_handler)
+app.add_exception_handler(RevisionOverflowError, revision_overflow_error_handler)
 app.add_exception_handler(CircuitOpenError, circuit_open_error_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handler)
@@ -726,6 +817,7 @@ v1_router.include_router(artists.router)
 v1_router.include_router(following.router)
 v1_router.include_router(albums.router)
 v1_router.include_router(settings.router)
+v1_router.include_router(library_policy_routes.router)
 v1_router.include_router(home.router)
 v1_router.include_router(wrapped.router)
 # literal /discover/batches paths registered before the discover router (which owns
@@ -796,6 +888,9 @@ app.add_middleware(
 # Must be outermost (added last) so it rewrites the scope before any other
 # middleware or route handler sees the request.
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware  # noqa: E402
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=get_settings().trusted_proxy_ips)
+
+app.add_middleware(
+    ProxyHeadersMiddleware, trusted_hosts=get_settings().trusted_proxy_ips
+)
 
 mount_frontend(app)

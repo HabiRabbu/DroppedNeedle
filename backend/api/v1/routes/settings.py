@@ -39,14 +39,20 @@ from api.v1.schemas.settings import (
 )
 from api.v1.schemas.plex import PlexLibrarySectionInfo
 from api.v1.schemas.common import VerifyConnectionResponse
-from api.v1.schemas.advanced_settings import AdvancedSettingsFrontend, FrontendCacheTTLs, _is_masked_api_key
+from api.v1.schemas.advanced_settings import (
+    AdvancedSettingsFrontend,
+    FrontendCacheTTLs,
+    _is_masked_api_key,
+)
 from core.dependencies import (
+    get_events_watcher_getter,
     get_preferences_service,
     get_settings_service,
     get_oidc_user_auth_service,
 )
 from services.oidc_user_auth_service import OIDCUserAuthService
 from core.exceptions import ConfigurationError
+from core.dependencies.cleanup import clear_library_policy_dependent_caches
 from infrastructure.msgspec_fastapi import AppStruct, MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep
 from services.preferences_service import PreferencesService
@@ -105,7 +111,9 @@ async def update_library_sync_settings(
         return library_sync_settings
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating library sync settings: {e}")
-        raise HTTPException(status_code=400, detail="Library sync settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="Library sync settings are incomplete or invalid"
+        )
 
 
 def _server_timezone_label() -> str:
@@ -143,7 +151,9 @@ async def update_library_scan_schedule(
         return schedule
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating library scan schedule: {e}")
-        raise HTTPException(status_code=400, detail="Library scan schedule is incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="Library scan schedule is incomplete or invalid"
+        )
 
 
 @router.get("/library", response_model=LibrarySettings)
@@ -160,6 +170,7 @@ async def update_library_settings(
 ):
     try:
         preferences_service.save_library_settings(settings)
+        clear_library_policy_dependent_caches()
         return preferences_service.get_library_settings()
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating library settings: {e}")
@@ -189,6 +200,7 @@ async def add_library_path(
     current.library_paths = paths
     current.acoustid_api_key = ACOUSTID_KEY_MASK if current.acoustid_api_key else ""
     preferences_service.save_library_settings(current)
+    clear_library_policy_dependent_caches()
     return preferences_service.get_library_settings()
 
 
@@ -201,6 +213,7 @@ async def remove_library_path(
     current.library_paths = [p for p in current.library_paths if p != path]
     current.acoustid_api_key = ACOUSTID_KEY_MASK if current.acoustid_api_key else ""
     preferences_service.save_library_settings(current)
+    clear_library_policy_dependent_caches()
     return preferences_service.get_library_settings()
 
 
@@ -258,8 +271,6 @@ async def update_advanced_settings(
         raise HTTPException(status_code=400, detail="That settings value isn't valid")
 
 
-
-
 @router.get("/jellyfin", response_model=JellyfinConnectionSettings)
 async def get_jellyfin_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
@@ -279,7 +290,9 @@ async def update_jellyfin_settings(
         return settings
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating Jellyfin settings: {e}")
-        raise HTTPException(status_code=400, detail="Jellyfin settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="Jellyfin settings are incomplete or invalid"
+        )
 
 
 @router.post("/jellyfin/verify", response_model=JellyfinVerifyResponse)
@@ -288,8 +301,14 @@ async def verify_jellyfin_connection(
     settings_service: SettingsService = Depends(get_settings_service),
 ):
     result = await settings_service.verify_jellyfin(settings)
-    users = [JellyfinUserInfo(id=user.id, name=user.name) for user in (result.users or [])] if result.success else []
-    return JellyfinVerifyResponse(success=result.success, message=result.message, users=users)
+    users = (
+        [JellyfinUserInfo(id=user.id, name=user.name) for user in (result.users or [])]
+        if result.success
+        else []
+    )
+    return JellyfinVerifyResponse(
+        success=result.success, message=result.message, users=users
+    )
 
 
 @router.get("/navidrome", response_model=NavidromeConnectionSettings)
@@ -311,7 +330,9 @@ async def update_navidrome_settings(
         return preferences_service.get_navidrome_connection()
     except ConfigurationError as e:
         logger.warning("Configuration error updating Navidrome settings: %s", e)
-        raise HTTPException(status_code=400, detail="Navidrome settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="Navidrome settings are incomplete or invalid"
+        )
 
 
 @router.post("/navidrome/verify", response_model=VerifyConnectionResponse)
@@ -343,7 +364,9 @@ async def update_plex_settings(
         return preferences_service.get_plex_connection()
     except ConfigurationError as e:
         logger.warning("Configuration error updating Plex settings: %s", e)
-        raise HTTPException(status_code=400, detail="Plex settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="Plex settings are incomplete or invalid"
+        )
 
 
 @router.post("/plex/verify", response_model=PlexVerifyResponse)
@@ -353,7 +376,9 @@ async def verify_plex_connection(
 ):
     result = await settings_service.verify_plex(settings)
     libs = [PlexLibrarySectionInfo(key=k, title=t) for k, t in result.libraries]
-    return PlexVerifyResponse(valid=result.valid, message=result.message, libraries=libs)
+    return PlexVerifyResponse(
+        valid=result.valid, message=result.message, libraries=libs
+    )
 
 
 @router.get("/plex/libraries", response_model=list[PlexLibrarySectionInfo])
@@ -367,7 +392,9 @@ async def get_plex_libraries(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Failed to fetch Plex libraries: %s", e)
-        raise HTTPException(status_code=502, detail="Could not fetch libraries from Plex")
+        raise HTTPException(
+            status_code=502, detail="Could not fetch libraries from Plex"
+        )
 
 
 @router.get("/listenbrainz", response_model=ListenBrainzConnectionSettings)
@@ -379,7 +406,9 @@ async def get_listenbrainz_settings(
 
 @router.put("/listenbrainz", response_model=ListenBrainzConnectionSettings)
 async def update_listenbrainz_settings(
-    settings: ListenBrainzConnectionSettings = MsgSpecBody(ListenBrainzConnectionSettings),
+    settings: ListenBrainzConnectionSettings = MsgSpecBody(
+        ListenBrainzConnectionSettings
+    ),
     preferences_service: PreferencesService = Depends(get_preferences_service),
     settings_service: SettingsService = Depends(get_settings_service),
 ):
@@ -389,12 +418,16 @@ async def update_listenbrainz_settings(
         return settings
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating ListenBrainz settings: {e}")
-        raise HTTPException(status_code=400, detail="ListenBrainz settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="ListenBrainz settings are incomplete or invalid"
+        )
 
 
 @router.post("/listenbrainz/verify", response_model=VerifyConnectionResponse)
 async def verify_listenbrainz_connection(
-    settings: ListenBrainzConnectionSettings = MsgSpecBody(ListenBrainzConnectionSettings),
+    settings: ListenBrainzConnectionSettings = MsgSpecBody(
+        ListenBrainzConnectionSettings
+    ),
     settings_service: SettingsService = Depends(get_settings_service),
 ):
     result = await settings_service.verify_listenbrainz(settings)
@@ -420,7 +453,9 @@ async def update_youtube_settings(
         return settings
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating YouTube settings: {e}")
-        raise HTTPException(status_code=400, detail="YouTube settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="YouTube settings are incomplete or invalid"
+        )
 
 
 @router.post("/youtube/verify", response_model=VerifyConnectionResponse)
@@ -432,14 +467,18 @@ async def verify_youtube_connection(
     return VerifyConnectionResponse(valid=result.valid, message=result.message)
 
 
-@router.get("/spotify", response_model=SpotifySettings, dependencies=[Depends(_admin_guard)])
+@router.get(
+    "/spotify", response_model=SpotifySettings, dependencies=[Depends(_admin_guard)]
+)
 async def get_spotify_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
     return preferences_service.get_spotify_settings()
 
 
-@router.put("/spotify", response_model=SpotifySettings, dependencies=[Depends(_admin_guard)])
+@router.put(
+    "/spotify", response_model=SpotifySettings, dependencies=[Depends(_admin_guard)]
+)
 async def update_spotify_settings(
     settings: SpotifySettings = MsgSpecBody(SpotifySettings),
     preferences_service: PreferencesService = Depends(get_preferences_service),
@@ -453,6 +492,7 @@ def _clear_events_cache() -> None:
     # watcher that composes them - clear the chain so it takes effect at once
     from core.dependencies import (
         get_events_watcher_service,
+        get_target_events_watcher_service,
         get_skiddle_repository,
         get_ticketmaster_repository,
     )
@@ -461,18 +501,27 @@ def _clear_events_cache() -> None:
         get_ticketmaster_repository,
         get_skiddle_repository,
         get_events_watcher_service,
+        get_target_events_watcher_service,
     ):
         provider.cache_clear()
 
 
-@router.get("/free-music", response_model=FreeMusicSettings, dependencies=[Depends(_admin_guard)])
+@router.get(
+    "/free-music",
+    response_model=FreeMusicSettings,
+    dependencies=[Depends(_admin_guard)],
+)
 async def get_free_music_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
     return preferences_service.get_free_music_settings()
 
 
-@router.put("/free-music", response_model=FreeMusicSettings, dependencies=[Depends(_admin_guard)])
+@router.put(
+    "/free-music",
+    response_model=FreeMusicSettings,
+    dependencies=[Depends(_admin_guard)],
+)
 async def update_free_music_settings(
     settings: FreeMusicSettings = MsgSpecBody(FreeMusicSettings),
     preferences_service: PreferencesService = Depends(get_preferences_service),
@@ -483,14 +532,18 @@ async def update_free_music_settings(
     return preferences_service.get_free_music_settings()
 
 
-@router.get("/get-it", response_model=GetItSettings, dependencies=[Depends(_admin_guard)])
+@router.get(
+    "/get-it", response_model=GetItSettings, dependencies=[Depends(_admin_guard)]
+)
 async def get_get_it_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
     return preferences_service.get_get_it_settings()
 
 
-@router.put("/get-it", response_model=GetItSettings, dependencies=[Depends(_admin_guard)])
+@router.put(
+    "/get-it", response_model=GetItSettings, dependencies=[Depends(_admin_guard)]
+)
 async def update_get_it_settings(
     settings: GetItSettings = MsgSpecBody(GetItSettings),
     preferences_service: PreferencesService = Depends(get_preferences_service),
@@ -502,26 +555,30 @@ async def update_get_it_settings(
     return preferences_service.get_get_it_settings()
 
 
-@router.get("/events", response_model=EventsSettings, dependencies=[Depends(_admin_guard)])
+@router.get(
+    "/events", response_model=EventsSettings, dependencies=[Depends(_admin_guard)]
+)
 async def get_events_settings(
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ):
     return preferences_service.get_events_settings()
 
 
-@router.put("/events", response_model=EventsSettings, dependencies=[Depends(_admin_guard)])
+@router.put(
+    "/events", response_model=EventsSettings, dependencies=[Depends(_admin_guard)]
+)
 async def update_events_settings(
     settings: EventsSettings = MsgSpecBody(EventsSettings),
     preferences_service: PreferencesService = Depends(get_preferences_service),
+    events_watcher_getter=Depends(get_events_watcher_getter),
 ):
     preferences_service.save_events_settings(settings)
     _clear_events_cache()
     # sweep now (no-ops when no source is ready) - the periodic loop may be
     # mid-sleep for up to a day, and a freshly enabled feature must not wait
-    from core.dependencies import get_events_watcher_service
     from core.tasks import kick_events_sweep
 
-    kick_events_sweep(get_events_watcher_service)
+    kick_events_sweep(events_watcher_getter)
     return preferences_service.get_events_settings()
 
 
@@ -549,7 +606,9 @@ async def test_events_ticketmaster(
         HttpClientFactory.get_client(name="ticketmaster", timeout=15.0), api_key=api_key
     )
     if await repo.test_connection():
-        return VerifyConnectionResponse(valid=True, message="Connected to Ticketmaster.")
+        return VerifyConnectionResponse(
+            valid=True, message="Connected to Ticketmaster."
+        )
     return VerifyConnectionResponse(
         valid=False, message="Ticketmaster rejected the key or is unreachable."
     )
@@ -594,7 +653,10 @@ class SpotifyRedirectUriResponse(AppStruct):
     dependencies=[Depends(_admin_guard)],
 )
 async def get_spotify_redirect_uri(request: Request) -> SpotifyRedirectUriResponse:
-    redirect_uri = str(request.base_url).rstrip("/") + "/api/v1/me/connections/spotify/auth/callback"
+    redirect_uri = (
+        str(request.base_url).rstrip("/")
+        + "/api/v1/me/connections/spotify/auth/callback"
+    )
     return SpotifyRedirectUriResponse(redirect_uri=redirect_uri)
 
 
@@ -617,8 +679,9 @@ async def update_home_settings(
         return settings
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating home settings: {e}")
-        raise HTTPException(status_code=400, detail="Home settings are incomplete or invalid")
-
+        raise HTTPException(
+            status_code=400, detail="Home settings are incomplete or invalid"
+        )
 
 
 @router.get("/lastfm", response_model=LastFmConnectionSettingsResponse)
@@ -642,7 +705,9 @@ async def update_lastfm_settings(
         return LastFmConnectionSettingsResponse.from_settings(saved)
     except ConfigurationError as e:
         logger.warning("Configuration error updating Last.fm settings: %s", e)
-        raise HTTPException(status_code=400, detail="Last.fm settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="Last.fm settings are incomplete or invalid"
+        )
 
 
 @router.post("/lastfm/verify", response_model=LastFmVerifyResponse)
@@ -708,7 +773,9 @@ async def update_scrobble_settings(
         return preferences_service.get_scrobble_settings()
     except ConfigurationError as e:
         logger.warning("Configuration error updating scrobble settings: %s", e)
-        raise HTTPException(status_code=400, detail="Scrobbling settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="Scrobbling settings are incomplete or invalid"
+        )
 
 
 @router.get("/primary-source", response_model=PrimaryMusicSourceSettings)
@@ -743,7 +810,9 @@ async def get_musicbrainz_settings(
 
 @router.put("/musicbrainz", response_model=MusicBrainzConnectionSettings)
 async def update_musicbrainz_settings(
-    settings: MusicBrainzConnectionSettings = MsgSpecBody(MusicBrainzConnectionSettings),
+    settings: MusicBrainzConnectionSettings = MsgSpecBody(
+        MusicBrainzConnectionSettings
+    ),
     preferences_service: PreferencesService = Depends(get_preferences_service),
     settings_service: SettingsService = Depends(get_settings_service),
 ):
@@ -753,12 +822,16 @@ async def update_musicbrainz_settings(
         return settings
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating MusicBrainz settings: {e}")
-        raise HTTPException(status_code=400, detail="MusicBrainz settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="MusicBrainz settings are incomplete or invalid"
+        )
 
 
 @router.post("/musicbrainz/verify", response_model=VerifyConnectionResponse)
 async def verify_musicbrainz_connection(
-    settings: MusicBrainzConnectionSettings = MsgSpecBody(MusicBrainzConnectionSettings),
+    settings: MusicBrainzConnectionSettings = MsgSpecBody(
+        MusicBrainzConnectionSettings
+    ),
     settings_service: SettingsService = Depends(get_settings_service),
 ):
     result = await settings_service.verify_musicbrainz(settings)
@@ -826,7 +899,9 @@ async def verify_hibp_local_file(
             message=f"File looks valid. Size: {_fmt_size(size)}.",
         )
     except OSError as e:
-        return VerifyConnectionResponse(valid=False, message=f"Could not read file: {e}")
+        return VerifyConnectionResponse(
+            valid=False, message=f"Could not read file: {e}"
+        )
 
 
 @router.get("/oidc", response_model=OIDCConnectionSettings)
@@ -846,7 +921,9 @@ async def update_oidc_settings(
         return preferences_service.get_oidc_connection()
     except ConfigurationError as e:
         logger.warning(f"Configuration error updating OIDC settings: {e}")
-        raise HTTPException(status_code=400, detail="OIDC settings are incomplete or invalid")
+        raise HTTPException(
+            status_code=400, detail="OIDC settings are incomplete or invalid"
+        )
 
 
 @router.post("/oidc/verify", response_model=VerifyConnectionResponse)

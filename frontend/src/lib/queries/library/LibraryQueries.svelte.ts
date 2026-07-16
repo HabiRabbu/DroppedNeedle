@@ -14,13 +14,11 @@ import type {
 	AlbumTracksInfo,
 	ArtistSort,
 	LibraryAlbumStatus,
+	LibraryAlbumDetail,
 	LibraryAlbumSummary,
 	LibraryArtistSummary,
 	LibraryScanSchedule,
-	LibraryScanStatus,
-	LibrarySettings,
 	LibraryStats,
-	LibraryUnmatchedResponse,
 	NativeAlbumsResponse,
 	NativeArtistsResponse,
 	NativeTrackListItem,
@@ -98,6 +96,62 @@ export const getLibraryStatsQueryOptions = () =>
 
 export const getLibraryStatsQuery = () => createQuery(() => getLibraryStatsQueryOptions());
 
+export const getLibraryRecentlyAddedQuery = () =>
+	createQuery(() => ({
+		staleTime: CACHE_TTL.LIBRARY_NATIVE,
+		queryKey: LibraryQueryKeyFactory.recentlyAdded(),
+		queryFn: ({ signal }) =>
+			api.global.get<NativeAlbumsResponse>(API.library.recentlyAdded(20), { signal })
+	}));
+
+export const getLibraryAlbumDetailQuery = (getAlbumId: Getter<string>) =>
+	createQuery(() => {
+		const albumId = getAlbumId();
+		return {
+			enabled: !!albumId,
+			staleTime: CACHE_TTL.LIBRARY_NATIVE,
+			queryKey: LibraryQueryKeyFactory.albumDetail(albumId),
+			queryFn: ({ signal }) =>
+				api.global.get<LibraryAlbumDetail>(API.library.albumDetail(albumId), { signal })
+		};
+	});
+
+export const getLibraryAlbumTracksQuery = (getAlbumId: Getter<string>) =>
+	createQuery(() => {
+		const albumId = getAlbumId();
+		return {
+			enabled: !!albumId,
+			staleTime: CACHE_TTL.LIBRARY_NATIVE,
+			queryKey: LibraryQueryKeyFactory.albumTracks(albumId),
+			queryFn: ({ signal }) =>
+				api.global.get<NativeTrackPage>(API.library.albumTracks(albumId), { signal })
+		};
+	});
+
+export const getLibraryArtistDetailQuery = (getArtistId: Getter<string>) =>
+	createQuery(() => {
+		const artistId = getArtistId();
+		return {
+			enabled: !!artistId,
+			staleTime: CACHE_TTL.LIBRARY_NATIVE,
+			queryKey: LibraryQueryKeyFactory.artistDetail(artistId),
+			queryFn: ({ signal }) =>
+				api.global.get<LibraryArtistSummary>(API.library.artistDetail(artistId), { signal })
+		};
+	});
+
+export const getLibraryArtistAlbumsQuery = (getArtistId: Getter<string>) =>
+	createQuery(() => {
+		const artistId = getArtistId();
+		return {
+			enabled: !!artistId,
+			staleTime: CACHE_TTL.LIBRARY_NATIVE,
+			queryKey: LibraryQueryKeyFactory.artistAlbums(artistId),
+			queryFn: ({ signal }) =>
+				api.global.get<NativeAlbumsResponse>(API.library.artistAlbums(artistId), { signal })
+		};
+	});
+
 // schedule route is admin-gated; pass `enabled` to keep it off for non-admins
 export const getLibraryScanScheduleQuery = (enabled: () => boolean = () => true) =>
 	createQuery(() => ({
@@ -117,26 +171,6 @@ export const getLibraryAlbumStatusQueryOptions = (mbid: string) =>
 
 export const getLibraryAlbumStatusQuery = (getMbid: Getter<string>) =>
 	createQuery(() => getLibraryAlbumStatusQueryOptions(getMbid()));
-
-// fast-poll only while scanning; when idle keep a lazy poll so a scheduled or
-// external scan still surfaces without hammering scan/status every 2s. An
-// in-page scan stays instant: the scan mutation invalidates and re-fetches this.
-export const getLibraryScanStatusQuery = () =>
-	createQuery(() => ({
-		staleTime: CACHE_TTL.SCAN_STATUS,
-		refetchInterval: (query: { state: { data?: LibraryScanStatus | undefined } }) =>
-			query.state.data?.status === 'scanning' ? CACHE_TTL.SCAN_STATUS : CACHE_TTL.SCAN_STATUS_IDLE,
-		queryKey: LibraryQueryKeyFactory.scanStatus(),
-		queryFn: ({ signal }) => api.global.get<LibraryScanStatus>(API.library.scanStatus(), { signal })
-	}));
-
-export const getLibraryUnmatchedQuery = () =>
-	createQuery(() => ({
-		staleTime: CACHE_TTL.LIBRARY_NATIVE,
-		queryKey: LibraryQueryKeyFactory.unmatched(),
-		queryFn: ({ signal }) =>
-			api.global.get<LibraryUnmatchedResponse>(API.library.unmatched(), { signal })
-	}));
 
 interface LibrarySearchResults {
 	albums: LibraryAlbumSummary[];
@@ -202,12 +236,3 @@ export const getAlbumTracksQuery = (getMbid: Getter<string | null>) =>
 				api.global.get<AlbumTracksInfo>(API.album.tracks(mbid ?? ''), { signal })
 		};
 	});
-
-// GET /settings/library is admin-gated; pass `enabled` to keep it off for non-admins so it never fires a 403
-export const getLibrarySettingsQuery = (enabled: () => boolean = () => true) =>
-	createQuery(() => ({
-		staleTime: CACHE_TTL.LIBRARY_NATIVE,
-		enabled: enabled(),
-		queryKey: LibraryQueryKeyFactory.settings(),
-		queryFn: ({ signal }) => api.global.get<LibrarySettings>(API.library.settings(), { signal })
-	}));

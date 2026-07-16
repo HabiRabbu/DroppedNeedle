@@ -105,6 +105,10 @@
 	--font-sans: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 	--font-display: 'Space Grotesk', 'Hanken Grotesk', system-ui, sans-serif;
 	--font-mono: 'Space Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+	--color-library-index: var(--color-primary);
+	--color-library-identify: var(--color-accent);
+	--color-library-paused: var(--color-warning);
+	--color-library-failed: var(--color-error);
 
 	/* below this the topbar no longer fits on one row, so non-essential items hide via max-xs: */
 	--breakpoint-xs: 380px;
@@ -119,6 +123,127 @@
 	--animate-equalizer-1: equalizer-1 0.8s ease-in-out infinite;
 	--animate-equalizer-2: equalizer-2 0.6s ease-in-out infinite;
 	--animate-equalizer-3: equalizer-3 0.7s ease-in-out infinite;
+}
+
+.library-activity-shell {
+	position: sticky;
+	top: var(--droppedneedle-topbar-height, 4rem);
+	z-index: 45;
+	border-bottom: 1px solid color-mix(in oklab, var(--color-base-content) 10%, transparent);
+	background: color-mix(in oklab, var(--color-base-100) 94%, transparent);
+	backdrop-filter: blur(0.75rem);
+}
+
+.library-activity-link {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	min-height: 4.5rem;
+	padding: 0.55rem clamp(1rem, 3vw, 2rem);
+	color: inherit;
+	text-decoration: none;
+}
+
+.library-activity-link:hover {
+	background: color-mix(in oklab, var(--color-base-content) 4%, transparent);
+}
+
+.library-activity-link:focus-visible {
+	outline: 2px solid var(--color-primary);
+	outline-offset: -2px;
+}
+
+.library-activity-link--quiet {
+	min-height: 2.4rem;
+	padding-block: 0.4rem;
+}
+
+.library-activity-failure {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.35rem clamp(1rem, 3vw, 2rem);
+	background: color-mix(in oklab, var(--color-error) 14%, var(--color-base-100));
+	color: var(--color-error);
+	font-size: 0.8rem;
+}
+
+.library-work-lane {
+	display: grid;
+	gap: 0.2rem;
+}
+
+.library-work-lane__track {
+	position: relative;
+	height: 0.36rem;
+	overflow: hidden;
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--color-base-content) 12%, transparent);
+}
+
+.library-work-lane__fill {
+	display: block;
+	height: 100%;
+	border-radius: inherit;
+	background: var(--color-library-index);
+	transition: width 220ms ease-out;
+}
+
+.library-work-lane[data-kind='identification'] .library-work-lane__fill {
+	background: var(--color-library-identify);
+}
+
+.library-work-lane__track--indeterminate::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	width: 42%;
+	background: repeating-linear-gradient(
+		110deg,
+		transparent 0 0.35rem,
+		color-mix(in oklab, var(--color-library-index) 52%, transparent) 0.35rem 0.7rem
+	);
+	animation: library-work-indeterminate 1.8s linear infinite;
+}
+
+.library-work-lane[data-kind='identification'] .library-work-lane__track--indeterminate::after {
+	background: repeating-linear-gradient(
+		110deg,
+		transparent 0 0.35rem,
+		color-mix(in oklab, var(--color-library-identify) 52%, transparent) 0.35rem 0.7rem
+	);
+}
+
+.library-work-lane__track--paused::after {
+	animation-play-state: paused;
+}
+
+.library-work-lane__track--failed {
+	box-shadow: inset 0 0 0 1px var(--color-library-failed);
+}
+
+@keyframes library-work-indeterminate {
+	from {
+		transform: translateX(-110%);
+	}
+	to {
+		transform: translateX(240%);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.genre-tile {
+		transition: none !important;
+		transform: none !important;
+	}
+	.library-work-lane__fill {
+		transition: none !important;
+	}
+	.library-work-lane__track--indeterminate::after {
+		animation: none !important;
+		transform: none !important;
+		width: 100%;
+	}
 }
 
 @keyframes shimmer {

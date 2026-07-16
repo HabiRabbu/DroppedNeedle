@@ -1,7 +1,6 @@
 """DownloadService tests: library check, search pipeline, pick/cancel ownership +
 bounds (domain exceptions), and the downloads-mount health check."""
 
-import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -31,8 +30,11 @@ def _candidate() -> ScoredCandidate:
         parent_directory="A - B",
         files=[
             DownloadSearchResult(
-                username="alice", filename="A - B/01.flac", parent_directory="A - B",
-                size=1, extension="flac",
+                username="alice",
+                filename="A - B/01.flac",
+                parent_directory="A - B",
+                size=1,
+                extension="flac",
             )
         ],
         coherence=0.9,
@@ -43,9 +45,15 @@ def _candidate() -> ScoredCandidate:
 
 
 def _make_service(
-    owner_id="u1", *, in_library=False, enabled=True,
-    upgrade_allowed=False, quality_cutoff="lossless", held_tier=None,
-    album_service=None, track_matcher=None,
+    owner_id="u1",
+    *,
+    in_library=False,
+    enabled=True,
+    upgrade_allowed=False,
+    quality_cutoff="lossless",
+    held_tier=None,
+    album_service=None,
+    track_matcher=None,
 ):
     client = AsyncMock()
     # Search is the indexer's job after the split (D2); it returns IndexerResults,
@@ -58,15 +66,19 @@ def _make_service(
     library.has_album.return_value = in_library
     # The album gate is now tier-aware (step 8): a held album reports its worst tier, an
     # absent one reports None. With upgrades off (the default) any held tier still skips.
-    library.album_quality_tier.return_value = held_tier if held_tier is not None else (
-        "lossless" if in_library else None
+    library.album_quality_tier.return_value = (
+        held_tier if held_tier is not None else ("lossless" if in_library else None)
     )
     store = AsyncMock()
     store.create_search_job.return_value = SearchJob(
         id="job1", user_id=owner_id, artist_name="A", album_title="B"
     )
     store.get_search_job.return_value = SearchJob(
-        id="job1", user_id=owner_id, artist_name="A", album_title="B", release_group_mbid="rg"
+        id="job1",
+        user_id=owner_id,
+        artist_name="A",
+        album_title="B",
+        release_group_mbid="rg",
     )
     store.get_search_job_candidates.return_value = [_candidate()]
     store.create_task.return_value = DownloadTask(id="task1", user_id=owner_id)
@@ -79,9 +91,18 @@ def _make_service(
     orchestrator.cancel_task = AsyncMock()
     orchestrator.retry_task = AsyncMock(return_value="task-retry")
     service = DownloadService(
-        client, indexer, scorer, library, store, bus, orchestrator, enabled=enabled,
-        upgrade_allowed=upgrade_allowed, quality_cutoff=quality_cutoff,
-        album_service=album_service, track_matcher=track_matcher,
+        client,
+        indexer,
+        scorer,
+        library,
+        store,
+        bus,
+        orchestrator,
+        enabled=enabled,
+        upgrade_allowed=upgrade_allowed,
+        quality_cutoff=quality_cutoff,
+        album_service=album_service,
+        track_matcher=track_matcher,
     )
     # The 4th element is the search source (indexer) - the only thing tests poke for
     # search behaviour now that search is split off the download client.
@@ -212,11 +233,39 @@ async def test_search_album_creates_job_and_runs_search():
 
 
 @pytest.mark.asyncio
+async def test_get_search_job_projects_current_order_with_original_pick_index():
+    service, store, *_ = _make_service()
+    manual = ScoredCandidate(
+        username="manual",
+        parent_directory="B Deluxe",
+        files=[
+            DownloadSearchResult(
+                username="manual",
+                filename="Music/A/B Deluxe/01.flac",
+                parent_directory="B Deluxe",
+                size=1,
+                extension="flac",
+            )
+        ],
+        final_score=0.59,
+        tier="manual",
+    )
+    store.get_search_job_candidates.return_value = [manual, _candidate()]
+
+    _job, candidates = await service.get_search_job("u1", "job1")
+
+    assert [candidate.username for candidate in candidates] == ["alice", "manual"]
+    assert [candidate.candidate_index for candidate in candidates] == [1, 0]
+
+
+@pytest.mark.asyncio
 async def test_run_search_failure_marks_failed():
     service, store, bus, indexer, _, _ = _make_service()
     indexer.search_album.side_effect = RuntimeError("boom")
     await service._run_search("job1", "A", "B", None, 12)
-    store.update_search_job_status.assert_any_await("job1", "failed", error="search failed")
+    store.update_search_job_status.assert_any_await(
+        "job1", "failed", error="search failed"
+    )
 
 
 @pytest.mark.asyncio
@@ -270,8 +319,11 @@ def _single_album_service(*, tracks=None, total=1, fail=False):
     if tracks is None:
         tracks = [
             SimpleNamespace(
-                position=1, disc_number=1, title="the arrival",
-                recording_id="rec-180ceef5", length=155556,
+                position=1,
+                disc_number=1,
+                title="the arrival",
+                recording_id="rec-180ceef5",
+                length=155556,
             )
         ]
     svc.get_album_tracks_info.return_value = SimpleNamespace(
@@ -299,8 +351,16 @@ async def test_request_album_threads_single_track_identity():
 
 @pytest.mark.asyncio
 async def test_request_album_multi_track_release_threads_nothing():
-    tracks = [SimpleNamespace(position=i, disc_number=1, title=f"T{i}",
-                              recording_id=f"r{i}", length=200000) for i in (1, 2, 3)]
+    tracks = [
+        SimpleNamespace(
+            position=i,
+            disc_number=1,
+            title=f"T{i}",
+            recording_id=f"r{i}",
+            length=200000,
+        )
+        for i in (1, 2, 3)
+    ]
     service, store, *_ = _make_service(
         album_service=_single_album_service(tracks=tracks, total=3)
     )
@@ -337,8 +397,12 @@ async def test_pick_candidate_resumes_parked_task_not_a_new_one():
     never arm) and the request linkage (terminal sync matches on the task id)."""
     service, store, _bus, _client, _scorer, orchestrator = _make_service()
     store.get_parked_task_for_search_job.return_value = DownloadTask(
-        id="parked1", user_id="u1", download_type="album", track_count=1,
-        track_title="the arrival", track_duration_seconds=155.556,
+        id="parked1",
+        user_id="u1",
+        download_type="album",
+        track_count=1,
+        track_title="the arrival",
+        track_duration_seconds=155.556,
     )
 
     task_id = await service.pick_candidate("u1", "job1", 0)
@@ -358,8 +422,12 @@ async def test_pick_candidate_standalone_single_rethreads_identity():
     # the pick re-resolves them so the canonical-duration/title gates still arm.
     service, store, *_ = _make_service(album_service=_single_album_service())
     store.get_search_job.return_value = SearchJob(
-        id="job1", user_id="u1", artist_name="Yan Qing", album_title="the arrival",
-        release_group_mbid="rg", track_count=1,
+        id="job1",
+        user_id="u1",
+        artist_name="Yan Qing",
+        album_title="the arrival",
+        release_group_mbid="rg",
+        track_count=1,
     )
 
     await service.pick_candidate("u1", "job1", 0)
@@ -383,7 +451,9 @@ async def test_search_soulseek_single_scores_via_track_matcher():
 
     from models.download import TargetAlbum
 
-    target = TargetAlbum(artist_name="Yan Qing", album_title="the arrival", track_count=1)
+    target = TargetAlbum(
+        artist_name="Yan Qing", album_title="the arrival", track_count=1
+    )
     await service._search_soulseek(target, ("rec-180ceef5", "the arrival", 155.556))
 
     track_matcher.rank.assert_awaited_once()
@@ -427,7 +497,10 @@ def _make_service_with_mb(owner_id="u1"):
     mb = MagicMock()
     mb.get_release_group = AsyncMock(
         return_value=SimpleNamespace(
-            title="Resolved Album", artist_name="Resolved Artist", year=2001, artist_id="artist-mbid-1"
+            title="Resolved Album",
+            artist_name="Resolved Artist",
+            year=2001,
+            artist_id="artist-mbid-1",
         )
     )
     service._matcher = matcher
@@ -446,7 +519,9 @@ async def test_request_album_already_in_library():
 @pytest.mark.asyncio
 async def test_request_album_dedup_returns_existing_task():
     service, store, _bus, _client, _scorer, orchestrator = _make_service()
-    store.get_active_task_for_album.return_value = DownloadTask(id="existing", user_id="u1")
+    store.get_active_task_for_album.return_value = DownloadTask(
+        id="existing", user_id="u1"
+    )
     result = await service.request_album("u1", "rg", "A", "B")
     assert result == "existing"
     store.create_task.assert_not_called()
@@ -482,8 +557,13 @@ async def test_request_album_track_request_does_not_clear_blocklist():
     store.get_active_task_for_track.return_value = None
     store.create_task.return_value = DownloadTask(id="t", user_id="u1")
     await service.request_album(
-        "u1", "rg", "Artist", "Album", year=1999,
-        recording_mbid="rec", download_type="track",
+        "u1",
+        "rg",
+        "Artist",
+        "Album",
+        year=1999,
+        recording_mbid="rec",
+        download_type="track",
     )
     store.delete_quarantine_for_album.assert_not_called()
 
@@ -525,7 +605,9 @@ async def test_stop_all_retries_cancels_only_pending_retries():
     stopped = await service.stop_all_retries("u1", "user")
 
     assert stopped == 2
-    store.list_tasks_by_status.assert_awaited_once_with("u1", "user", ["failed", "partial"])
+    store.list_tasks_by_status.assert_awaited_once_with(
+        "u1", "user", ["failed", "partial"]
+    )
     assert {c.args[0] for c in orch.cancel_task.await_args_list} == {"w", "p"}
 
 
@@ -576,7 +658,9 @@ def _with_album_service(service, *, total_tracks=12, raises=False):
     """Attach a stub AlbumService so the track-count backfill has a resolver."""
     album_service = MagicMock()
     if raises:
-        album_service.get_album_tracks_info = AsyncMock(side_effect=RuntimeError("MB down"))
+        album_service.get_album_tracks_info = AsyncMock(
+            side_effect=RuntimeError("MB down")
+        )
     else:
         album_service.get_album_tracks_info = AsyncMock(
             return_value=SimpleNamespace(total_tracks=total_tracks)
@@ -625,7 +709,9 @@ async def test_request_album_keeps_explicit_track_count_without_mb_call():
     store.get_active_task_for_album.return_value = None
     album_service = _with_album_service(service, total_tracks=99)
 
-    await service.request_album("u1", "rg", "Artist", "Album", year=1999, track_count=10)
+    await service.request_album(
+        "u1", "rg", "Artist", "Album", year=1999, track_count=10
+    )
 
     assert store.create_task.await_args.kwargs["track_count"] == 10
     album_service.get_album_tracks_info.assert_not_called()
@@ -668,7 +754,9 @@ async def test_request_track_resolves_and_creates_track_task():
     store.get_active_task_for_track.return_value = None
     store.create_task.return_value = DownloadTask(id="track-task", user_id="u1")
 
-    result = await service.request_track("u1", "rec-1", "", "Airbag", duration_seconds=212)
+    result = await service.request_track(
+        "u1", "rec-1", "", "Airbag", duration_seconds=212
+    )
 
     assert result == "track-task"
     matcher.resolve_recording_to_release_group.assert_awaited_once_with("rec-1")
@@ -690,10 +778,14 @@ async def test_request_track_dedup_is_recording_keyed_not_album_keyed():
     service, store, _client, orchestrator, _matcher, _mb = _make_service_with_mb()
     service._library.has_track.return_value = False
     store.get_active_task_for_track.return_value = None
-    store.get_active_task_for_album.return_value = DownloadTask(id="album-active", user_id="u1")
+    store.get_active_task_for_album.return_value = DownloadTask(
+        id="album-active", user_id="u1"
+    )
     store.create_task.return_value = DownloadTask(id="track-task", user_id="u1")
 
-    result = await service.request_track("u1", "rec-2", "Artist", "Lucky", release_group_mbid="rg-x")
+    result = await service.request_track(
+        "u1", "rec-2", "Artist", "Lucky", release_group_mbid="rg-x"
+    )
 
     assert result == "track-task"
     store.get_active_task_for_track.assert_awaited_once_with("rec-2", "u1")
@@ -757,7 +849,9 @@ def test_mount_ok(tmp_path):
 def test_mount_not_writable(tmp_path, monkeypatch):
     downloads = tmp_path / "dl"
     downloads.mkdir()
-    monkeypatch.setattr("services.native.download_service.os.access", lambda p, m: False)
+    monkeypatch.setattr(
+        "services.native.download_service.os.access", lambda p, m: False
+    )
     status = check_downloads_mount(downloads, [tmp_path])
     assert status.ok is False
     assert status.reason == "not_writable"
@@ -785,26 +879,48 @@ def test_mount_different_filesystem(tmp_path, monkeypatch):
 # -- held imports (import anyway / discard) --
 
 
-def _held_service(store, file_processor):
+def _held_service(store, file_processor, library_reconciler=None):
     """A DownloadService with only the deps the held methods touch."""
     library = MagicMock()
     library.reconcile_with_filesystem = AsyncMock()
     orchestrator = MagicMock()
     orchestrator.settle_after_manual_import = AsyncMock()
     return DownloadService(
-        MagicMock(), MagicMock(), MagicMock(), library, store, MagicMock(),
-        orchestrator, file_processor=file_processor,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        library,
+        store,
+        MagicMock(),
+        orchestrator,
+        file_processor=file_processor,
+        library_reconciler=library_reconciler,
     )
 
 
 async def _record_held(store, path, *, task_id="t-1"):
     return await store.record_held_import(
-        user_id="user-a", held_path=str(path), reason="fingerprint_mismatch", source="usenet",
-        source_task_id=task_id, release_group_mbid="rg-1", release_mbid=None, recording_mbid="rec-3",
-        track_number=3, disc_number=1, track_title="You Shook Me", artist_name="Led Zeppelin",
+        user_id="user-a",
+        held_path=str(path),
+        reason="fingerprint_mismatch",
+        source="usenet",
+        source_task_id=task_id,
+        release_group_mbid="rg-1",
+        release_mbid=None,
+        recording_mbid="rec-3",
+        track_number=3,
+        disc_number=1,
+        track_title="You Shook Me",
+        artist_name="Led Zeppelin",
         artist_mbid="678d88b2-87b0-403b-b63d-5da7465aecc3",
-        album_title="Led Zeppelin", year=1969, original_filename="x.flac", file_format="flac",
-        duration_seconds=388.0, evidence_title="X", evidence_artist="Y", evidence_score=0.9,
+        album_title="Led Zeppelin",
+        year=1969,
+        original_filename="x.flac",
+        file_format="flac",
+        duration_seconds=388.0,
+        evidence_title="X",
+        evidence_artist="Y",
+        evidence_score=0.9,
         naming_template="{album}/{track}",
     )
 
@@ -824,9 +940,13 @@ async def test_discard_held_deletes_the_file(tmp_path):
 
     await svc.discard_held(hid, "user-a", "user")
 
-    assert not held_file.exists()  # the rejected file is ALWAYS removed (the requirement)
+    assert (
+        not held_file.exists()
+    )  # the rejected file is ALWAYS removed (the requirement)
     assert await store.list_held_imports("user-a", "user") == []  # dropped from review
-    assert await store.has_unresolved_held_for_task("t-1") is False  # auto-retry can resume
+    assert (
+        await store.has_unresolved_held_for_task("t-1") is False
+    )  # auto-retry can resume
 
 
 @pytest.mark.asyncio
@@ -841,14 +961,23 @@ async def test_import_held_places_and_resolves(tmp_path):
     held_file.write_bytes(b"audio")
     hid = await _record_held(store, held_file)
     fp = MagicMock()
-    fp.place_held_file = AsyncMock(return_value=Path("/music/Led Zeppelin/03 You Shook Me.flac"))
-    svc = _held_service(store, fp)
+    fp.place_held_file = AsyncMock(
+        return_value=Path("/music/Led Zeppelin/03 You Shook Me.flac")
+    )
+    reconciler = MagicMock()
+    reconciler.reconcile_with_filesystem = AsyncMock()
+    svc = _held_service(store, fp, reconciler)
 
     final_path = await svc.import_held(hid, "user-a", "user")
 
     assert final_path.endswith("03 You Shook Me.flac")
     fp.place_held_file.assert_awaited_once()
-    assert await store.list_held_imports("user-a", "user") == []  # resolved -> off the review list
+    reconciler.reconcile_with_filesystem.assert_awaited_once_with(
+        targets=[Path("/music/Led Zeppelin")]
+    )
+    assert (
+        await store.list_held_imports("user-a", "user") == []
+    )  # resolved -> off the review list
     assert await store.has_unresolved_held_for_task("t-1") is False
     # the source task is re-measured so a completed album stops showing a phantom retry
     svc._orchestrator.settle_after_manual_import.assert_awaited_once_with("t-1")
@@ -877,35 +1006,62 @@ async def test_purge_album_downloads_clears_tasks_held_and_quarantine(tmp_path):
 
     db_path = tmp_path / "library.db"
     conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE IF NOT EXISTS auth_users (id TEXT PRIMARY KEY, username TEXT, role TEXT)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS auth_users (id TEXT PRIMARY KEY, username TEXT, role TEXT)"
+    )
     conn.execute("INSERT OR IGNORE INTO auth_users VALUES ('user-a','a','user')")
     conn.commit()
     conn.close()
     store = DownloadStore(db_path=db_path, write_lock=threading.Lock())
     RG = "rg-1"
     task = await store.create_task(
-        user_id="user-a", release_group_mbid=RG, artist_name="a", album_title="b", source="usenet"
+        user_id="user-a",
+        release_group_mbid=RG,
+        artist_name="a",
+        album_title="b",
+        source="usenet",
     )
     await store.update_status(task.id, "partial", files_completed=7)  # would auto-retry
     await store.record_quarantine(
-        source="usenet", identity="bad-release", reason="verify_failed", release_group_mbid=RG
+        source="usenet",
+        identity="bad-release",
+        reason="verify_failed",
+        release_group_mbid=RG,
     )
     held_file = tmp_path / "held" / "x.flac"
     held_file.parent.mkdir()
     held_file.write_bytes(b"audio")
     await store.record_held_import(
-        user_id="user-a", held_path=str(held_file), reason="fingerprint_mismatch", source="usenet",
-        source_task_id=task.id, release_group_mbid=RG, release_mbid=None, recording_mbid=None,
-        track_number=3, disc_number=1, track_title="t", artist_name="a", artist_mbid=None,
-        album_title="b", year=None,
-        original_filename="x.flac", file_format="flac", duration_seconds=1.0, evidence_title=None,
-        evidence_artist=None, evidence_score=None, naming_template=None,
+        user_id="user-a",
+        held_path=str(held_file),
+        reason="fingerprint_mismatch",
+        source="usenet",
+        source_task_id=task.id,
+        release_group_mbid=RG,
+        release_mbid=None,
+        recording_mbid=None,
+        track_number=3,
+        disc_number=1,
+        track_title="t",
+        artist_name="a",
+        artist_mbid=None,
+        album_title="b",
+        year=None,
+        original_filename="x.flac",
+        file_format="flac",
+        duration_seconds=1.0,
+        evidence_title=None,
+        evidence_artist=None,
+        evidence_score=None,
+        naming_template=None,
     )
     svc = _held_service(store, MagicMock())
 
     await svc.purge_album_downloads(RG)
 
-    assert (await store.get_task(task.id)).status == "cancelled"  # no auto-retry resurrection
+    assert (
+        await store.get_task(task.id)
+    ).status == "cancelled"  # no auto-retry resurrection
     assert await store.list_held_imports("user-a", "user") == []  # held rows gone
     assert not held_file.exists()  # held file deleted from disk
     assert await store.list_quarantine() == []  # blocklist cleared
@@ -920,7 +1076,9 @@ async def test_storage_admission_blocks_request_album_before_task_creation():
 
     service, store, *_ = _make_service()
     quota = AsyncMock()
-    quota.check_storage_admission.side_effect = VErr("Library storage limit reached (10.0 / 10 GB)")
+    quota.check_storage_admission.side_effect = VErr(
+        "Library storage limit reached (10.0 / 10 GB)"
+    )
     service._quota = quota
     store.get_active_task_for_album.return_value = None
 
@@ -937,7 +1095,9 @@ async def test_storage_admission_blocks_pick_candidate():
 
     service, store, *_ = _make_service()
     quota = AsyncMock()
-    quota.check_storage_admission.side_effect = VErr("Your storage budget is full (5.0 / 5 GB)")
+    quota.check_storage_admission.side_effect = VErr(
+        "Your storage budget is full (5.0 / 5 GB)"
+    )
     service._quota = quota
 
     with pytest.raises(VErr):

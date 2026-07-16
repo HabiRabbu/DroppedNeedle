@@ -2,23 +2,28 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from core import dependencies as deps
 from core.dependencies import cleanup as _cleanup_mod
 
 
 LASTFM_DEPENDENT_FACTORIES = [
     "get_artist_discovery_service",
+    "get_target_artist_discovery_service",
     "get_album_discovery_service",
+    "get_target_album_discovery_service",
     "get_artist_enrichment_service",
     "get_album_enrichment_service",
     "get_search_enrichment_service",
     "get_scrobble_service",
     "get_home_charts_service",
+    "get_target_home_charts_service",
     "get_home_service",
+    "get_target_home_service",
     "get_discover_service",
+    "get_target_discover_service",
+    "get_target_discover_queue_manager",
     "get_lastfm_auth_service",
+    "get_target_wrapped_service",
 ]
 
 

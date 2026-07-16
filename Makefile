@@ -91,6 +91,14 @@ NPM    ?= pnpm
 	backend-test-subsonic-security backend-test-subsonic-hosted backend-test-navidrome-folders \
 	test-subsonic \
 	backend-test-peer-review-fixes \
+	backend-test-feedback-fixes \
+	frontend-test-feedback-fixes \
+	feedback-fixes-benchmark \
+	feedback-fixes-root-mapping \
+	feedback-fixes-migration-rehearsal \
+	feedback-fixes-maintenance-rehearsal \
+	feedback-fixes-cli-rehearsal \
+	feedback-fixes-automatic-upgrade-rehearsal \
 	backend-test-discover-all \
 	test-discover-all \
 	test-audiodb-all test-mus14-all test-sync-all \
@@ -289,8 +297,8 @@ backend-test-profile: $(BACKEND_VENV_STAMP) ## Run per-user profile + self-servi
 backend-test-user-import: $(BACKEND_VENV_STAMP) ## Run Phase 6 admin user-import service + route tests
 	$(PYTEST) tests/services/test_user_import_service.py tests/routes/test_user_import_routes.py
 
-backend-test-home-genre: $(BACKEND_VENV_STAMP) ## Run home genre decoupling tests
-	$(PYTEST) tests/services/test_home_genre_decoupling.py
+backend-test-home-genre: $(BACKEND_VENV_STAMP) ## Run collection-grounded genre artwork tests
+	$(PYTEST) tests/services/test_genre_artwork_service.py tests/services/test_cached_local_artwork_service.py
 
 backend-test-infra-hardening: $(BACKEND_VENV_STAMP) ## Run infrastructure hardening tests
 	$(PYTEST) tests/infrastructure/test_circuit_breaker_sync.py tests/infrastructure/test_disk_cache_periodic.py tests/infrastructure/test_retry_non_breaking.py
@@ -419,7 +427,7 @@ backend-test-navidrome: $(BACKEND_VENV_STAMP) ## Run all Navidrome integration b
 	$(PYTEST) tests/repositories/test_navidrome_repository.py tests/services/test_navidrome_library_service.py tests/services/test_navidrome_playback_service.py tests/services/test_navidrome_cache_invalidation.py tests/services/test_navidrome_stream_proxy.py tests/routes/test_navidrome_routes.py -v
 
 backend-test-performance: $(BACKEND_VENV_STAMP) ## Run performance regression tests
-	$(PYTEST) tests/services/test_album_singleflight.py tests/services/test_artist_singleflight.py tests/services/test_genre_batch_parallel.py tests/services/test_cache_stats_nonblocking.py tests/services/test_settings_cache_invalidation.py tests/services/test_discover_enrich_singleflight.py
+	$(PYTEST) tests/services/test_album_singleflight.py tests/services/test_artist_singleflight.py tests/services/test_genre_artwork_service.py tests/services/test_cache_stats_nonblocking.py tests/services/test_settings_cache_invalidation.py tests/services/test_discover_enrich_singleflight.py
 
 backend-test-preferences: $(BACKEND_VENV_STAMP) ## Run release-type preferences persistence + consumer (artist/search) tests
 	$(PYTEST) tests/services/test_preferences_generic_settings.py tests/services/test_preferences_library_settings.py tests/services/test_settings_cache_invalidation.py tests/services/test_search_service.py tests/services/test_artist_release_pagination.py tests/test_cache_key_contracts.py tests/repositories/test_musicbrainz_recording_search.py -v
@@ -453,6 +461,128 @@ backend-test-username-login: $(BACKEND_VENV_STAMP) ## Run Phase 1 username-login
 
 backend-test-peer-review-fixes: $(BACKEND_VENV_STAMP) ## Run peer review fix regression tests
 	$(PYTEST) tests/test_peer_review_fixes.py -v
+
+backend-test-feedback-fixes: $(BACKEND_VENV_STAMP) ## Feedback Fixes focused backend tests
+	$(PYTEST) tests/services/native tests/benchmarks \
+		tests/compat/test_feedback_fixes_contract.py \
+		tests/infrastructure/test_native_library_store.py \
+		tests/infrastructure/test_native_library_store_dependencies.py \
+		tests/infrastructure/test_legacy_catalog_importer.py \
+		tests/infrastructure/test_maintenance_manifest.py \
+		tests/infrastructure/test_feedback_fixes_maintenance.py \
+		tests/infrastructure/test_automatic_upgrade.py \
+		tests/infrastructure/test_target_scan_lifecycle.py \
+		tests/repositories/test_musicbrainz_identification_repository.py \
+		tests/infrastructure/test_sse_publisher.py \
+		tests/test_dependencies_package.py \
+		tests/services/test_preferences_typed_library_settings.py \
+		tests/services/test_album_service.py \
+		tests/services/test_album_discovery_service.py \
+		tests/services/test_acquisition_dispatcher.py \
+		tests/services/test_artist_discovery_service.py \
+		tests/services/test_discover_service.py \
+		tests/test_discover_home_peruser.py \
+		tests/services/test_home_charts_service.py \
+		tests/services/test_home_service.py \
+		tests/routes/test_home_routes.py \
+		tests/services/test_wrapped_target_authority.py \
+		tests/services/test_genre_artwork_service.py \
+		tests/services/test_genre_artwork_surfaces.py \
+		tests/services/test_cached_local_artwork_service.py \
+		tests/services/test_download_service.py \
+		tests/services/test_file_processor.py \
+		tests/services/test_drop_import_service.py \
+		tests/services/test_free_music_service.py \
+		tests/services/test_request_free_music_dispatch.py \
+		tests/services/test_quota_service.py \
+		tests/services/test_events_watcher_service.py \
+		tests/services/test_now_playing.py \
+		tests/services/test_settings_cache_invalidation.py \
+		tests/services/test_spotify_import_service.py \
+		tests/routes/test_cache_routes.py \
+		tests/routes/test_discovery_batches_routes.py \
+		tests/routes/test_download_client_routes.py \
+		tests/routes/test_download_clients_routes.py \
+		tests/routes/test_indexer_routes.py \
+		tests/routes/test_settings_events_routes.py \
+		tests/routes/test_spotify_routes.py \
+		tests/routes/test_library_policy_routes.py \
+		tests/routes/test_library_operations_target_routes.py \
+		tests/routes/test_target_library_policy_routes.py \
+		tests/routes/test_target_library_scan_routes.py \
+		tests/routes/test_target_library_routes.py \
+		tests/routes/test_target_application.py \
+		tests/compat/test_subsonic_scan.py \
+		tests/test_auto_scan_task.py \
+		tests/test_cache_cleanup.py \
+		tests/test_lastfm_cache_invalidation.py \
+		tests/security/test_auth_on_every_endpoint.py \
+		tests/services/test_library_scanner.py::test_album_match_claims_unmapped_files_under_the_album -v
+
+frontend-test-feedback-fixes: ## Feedback Fixes focused frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/__tests__/integration-coverage.spec.ts \
+		src/lib/queries/library/LibraryQueries.spec.ts \
+		src/lib/queries/library/LibraryMutations.spec.ts \
+		src/lib/queries/library/LibraryFeedbackQueries.spec.ts \
+		src/lib/queries/library/LibraryActivityEvents.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/genre/GenreQueryKeyFactory.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client \
+		src/lib/components/library/LibraryActivityStrip.svelte.spec.ts \
+		src/lib/components/library/LibraryOperationsPanel.svelte.spec.ts \
+		src/lib/components/library/LibraryReviewTable.svelte.spec.ts \
+		src/lib/components/library/LibraryReviewDetail.svelte.spec.ts \
+		src/lib/components/library/LibraryReviewBrowser.svelte.spec.ts \
+		src/lib/components/library/LibraryReviewFilters.svelte.spec.ts \
+		src/lib/components/library/LibraryBulkActionDialog.svelte.spec.ts \
+		src/lib/components/library/LibraryRepairPanel.svelte.spec.ts \
+		src/lib/components/library/LibraryRunHistory.svelte.spec.ts \
+		src/lib/components/library/LibraryRootPolicyEditor.svelte.spec.ts \
+		src/lib/components/library/AlbumIdentificationPanel.svelte.spec.ts \
+		src/lib/components/library/AlbumOrganizationDialog.svelte.spec.ts \
+		src/lib/components/library/ArtistMergeDialog.svelte.spec.ts \
+		src/lib/components/library/LibraryAlbumCard.svelte.spec.ts \
+		src/lib/components/library/LocalAlbumTrackList.svelte.spec.ts \
+		src/lib/components/settings/SettingsLibrary.svelte.spec.ts \
+		src/lib/components/AlbumImage.svelte.spec.ts \
+		src/lib/components/GenreArtwork.svelte.spec.ts \
+		src/lib/components/GenreGrid.svelte.spec.ts \
+		src/lib/components/HomeSection.svelte.spec.ts \
+		src/routes/album/\[id\]/page.svelte.spec.ts \
+		src/routes/genre/page.svelte.spec.ts \
+		src/routes/library/page.svelte.spec.ts \
+		src/routes/library/review/page.svelte.spec.ts \
+		src/routes/library/albums/\[id\]/page.svelte.spec.ts
+
+feedback-fixes-benchmark: $(BACKEND_VENV_STAMP) ## Run the non-default Feedback Fixes benchmark harness
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_benchmark \
+		--sizes 1000 25000 115000 \
+		--target-sizes 10000 115000 \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-latest.json"
+
+feedback-fixes-root-mapping: $(BACKEND_VENV_STAMP) ## Rehearse typed-root migration and path mapping in scratch
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_root_mapping \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-root-mapping.json"
+
+feedback-fixes-migration-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse target import against a generated coherent copy
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_migration_rehearsal \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-migration-latest.json"
+
+feedback-fixes-maintenance-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse closed-source manifest, target startup, and full rollback in scratch
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_maintenance_rehearsal \
+		--source-commit "$$(git -C "$(ROOT_DIR)" rev-parse HEAD)" \
+		--file-count 115000 \
+		--managed-asset-bytes 134217728 \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-maintenance-latest.json"
+
+feedback-fixes-cli-rehearsal: $(BACKEND_VENV_STAMP) ## Run the exact staged maintenance CLI against isolated Docker/Compose scratch
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_cli_rehearsal \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-cli-latest.json"
+
+feedback-fixes-automatic-upgrade-rehearsal: $(BACKEND_VENV_STAMP) ## Prove a normal image update, restart, and fresh install need no maintenance command
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_automatic_upgrade_rehearsal \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-automatic-upgrade-latest.json"
 
 backend-test-plex: $(BACKEND_VENV_STAMP) ## Run all Plex integration backend tests
 	$(PYTEST) tests/repositories/test_plex_repository.py tests/services/test_plex_playback_service.py tests/services/test_plex_library_service.py tests/routes/test_plex_routes.py tests/routes/test_plex_settings.py tests/routes/test_plex_auth.py tests/services/test_plex_integration_status.py tests/services/test_plex_settings_lifecycle.py -v

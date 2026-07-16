@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from infrastructure.queue.priority_queue import RequestPriority
 from repositories.musicbrainz_album import _pick_best_release_group
@@ -44,12 +44,19 @@ class SpotifyImportService:
     def __init__(
         self,
         client_factory: PerUserClientFactory,
-        playlist_repo: PlaylistRepository,
+        playlist_repo: PlaylistRepository | None,
         mb_repo: MusicBrainzRepository,
         playlist_service: PlaylistService,
+        async_playlist_repo: Any | None = None,
     ) -> None:
         self._client_factory = client_factory
-        self._async_repo = AsyncPlaylistRepository(playlist_repo)
+        if async_playlist_repo is None and playlist_repo is None:
+            raise ValueError("A playlist repository is required.")
+        self._async_repo = (
+            async_playlist_repo
+            if async_playlist_repo is not None
+            else AsyncPlaylistRepository(playlist_repo)
+        )
         self._mb_repo = mb_repo
         self._playlist_service = playlist_service
 
@@ -71,7 +78,7 @@ class SpotifyImportService:
 
         user_playlists = await self._async_repo.get_all_playlists(user_id)
         imported_mapping: dict[str, str] = {
-            pl.source_ref[len("spotify:"):]: pl.id
+            pl.source_ref[len("spotify:") :]: pl.id
             for pl in user_playlists
             if pl.source_ref and pl.source_ref.startswith("spotify:")
         }
@@ -203,7 +210,9 @@ class SpotifyImportService:
                     rec_id = rec.get("id")
                     if not rec_id:
                         continue
-                    mbid = await self._mb_repo.resolve_recording_to_release_group(rec_id)
+                    mbid = await self._mb_repo.resolve_recording_to_release_group(
+                        rec_id
+                    )
                     if mbid:
                         return mbid
                 all_releases: list[dict] = []

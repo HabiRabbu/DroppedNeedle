@@ -7,15 +7,15 @@
 	} from '$lib/queries/downloads/DownloadClientQueries.svelte';
 	import { getSabnzbdConfigQuery } from '$lib/queries/downloads/DownloadClientsQueries.svelte';
 	import { getIndexersQuery } from '$lib/queries/downloads/IndexerQueries.svelte';
-	import { getLibrarySettingsQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import { getTargetLibrarySettingsQuery } from '$lib/queries/library/LibraryPolicyQueries.svelte';
 
-	const libQuery = getLibrarySettingsQuery();
+	const libQuery = getTargetLibrarySettingsQuery();
 	const dcQuery = getDownloadClientConfigQuery();
 	const statusQuery = getDownloadClientStatusQuery();
 	const sabQuery = getSabnzbdConfigQuery();
 	const indexersQuery = getIndexersQuery();
 
-	const hasLibraryPath = $derived((libQuery.data?.library_paths?.length ?? 0) > 0);
+	const hasLibraryPath = $derived((libQuery.data?.library_roots.length ?? 0) > 0);
 	const slskdConfigured = $derived(Boolean(dcQuery.data?.url && dcQuery.data?.api_key));
 	const sabnzbdEnabled = $derived(sabQuery.data?.enabled === true && Boolean(sabQuery.data?.url));
 	const hasIndexer = $derived((indexersQuery.data?.length ?? 0) > 0);

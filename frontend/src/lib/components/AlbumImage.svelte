@@ -1,8 +1,11 @@
 <script lang="ts">
 	import BaseImage from './BaseImage.svelte';
+	import { API } from '$lib/constants';
 
 	interface Props {
-		mbid: string;
+		mbid?: string;
+		albumId?: string;
+		coverVersion?: number;
 		alt?: string;
 		size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'hero' | 'full';
 		lazy?: boolean;
@@ -12,10 +15,15 @@
 		customUrl?: string | null;
 		remoteUrl?: string | null;
 		onload?: () => void;
+		testId?: string;
+		source?: 'provider' | 'local';
+		available?: boolean;
 	}
 
 	let {
-		mbid,
+		mbid = '',
+		albumId = undefined,
+		coverVersion = undefined,
 		alt = 'Album',
 		size = 'md',
 		lazy = true,
@@ -24,8 +32,17 @@
 		rounded = 'lg',
 		customUrl = null,
 		remoteUrl = null,
-		onload = undefined
+		onload = undefined,
+		testId = undefined,
+		source = 'provider',
+		available = true
 	}: Props = $props();
+
+	let cachedLocalUrl = $derived(
+		albumId && coverVersion !== undefined
+			? API.library.cachedAlbumArtwork(albumId, coverVersion)
+			: null
+	);
 </script>
 
 <BaseImage
@@ -36,8 +53,13 @@
 	{showPlaceholder}
 	{className}
 	{rounded}
-	{customUrl}
+	customUrl={cachedLocalUrl ?? customUrl}
 	{remoteUrl}
 	{onload}
+	{testId}
+	source={cachedLocalUrl ? 'local' : source}
+	{available}
+	retryOnError={!cachedLocalUrl}
+	transparentFallback={Boolean(cachedLocalUrl)}
 	imageType="album"
 />

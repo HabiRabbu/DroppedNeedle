@@ -54,7 +54,7 @@
 		loader.abort();
 		loading = true;
 		try {
-			data = await api.get<NativeTrackPage>(
+			data = await api.global.get<NativeTrackPage>(
 				API.library.tracks(PAGE_SIZE, currentPage * PAGE_SIZE, sort, searchQuery)
 			);
 		} catch {
@@ -130,7 +130,7 @@
 	function isTrackPlaying(track: NativeTrackListItem): boolean {
 		return (
 			playerStore.isPlaying &&
-			playerStore.currentQueueItem?.trackSourceId === track.track_file_id &&
+			playerStore.currentQueueItem?.trackSourceId === track.id &&
 			playerStore.currentQueueItem?.sourceType === 'local'
 		);
 	}
@@ -257,7 +257,7 @@
 			class="divide-y divide-base-content/5 overflow-hidden rounded-xl bg-base-100/40 shadow-sm"
 			use:reveal
 		>
-			{#each data.items as track, i (track.track_file_id)}
+			{#each data.items as track, i (track.id)}
 				{@const playing = isTrackPlaying(track)}
 				<div
 					class="group flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors {playing
@@ -272,9 +272,10 @@
 				>
 					<div class="relative h-12 w-12 shrink-0">
 						<AlbumImage
-							mbid={track.album_mbid ?? ''}
-							remoteUrl={track.cover_url}
-							alt={track.album_name}
+							mbid={track.album_id}
+							source="local"
+							available={track.cover_available}
+							alt={track.album_title}
 							size="full"
 							rounded="md"
 							className="h-12 w-12 ring-1 ring-base-content/10"
@@ -297,8 +298,8 @@
 							{track.title}
 						</div>
 						<div class="truncate text-xs text-base-content/55">
-							{track.artist_name}{#if track.album_name}<span class="text-base-content/35">
-									· {track.album_name}</span
+							{track.artist_name}{#if track.album_title}<span class="text-base-content/35">
+									· {track.album_title}</span
 								>{/if}
 						</div>
 					</div>

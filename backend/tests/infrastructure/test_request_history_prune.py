@@ -35,7 +35,9 @@ async def _seed_terminal_request(store: RequestHistoryStore, mbid: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_watched_terminal_request_survives_prune_unwatched_twin_dies(tmp_path: Path):
+async def test_watched_terminal_request_survives_prune_unwatched_twin_dies(
+    tmp_path: Path,
+):
     lock = threading.Lock()
     db_path = tmp_path / "library.db"
     requests = RequestHistoryStore(db_path=db_path, write_lock=lock)
@@ -48,11 +50,18 @@ async def test_watched_terminal_request_survives_prune_unwatched_twin_dies(tmp_p
 
     for mbid in ("rg-watched", "rg-dormant", "rg-stopped"):
         await wanted.create_watch(
-            release_group_mbid=mbid, user_id="user-a", artist_name="Artist",
-            album_title="Album", kind="missing", next_check_at=time.time(),
+            release_group_mbid=mbid,
+            user_id="user-a",
+            artist_name="Artist",
+            album_title="Album",
+            kind="missing",
+            next_check_at=time.time(),
         )
     await wanted.record_cycle(
-        "rg-dormant", outcome="no_results", next_check_at=time.time(), quiet=True,
+        "rg-dormant",
+        outcome="no_results",
+        next_check_at=time.time(),
+        quiet=True,
         go_dormant=True,
     )
     await wanted.stop_watch("rg-stopped")
@@ -75,3 +84,27 @@ async def test_prune_still_works_without_the_wanted_table(tmp_path: Path):
     await _seed_terminal_request(requests, "rg-old")
     assert await requests.prune_old_terminal_requests(180) == 1
     assert await requests.async_get_record("rg-old") is None
+
+
+@pytest.mark.asyncio
+async def test_requested_mbids_include_every_nonterminal_ui_state(tmp_path: Path):
+    requests = RequestHistoryStore(
+        db_path=tmp_path / "requests.db", write_lock=threading.Lock()
+    )
+    statuses = {
+        "rg-pending": "pending",
+        "rg-downloading": "downloading",
+        "rg-awaiting": "awaiting_approval",
+        "rg-queued": "queued",
+        "rg-failed": "failed",
+    }
+    for mbid, status in statuses.items():
+        await requests.async_record_request(mbid, "Artist", "Album")
+        await requests.async_update_status(mbid, status)
+
+    assert await requests.async_get_requested_mbids() == {
+        "rg-pending",
+        "rg-downloading",
+        "rg-awaiting",
+        "rg-queued",
+    }

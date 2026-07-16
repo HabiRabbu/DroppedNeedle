@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { run } from 'svelte/legacy';
-
 	import { onDestroy } from 'svelte';
 	import { Disc3, Users } from 'lucide-svelte';
 	import { lazyImage, resetLazyImage } from '$lib/utils/lazyImage';
@@ -21,6 +19,11 @@
 		customUrl?: string | null;
 		remoteUrl?: string | null;
 		imageType?: 'album' | 'artist';
+		source?: 'provider' | 'local';
+		available?: boolean;
+		retryOnError?: boolean;
+		transparentFallback?: boolean;
+		testId?: string;
 		onload?: () => void;
 	}
 
@@ -35,6 +38,11 @@
 		customUrl = null,
 		remoteUrl = null,
 		imageType = 'album',
+		source = 'provider',
+		available = true,
+		retryOnError = true,
+		transparentFallback = false,
+		testId = undefined,
 		onload = undefined
 	}: Props = $props();
 
@@ -102,10 +110,11 @@
 			? getApiUrl(`/api/v1/covers/release-group/${mbid}?size=${apiSizes[size]}`)
 			: null
 	);
-	let validMbid = $derived(imageType === 'artist' ? isValidMbid(mbid) : true);
+	let validMbid = $derived(source === 'local' || imageType === 'album' ? true : isValidMbid(mbid));
 	let hasSource = $derived(
-		(useRemoteUrl && resolvedRemoteUrl) ||
-			(imageType === 'album' ? canonicalAlbumCoverUrl || customUrl || mbid : validMbid)
+		available &&
+			((useRemoteUrl && resolvedRemoteUrl) ||
+				(imageType === 'album' ? canonicalAlbumCoverUrl || customUrl || mbid : validMbid))
 	);
 	let apiEndpoint = $derived(imageType === 'album' ? 'release-group' : 'artist');
 	let fallbackCoverUrl = $derived(
@@ -123,7 +132,7 @@
 	let sizeClass = $derived(sizeClasses[size]);
 	let roundedClass = $derived(roundedClasses[rounded]);
 
-	run(() => {
+	$effect(() => {
 		const newKey = coverUrl;
 		if (newKey !== retrySourceKey) {
 			retrySourceKey = newKey;
@@ -140,7 +149,7 @@
 		}
 	});
 
-	run(() => {
+	$effect(() => {
 		const source = imageType === 'album' ? (canonicalAlbumCoverUrl ?? customUrl ?? mbid) : mbid;
 		if (source && imgElement && source !== currentSource) {
 			currentSource = source;
@@ -150,7 +159,7 @@
 		}
 	});
 
-	run(() => {
+	$effect(() => {
 		remoteError = false;
 		if (remoteUrl) imgLoaded = false;
 	});
@@ -161,7 +170,7 @@
 	}
 
 	function onImgError() {
-		if (retryCount < MAX_RETRIES) {
+		if (retryOnError && retryCount < MAX_RETRIES) {
 			// Hide the img so it re-creates and re-requests on the next tick; hold the skeleton
 			// (imgLoaded false, failed false) until it either lands or we give up.
 			imgError = true;
@@ -206,7 +215,11 @@
 	});
 </script>
 
-<div class="relative overflow-hidden shrink-0 bg-base-200 {sizeClass} {roundedClass} {className}">
+<div
+	class="relative overflow-hidden shrink-0 {transparentFallback
+		? 'bg-transparent'
+		: 'bg-base-200'} {sizeClass} {roundedClass} {className}"
+>
 	{#if showPlaceholder && (!imgLoaded || !hasSource)}
 		{#if !hasSource || failed}
 			<div class="absolute inset-0 w-full h-full flex items-center justify-center">
@@ -225,6 +238,7 @@
 	{/if}
 	{#if useRemoteUrl && resolvedRemoteUrl && !remoteError}
 		<img
+			data-testid={testId}
 			src={resolvedRemoteUrl}
 			{alt}
 			class="w-full h-full object-cover transition-opacity duration-300"
@@ -238,6 +252,7 @@
 	{:else if hasSource && !imgError}
 		{#if lazy}
 			<img
+				data-testid={testId}
 				src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
 				data-src={retryCoverUrl}
 				{alt}
@@ -251,6 +266,7 @@
 			/>
 		{:else}
 			<img
+				data-testid={testId}
 				src={retryCoverUrl}
 				{alt}
 				class="w-full h-full object-cover transition-opacity duration-300"

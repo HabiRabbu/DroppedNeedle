@@ -86,7 +86,9 @@ async def test_cached_album_membership_is_overlaid_from_active_files():
         album_thumb_url="cached-thumb",
     )
     service._get_cached_album_info = AsyncMock(return_value=cached)
-    service._apply_audiodb_album_images = AsyncMock(side_effect=lambda info, *a, **k: info)
+    service._apply_audiodb_album_images = AsyncMock(
+        side_effect=lambda info, *a, **k: info
+    )
     library_repo.is_configured.return_value = False
     library_db.resolve_library_album_identifier = AsyncMock(return_value=None)
 
@@ -119,7 +121,14 @@ def _release_with_tracks(n: int) -> dict:
             {
                 "position": 1,
                 "tracks": [
-                    {"position": i, "recording": {"title": f"T{i}", "id": f"rec{i}", "length": 200000}}
+                    {
+                        "position": i,
+                        "recording": {
+                            "title": f"T{i}",
+                            "id": f"rec{i}",
+                            "length": 200000,
+                        },
+                    }
                     for i in range(1, n + 1)
                 ],
             }
@@ -140,11 +149,15 @@ async def test_get_album_info_uses_owned_release_edition_not_the_larger_ranked_r
     service, _library_repo, library_db = _make_service()
     service._get_cached_album_info = AsyncMock(return_value=None)
     service._fetch_release_group = AsyncMock(return_value=_rg_with_ranked_release())
-    service._apply_audiodb_album_images = AsyncMock(side_effect=lambda info, *a, **k: info)
+    service._apply_audiodb_album_images = AsyncMock(
+        side_effect=lambda info, *a, **k: info
+    )
     service._save_album_to_cache = AsyncMock()
     library_db.has_album_files = AsyncMock(return_value=True)
     library_db.get_album_release_mbid = AsyncMock(return_value="owned-rel")
-    service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe("owned-rel", owned_n=12, deluxe_n=28)
+    service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe(
+        "owned-rel", owned_n=12, deluxe_n=28
+    )
 
     result = await service.get_album_info(_MBID)
 
@@ -158,12 +171,16 @@ async def test_get_album_info_falls_back_to_ranked_release_when_not_owned():
     service, _library_repo, library_db = _make_service()
     service._get_cached_album_info = AsyncMock(return_value=None)
     service._fetch_release_group = AsyncMock(return_value=_rg_with_ranked_release())
-    service._apply_audiodb_album_images = AsyncMock(side_effect=lambda info, *a, **k: info)
+    service._apply_audiodb_album_images = AsyncMock(
+        side_effect=lambda info, *a, **k: info
+    )
     service._save_album_to_cache = AsyncMock()
     library_db.has_album_files = AsyncMock(return_value=False)
     service._check_in_library = AsyncMock(return_value=False)
     library_db.get_album_release_mbid = AsyncMock(return_value="owned-rel")
-    service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe("owned-rel", owned_n=12, deluxe_n=28)
+    service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe(
+        "owned-rel", owned_n=12, deluxe_n=28
+    )
 
     result = await service.get_album_info(_MBID)
 
@@ -177,7 +194,9 @@ async def test_get_album_tracks_info_prefers_owned_release_edition():
     service._get_cached_album_info = AsyncMock(return_value=None)
     service._fetch_release_group = AsyncMock(return_value=_rg_with_ranked_release())
     library_db.get_album_release_mbid = AsyncMock(return_value="owned-rel")
-    service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe("owned-rel", owned_n=12, deluxe_n=28)
+    service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe(
+        "owned-rel", owned_n=12, deluxe_n=28
+    )
 
     result = await service.get_album_tracks_info(_MBID)
 
@@ -192,15 +211,21 @@ def _lib_track(id, *, disc=1, track=0, title="", recording=None, duration=None):
     from services.native.library_manager import LibraryTrack
 
     return LibraryTrack(
-        id=id, recording_mbid=recording, disc_number=disc, track_number=track,
-        track_title=title, duration_seconds=duration,
+        id=id,
+        recording_mbid=recording,
+        disc_number=disc,
+        track_number=track,
+        track_title=title,
+        duration_seconds=duration,
     )
 
 
 def _status(tracks):
     from services.native.library_manager import LibraryAlbumStatus
 
-    return LibraryAlbumStatus(in_library=bool(tracks), track_count=len(tracks), tracks=tracks)
+    return LibraryAlbumStatus(
+        in_library=bool(tracks), track_count=len(tracks), tracks=tracks
+    )
 
 
 def _svc_self(tracks_info):
@@ -231,9 +256,9 @@ async def test_annotate_coverage_incident_shape_all_orphans():
     recording) against a 1-track release - covered 0/1, the file is an orphan."""
     from services.album_service import AlbumService
 
-    status = _status([
-        _lib_track("f-wrong", track=2, title="Arrival in Ashford", duration=137.24)
-    ])
+    status = _status(
+        [_lib_track("f-wrong", track=2, title="Arrival in Ashford", duration=137.24)]
+    )
     info = _mb_tracks((1, 1, "the arrival", "rec-180ceef5", 155556))
 
     out = await AlbumService.annotate_album_coverage(_svc_self(info), "rg-1", status)
@@ -248,10 +273,12 @@ async def test_annotate_coverage_incident_shape_all_orphans():
 async def test_annotate_coverage_full_album_no_orphans():
     from services.album_service import AlbumService
 
-    status = _status([
-        _lib_track("f1", track=1, title="A", recording="rec-1", duration=200.0),
-        _lib_track("f2", track=2, title="B", duration=210.0),
-    ])
+    status = _status(
+        [
+            _lib_track("f1", track=1, title="A", recording="rec-1", duration=200.0),
+            _lib_track("f2", track=2, title="B", duration=210.0),
+        ]
+    )
     info = _mb_tracks((1, 1, "A", "rec-1", 200000), (2, 1, "B", None, 210000))
 
     out = await AlbumService.annotate_album_coverage(_svc_self(info), "rg-1", status)
@@ -269,7 +296,9 @@ async def test_annotate_coverage_fails_open_on_mb_error():
     from services.album_service import AlbumService
 
     status = _status([_lib_track("f1", track=1, title="A")])
-    fake = SimpleNamespace(get_album_tracks_info=AsyncMock(side_effect=RuntimeError("down")))
+    fake = SimpleNamespace(
+        get_album_tracks_info=AsyncMock(side_effect=RuntimeError("down"))
+    )
 
     out = await AlbumService.annotate_album_coverage(fake, "rg-1", status)
 
@@ -290,7 +319,9 @@ async def test_fetch_release_group_resolves_release_mbid_alias():
     service, _, _ = _make_service()
     rg = {**_mb_release_group(), "id": _RESOLVED_RG}
     service._mb_repo.get_release_group_by_id = AsyncMock(side_effect=[None, rg])
-    service._mb_repo.get_release_group_id_from_release = AsyncMock(return_value=_RESOLVED_RG)
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(
+        return_value=_RESOLVED_RG
+    )
 
     result = await service._fetch_release_group(_RELEASE_ALIAS)
 
@@ -319,7 +350,9 @@ async def test_fetch_release_group_raises_when_alias_unresolvable():
 async def test_fetch_release_group_raises_when_resolved_rg_also_missing():
     service, _, _ = _make_service()
     service._mb_repo.get_release_group_by_id = AsyncMock(return_value=None)
-    service._mb_repo.get_release_group_id_from_release = AsyncMock(return_value=_RESOLVED_RG)
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(
+        return_value=_RESOLVED_RG
+    )
 
     with pytest.raises(ResourceNotFoundError):
         await service._fetch_release_group(_RELEASE_ALIAS)
@@ -333,7 +366,9 @@ async def test_get_album_basic_info_via_release_mbid_alias():
     service._get_cached_album_info = AsyncMock(return_value=None)
     rg = {**_mb_release_group(), "id": _RESOLVED_RG}
     service._mb_repo.get_release_group_by_id = AsyncMock(side_effect=[None, rg])
-    service._mb_repo.get_release_group_id_from_release = AsyncMock(return_value=_RESOLVED_RG)
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(
+        return_value=_RESOLVED_RG
+    )
     library_repo.get_requested_mbids = AsyncMock(return_value=set())
     library_db.has_album_files = AsyncMock(return_value=True)
 
@@ -341,4 +376,22 @@ async def test_get_album_basic_info_via_release_mbid_alias():
 
     assert result.title == "Album"
     assert result.in_library is True
+    assert result.musicbrainz_id == _RESOLVED_RG
     library_db.has_album_files.assert_awaited_once_with(_RESOLVED_RG)
+
+
+@pytest.mark.asyncio
+async def test_resolve_album_identity_preserves_release_alias_as_edition():
+    service, _, _ = _make_service()
+    rg = {**_mb_release_group(), "id": _RESOLVED_RG}
+    service._mb_repo.get_release_group_by_id = AsyncMock(side_effect=[None, rg])
+    service._mb_repo.get_release_group_id_from_release = AsyncMock(
+        return_value=_RESOLVED_RG
+    )
+
+    release_group_mbid, release_mbid = await service.resolve_album_identity(
+        _RELEASE_ALIAS
+    )
+
+    assert release_group_mbid == _RESOLVED_RG
+    assert release_mbid == _RELEASE_ALIAS

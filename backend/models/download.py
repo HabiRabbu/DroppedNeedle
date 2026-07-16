@@ -5,7 +5,6 @@ defined on the protocol (the boundary type); the models here are the
 service/persistence-layer domain types.
 """
 
-
 from infrastructure.msgspec_fastapi import AppStruct
 from repositories.protocols.download_client import DownloadSearchResult
 from repositories.protocols.indexer import UsenetRelease
@@ -36,6 +35,9 @@ class ScoredCandidate(AppStruct):
     file_confidence: float = 0.0
     final_score: float = 0.0
     tier: str = "rejected"
+    # Response-only pointer into the persisted candidate list. It lets a current-policy
+    # review projection reorder/filter older blobs without changing what a Pick indexes.
+    candidate_index: int | None = None
 
 
 class DownloadsMountStatus(AppStruct):

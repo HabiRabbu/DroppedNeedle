@@ -58,7 +58,9 @@ def map_navidrome(resp) -> list[ExternalSession]:
                 artist_name=e.artist_name,
                 album_name=e.album_name or None,
                 # Navidrome's getNowPlaying carries no play/pause state
-                cover_url=f"/api/v1/navidrome/cover/{e.cover_art_id}" if e.cover_art_id else "",
+                cover_url=f"/api/v1/navidrome/cover/{e.cover_art_id}"
+                if e.cover_art_id
+                else "",
                 is_paused=False,
                 progress_ms=progress,
                 duration_ms=e.duration_seconds * 1000,
@@ -110,7 +112,10 @@ async def poll_external_once(
             logger.debug("now-playing %s poll failed: %s", source, e)
 
     await _reconcile(
-        "jellyfin", getattr(status, "jellyfin", False), jellyfin_service.get_sessions, map_jellyfin
+        "jellyfin",
+        getattr(status, "jellyfin", False),
+        jellyfin_service.get_sessions,
+        map_jellyfin,
     )
     await _reconcile(
         "navidrome",
@@ -125,17 +130,21 @@ async def poll_external_once(
 
 async def run_now_playing_presence_loop(
     now_playing: NowPlayingService,
-    home_service,
-    jellyfin_service,
-    navidrome_service,
-    plex_service,
+    home_service_getter,
+    jellyfin_service_getter,
+    navidrome_service_getter,
+    plex_service_getter,
     interval: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     while True:
         try:
             await now_playing.sweep()
             await poll_external_once(
-                now_playing, home_service, jellyfin_service, navidrome_service, plex_service
+                now_playing,
+                home_service_getter(),
+                jellyfin_service_getter(),
+                navidrome_service_getter(),
+                plex_service_getter(),
             )
         except asyncio.CancelledError:
             raise

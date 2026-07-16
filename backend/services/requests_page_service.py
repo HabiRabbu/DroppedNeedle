@@ -15,7 +15,10 @@ from api.v1.schemas.requests_page import (
 )
 from core.exceptions import PermissionDeniedError, ValidationError
 from infrastructure.cover_urls import prefer_release_group_cover_url
-from infrastructure.persistence.request_history import RequestHistoryRecord, RequestHistoryStore
+from infrastructure.persistence.request_history import (
+    RequestHistoryRecord,
+    RequestHistoryStore,
+)
 from repositories.protocols import LibraryRepositoryProtocol
 
 if TYPE_CHECKING:
@@ -36,7 +39,8 @@ class RequestsPageService:
         library_repo: LibraryRepositoryProtocol,
         request_history: RequestHistoryStore,
         library_mbids_fn: Callable[..., Coroutine[Any, Any, set[str]]],
-        on_import_callback: Callable[[RequestHistoryRecord], Coroutine[Any, Any, None]] | None = None,
+        on_import_callback: Callable[[RequestHistoryRecord], Coroutine[Any, Any, None]]
+        | None = None,
         get_download_service: Optional[Callable[[], "DownloadService"]] = None,
         download_store=None,  # DownloadStore | None - native reconciler source of truth
         acquisition=None,  # noqa: ANN001 - AcquisitionDispatcher | None
@@ -55,9 +59,13 @@ class RequestsPageService:
         self._library_mbids_cache: set[str] | None = None
         self._library_mbids_cache_time: float = 0
 
-    async def get_active_requests(self, user_id: str | None = None) -> ActiveRequestsResponse:
+    async def get_active_requests(
+        self, user_id: str | None = None
+    ) -> ActiveRequestsResponse:
         if user_id is not None:
-            active_records = await self._request_history.async_get_active_requests_for_user(user_id)
+            active_records = (
+                await self._request_history.async_get_active_requests_for_user(user_id)
+            )
         else:
             active_records = await self._request_history.async_get_active_requests()
         if not active_records:
@@ -89,7 +97,11 @@ class RequestsPageService:
     ) -> RequestHistoryResponse:
         if user_id is not None:
             records, total = await self._request_history.async_get_history_for_user(
-                user_id=user_id, page=page, page_size=page_size, status_filter=status_filter, sort=sort
+                user_id=user_id,
+                page=page,
+                page_size=page_size,
+                status_filter=status_filter,
+                sort=sort,
             )
         else:
             records, total = await self._request_history.async_get_history(
@@ -115,9 +127,7 @@ class RequestsPageService:
                 cover_url=r.cover_url,
                 requested_at=datetime.fromisoformat(r.requested_at),
                 completed_at=(
-                    datetime.fromisoformat(r.completed_at)
-                    if r.completed_at
-                    else None
+                    datetime.fromisoformat(r.completed_at) if r.completed_at else None
                 ),
                 status=r.status,
                 in_library=r.musicbrainz_id.lower() in library_mbids,
@@ -125,12 +135,11 @@ class RequestsPageService:
                 requested_by_name=r.requested_by_name,
                 reviewed_by_name=r.reviewed_by_name,
                 reviewed_at=(
-                    datetime.fromisoformat(r.reviewed_at)
-                    if r.reviewed_at
-                    else None
+                    datetime.fromisoformat(r.reviewed_at) if r.reviewed_at else None
                 ),
                 download_task_id=r.download_task_id,
-                can_reimport=r.status == 'failed' and r.download_task_id in reimportable,
+                can_reimport=r.status == "failed"
+                and r.download_task_id in reimportable,
             )
             for r in records
         ]
@@ -161,9 +170,12 @@ class RequestsPageService:
             return CancelRequestResponse(success=False, message="Request not found")
         if record.status != "awaiting_approval":
             return CancelRequestResponse(
-                success=False, message=f"Request is not awaiting approval (status: {record.status})"
+                success=False,
+                message=f"Request is not awaiting approval (status: {record.status})",
             )
-        await self._request_history.async_record_review(musicbrainz_id, "pending", reviewer_id, reviewer_name)
+        await self._request_history.async_record_review(
+            musicbrainz_id, "pending", reviewer_id, reviewer_name
+        )
         # approving dispatches the native pipeline directly; link the new task id
         # (the 'already_in_library' sentinel is guarded)
         if self._acquisition is not None:
@@ -176,6 +188,7 @@ class RequestsPageService:
                     year=record.year,
                     artist_mbid=record.artist_mbid,
                     origin="user",
+                    release_mbid=record.release_mbid,
                 )
             except ValidationError as e:
                 # A cap/quota rejection (Feature C) is not a failure of the request:
@@ -186,19 +199,27 @@ class RequestsPageService:
                 )
                 return CancelRequestResponse(success=False, message=str(e))
             except Exception as e:  # noqa: BLE001
-                logger.error(f"Failed to dispatch approved request {musicbrainz_id}: {e}")
+                logger.error(
+                    f"Failed to dispatch approved request {musicbrainz_id}: {e}"
+                )
                 await self._request_history.async_update_status(
-                    musicbrainz_id, "failed",
+                    musicbrainz_id,
+                    "failed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
                 )
                 return CancelRequestResponse(
-                    success=False, message=f"Approved but failed to start: {record.album_title}"
+                    success=False,
+                    message=f"Approved but failed to start: {record.album_title}",
                 )
             from services.native.download_service import ALREADY_IN_LIBRARY
 
             if task_id != ALREADY_IN_LIBRARY:
-                await self._request_history.async_update_download_task_id(musicbrainz_id, task_id)
-        return CancelRequestResponse(success=True, message=f"Approved: {record.album_title}")
+                await self._request_history.async_update_download_task_id(
+                    musicbrainz_id, task_id
+                )
+        return CancelRequestResponse(
+            success=True, message=f"Approved: {record.album_title}"
+        )
 
     async def reject_request(
         self, musicbrainz_id: str, reviewer_id: str, reviewer_name: str | None = None
@@ -208,22 +229,23 @@ class RequestsPageService:
             return CancelRequestResponse(success=False, message="Request not found")
         if record.status != "awaiting_approval":
             return CancelRequestResponse(
-                success=False, message=f"Request is not awaiting approval (status: {record.status})"
+                success=False,
+                message=f"Request is not awaiting approval (status: {record.status})",
             )
         now_iso = datetime.now(timezone.utc).isoformat()
         await self._request_history.async_record_review(
             musicbrainz_id, "rejected", reviewer_id, reviewer_name, completed_at=now_iso
         )
-        return CancelRequestResponse(success=True, message=f"Rejected: {record.album_title}")
+        return CancelRequestResponse(
+            success=True, message=f"Rejected: {record.album_title}"
+        )
 
     async def cancel_request(
         self, musicbrainz_id: str, *, user_id: str, user_role: str
     ) -> CancelRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
-            return CancelRequestResponse(
-                success=False, message="Request not found"
-            )
+            return CancelRequestResponse(success=False, message="Request not found")
         if user_role != "admin" and record.user_id != user_id:
             raise PermissionDeniedError("Cannot cancel another user's request")
 
@@ -245,7 +267,11 @@ class RequestsPageService:
             )
 
         # best-effort: a missing/already-terminal task must not block marking cancelled
-        download_service = self._get_download_service() if self._get_download_service is not None else None
+        download_service = (
+            self._get_download_service()
+            if self._get_download_service is not None
+            else None
+        )
         if record.download_task_id and download_service is not None:
             try:
                 await download_service.cancel_task(
@@ -253,7 +279,9 @@ class RequestsPageService:
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "cancel_request: native task cancel failed for %s: %s", musicbrainz_id, e
+                    "cancel_request: native task cancel failed for %s: %s",
+                    musicbrainz_id,
+                    e,
                 )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -271,9 +299,7 @@ class RequestsPageService:
     ) -> RetryRequestResponse:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
-            return RetryRequestResponse(
-                success=False, message="Request not found"
-            )
+            return RetryRequestResponse(success=False, message="Request not found")
         if user_role != "admin" and record.user_id != user_id:
             raise PermissionDeniedError("Cannot retry another user's request")
 
@@ -299,11 +325,14 @@ class RequestsPageService:
                 year=record.year,
                 artist_mbid=record.artist_mbid,
                 origin="retry",
+                release_mbid=record.release_mbid,
             )
         except ValidationError as e:
             # cap/quota rejection: restore the pre-retry status (don't strand it as
             # a phantom 'pending') and surface the reason verbatim
-            await self._request_history.async_update_status(musicbrainz_id, record.status)
+            await self._request_history.async_update_status(
+                musicbrainz_id, record.status
+            )
             return RetryRequestResponse(success=False, message=str(e))
         except Exception as e:  # noqa: BLE001
             logger.error("Retry failed for %s: %s", musicbrainz_id, e)
@@ -312,12 +341,16 @@ class RequestsPageService:
         from services.native.download_service import ALREADY_IN_LIBRARY
 
         if task_id != ALREADY_IN_LIBRARY:
-            await self._request_history.async_update_download_task_id(musicbrainz_id, task_id)
+            await self._request_history.async_update_download_task_id(
+                musicbrainz_id, task_id
+            )
         return RetryRequestResponse(
             success=True, message=f"Re-requested {record.album_title}"
         )
 
-    async def clear_history_item(self, musicbrainz_id: str, *, user_id: str, user_role: str) -> bool:
+    async def clear_history_item(
+        self, musicbrainz_id: str, *, user_id: str, user_role: str
+    ) -> bool:
         record = await self._request_history.async_get_record(musicbrainz_id)
         if not record:
             return False
@@ -400,10 +433,12 @@ class RequestsPageService:
             record.musicbrainz_id
         )
 
-
     async def _fetch_library_mbids(self) -> set[str]:
         now = _time.monotonic()
-        if self._library_mbids_cache is not None and (now - self._library_mbids_cache_time) < _LIBRARY_MBIDS_CACHE_TTL:
+        if (
+            self._library_mbids_cache is not None
+            and (now - self._library_mbids_cache_time) < _LIBRARY_MBIDS_CACHE_TTL
+        ):
             return self._library_mbids_cache
         try:
             result = await self._library_mbids_fn()
@@ -465,4 +500,6 @@ class RequestsPageService:
             try:
                 await self._on_import_callback(record)
             except Exception as e:  # noqa: BLE001
-                logger.warning("Import callback failed for %s: %s", record.musicbrainz_id, e)
+                logger.warning(
+                    "Import callback failed for %s: %s", record.musicbrainz_id, e
+                )

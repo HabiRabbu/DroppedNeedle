@@ -29,6 +29,11 @@ from api.v1.routes import free_music as free_music_routes
 from api.v1.routes import import_drop as import_drop_routes
 from api.v1.routes import plugins as plugins_routes
 from api.v1.routes import library as library_routes
+from api.v1.routes import library_operations_target as library_operations_target_routes
+from api.v1.routes import library_policies as library_policy_routes
+from api.v1.routes import library_policies_target as target_library_policy_routes
+from api.v1.routes import library_scan_target as target_library_scan_routes
+from api.v1.routes import library_target as target_library_routes
 from api.v1.routes import lidarr_import as lidarr_import_routes
 from api.v1.routes import discovery_batches as discovery_batches_routes
 from api.v1.routes import library_scan as library_scan_routes
@@ -57,6 +62,7 @@ from core.dependencies import (
     get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_library_manager,
+    get_library_policy_service,
     get_library_scanner,
     get_library_service,
     get_local_files_service,
@@ -84,7 +90,21 @@ from core.dependencies import (
     get_user_listening_prefs_store,
     get_user_section_prefs_store,
     get_wanted_watcher_service,
+    get_target_catalog_correction_service,
+    get_target_explicit_reidentification_worker,
+    get_target_identity_repair_service,
+    get_target_library_diagnostics_service,
+    get_target_identification_queue,
+    get_target_library_operation_service,
+    get_target_library_review_service,
+    get_target_library_scan_coordinator,
+    get_target_native_library_service,
+    get_target_catalog_writer_service,
+    get_cached_local_artwork_service,
+    get_target_reidentification_service,
+    get_library_policy_resolver,
 )
+from core.dependencies.service_providers import get_target_library_policy_service
 from middleware import _get_current_admin, _get_current_curator, _get_current_user
 from tests.helpers import build_test_client, mock_admin_user, mock_user
 
@@ -103,6 +123,8 @@ _SERVICE_PROVIDERS = (
     get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_library_manager,
+    get_library_policy_service,
+    get_target_library_policy_service,
     get_library_scanner,
     get_library_service,
     get_local_files_service,
@@ -130,6 +152,19 @@ _SERVICE_PROVIDERS = (
     get_user_listening_prefs_store,
     get_user_section_prefs_store,
     get_wanted_watcher_service,
+    get_target_catalog_correction_service,
+    get_target_explicit_reidentification_worker,
+    get_target_identity_repair_service,
+    get_target_library_diagnostics_service,
+    get_target_identification_queue,
+    get_target_library_operation_service,
+    get_target_library_review_service,
+    get_target_library_scan_coordinator,
+    get_target_native_library_service,
+    get_target_catalog_writer_service,
+    get_target_reidentification_service,
+    get_library_policy_resolver,
+    get_cached_local_artwork_service,
 )
 
 # (method, path, body-or-None). Path params use dummy values; bodies are valid so
@@ -141,9 +176,28 @@ _ADMIN_ENDPOINTS = [
     ("POST", "/api/v1/library/scan/start", None),
     ("POST", "/api/v1/library/scan/cancel", None),
     ("GET", "/api/v1/library/scan/unmatched", None),
+    ("GET", "/api/v1/settings/library/roots", None),
+    ("PUT", "/api/v1/settings/library/roots", {"library_roots": []}),
+    ("GET", "/api/v1/settings/library/policy-tree", None),
+    (
+        "POST",
+        "/api/v1/settings/library/policy-impact",
+        {"settings": {"library_roots": []}},
+    ),
+    ("GET", "/api/v1/settings/library/path-mapping", None),
+    ("GET", "/api/v1/settings/library", None),
+    ("PUT", "/api/v1/settings/library", {"library_roots": []}),
+    (
+        "POST",
+        "/api/v1/settings/library/policy-apply-preview",
+        {"scope_ids": [], "expected_policy_revision": "policy"},
+    ),
     ("POST", "/api/v1/library/scan/unmatched/1/resolve", {"resolution": "reject"}),
-    ("POST", "/api/v1/library/scan/unmatched/resolve-batch",
-     {"release_group_mbid": "rg-1", "items": []}),
+    (
+        "POST",
+        "/api/v1/library/scan/unmatched/resolve-batch",
+        {"release_group_mbid": "rg-1", "items": []},
+    ),
     ("GET", "/api/v1/download-client/config", None),
     ("PUT", "/api/v1/download-client/config", {}),
     ("POST", "/api/v1/download-client/test", {}),
@@ -151,8 +205,11 @@ _ADMIN_ENDPOINTS = [
     ("DELETE", "/api/v1/downloads/quarantine/1", None),
     ("POST", "/api/v1/downloads/task-1/reimport", None),
     ("GET", "/api/v1/library/tracks/file-1/tags", None),
-    ("POST", "/api/v1/library/tracks/file-1",
-     {"title": "t", "artist": "a", "album": "al", "track_number": 1}),
+    (
+        "POST",
+        "/api/v1/library/tracks/file-1",
+        {"title": "t", "artist": "a", "album": "al", "track_number": 1},
+    ),
     ("POST", "/api/v1/library/albums/rg-1/rescan", None),
     # Spotify app credentials + home settings (admin-gated at the /settings router level).
     ("GET", "/api/v1/settings/spotify", None),
@@ -164,10 +221,18 @@ _ADMIN_ENDPOINTS = [
     ("PUT", "/api/v1/download-clients/wanted", {}),
     # Free Music settings (admin, settings router)
     ("GET", "/api/v1/settings/free-music", None),
-    ("PUT", "/api/v1/settings/free-music", {"enabled": True, "preferred_format": "flac"}),
+    (
+        "PUT",
+        "/api/v1/settings/free-music",
+        {"enabled": True, "preferred_format": "flac"},
+    ),
     # Get it purchase-link settings (admin, settings router)
     ("GET", "/api/v1/settings/get-it", None),
-    ("PUT", "/api/v1/settings/get-it", {"store_region": "US", "support_droppedneedle": True}),
+    (
+        "PUT",
+        "/api/v1/settings/get-it",
+        {"store_region": "US", "support_droppedneedle": True},
+    ),
     # Upcoming Events sources (admin, settings router)
     ("GET", "/api/v1/settings/events", None),
     ("PUT", "/api/v1/settings/events", {}),
@@ -197,6 +262,219 @@ _ADMIN_ENDPOINTS = [
     ("GET", "/api/v1/requests/auto-download-approval-batches", None),
     ("POST", "/api/v1/requests/auto-download-approval-batches/batch-1/approve", None),
     ("POST", "/api/v1/requests/auto-download-approval-batches/batch-1/reject", None),
+    # Feedback Fixes target-only surfaces. The router remains unmounted in production
+    # until the separately authorized offline replacement, but its auth contract is
+    # complete and testable in isolation.
+    ("GET", "/api/v1/library/reviews", None),
+    ("GET", "/api/v1/library/reviews/review-1", None),
+    (
+        "POST",
+        "/api/v1/library/reviews/review-1/keep-tagged",
+        {"expected_review_revision": 1, "expected_catalog_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/reviews/review-1/detach-and-keep-tagged",
+        {"expected_review_revision": 1, "expected_catalog_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/reviews/review-1/exclude",
+        {"expected_review_revision": 1, "expected_catalog_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/reviews/review-1/restore",
+        {"expected_review_revision": 1, "expected_catalog_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/reviews/review-1/candidate",
+        {
+            "expected_review_revision": 1,
+            "expected_catalog_revision": 1,
+            "candidate_key": "candidate-1",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/reviews/bulk-preview",
+        {"action": "keep_tagged", "selection": {"review_ids": ["review-1"]}},
+    ),
+    (
+        "POST",
+        "/api/v1/library/reviews/bulk-apply",
+        {
+            "preview_token": "preview-1",
+            "idempotency_key": "bulk-1",
+            "action": "keep_tagged",
+            "selection": {"review_ids": ["review-1"]},
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/reviews/review-1/retry",
+        {"expected_review_revision": 1, "expected_catalog_revision": 1},
+    ),
+    ("GET", "/api/v1/library/operations/job-1", None),
+    ("POST", "/api/v1/library/operations/job-1/pause", {"expected_row_revision": 1}),
+    ("POST", "/api/v1/library/operations/job-1/resume", {"expected_row_revision": 1}),
+    ("POST", "/api/v1/library/operations/job-1/stop", {"expected_row_revision": 1}),
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/reidentify",
+        {
+            "expected_album_revision": 1,
+            "expected_input_revision": "input-1",
+            "idempotency_key": "reidentify-1",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/operations/job-1/candidate",
+        {"expected_row_revision": 1, "candidate_key": "candidate-1"},
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/split-preview",
+        {"track_ids": ["track-1"], "expected_album_revisions": {"album-1": 1}},
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/split",
+        {
+            "track_ids": ["track-1"],
+            "expected_album_revisions": {"album-1": 1},
+            "preview_token": "preview-1",
+            "idempotency_key": "split-1",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/merge-preview",
+        {"track_ids": ["track-1"], "expected_album_revisions": {"album-1": 1}},
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/merge",
+        {
+            "track_ids": ["track-1"],
+            "expected_album_revisions": {"album-1": 1},
+            "preview_token": "preview-1",
+            "idempotency_key": "merge-1",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/tracks/move-preview",
+        {
+            "track_ids": ["track-1"],
+            "expected_album_revisions": {"album-1": 1},
+            "target_album_id": "album-2",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/tracks/move",
+        {
+            "track_ids": ["track-1"],
+            "expected_album_revisions": {"album-1": 1, "album-2": 1},
+            "target_album_id": "album-2",
+            "preview_token": "preview-1",
+            "idempotency_key": "move-1",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/reset-grouping-preview",
+        {"track_ids": ["track-1"], "expected_album_revisions": {"album-1": 1}},
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/reset-grouping",
+        {
+            "track_ids": ["track-1"],
+            "expected_album_revisions": {"album-1": 1},
+            "preview_token": "preview-1",
+            "idempotency_key": "reset-1",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/artists/merge-preview",
+        {
+            "source_artist_ids": ["artist-1"],
+            "surviving_artist_id": "artist-2",
+            "expected_revisions": {"artist-1": 1, "artist-2": 1},
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/artists/merge",
+        {
+            "source_artist_ids": ["artist-1"],
+            "surviving_artist_id": "artist-2",
+            "expected_revisions": {"artist-1": 1, "artist-2": 1},
+            "preview_token": "preview-1",
+            "idempotency_key": "artist-merge-1",
+        },
+    ),
+    ("POST", "/api/v1/library/identity-repairs", {"idempotency_key": "repair-1"}),
+    ("GET", "/api/v1/library/identity-repairs", None),
+    ("GET", "/api/v1/library/identity-repairs/estimate", None),
+    ("GET", "/api/v1/library/identity-repairs/job-1", None),
+    ("GET", "/api/v1/library/identity-repairs/job-1/findings", None),
+    (
+        "POST",
+        "/api/v1/library/identity-repairs/job-1/apply",
+        {"expected_row_revision": 1, "confirmation": True},
+    ),
+    (
+        "POST",
+        "/api/v1/library/identity-repairs/job-1/pause",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/identity-repairs/job-1/resume",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/identity-repairs/job-1/stop",
+        {"expected_row_revision": 1},
+    ),
+    ("GET", "/api/v1/library/scan-runs/run-1/diagnostics", None),
+    ("POST", "/api/v1/library/identification/pause", {"expected_revision": 1}),
+    ("POST", "/api/v1/library/identification/resume", {"expected_revision": 1}),
+    (
+        "POST",
+        "/api/v1/library/scan-runs",
+        {
+            "kind": "incremental",
+            "scope_ids": [],
+            "expected_policy_revision": "policy",
+        },
+    ),
+    ("GET", "/api/v1/library/scan-runs/current", None),
+    ("GET", "/api/v1/library/scan-runs", None),
+    ("GET", "/api/v1/library/scan-runs/estimate", None),
+    ("GET", "/api/v1/library/scan-runs/run-1", None),
+    (
+        "POST",
+        "/api/v1/library/scan-runs/run-1/pause",
+        {"expected_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/scan-runs/run-1/resume",
+        {"expected_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/scan-runs/run-1/stop",
+        {"expected_revision": 1},
+    ),
 ]
 
 _USER_ENDPOINTS = [
@@ -213,7 +491,11 @@ _USER_ENDPOINTS = [
     ("POST", "/api/v1/downloads/task-1/cancel", None),
     ("POST", "/api/v1/downloads/task-1/retry", None),
     ("GET", "/api/v1/downloads/task-1", None),
-    ("POST", "/api/v1/downloads/search/album", {"artist_name": "A", "album_title": "B"}),
+    (
+        "POST",
+        "/api/v1/downloads/search/album",
+        {"artist_name": "A", "album_title": "B"},
+    ),
     ("GET", "/api/v1/downloads/search/job-1", None),
     ("POST", "/api/v1/downloads/search/job-1/pick", {"candidate_index": 0}),
     ("POST", "/api/v1/downloads/search/job-1/dismiss", None),
@@ -225,12 +507,23 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/library/stats", None),
     ("GET", "/api/v1/library/albums/rg-1/tracks", None),
     ("GET", "/api/v1/library/albums/rg-1/status", None),
+    ("GET", "/api/v1/library/mbids", None),
+    ("GET", "/api/v1/library/recently-added", None),
+    ("GET", "/api/v1/library/artists/artist-1", None),
+    ("GET", "/api/v1/library/artists/artist-1/albums", None),
+    ("GET", "/api/v1/library/albums/album-1", None),
+    ("GET", "/api/v1/library/albums/album-1/artwork/cached?v=1", None),
+    ("POST", "/api/v1/library/resolve-tracks", {"items": []}),
+    ("GET", "/api/v1/library/activity", None),
     ("GET", "/api/v1/me/section-prefs", None),
     ("POST", "/api/v1/me/personal-mix/refresh", None),
     ("PUT", "/api/v1/me/section-prefs", {"page": "home", "sections": []}),
     ("GET", "/api/v1/discover/batches", None),
-    ("POST", "/api/v1/discover/batches",
-     {"name": "b", "items": [{"release_group_mbid": "rg-1"}]}),
+    (
+        "POST",
+        "/api/v1/discover/batches",
+        {"name": "b", "items": [{"release_group_mbid": "rg-1"}]},
+    ),
     ("GET", "/api/v1/discover/batches/b-1", None),
     ("DELETE", "/api/v1/discover/batches/b-1", None),
     ("GET", "/api/v1/system/health", None),
@@ -259,13 +552,19 @@ _USER_ENDPOINTS = [
     # tests/routes/test_wanted_routes.py; here: 401 unauth / user admitted.
     ("GET", "/api/v1/requests/wanted", None),
     ("POST", "/api/v1/requests/wanted/22222222-2222-2222-2222-222222222222/stop", None),
-    ("POST", "/api/v1/requests/wanted/22222222-2222-2222-2222-222222222222/resume", None),
+    (
+        "POST",
+        "/api/v1/requests/wanted/22222222-2222-2222-2222-222222222222/resume",
+        None,
+    ),
     ("POST", "/api/v1/requests/wanted/22222222-2222-2222-2222-222222222222/seen", None),
     # Lidarr import: any authenticated user reads candidates + imports into their OWN
     # follows (no target-user param - the caller can only ever import to themselves).
     # Free Music: reading your own downloads is a user surface.
     ("GET", "/api/v1/free-music/tasks", None),
     ("GET", "/api/v1/free-music/tasks/t-1", None),
+    ("DELETE", "/api/v1/free-music/tasks", None),
+    ("DELETE", "/api/v1/free-music/tasks/t-1", None),
     ("GET", "/api/v1/lidarr-import/status", None),
     ("GET", "/api/v1/lidarr-import/artists", None),
     ("POST", "/api/v1/lidarr-import/import", {"selected_mbids": []}),
@@ -274,10 +573,16 @@ _USER_ENDPOINTS = [
     # upstream account. GET/HEAD stream proxies stay dependency-free (guarded by
     # AuthMiddleware in production, which this harness doesn't mount).
     ("POST", "/api/v1/stream/jellyfin/item-1/start", None),
-    ("POST", "/api/v1/stream/jellyfin/item-1/progress",
-     {"play_session_id": "s-1", "position_seconds": 1.0, "is_paused": False}),
-    ("POST", "/api/v1/stream/jellyfin/item-1/stop",
-     {"play_session_id": "s-1", "position_seconds": 1.0}),
+    (
+        "POST",
+        "/api/v1/stream/jellyfin/item-1/progress",
+        {"play_session_id": "s-1", "position_seconds": 1.0, "is_paused": False},
+    ),
+    (
+        "POST",
+        "/api/v1/stream/jellyfin/item-1/stop",
+        {"play_session_id": "s-1", "position_seconds": 1.0},
+    ),
     ("POST", "/api/v1/stream/navidrome/item-1/scrobble", None),
     ("POST", "/api/v1/stream/navidrome/item-1/now-playing", None),
     ("POST", "/api/v1/stream/navidrome/item-1/stopped", None),
@@ -313,7 +618,12 @@ def _client(scenario: str):
         downloads_routes.router,
         following_routes.router,
         tracks_routes.router,
+        target_library_routes.router,
+        target_library_scan_routes.router,
         library_routes.router,
+        library_operations_target_routes.router,
+        target_library_policy_routes.router,
+        library_policy_routes.router,
         me_routes.router,
         navidrome_preferences_routes.router,
         connect_apps_routes.router,
@@ -334,9 +644,33 @@ def _client(scenario: str):
 
     for provider in _SERVICE_PROVIDERS:
         app.dependency_overrides[provider] = lambda: AsyncMock()
+    target_native = AsyncMock()
+    target_native.artists.return_value = ([], 0)
+    target_native.albums.return_value = ([], 0)
+    target_native.tracks.return_value = ([], 0)
+    target_native.stats.return_value = {
+        "total_albums": 0,
+        "total_artists": 0,
+        "total_tracks": 0,
+        "total_size_bytes": 0,
+        "format_breakdown": {},
+        "review_count": 0,
+        "last_scan_at": None,
+    }
+    target_native.provider_ids.return_value = {"musicbrainz_release_group_ids": []}
+    target_native.recently_added.return_value = []
+    target_native.canonical_id.return_value = None
+    target_native.artist.return_value = None
+    target_native.artist_albums.return_value = []
+    target_native.album_detail.return_value = None
+    target_native.resolve_tracks.return_value = {"items": []}
+    target_native.album_tracks.return_value = []
+    app.dependency_overrides[get_target_native_library_service] = lambda: target_native
 
     if scenario == "user":
-        app.dependency_overrides[_get_current_user] = lambda: mock_user(role="user", user_id="user-1")
+        app.dependency_overrides[_get_current_user] = lambda: mock_user(
+            role="user", user_id="user-1"
+        )
         app.dependency_overrides[_get_current_admin] = _deny_admin
         # curator endpoints reject a plain user exactly like admin ones (403)
         app.dependency_overrides[_get_current_curator] = _deny_admin
@@ -361,7 +695,9 @@ def test_every_endpoint_rejects_unauthenticated():
         status = _send(client, method, path, body).status_code
         if status != 401:
             failures.append(f"{method} {path} -> {status} (expected 401)")
-    assert not failures, "unauthenticated requests not rejected:\n" + "\n".join(failures)
+    assert not failures, "unauthenticated requests not rejected:\n" + "\n".join(
+        failures
+    )
 
 
 def test_admin_endpoints_forbid_regular_users():
@@ -371,7 +707,9 @@ def test_admin_endpoints_forbid_regular_users():
         status = _send(client, method, path, body).status_code
         if status != 403:
             failures.append(f"{method} {path} -> {status} (expected 403)")
-    assert not failures, "admin endpoints not forbidden to users:\n" + "\n".join(failures)
+    assert not failures, "admin endpoints not forbidden to users:\n" + "\n".join(
+        failures
+    )
 
 
 def test_user_endpoints_admit_regular_users():
@@ -380,8 +718,12 @@ def test_user_endpoints_admit_regular_users():
     for method, path, body in _USER_ENDPOINTS:
         status = _send(client, method, path, body).status_code
         if status in (401, 403):
-            failures.append(f"{method} {path} -> {status} (auth rejected an allowed user)")
-    assert not failures, "user endpoints wrongly rejected a user:\n" + "\n".join(failures)
+            failures.append(
+                f"{method} {path} -> {status} (auth rejected an allowed user)"
+            )
+    assert not failures, "user endpoints wrongly rejected a user:\n" + "\n".join(
+        failures
+    )
 
 
 def test_admin_admitted_everywhere():

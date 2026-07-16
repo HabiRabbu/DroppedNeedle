@@ -4,8 +4,7 @@
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { API, AUTH_FREE_PATHS } from '$lib/constants';
-	import { api } from '$lib/api/client';
+	import { AUTH_FREE_PATHS } from '$lib/constants';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { logout } from '$lib/utils/logout';
 	import { migratePageSourceKeys } from '$lib/stores/musicSource';
@@ -71,12 +70,15 @@
 	import NewReleasesNavBadge from '$lib/components/NewReleasesNavBadge.svelte';
 	import ConcertsNavBadge from '$lib/components/ConcertsNavBadge.svelte';
 	import { createFollowingEvents } from '$lib/queries/following/FollowingEvents';
+	import { createLibraryActivityEvents } from '$lib/queries/library/LibraryActivityEvents';
+	import LibraryActivityStrip from '$lib/components/library/LibraryActivityStrip.svelte';
 
 	migratePageSourceKeys();
 
 	let { children }: { children: Snippet } = $props();
 
 	const followingEvents = createFollowingEvents();
+	const libraryActivityEvents = createLibraryActivityEvents();
 
 	let query = $state('');
 	let audioElement = $state<HTMLAudioElement | undefined>(undefined);
@@ -181,6 +183,7 @@
 		if (!authStore.isAuthenticated) return;
 		untrack(() => {
 			followingEvents.start();
+			libraryActivityEvents.start(authStore.isAdmin);
 			// presence is server-driven now (the backend polls upstream servers itself),
 			// so it no longer waits on integration status
 			nowPlayingStore.start();
@@ -188,6 +191,7 @@
 		});
 		return () => {
 			followingEvents.stop();
+			libraryActivityEvents.stop();
 			nowPlayingStore.stop();
 			nowPlayingReporter.stop();
 		};
@@ -298,31 +302,10 @@
 		integrations.current.download_client || !integrations.current.loaded
 	);
 	const showAppShell = $derived(!AUTH_FREE_PATHS.some((p) => page.url.pathname.startsWith(p)));
-
-	// raw poll: QueryClient context lives below this component, so TanStack isn't available here
-	let libraryScanActive = $state(false);
-	$effect(() => {
-		if (!showAppShell) return;
-		let cancelled = false;
-		const poll = async () => {
-			try {
-				const s = await api.global.get<{ status: string }>(API.library.scanStatus());
-				if (!cancelled) libraryScanActive = s.status === 'scanning';
-			} catch {
-				/* ignore - nav dot is best-effort */
-			}
-		};
-		void poll();
-		const timer = setInterval(poll, 5000);
-		return () => {
-			cancelled = true;
-			clearInterval(timer);
-		};
-	});
 </script>
 
 <QueryProvider>
-	<div data-theme="droppedneedle" class="droppedneedle-app-shell">
+	<div data-testid="app-shell" data-theme="dark" class="droppedneedle-app-shell">
 		{#if showNavigationProgress}
 			<div class="fixed top-0 left-0 right-0 z-120 pointer-events-none">
 				<progress class="progress progress-primary w-full h-1"></progress>
@@ -371,6 +354,8 @@
 							</a>
 						</div>
 					</div>
+
+					<LibraryActivityStrip />
 
 					<div
 						class="droppedneedle-main-content flex-1"
@@ -431,7 +416,7 @@
 								>
 									<div class="relative">
 										<Menu class="h-6 w-6" />
-										{#if syncStatus.isActive || libraryScanActive}
+										{#if syncStatus.isActive}
 											<span
 												class="absolute -top-1 -right-1 badge badge-primary badge-xs w-2.5 h-2.5 p-0 animate-pulse"
 												aria-label="Library sync in progress"
@@ -620,7 +605,7 @@
 			>
 				<Menu />
 				<span>Library</span>
-				{#if syncStatus.isActive || libraryScanActive}
+				{#if syncStatus.isActive}
 					<span class="droppedneedle-bottom-nav__badge" aria-label="Library sync in progress"
 					></span>
 				{/if}

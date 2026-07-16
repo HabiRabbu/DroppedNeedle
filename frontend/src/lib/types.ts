@@ -209,6 +209,7 @@ export type OIDCConnectionSettings = {
 
 export type HomeArtist = {
 	mbid: string | null;
+	local_id?: string | null;
 	name: string;
 	image_url: string | null;
 	listen_count: number | null;
@@ -217,6 +218,7 @@ export type HomeArtist = {
 
 export type HomeAlbum = {
 	mbid: string | null;
+	local_id?: string | null;
 	name: string;
 	artist_name: string | null;
 	artist_mbid: string | null;
@@ -295,8 +297,8 @@ export type HomeResponse = {
 	weekly_exploration: WeeklyExplorationSection | null;
 	service_prompts: ServicePrompt[];
 	integration_status: Record<string, boolean>;
-	genre_artists: Record<string, string | null>;
-	genre_artist_images: Record<string, string | null>;
+	genre_artwork: Record<string, GenreArtwork>;
+	genre_artwork_schema_version: 'v2';
 	discover_preview: DiscoverPreview | null;
 };
 
@@ -370,8 +372,8 @@ export type DiscoverResponse = {
 	anniversaries: HomeSection | null;
 	new_from_followed: HomeSection | null;
 	unexplored_genres: HomeSection | null;
-	genre_artists: Record<string, string | null>;
-	genre_artist_images: Record<string, string | null>;
+	genre_artwork: Record<string, GenreArtwork>;
+	genre_artwork_schema_version: 'v2';
 	integration_status: Record<string, boolean>;
 	service_prompts: ServicePrompt[];
 	refreshing: boolean;
@@ -406,10 +408,24 @@ export type GenrePopularSection = {
 
 export type GenreDetailResponse = {
 	genre: string;
+	genre_artwork: GenreArtwork;
 	library: GenreLibrarySection | null;
 	popular: GenrePopularSection | null;
 	artists: HomeArtist[];
 	total_count: number | null;
+};
+
+export type GenreArtworkAlbum = {
+	album_id: string;
+	album_title: string;
+	album_artist_name: string | null;
+	cover_version: number;
+};
+
+export type GenreArtwork = {
+	kind: 'collage' | 'gradient';
+	albums: GenreArtworkAlbum[];
+	version: string;
 };
 
 export type SimilarArtist = {
@@ -1462,30 +1478,37 @@ export type AlbumSort = 'recent' | 'title' | 'artist';
 
 export type TrackSort = 'recent' | 'title' | 'artist' | 'album';
 
-export type NativeTrackListItem = {
-	track_file_id: string;
+export interface TargetNativeTrack {
+	id: string;
 	title: string;
-	album_name: string;
+	album_id: string;
+	album_title: string;
+	artist_id: string;
 	artist_name: string;
-	album_mbid?: string | null;
-	cover_url?: string | null;
-	format: string;
-	track_number: number;
+	album_artist_id: string;
+	album_artist_name: string;
+	musicbrainz_recording_id: string | null;
+	musicbrainz_release_group_id: string | null;
+	musicbrainz_artist_id: string | null;
+	musicbrainz_album_artist_id: string | null;
 	disc_number: number;
-	duration_seconds?: number | null;
-	recording_mbid?: string | null;
-	artist_mbid?: string | null;
-	album_artist_name?: string | null;
-	album_artist_mbid?: string | null;
-	year?: number | null;
-	genre?: string | null;
-	bit_rate?: number | null;
-	sample_rate?: number | null;
-	bit_depth?: number | null;
-	channels?: number | null;
-	file_size_bytes?: number;
-	created_at?: number | null;
-};
+	track_number: number;
+	year: number | null;
+	genre: string | null;
+	duration_seconds: number;
+	format: string;
+	bit_rate: number | null;
+	sample_rate: number | null;
+	bit_depth: number | null;
+	channels: number | null;
+	file_size_bytes: number;
+	date_added: number | null;
+	cover_available: boolean;
+	current_tier: string | null;
+	below_cutoff: boolean;
+}
+
+export type NativeTrackListItem = TargetNativeTrack;
 
 export type NativeTrackPage = {
 	items: NativeTrackListItem[];
@@ -1495,19 +1518,35 @@ export type NativeTrackPage = {
 };
 
 export interface LibraryAlbumSummary {
-	release_group_mbid: string;
-	album_title: string;
-	album_artist_name: string | null;
+	id: string;
+	title: string;
+	artist_name: string;
+	artist_id: string;
+	musicbrainz_release_group_id: string | null;
+	musicbrainz_artist_id: string | null;
 	track_count: number;
+	total_duration_seconds: number;
 	total_size_bytes: number;
-	quality_format: string | null;
+	format: string | null;
 	year: number | null;
 	is_compilation: boolean;
-	cover_url: string | null;
-	last_imported_at: number | null;
-	album_artist_mbid?: string | null;
-	album_sort_name?: string | null;
-	original_release_date?: string | null;
+	cover_available: boolean;
+	date_added: number | null;
+	sort_name: string | null;
+	original_release_date: string | null;
+}
+
+export interface LibraryAlbumDetail extends LibraryAlbumSummary {
+	row_revision: number;
+	input_revision: string;
+	identification_status:
+		| 'identified'
+		| 'needs_review'
+		| 'keep_tagged'
+		| 'local_metadata'
+		| 'manual_identity_needs_review';
+	review_id: string | null;
+	review_revision: number | null;
 }
 
 export interface NativeAlbumsResponse {
@@ -1518,11 +1557,13 @@ export interface NativeAlbumsResponse {
 export type ArtistSort = 'name' | 'album_count' | 'date_added';
 
 export interface LibraryArtistSummary {
-	artist_name: string;
-	artist_mbid: string | null;
+	id: string;
+	name: string;
+	musicbrainz_artist_id: string | null;
 	album_count: number;
 	track_count: number;
 	date_added: number | null;
+	row_revision: number;
 }
 
 export interface NativeArtistsResponse {
@@ -1548,19 +1589,20 @@ export interface LibraryTrack {
 	below_cutoff: boolean;
 }
 
-export type LibraryFileMeta = LibraryTrack;
+export type LibraryFileMeta = TargetNativeTrack;
 
 export interface LibraryAlbumStatus {
 	in_library: boolean;
+	album_id: string;
 	track_count: number;
-	tracks: LibraryTrack[];
+	tracks: TargetNativeTrack[];
 	// Coverage vs the release's MB tracklist (P5): expected_tracks === 0 means the
 	// tracklist was unavailable and the UI falls back to the presence-only reading.
-	expected_tracks: number;
-	covered_tracks: number;
-	matched_file_ids: string[];
+	expected_tracks?: number;
+	covered_tracks?: number;
+	matched_file_ids?: string[];
 	// held files that match NONE of the album's expected tracks ("doesn't match")
-	orphans: LibraryTrack[];
+	orphans?: LibraryTrack[];
 }
 
 export interface AlbumRemoveResponse {
@@ -1625,67 +1667,9 @@ export interface LibraryStats {
 	total_tracks: number;
 	total_size_bytes: number;
 	format_breakdown: Record<string, number>;
-	unmatched_count: number;
+	review_count: number;
+	local_only_count: number;
 	last_scan_at: number | null;
-	recently_added: LibraryAlbumSummary[];
-}
-
-export interface ManualReviewEntry {
-	id: number;
-	file_path: string;
-	extracted_title: string | null;
-	extracted_artist: string | null;
-	extracted_album: string | null;
-	extracted_year: number | null;
-	track_number: number | null;
-	disc_number: number | null;
-	file_format: string | null;
-	duration: number | null;
-	file_size: number | null;
-	fingerprint: string | null;
-	fingerprint_score: number | null;
-	candidate_mbids: string[];
-	source: string;
-	created_at: number | null;
-}
-
-export interface LibraryUnmatchedResponse {
-	items: ManualReviewEntry[];
-	total: number;
-}
-
-export interface UnmatchedBatchItem {
-	review_id: number;
-	recording_mbid: string | null;
-}
-
-export interface UnmatchedBatchResolveRequest {
-	release_group_mbid: string;
-	items: UnmatchedBatchItem[];
-}
-
-export interface UnmatchedBatchResolveResponse {
-	resolved: number;
-	failed: { review_id: number; error: string }[];
-}
-
-export type ScanStatus = 'idle' | 'scanning' | 'complete' | 'cancelled' | 'failed';
-
-export interface LibraryScanStatus {
-	status: ScanStatus;
-	total_files: number;
-	processed_files: number;
-	matched_files: number;
-	failed_files: number;
-	started_at: number | null;
-	updated_at: number | null;
-}
-
-export interface LibrarySettings {
-	library_paths: string[];
-	staging_path: string;
-	naming_template: string;
-	acoustid_api_key: string;
 }
 
 export type ScanFrequency =
@@ -1726,8 +1710,6 @@ export interface TrackTagUpdate {
 	musicbrainz_artist_id: string | null;
 	musicbrainz_album_artist_id: string | null;
 }
-
-export type UnmatchedResolution = 'accept' | 'reject' | 'manual_id';
 
 export interface LibraryActionResponse {
 	status: string;
@@ -1884,6 +1866,7 @@ export interface DownloadSearchResultFile {
 	duration?: number | null;
 	has_free_slot: boolean;
 	upload_speed: number;
+	queue_length?: number | null;
 }
 
 export type CandidateTier = 'auto' | 'manual' | 'rejected';
@@ -1913,6 +1896,7 @@ export interface ScoredCandidate {
 	file_confidence: number;
 	final_score: number;
 	tier: CandidateTier;
+	candidate_index?: number | null;
 }
 
 export interface SearchAlbumResponse {

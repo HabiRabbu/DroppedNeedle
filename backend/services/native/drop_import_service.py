@@ -25,7 +25,6 @@ import logging
 import os
 import re
 import shutil
-import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -171,9 +170,13 @@ class DropImportService:
 
         first_name = uploads[0][0]
         upload_name = (
-            first_name if len(uploads) == 1 else f"{first_name} +{len(uploads) - 1} more"
+            first_name
+            if len(uploads) == 1
+            else f"{first_name} +{len(uploads) - 1} more"
         )
-        await self._store.create_job(job_id, user_id, user_name, upload_name, str(staging_dir))
+        await self._store.create_job(
+            job_id, user_id, user_name, upload_name, str(staging_dir)
+        )
         task = asyncio.create_task(self._run_job(job_id))
         self._tasks[job_id] = task
         task.add_done_callback(lambda t, jid=job_id: self._on_task_done(jid, t))
@@ -181,10 +184,14 @@ class DropImportService:
         assert job is not None  # just created
         return job
 
-    async def list_jobs(self, *, user_id: str, include_all: bool) -> list[DropImportJob]:
+    async def list_jobs(
+        self, *, user_id: str, include_all: bool
+    ) -> list[DropImportJob]:
         return await self._store.list_jobs(user_id=None if include_all else user_id)
 
-    async def get_job(self, job_id: str, *, user_id: str, is_admin: bool) -> DropImportJob:
+    async def get_job(
+        self, job_id: str, *, user_id: str, is_admin: bool
+    ) -> DropImportJob:
         job = await self._store.get_job(job_id)
         if job is None or (job.user_id != user_id and not is_admin):
             raise ResourceNotFoundError("Import job not found")
@@ -288,7 +295,9 @@ class DropImportService:
             logger.exception("Drop import job %s failed", job_id)
             try:
                 await self._store.set_job_status(
-                    job_id, JobStatus.FAILED, "The import didn't finish. Check the server logs."
+                    job_id,
+                    JobStatus.FAILED,
+                    "The import didn't finish. Check the server logs.",
                 )
                 job = await self._store.get_job(job_id)
                 if job:
@@ -304,7 +313,9 @@ class DropImportService:
             self._extract_and_group, Path(job.staging_dir)
         )
         if notes:
-            logger.info("drop_import.extract_notes", extra={"job_id": job_id, "notes": notes})
+            logger.info(
+                "drop_import.extract_notes", extra={"job_id": job_id, "notes": notes}
+            )
         if not units:
             error = notes[0] if notes else "No audio files found in the upload"
             await self._store.set_job_status(job_id, JobStatus.FAILED, error)
@@ -365,7 +376,9 @@ class DropImportService:
                 try:
                     self._safe_extract(child, target, notes, display=f"{display}.zip")
                 except zipfile.BadZipFile:
-                    notes.append(f"Couldn't read {display}.zip - the archive is corrupt.")
+                    notes.append(
+                        f"Couldn't read {display}.zip - the archive is corrupt."
+                    )
             child.unlink(missing_ok=True)
 
         units: dict[str, list[Path]] = {}
@@ -445,7 +458,9 @@ class DropImportService:
         except OSError:
             pass
 
-    async def _process_item(self, job: DropImportJob, item_id: int, paths: list[Path]) -> None:
+    async def _process_item(
+        self, job: DropImportJob, item_id: int, paths: list[Path]
+    ) -> None:
         entries, unreadable = await self._read_entries(paths)
         if not entries:
             await self._store.update_item(
@@ -522,6 +537,7 @@ class DropImportService:
         )
         if result.imported > 0:
             await self._after_import(job, ident)
+
         # staged sources are consumed by the moves; clear any cross-mount leftovers
         def _tidy() -> None:
             for entry in staged:
@@ -647,13 +663,17 @@ class DropImportService:
         seen: set[str] = set()
         for entry, local in zip(entries, locals_):
             try:
-                fp: "FingerprintResult" = await self._fingerprinter.fingerprint(entry.path)
+                fp: "FingerprintResult" = await self._fingerprinter.fingerprint(
+                    entry.path
+                )
                 if (
                     fp.status == "pass"
                     and (fp.score or 0.0) >= _FINGERPRINT_SCORE_THRESHOLD
                     and fp.recording_id
                 ):
-                    local = msgspec.structs.replace(local, recording_mbid=fp.recording_id)
+                    local = msgspec.structs.replace(
+                        local, recording_mbid=fp.recording_id
+                    )
                     rg = await self._mb_matcher.resolve_recording_to_release_group(
                         fp.recording_id
                     )
@@ -668,10 +688,10 @@ class DropImportService:
     # -- organisation (mirrors the download import) --
 
     def _require_library_root(self) -> Path:
-        lib = self._prefs.get_library_settings_raw()
-        if not lib.library_paths:
+        lib = self._prefs.get_typed_library_settings_raw()
+        if not lib.library_roots:
             raise ValidationError("Set a library path before importing.")
-        return Path(lib.library_paths[0])
+        return Path(lib.library_roots[0].path)
 
     async def _organise(
         self,
@@ -680,7 +700,7 @@ class DropImportService:
         confidence_override: float | None = None,
     ) -> _OrganiseResult:
         root = self._require_library_root()
-        lib = self._prefs.get_library_settings_raw()
+        lib = self._prefs.get_typed_library_settings_raw()
         template = lib.naming_template or NamingTemplateEngine.DEFAULT
         meta, tracks, match = ident.meta, ident.tracks, ident.match
         confidence = (
@@ -729,7 +749,9 @@ class DropImportService:
         target_tag = self._target_tag(meta, track, entry.tag)
         upgrading = False
         present = await self._library.get_file_at_position(
-            meta.release_group_mbid, target_tag.disc_number or 1, target_tag.track_number
+            meta.release_group_mbid,
+            target_tag.disc_number or 1,
+            target_tag.track_number,
         )
         if present is not None:
             covers = row_covers_track(
@@ -739,7 +761,9 @@ class DropImportService:
                 duration_seconds=entry.info.duration_seconds,
             )
             if covers:
-                new_rank = tier_rank(tier_for(entry.info.file_format, entry.info.bitrate))
+                new_rank = tier_rank(
+                    tier_for(entry.info.file_format, entry.info.bitrate)
+                )
                 old_rank = tier_rank(
                     tier_for(present.get("file_format") or "", present.get("bit_rate"))
                 )
@@ -749,19 +773,26 @@ class DropImportService:
                 policy = self._prefs.get_download_policy()
                 bin_path = resolve_bin_path(
                     policy.recycle_bin_path,
-                    self._prefs.get_library_settings_raw().library_paths,
+                    [
+                        root.path
+                        for root in self._prefs.get_typed_library_settings_raw().library_roots
+                    ],
                 )
                 try:
                     if bin_path is not None and old_path.exists():
                         await asyncio.to_thread(recycle, old_path, bin_path)
                     await self._library.soft_delete_file(str(old_path))
                 except OSError:
-                    logger.warning("Could not recycle %s; keeping both copies", old_path)
+                    logger.warning(
+                        "Could not recycle %s; keeping both copies", old_path
+                    )
                 upgrading = True
             # a non-covering occupant is a squatter from an earlier wrong grab -
             # import alongside, keep it for review (the download importer's D5 rule)
 
-        target = root / self._naming.format_path(template, target_tag, entry.info.file_format)
+        target = root / self._naming.format_path(
+            template, target_tag, entry.info.file_format
+        )
         if target.exists() and not upgrading:
             return "skipped"
         await asyncio.to_thread(self._move_into_library, entry.path, target, target_tag)
@@ -789,7 +820,9 @@ class DropImportService:
         take): keep it with the album under its own tags, no recording claim -
         the scanner's unmapped-album-member semantics."""
         target_tag = self._target_tag(meta, None, entry.tag)
-        target = root / self._naming.format_path(template, target_tag, entry.info.file_format)
+        target = root / self._naming.format_path(
+            template, target_tag, entry.info.file_format
+        )
         if target.exists():
             return False
         await asyncio.to_thread(self._move_into_library, entry.path, target, target_tag)
@@ -889,7 +922,8 @@ class DropImportService:
             record = await self._requests.async_get_record(rg)
             if record is not None and record.status != "imported":
                 await self._requests.async_update_status(
-                    rg, "imported",
+                    rg,
+                    "imported",
                     completed_at=datetime.now(timezone.utc).isoformat(),
                 )
         except Exception:  # noqa: BLE001 - request sync must never fail the import

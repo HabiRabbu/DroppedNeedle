@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from api.v1.schemas.cache import CacheStats, CacheClearResponse
 from core.dependencies import get_cache_service
 from infrastructure.msgspec_fastapi import MsgSpecRoute
+from middleware import CurrentAdminDep
 from services.cache_service import CacheService
 
 router = APIRouter(route_class=MsgSpecRoute, prefix="/cache", tags=["cache"])
@@ -17,6 +18,7 @@ async def get_cache_stats(
 
 @router.post("/clear/memory", response_model=CacheClearResponse)
 async def clear_memory_cache(
+    _: CurrentAdminDep,
     cache_service: CacheService = Depends(get_cache_service),
 ):
     result = await cache_service.clear_memory_cache()
@@ -27,6 +29,7 @@ async def clear_memory_cache(
 
 @router.post("/clear/disk", response_model=CacheClearResponse)
 async def clear_disk_cache(
+    _: CurrentAdminDep,
     cache_service: CacheService = Depends(get_cache_service),
 ):
     result = await cache_service.clear_disk_cache()
@@ -37,6 +40,7 @@ async def clear_disk_cache(
 
 @router.post("/clear/all", response_model=CacheClearResponse)
 async def clear_all_cache(
+    _: CurrentAdminDep,
     cache_service: CacheService = Depends(get_cache_service),
 ):
     result = await cache_service.clear_all_cache()
@@ -47,6 +51,7 @@ async def clear_all_cache(
 
 @router.post("/clear/covers", response_model=CacheClearResponse)
 async def clear_covers_cache(
+    _: CurrentAdminDep,
     cache_service: CacheService = Depends(get_cache_service),
 ):
     result = await cache_service.clear_covers_cache()
@@ -57,6 +62,7 @@ async def clear_covers_cache(
 
 @router.post("/clear/library", response_model=CacheClearResponse)
 async def clear_library_cache(
+    _: CurrentAdminDep,
     cache_service: CacheService = Depends(get_cache_service),
 ):
     result = await cache_service.clear_library_cache()
@@ -67,6 +73,7 @@ async def clear_library_cache(
 
 @router.post("/clear/audiodb", response_model=CacheClearResponse)
 async def clear_audiodb_cache(
+    _: CurrentAdminDep,
     cache_service: CacheService = Depends(get_cache_service),
 ):
     result = await cache_service.clear_audiodb()
