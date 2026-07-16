@@ -40,6 +40,19 @@ async def test_search3_missing_query_pages_everything(compat_env):
     assert len(res["song"]) == 2
 
 
+async def test_search3_quoted_empty_query_pages_everything(compat_env):
+    # Symfonium's full-library sync sends the query as two literal double-quote
+    # characters (query=""); it must page everything like an empty query, otherwise
+    # Symfonium syncs an empty library. Navidrome strips the quote pair the same way.
+    res = _sub(_get(compat_env, "search3", query='""', songCount="100"))["searchResult3"]
+    assert len(res["song"]) == 2
+
+
+async def test_search3_quoted_query_matches_unquoted(compat_env):
+    res = _sub(_get(compat_env, "search3", query='"Radiohead"'))["searchResult3"]
+    assert any(a["name"] == "Radiohead" for a in res.get("artist", []))
+
+
 async def test_search2_file_structure(compat_env):
     res = _sub(_get(compat_env, "search2", query=""))["searchResult2"]
     assert res["album"][0]["isDir"] is True

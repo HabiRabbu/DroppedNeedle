@@ -348,8 +348,13 @@ async def _get_music_directory(c: Ctx) -> Response:
 
 async def _search(c: Ctx):
     # missing/empty query means "match everything", matching Navidrome/gonic (clients
-    # like Arpeggi rely on this for their "all songs" view)
-    q = c.p("query") or None
+    # like Arpeggi rely on this for their "all songs" view). Symfonium sends the query
+    # wrapped in literal double quotes (`query=""` for its full-library sync), so strip
+    # a surrounding quote pair first, like Navidrome does.
+    q = c.p("query") or ""
+    if len(q) >= 2 and q.startswith('"') and q.endswith('"'):
+        q = q[1:-1]
+    q = q or None
     a_count = max(c.pint("artistCount", 20) or 0, 0)
     a_offset = max(c.pint("artistOffset", 0) or 0, 0)
     al_count = max(c.pint("albumCount", 20) or 0, 0)
