@@ -2157,6 +2157,7 @@ export interface RadioSeedItem {
 	artist_mbid: string;
 	artist_name?: string;
 	album_mbid?: string | null;
+	album_name?: string;
 }
 
 export interface RadioPlanRequest {

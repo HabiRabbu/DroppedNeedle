@@ -50,7 +50,9 @@ export const getDiscoverQuery = () =>
 			query.state.data?.refreshing ? 3000 : false
 	}));
 
-export const getRadioQuery = (getParams: Getter<{ seedType: string; seedId: string }>) =>
+export const getRadioQuery = (
+	getParams: Getter<{ seedType: string; seedId: string; enabled?: boolean }>
+) =>
 	createQuery(() => ({
 		staleTime: CACHE_TTL.DISCOVER,
 		queryKey: DiscoverQueryKeyFactory.radio(
@@ -67,7 +69,7 @@ export const getRadioQuery = (getParams: Getter<{ seedType: string; seedId: stri
 				},
 				{ signal }
 			),
-		enabled: !!getParams().seedId
+		enabled: (getParams().enabled ?? true) && !!getParams().seedId
 	}));
 
 export const getPlaylistSuggestionsQuery = (

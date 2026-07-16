@@ -24,6 +24,7 @@ import {
 	reportPlexStopped
 } from '$lib/player/plexPlaybackApi';
 import { playbackToast } from '$lib/stores/playbackToast.svelte';
+import { radioSession } from '$lib/stores/radioSession.svelte';
 import {
 	getStoredVolume,
 	storeVolume,
@@ -186,6 +187,7 @@ function createPlayerStore() {
 	}
 
 	function applyResetState(): void {
+		radioSession.end();
 		currentSource?.destroy();
 		currentSource = null;
 		nowPlaying = null;
@@ -488,6 +490,7 @@ function createPlayerStore() {
 		},
 
 		playAlbum(source: PlaybackSource, metadata: NowPlaying): void {
+			radioSession.end();
 			void resumeAudioEngine();
 			void stopPreviousSession(getCurrentItem(), progress);
 			currentSource?.destroy();
@@ -508,6 +511,9 @@ function createPlayerStore() {
 
 		playQueue(items: QueueItem[], startIndex: number = 0, shuffle: boolean = false): void {
 			if (items.length === 0) return;
+			if (!items.some((item) => item.playlistTrackId?.startsWith('radio:'))) {
+				radioSession.end();
+			}
 			void resumeAudioEngine();
 			const s = buildPlayQueueState(items, startIndex, shuffle);
 			queue = s.queue;
@@ -692,6 +698,7 @@ function createPlayerStore() {
 		},
 
 		clearQueue(): void {
+			radioSession.end();
 			if (queue.length === 0 || !queue[currentIndex]) {
 				this.stop();
 				return;

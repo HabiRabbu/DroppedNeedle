@@ -483,6 +483,16 @@ class TargetLibraryRepository:
         )
         return rows
 
+    async def get_files_by_release_group_mbids(
+        self, album_ids: list[str], *, limit: int
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for album_id in album_ids:
+            rows.extend(await self._store.get_target_album_tracks(album_id))
+            if len(rows) >= limit:
+                break
+        return rows[:limit]
+
     async def get_files_by_album_artist_mbids(
         self, artist_ids: list[str], *, limit: int
     ) -> list[dict[str, Any]]:

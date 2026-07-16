@@ -1,8 +1,10 @@
 <script lang="ts">
-	import type { HomeSection as HomeSectionType, HomeAlbum } from '$lib/types';
+	import type { HomeSection as HomeSectionType, HomeAlbum, RadioSeedItem } from '$lib/types';
 	import HomeSection from '$lib/components/HomeSection.svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
+	import DiscoveryShelfActions from '$lib/components/discover/DiscoveryShelfActions.svelte';
 	import { ChevronDown, Disc3 } from 'lucide-svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { tilt } from '$lib/actions/tilt';
 	import { slide } from 'svelte/transition';
 
@@ -19,6 +21,21 @@
 	);
 	const mosaicAlbums = $derived(albumItems.slice(0, 4));
 	const albumCount = $derived(albumItems.length);
+	const seedItems = $derived.by(() => {
+		const items: RadioSeedItem[] = [];
+		const seen = new SvelteSet<string>();
+		for (const album of albumItems) {
+			if (!album.artist_mbid || !album.mbid || seen.has(album.mbid)) continue;
+			seen.add(album.mbid);
+			items.push({
+				artist_mbid: album.artist_mbid,
+				artist_name: album.artist_name ?? '',
+				album_mbid: album.mbid,
+				album_name: album.name
+			});
+		}
+		return items;
+	});
 
 	function toggleExpanded() {
 		expanded = !expanded;
@@ -59,7 +76,6 @@
 						/>
 					</div>
 				{:else}
-					<!-- Fallback if fewer than 4 albums -->
 					{#each Array(4) as _, i (i)}
 						<div class="bg-base-200 flex items-center justify-center">
 							<Disc3 class="h-6 w-6 text-base-content/20" />
@@ -114,10 +130,19 @@
 	</div>
 </div>
 
-<!-- Expanded carousel (full grid width) -->
 {#if expanded}
 	<div transition:slide={{ duration: 300 }} class="col-span-full overflow-hidden">
-		<div class="pt-3">
+		<div class="mt-3 rounded-2xl border border-primary/15 bg-base-200/45 p-4">
+			<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+				<p class="text-sm text-base-content/60">
+					Play the mix, or download any albums you're missing.
+				</p>
+				<DiscoveryShelfActions
+					{section}
+					sectionKey="daily_mixes"
+					seed={{ seed_type: 'items', items: seedItems }}
+				/>
+			</div>
 			<HomeSection {section} showConnectCard={false} />
 		</div>
 	</div>

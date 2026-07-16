@@ -136,6 +136,7 @@ class RadioSeedItem(AppStruct):
     artist_mbid: str
     artist_name: str = ""
     album_mbid: str | None = None
+    album_name: str = ""
 
 
 class RadioPlanRequest(AppStruct):
@@ -145,8 +146,7 @@ class RadioPlanRequest(AppStruct):
     mode: Literal["library", "hybrid"] = "hybrid"
     count: int = 30
     exclude_recording_mbids: list[str] = []
-    # fast=True expands only the seed itself (+ library pool) so first audio
-    # lands within the <=5s budget; the client follows up with fast=False
+    # Accepted for compatibility with the former two-stage client. Plans are complete.
     fast: bool = False
 
 

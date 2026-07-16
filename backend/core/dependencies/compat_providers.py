@@ -227,6 +227,7 @@ def get_target_consumer_composition() -> "TargetConsumerComposition":
     from .service_providers import (
         get_now_playing_service,
         get_per_user_client_factory,
+        get_plugin_host,
     )
 
     return build_target_consumer_composition(
@@ -240,6 +241,7 @@ def get_target_consumer_composition() -> "TargetConsumerComposition":
         listening_prefs_store=get_user_listening_prefs_store(),
         now_playing=get_now_playing_service(),
         request_history=get_request_history_store(),
+        plugin_host=get_plugin_host(),
     )
 
 

@@ -174,7 +174,15 @@
 	}
 </script>
 
-<section id="operations" class="scroll-mt-28 space-y-4" aria-labelledby="library-operations-title">
+<section
+	id="operations"
+	class="relative isolate scroll-mt-28 space-y-5 rounded-3xl border border-primary/15 bg-base-200/65 p-4 shadow-xl shadow-base-300/25 sm:p-6 lg:p-8"
+	aria-labelledby="library-operations-title"
+>
+	<div
+		aria-hidden="true"
+		class="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-primary/55 to-transparent"
+	></div>
 	<div class="flex flex-wrap items-end justify-between gap-3">
 		<div>
 			<p class="font-mono text-xs uppercase tracking-[0.18em] text-primary/70">Control room</p>

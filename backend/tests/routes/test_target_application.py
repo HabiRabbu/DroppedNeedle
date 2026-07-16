@@ -21,6 +21,7 @@ from core.dependencies import (
     get_navidrome_library_service,
     get_plex_library_service,
     get_settings_service,
+    get_scrobble_service,
     get_personal_mix_service,
     get_quota_service,
     get_requests_page_service,
@@ -215,6 +216,27 @@ def test_isolated_target_application_mounts_target_catalog_and_compat_routes() -
     assert app.dependency_overrides[get_events_watcher_getter]() is (
         get_target_events_watcher_service
     )
+
+
+def test_target_native_scrobble_routes_receive_the_native_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import target_application as target_module
+
+    native_scrobble = object()
+    compat_scrobble = object()
+    monkeypatch.setattr(
+        target_module,
+        "get_target_consumer_composition",
+        lambda: SimpleNamespace(
+            scrobble_service=native_scrobble,
+            scrobble=compat_scrobble,
+        ),
+    )
+
+    app = create_isolated_target_application()
+
+    assert app.dependency_overrides[get_scrobble_service]() is native_scrobble
 
 
 def test_target_application_exposes_only_typed_library_root_mutations() -> None:

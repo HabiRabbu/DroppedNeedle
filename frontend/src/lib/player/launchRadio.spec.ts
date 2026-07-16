@@ -74,8 +74,6 @@ describe('planTrackToQueueItem tiers', () => {
 	});
 
 	it('un-owned tracks without YouTube are dropped (previews are not a player tier)', () => {
-		// previews are cross-origin clips the player's Web Audio graph mutes; they
-		// live in the floating widget, so the player queue simply omits these
 		const item = planTrackToQueueItem(track(), false);
 		expect(item).toBeNull();
 	});
@@ -97,7 +95,6 @@ describe('launchRadio', () => {
 		expect(ok).toBe(true);
 		expect(resolveRadioPatch).toHaveBeenCalledTimes(1);
 		const [items] = playerMock.playQueue.mock.calls[0];
-		// the head is playable at playQueue time - no startup error cascade
 		expect(items[0].trackSourceId).toBe('vid-1');
 	});
 
@@ -112,7 +109,7 @@ describe('launchRadio', () => {
 		expect(radioSession.active).toBe(false);
 	});
 
-	it('starts playback from the fast plan and starts a session', async () => {
+	it('loads one complete plan before playback and starts a finite session', async () => {
 		apiMock.global.post.mockResolvedValue({
 			title: 'Radio: Shoegaze',
 			tracks: [track(), track({ track_name: 'Other', recording_mbid: 'rec-2' })]
@@ -122,12 +119,12 @@ describe('launchRadio', () => {
 
 		expect(ok).toBe(true);
 		expect(radioSession.active).toBe(true);
-		expect(radioSession.title).toBe('Radio: Shoegaze');
 		expect(playerMock.playQueue).toHaveBeenCalledTimes(1);
 		const [items] = playerMock.playQueue.mock.calls[0];
 		expect(items).toHaveLength(2);
-		// fast first call, then the background full-plan extension
-		expect(apiMock.global.post.mock.calls[0][1]).toMatchObject({ fast: true });
+		expect(apiMock.global.post).toHaveBeenCalledTimes(1);
+		expect(apiMock.global.post.mock.calls[0][1]).toMatchObject({ fast: false, count: 30 });
+		expect(playerMock.addMultipleToQueue).not.toHaveBeenCalled();
 	});
 
 	it('empty plan warns instead of playing', async () => {
@@ -141,7 +138,6 @@ describe('launchRadio', () => {
 	});
 
 	it('un-owned tracks without YouTube are dropped from the station', async () => {
-		// a station of only un-owned tracks + no YouTube has nothing for the player
 		apiMock.global.post.mockResolvedValue({ title: 'Radio', tracks: [track()] });
 
 		const ok = await launchRadio({ seed_type: 'genre', seed_id: 'x' }, false);
@@ -150,7 +146,7 @@ describe('launchRadio', () => {
 		expect(playerMock.playQueue).not.toHaveBeenCalled();
 	});
 
-	it('session dedupes tracks across extensions', async () => {
+	it('dedupes tracks within the complete plan', async () => {
 		apiMock.global.post.mockResolvedValue({
 			title: 'Radio',
 			tracks: [track(), track()] // duplicate in one plan
@@ -160,5 +156,50 @@ describe('launchRadio', () => {
 
 		const [items] = playerMock.playQueue.mock.calls[0];
 		expect(items).toHaveLength(1);
+	});
+
+	it('does not start playback when the player closes during tuning', async () => {
+		let finishPlan: (value: { title: string; tracks: RadioPlanTrack[] }) => void = () => {};
+		apiMock.global.post.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finishPlan = resolve;
+				})
+		);
+
+		const tuning = launchRadio({ seed_type: 'artist', seed_id: 'slow' }, true);
+		radioSession.end();
+		finishPlan({ title: 'Late station', tracks: [track()] });
+
+		expect(await tuning).toBe(false);
+		expect(playerMock.playQueue).not.toHaveBeenCalled();
+	});
+
+	it('lets the newest station win when plans finish out of order', async () => {
+		let finishFirst: (value: { title: string; tracks: RadioPlanTrack[] }) => void = () => {};
+		let finishSecond: (value: { title: string; tracks: RadioPlanTrack[] }) => void = () => {};
+		apiMock.global.post
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finishFirst = resolve;
+					})
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finishSecond = resolve;
+					})
+			);
+
+		const first = launchRadio({ seed_type: 'artist', seed_id: 'first' }, true);
+		const second = launchRadio({ seed_type: 'artist', seed_id: 'second' }, true);
+		finishSecond({ title: 'Second', tracks: [track({ track_name: 'Second' })] });
+		expect(await second).toBe(true);
+		finishFirst({ title: 'First', tracks: [track({ track_name: 'First' })] });
+
+		expect(await first).toBe(false);
+		expect(playerMock.playQueue).toHaveBeenCalledOnce();
+		expect(playerMock.playQueue.mock.calls[0][0][0].trackName).toBe('Second');
 	});
 });

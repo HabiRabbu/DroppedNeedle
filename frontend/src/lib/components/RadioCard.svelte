@@ -2,12 +2,13 @@
 	import type { HomeSection as HomeSectionType, HomeAlbum } from '$lib/types';
 	import HomeSection from '$lib/components/HomeSection.svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
+	import ArtistImage from '$lib/components/ArtistImage.svelte';
 	import { getRadioQuery } from '$lib/queries/discover/DiscoverQuery.svelte';
 	import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 	import { DiscoverQueryKeyFactory } from '$lib/queries/discover/DiscoverQueryKeyFactory';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { ChevronDown, Disc3, Radio, RefreshCw } from 'lucide-svelte';
-	import RadioPlayButton from '$lib/components/discover/RadioPlayButton.svelte';
+	import DiscoveryShelfActions from '$lib/components/discover/DiscoveryShelfActions.svelte';
 	import { tilt } from '$lib/actions/tilt';
 	import { slide } from 'svelte/transition';
 
@@ -19,10 +20,11 @@
 
 	let { seedType, seedId, initialSection = null }: Props = $props();
 
-	const radioQuery = getRadioQuery(() => ({ seedType, seedId }));
-	const section = $derived(radioQuery.data ?? initialSection);
-
 	let expanded = $state(false);
+	const radioQuery = getRadioQuery(() => ({ seedType, seedId, enabled: expanded }));
+	const section = $derived(
+		radioQuery.data?.items.length ? radioQuery.data : (initialSection ?? radioQuery.data)
+	);
 
 	const albumItems = $derived(
 		section ? section.items.filter((item): item is HomeAlbum => section.type === 'albums') : []
@@ -59,9 +61,9 @@
 				"
 				onclick={toggleExpanded}
 				aria-expanded={expanded}
-				aria-label="{section.title} radio - {section.items.length} albums. {expanded
-					? 'Collapse'
-					: 'Expand'} to browse."
+				aria-label="{section.title} radio. {albumCount
+					? `${albumCount} album${albumCount === 1 ? '' : 's'}.`
+					: 'Tracks load when you press Play all.'} {expanded ? 'Collapse' : 'Expand'} to browse."
 			>
 				<div class="absolute inset-0" style="height: 140px;">
 					{#if featuredAlbum}
@@ -72,6 +74,14 @@
 							rounded="none"
 							className="w-full h-full object-cover"
 							customUrl={featuredAlbum.image_url || null}
+						/>
+					{:else if seedType === 'artist' && seedId}
+						<ArtistImage
+							mbid={seedId}
+							alt={section.title}
+							size="full"
+							rounded="none"
+							className="h-full w-full object-cover"
 						/>
 					{:else}
 						<div class="flex h-full w-full items-center justify-center bg-base-200">
@@ -121,7 +131,7 @@
 								class="inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-xs text-white/70 backdrop-blur-sm"
 							>
 								<Radio class="h-3 w-3" />
-								{albumCount} album{albumCount !== 1 ? 's' : ''}
+								{albumCount ? `${albumCount} album${albumCount === 1 ? '' : 's'}` : 'Ready to play'}
 							</span>
 						</div>
 					</div>
@@ -142,26 +152,38 @@
 
 	{#if expanded}
 		<div transition:slide={{ duration: 300 }} class="col-span-full overflow-hidden">
-			<div class="relative pt-3">
-				<div class="absolute right-0 top-3 z-10 flex items-center gap-2">
-					<RadioPlayButton
-						seed={{
-							seed_type: seedType === 'genre' ? 'genre' : seedType === 'album' ? 'album' : 'artist',
-							seed_id: seedId
-						}}
-						size="sm"
-						label="Play station"
-					/>
-					<button
-						class="btn btn-ghost btn-sm gap-1"
-						onclick={handleRefresh}
-						disabled={radioQuery.isFetching}
-					>
-						<RefreshCw class="h-3.5 w-3.5 {radioQuery.isFetching ? 'animate-spin' : ''}" />
-						Refresh
-					</button>
+			<div class="mt-3 rounded-2xl border border-secondary/15 bg-base-200/45 p-4">
+				<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+					<p class="text-sm text-base-content/60">
+						{#if albumCount}
+							Play the station, or download any albums you're missing.
+						{:else if radioQuery.isFetching}
+							Finding albums for this station...
+						{:else}
+							The complete track list is built when you press play.
+						{/if}
+					</p>
+					<div class="flex items-center gap-2">
+						<DiscoveryShelfActions
+							{section}
+							sectionKey="radio_sections"
+							seed={{
+								seed_type:
+									seedType === 'genre' ? 'genre' : seedType === 'album' ? 'album' : 'artist',
+								seed_id: seedId
+							}}
+						/>
+						<button
+							class="btn btn-ghost btn-sm gap-1"
+							onclick={handleRefresh}
+							disabled={radioQuery.isFetching}
+						>
+							<RefreshCw class="h-3.5 w-3.5 {radioQuery.isFetching ? 'animate-spin' : ''}" />
+							Refresh
+						</button>
+					</div>
 				</div>
-				<HomeSection {section} showConnectCard={false} />
+				{#if albumCount}<HomeSection {section} showConnectCard={false} />{/if}
 			</div>
 		</div>
 	{/if}

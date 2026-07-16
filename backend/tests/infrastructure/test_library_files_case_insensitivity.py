@@ -69,6 +69,23 @@ async def test_get_library_files_for_album_is_case_insensitive(db: LibraryDB):
 
 
 @pytest.mark.asyncio
+async def test_get_files_by_release_group_mbids_preserves_shelf_order(db: LibraryDB):
+    await _seed_album(db, "album-one", track_count=2)
+    await _seed_album(db, "album-two", track_count=2)
+
+    rows = await db.get_files_by_release_group_mbids(
+        ["ALBUM-TWO", "ALBUM-ONE"], limit=10
+    )
+
+    assert [(row["release_group_mbid"], row["track_number"]) for row in rows] == [
+        ("album-two", 1),
+        ("album-two", 2),
+        ("album-one", 1),
+        ("album-one", 2),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_has_album_files_and_get_library_files_for_album_agree(db: LibraryDB):
     """The two check sites must not diverge - both case-insensitive or neither."""
     await _seed_album(db, "rg-mixed-case-0001")

@@ -7,7 +7,7 @@ vi.mock('$env/dynamic/public', () => ({
 	env: { PUBLIC_API_URL: '' }
 }));
 
-const { discoverState, deckState } = vi.hoisted(() => ({
+const { discoverState, deckState, launchRadioMock } = vi.hoisted(() => ({
 	discoverState: {
 		data: undefined as Partial<DiscoverResponse> | undefined,
 		isLoading: false,
@@ -17,13 +17,25 @@ const { discoverState, deckState } = vi.hoisted(() => ({
 		dataUpdatedAt: 0,
 		refetch: () => {}
 	},
-	deckState: { shouldThrow: false }
+	deckState: { shouldThrow: false },
+	launchRadioMock: vi.fn().mockResolvedValue(true)
 }));
 
 vi.mock('$lib/queries/discover/DiscoverQuery.svelte', () => ({
 	getDiscoverQuery: () => discoverState,
 	getDiscoverQueryOptions: () => ({ queryKey: ['discover'], queryFn: () => ({}) }),
-	getRadioQuery: () => ({ data: undefined, isLoading: false }),
+	getRadioQuery: () => ({
+		data: {
+			title: 'Radio',
+			type: 'albums',
+			items: [],
+			source: 'lastfm',
+			fallback_message: null,
+			connect_service: null
+		},
+		isLoading: false,
+		isFetching: false
+	}),
 	getPlaylistSuggestionsQuery: () => ({ data: undefined, isLoading: false })
 }));
 vi.mock('$lib/queries/section-prefs/SectionPrefsQuery.svelte', () => ({
@@ -45,7 +57,10 @@ vi.mock('$lib/api/client', () => {
 vi.mock('$lib/stores/authStore.svelte', () => ({
 	authStore: { user: { id: 'u1' }, isAdmin: false }
 }));
-// the deck fetches its own queue; stub it, optionally throwing to exercise the boundary
+vi.mock('$lib/player/launchRadio', () => ({
+	launchRadio: launchRadioMock
+}));
+// stub the deck fetch; optional failure exercises the section boundary
 vi.mock('$lib/components/discover/DiscoverQueueDeck.svelte', () => ({
 	default: function () {
 		if (deckState.shouldThrow) throw new Error('deck exploded');
@@ -79,6 +94,7 @@ describe('/discover degraded and error states (#147)', () => {
 		discoverState.isFetching = false;
 		discoverState.isRefetching = false;
 		deckState.shouldThrow = false;
+		launchRadioMock.mockClear();
 	});
 
 	it('shows a terminal degraded state instead of endless skeletons', async () => {
@@ -137,5 +153,92 @@ describe('/discover degraded and error states (#147)', () => {
 
 		await expect.element(page.getByText('Because You Listened')).toBeVisible();
 		await expect.element(page.getByText('Something Went Wrong')).not.toBeInTheDocument();
+	});
+
+	it('keeps a useful station identity when a cached detail response is empty', async () => {
+		discoverState.data = emptyResponse({
+			radio_sections: [
+				{
+					title: 'Radio: Cocteau Twins',
+					type: 'albums',
+					items: [],
+					source: 'lastfm',
+					fallback_message: null,
+					connect_service: null,
+					radio_seed_type: 'artist',
+					radio_seed_id: '5882a127-6b1f-493a-a70f-7cfbbef01b2d'
+				}
+			]
+		});
+		render(DiscoverPage);
+
+		await expect.element(page.getByRole('heading', { name: 'Radio: Cocteau Twins' })).toBeVisible();
+		await expect.element(page.getByText('Ready to play')).toBeVisible();
+		await page.getByRole('button', { name: /Radio: Cocteau Twins radio/ }).click();
+		await expect
+			.element(page.getByText('The complete track list is built when you press play.'))
+			.toBeVisible();
+	});
+
+	it('plays every displayed daily-mix album when one artist has several albums', async () => {
+		discoverState.data = emptyResponse({
+			daily_mixes: [
+				{
+					title: 'Daily Dream Mix',
+					type: 'albums',
+					items: [
+						{
+							mbid: 'album-one',
+							name: 'Album One',
+							artist_name: 'One Artist',
+							artist_mbid: 'artist-one',
+							image_url: null,
+							release_date: null,
+							listen_count: null,
+							in_library: true
+						},
+						{
+							mbid: 'album-two',
+							name: 'Album Two',
+							artist_name: 'One Artist',
+							artist_mbid: 'artist-one',
+							image_url: null,
+							release_date: null,
+							listen_count: null,
+							in_library: true
+						}
+					],
+					source: 'listenbrainz',
+					fallback_message: null,
+					connect_service: null
+				}
+			]
+		});
+		render(DiscoverPage);
+
+		await page.getByRole('button', { name: /Daily Dream Mix - 2 albums/ }).click();
+		await page.getByRole('button', { name: 'Play all' }).click();
+
+		expect(launchRadioMock).toHaveBeenCalledWith(
+			{
+				seed_type: 'items',
+				items: [
+					{
+						artist_mbid: 'artist-one',
+						artist_name: 'One Artist',
+						album_mbid: 'album-one',
+						album_name: 'Album One'
+					},
+					{
+						artist_mbid: 'artist-one',
+						artist_name: 'One Artist',
+						album_mbid: 'album-two',
+						album_name: 'Album Two'
+					}
+				]
+			},
+			false,
+			{ shuffle: false, mode: undefined }
+		);
 	});
 });

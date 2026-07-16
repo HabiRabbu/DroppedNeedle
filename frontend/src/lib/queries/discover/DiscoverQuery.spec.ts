@@ -112,4 +112,13 @@ describe('getRadioQuery', () => {
 		expect(opts.queryKey).toContain('genre');
 		expect(opts.queryKey).toContain('shoegaze');
 	});
+
+	it('can defer the individual station request until its card is expanded', async () => {
+		const { getRadioQuery } = await import('./DiscoverQuery.svelte');
+
+		getRadioQuery(() => ({ seedType: 'artist', seedId: 'mbid-123', enabled: false }));
+
+		const opts = lastQueryOpts();
+		expect(opts.enabled).toBe(false);
+	});
 });

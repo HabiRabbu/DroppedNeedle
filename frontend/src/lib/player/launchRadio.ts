@@ -1,15 +1,7 @@
 /**
- * Smart radio launcher: fetch a track plan, start playback on the first playable
- * track, and hydrate the rest as the station plays.
- *
- * Tiers per track: library file -> native stream (full quality); un-owned ->
- * YouTube full track when the API is configured, else the track is skipped.
- * NOTHING is ever downloaded by radio - all tiers stream. 30s previews are NOT a
- * player tier: they're cross-origin clips the player's Web Audio graph mutes, so
- * preview stations run through the floating widget (deckSampler) instead.
- *
- * Time-to-first-sound: the first request uses `fast: true` (seed-only plan);
- * the full plan is fetched in the background and appended.
+ * Loads one finite radio plan. Local files stream natively; unowned tracks use
+ * YouTube when configured. Cross-origin previews stay in deckSampler because the
+ * player's Web Audio graph mutes them.
  */
 import { API } from '$lib/constants';
 import { api } from '$lib/api/client';
@@ -39,11 +31,6 @@ export function radioTrackKey(track: { artist_name: string; track_name: string }
 	return `radio:${track.artist_name.toLowerCase()}|${track.track_name.toLowerCase()}`;
 }
 
-/**
- * Map a plan track to a player queue item, or null when it has no player-playable
- * source (un-owned + no YouTube). Nulls are filtered before the queue is built, so
- * the player never carries an item it can't play.
- */
 export function planTrackToQueueItem(
 	track: RadioPlanTrack,
 	ytConfigured: boolean
@@ -68,7 +55,7 @@ export function planTrackToQueueItem(
 		};
 	}
 	if (ytConfigured) {
-		// placeholder: the hydrator fills trackSourceId with a video id just-in-time
+		// the hydrator resolves the video just before playback
 		return {
 			trackSourceId: '',
 			trackName: track.track_name,
@@ -83,28 +70,24 @@ export function planTrackToQueueItem(
 			playlistTrackId: radioTrackKey(track)
 		};
 	}
-	// un-owned and no YouTube: nothing to play in the main player (previews live
-	// in the widget, not here) -> drop it
 	return null;
 }
 
-async function fetchPlan(request: RadioPlanRequest): Promise<RadioPlanResponse> {
-	return api.global.post<RadioPlanResponse>(API.discoverRadioPlan(), request);
+async function fetchPlan(
+	request: RadioPlanRequest,
+	signal: AbortSignal
+): Promise<RadioPlanResponse> {
+	return api.global.post<RadioPlanResponse>(API.discoverRadioPlan(), request, { signal });
 }
 
-/** Keep each freshly-claimed key exactly once (a plan can contain duplicates). */
-function pickFresh(
-	tracks: RadioPlanTrack[],
-	fresh: { artist_name: string; track_name: string }[]
-): RadioPlanTrack[] {
-	const remaining = new Set(fresh.map((t) => radioTrackKey(t)));
+function dedupeTracks(tracks: RadioPlanTrack[]): RadioPlanTrack[] {
+	const seen = new Set<string>();
 	const out: RadioPlanTrack[] = [];
-	for (const t of tracks) {
-		const key = radioTrackKey(t);
-		if (remaining.has(key)) {
-			remaining.delete(key);
-			out.push(t);
-		}
+	for (const track of tracks) {
+		const key = radioTrackKey(track);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(track);
 	}
 	return out;
 }
@@ -117,18 +100,23 @@ export async function launchRadio(
 	const mode: RadioMode = options.mode ?? seed.mode ?? 'hybrid';
 	const effectiveYt = ytConfigured;
 	const request = { ...seed, mode, count: options.count ?? seed.count ?? 30 };
+	const launch = radioSession.beginLaunch();
 
-	// never talk over the deck (one-sound rule): starting a station owns audio
+	// starting a station takes audio focus from the preview player
 	audioFocus.interrupt();
 
-	let fastPlan: RadioPlanResponse;
+	let plan: RadioPlanResponse;
 	try {
-		fastPlan = await fetchPlan({ ...request, fast: true });
+		plan = await fetchPlan({ ...request, fast: false }, launch.signal);
 	} catch {
+		if (!radioSession.isCurrent(launch.generation)) return false;
+		radioSession.end();
 		playbackToast.show("Couldn't tune this station", 'error');
 		return false;
 	}
-	if (fastPlan.tracks.length === 0) {
+	if (!radioSession.isCurrent(launch.generation)) return false;
+	if (plan.tracks.length === 0) {
+		radioSession.end();
 		playbackToast.show(
 			mode === 'library'
 				? 'Nothing in your library for this yet - try the full-tracks mode'
@@ -138,29 +126,20 @@ export async function launchRadio(
 		return false;
 	}
 
-	radioSession.start(fastPlan.title, request);
-	const fresh = radioSession.claim(
-		fastPlan.tracks.map((t) => ({
-			artist_name: t.artist_name,
-			track_name: t.track_name,
-			recording_mbid: t.recording_mbid
-		}))
-	);
-	const items = pickFresh(fastPlan.tracks, fresh)
+	const items = dedupeTracks(plan.tracks)
 		.map((t) => planTrackToQueueItem(t, effectiveYt))
 		.filter((item): item is QueueItem => item !== null);
 
-	// The player advances through unplayable items in milliseconds - far faster
-	// than the background hydrator - so the FIRST track must be playable before
-	// playback starts, or three placeholder misses kill the station instantly.
-	prepareRadioHydration(effectiveYt);
+	// resolve the head inline or rapid placeholder failures can stop the station
+	prepareRadioHydration();
 	while (items.length > 0 && needsHydration(items[0])) {
 		const patch = await resolveRadioPatch(items[0]);
+		if (!radioSession.isCurrent(launch.generation)) return false;
 		if (patch) {
 			items[0] = { ...items[0], ...patch };
 			break;
 		}
-		items.shift(); // no playable source for this track: drop it
+		items.shift();
 	}
 	if (items.length === 0) {
 		radioSession.end();
@@ -168,42 +147,8 @@ export async function launchRadio(
 		return false;
 	}
 
+	if (!radioSession.start(launch.generation)) return false;
 	playerStore.playQueue(items, 0, options.shuffle ?? false);
 	startRadioHydration();
-
-	// full plan in the background; append what the fast plan didn't cover
-	void extendRadio(effectiveYt);
 	return true;
-}
-
-/** Fetch more tracks for the live session and append them to the player queue. */
-export async function extendRadio(ytConfigured: boolean): Promise<void> {
-	const seed = radioSession.seed;
-	if (!radioSession.active || !seed || radioSession.extending || radioSession.atCapacity) return;
-	radioSession.extending = true;
-	try {
-		const plan = await fetchPlan({
-			...seed,
-			exclude_recording_mbids: radioSession.exclusions,
-			fast: false
-		});
-		if (!radioSession.active) return;
-		const fresh = radioSession.claim(
-			plan.tracks.map((t) => ({
-				artist_name: t.artist_name,
-				track_name: t.track_name,
-				recording_mbid: t.recording_mbid
-			}))
-		);
-		const items = pickFresh(plan.tracks, fresh)
-			.map((t) => planTrackToQueueItem(t, ytConfigured))
-			.filter((item): item is QueueItem => item !== null);
-		if (items.length > 0) {
-			playerStore.addMultipleToQueue(items);
-		}
-	} catch {
-		// extension is best-effort; the current queue keeps playing
-	} finally {
-		radioSession.extending = false;
-	}
 }

@@ -3,6 +3,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
+	import { libraryStore } from '$lib/stores/library';
 	import { createDiscoveryBatch } from '$lib/queries/discover/DiscoveryBatchQuery.svelte';
 	import type { HomeAlbum } from '$lib/types';
 
@@ -20,26 +21,27 @@
 	let deselected = new SvelteSet<string>();
 	let submitting = $state(false);
 
-	// dedupe by mbid: a repeated album is meaningless here and a duplicate key
-	// would crash the keyed {#each} below (and the batch it creates)
 	const eligible = $derived(
 		albums.filter((a, i) => a.mbid && albums.findIndex((b) => b.mbid === a.mbid) === i)
 	);
+	const isRequested = (album: HomeAlbum) =>
+		!!album.requested || libraryStore.isRequested(album.mbid);
 	const selectedCount = $derived(
-		eligible.filter((a) => !a.in_library && !deselected.has(a.mbid!)).length
+		eligible.filter((a) => !a.in_library && !isRequested(a) && !deselected.has(a.mbid!)).length
 	);
 	const needsApproval = $derived(authStore.user?.role === 'user');
 
 	$effect(() => {
 		if (!dialogEl) return;
 		if (open) {
-			name = `${sectionTitle} — ${new Date().toLocaleDateString(undefined, {
+			name = `${sectionTitle} - ${new Date().toLocaleDateString(undefined, {
 				month: 'short',
 				day: 'numeric'
 			})}`;
 			deselected.clear();
-			// in-library albums start unchecked: requesting them is a no-op
-			for (const a of eligible.filter((x) => x.in_library)) deselected.add(a.mbid!);
+			for (const album of eligible.filter((item) => item.in_library || isRequested(item))) {
+				deselected.add(album.mbid!);
+			}
 			dialogEl.showModal();
 		} else if (dialogEl.open) {
 			dialogEl.close();
@@ -59,7 +61,7 @@
 		submitting = true;
 		try {
 			const items = eligible
-				.filter((a) => !deselected.has(a.mbid!))
+				.filter((a) => !a.in_library && !isRequested(a) && !deselected.has(a.mbid!))
 				.map((a) => ({
 					release_group_mbid: a.mbid!,
 					artist_mbid: a.artist_mbid ?? '',
@@ -87,9 +89,9 @@
 			</button>
 		</div>
 		<p class="mb-4 text-sm text-base-content/60">
-			Files a request for each selected album - the same rules as requesting them one by one.
+			Requests each selected album using the same rules as an individual request.
 			{#if needsApproval}These will wait for admin approval.{/if}
-			You can remove the whole batch later from the Downloads page.
+			You can remove the batch later from Downloads.
 		</p>
 
 		<label class="form-control mb-4 w-full">
@@ -104,14 +106,16 @@
 		<div class="max-h-80 space-y-1 overflow-y-auto pr-1">
 			{#each eligible as album (album.mbid)}
 				<label
-					class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-base-content/5 {album.in_library
+					class="flex items-center gap-3 rounded-lg px-2 py-1.5 {album.in_library ||
+					isRequested(album)
 						? 'opacity-60'
-						: ''}"
+						: 'cursor-pointer hover:bg-base-content/5'}"
 				>
 					<input
 						type="checkbox"
 						class="checkbox checkbox-primary checkbox-sm"
 						checked={!deselected.has(album.mbid!)}
+						disabled={album.in_library || isRequested(album)}
 						onchange={() => toggle(album.mbid!)}
 					/>
 					<AlbumImage
@@ -131,6 +135,8 @@
 						<span class="badge badge-success badge-sm gap-1 shrink-0">
 							<Check class="h-3 w-3" /> Owned
 						</span>
+					{:else if isRequested(album)}
+						<span class="badge badge-info badge-sm shrink-0">Requested</span>
 					{/if}
 				</label>
 			{/each}

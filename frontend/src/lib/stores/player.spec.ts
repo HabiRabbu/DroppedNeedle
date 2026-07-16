@@ -100,6 +100,7 @@ vi.mock('$lib/api/client', () => ({
 
 import { playerStore } from './player.svelte';
 import { playbackToast } from '$lib/stores/playbackToast.svelte';
+import { radioSession } from '$lib/stores/radioSession.svelte';
 
 function makeItem(overrides: Partial<QueueItem> = {}): QueueItem {
 	const id = overrides.trackSourceId ?? `vid-${Math.random().toString(36).slice(2, 6)}`;
@@ -711,6 +712,30 @@ describe('playerStore queue methods', () => {
 			const before = playerStore.currentIndex;
 			playerStore.jumpToTrack(10);
 			expect(playerStore.currentIndex).toBe(before);
+		});
+	});
+
+	describe('radio session lifecycle', () => {
+		it('ends the station when the player is closed', () => {
+			const launch = radioSession.beginLaunch();
+			radioSession.start(launch.generation);
+			playerStore.playQueue([makeItem({ playlistTrackId: 'radio:test artist|test track' })]);
+
+			playerStore.stop();
+
+			expect(radioSession.active).toBe(false);
+			expect(playerStore.queue).toHaveLength(0);
+		});
+
+		it('keeps the fixed station queue when playback is paused', () => {
+			const launch = radioSession.beginLaunch();
+			radioSession.start(launch.generation);
+			playerStore.playQueue([makeItem({ playlistTrackId: 'radio:test artist|test track' })]);
+
+			playerStore.pause();
+
+			expect(radioSession.active).toBe(true);
+			expect(playerStore.queue).toHaveLength(1);
 		});
 	});
 });

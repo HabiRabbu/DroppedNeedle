@@ -25,18 +25,18 @@
 		downloadable && $integrationStore.download_client && requestableCount > 1
 	);
 
-	// "play this shelf": seed the station with the section's artists
 	const seedItems = $derived.by(() => {
 		const items: RadioSeedItem[] = [];
 		const seen = new SvelteSet<string>();
 		for (const item of section.items as HomeAlbum[]) {
 			const mbid = item.artist_mbid;
-			if (!mbid || seen.has(mbid)) continue;
-			seen.add(mbid);
+			if (!mbid || !item.mbid || seen.has(item.mbid)) continue;
+			seen.add(item.mbid);
 			items.push({
 				artist_mbid: mbid,
 				artist_name: item.artist_name ?? '',
-				album_mbid: item.mbid
+				album_mbid: item.mbid,
+				album_name: item.name
 			});
 		}
 		return items;

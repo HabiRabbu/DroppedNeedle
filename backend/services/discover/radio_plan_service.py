@@ -1,13 +1,4 @@
-"""Track-level radio plans for hands-free smart playback.
-
-The backend returns a *plan* (ordered desired tracks with library membership);
-the frontend resolves playback: library tracks stream natively via the user's
-playback sources, un-owned tracks resolve lazily to YouTube or 30s previews.
-
-Time-to-first-sound budget is <=5s: the ``fast`` first call expands only the
-seed itself plus the local library pool (one LB call at most); the frontend
-immediately asks for the full plan in the background.
-"""
+"""Finite track plans for radio stations and exact discovery shelves."""
 
 import asyncio
 import hashlib
@@ -30,7 +21,6 @@ logger = logging.getLogger(__name__)
 VARIOUS_ARTISTS_MBID = "89ad4ac3-39f7-470e-963a-56509c546377"
 
 _MAX_SEED_ARTISTS = 8
-_FAST_SEED_ARTISTS = 2
 _TRACKS_PER_ARTIST_EXTERNAL = 5
 _MAX_PER_ARTIST = 4
 _MAX_CONSECUTIVE_SAME_ARTIST = 2
@@ -55,7 +45,14 @@ class RadioPlanService:
         self._lfm_repo = lfm_repo
         self._preview_repo = preview_repo
 
-    async def build_plan(self, user_id: str, request: RadioPlanRequest) -> RadioPlanResponse:
+    async def build_plan(
+        self, user_id: str, request: RadioPlanRequest
+    ) -> RadioPlanResponse:
+        if request.seed_type == "items" and any(
+            item.album_mbid and item.album_name for item in request.items
+        ):
+            return await self._build_item_plan(request)
+
         seeds, title = await self._expand_seeds(user_id, request)
         if not seeds:
             return RadioPlanResponse(title=title, tracks=[])
@@ -75,7 +72,7 @@ class RadioPlanService:
         self, user_id: str, request: RadioPlanRequest
     ) -> tuple[list[tuple[str, str]], str]:
         """Resolve the request into a list of (artist_mbid, artist_name) seeds."""
-        seed_cap = _FAST_SEED_ARTISTS if request.fast else _MAX_SEED_ARTISTS
+        seed_cap = _MAX_SEED_ARTISTS
 
         if request.seed_type == "items":
             seen: set[str] = set()
@@ -104,11 +101,17 @@ class RadioPlanService:
                 return [], "Radio"
             artist_mbid = self._mbid.normalize_mbid(rg.artist_id) or ""
             title = f"Radio: {rg.title}"
-            base = [(artist_mbid, getattr(rg, "artist_name", "") or "")] if artist_mbid else []
+            base = (
+                [(artist_mbid, getattr(rg, "artist_name", "") or "")]
+                if artist_mbid
+                else []
+            )
         else:  # artist
             name = seed_mbid
             try:
-                rgs = await self._lb_repo.get_artist_top_release_groups(seed_mbid, count=1)
+                rgs = await self._lb_repo.get_artist_top_release_groups(
+                    seed_mbid, count=1
+                )
                 if rgs:
                     name = rgs[0].artist_name or seed_mbid
             except Exception:  # noqa: BLE001
@@ -119,9 +122,113 @@ class RadioPlanService:
         if not base:
             return [], title
         seeds = list(base)
-        if not request.fast:
-            seeds.extend(await self._similar_artists(base[0][0], seed_cap - 1))
+        seeds.extend(await self._similar_artists(base[0][0], seed_cap - 1))
         return seeds[:seed_cap], title
+
+    @staticmethod
+    def _library_row_to_track(row: dict[str, Any]) -> RadioPlanTrack:
+        return RadioPlanTrack(
+            track_name=row.get("track_title") or "Unknown",
+            artist_name=row.get("artist_name")
+            or row.get("album_artist_name")
+            or "Unknown",
+            artist_mbid=(
+                row.get("provider_artist_mbid")
+                or row.get("artist_mbid")
+                or row.get("provider_album_artist_mbid")
+                or row.get("album_artist_mbid")
+                or ""
+            ),
+            recording_mbid=row.get("recording_mbid"),
+            album_mbid=row.get("provider_release_group_mbid")
+            or row.get("release_group_mbid"),
+            album_name=row.get("album_title"),
+            in_library=True,
+            local_file_id=row.get("id"),
+            file_format=row.get("file_format"),
+            duration_s=row.get("duration_seconds"),
+        )
+
+    async def _build_item_plan(self, request: RadioPlanRequest) -> RadioPlanResponse:
+        count = max(5, min(request.count, 50))
+        exclude_recordings = {
+            mbid.casefold() for mbid in request.exclude_recording_mbids
+        }
+        items = [
+            item
+            for item in request.items
+            if item.album_mbid and self._mbid.normalize_mbid(item.album_mbid)
+        ]
+        album_ids = [self._mbid.normalize_mbid(item.album_mbid) or "" for item in items]
+
+        local_rows: list[dict[str, Any]] = []
+        if self._library_db is not None:
+            try:
+                local_rows = await self._library_db.get_files_by_release_group_mbids(
+                    album_ids, limit=count
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.debug("Discovery shelf library lookup failed: %s", error)
+
+        local_by_album: dict[str, list[RadioPlanTrack]] = {}
+        for row in local_rows:
+            recording = str(row.get("recording_mbid") or "").casefold()
+            if recording and recording in exclude_recordings:
+                continue
+            track = self._library_row_to_track(row)
+            album_mbid = str(track.album_mbid or "").casefold()
+            local_by_album.setdefault(album_mbid, []).append(track)
+
+        external_items = [
+            item
+            for item, album_id in zip(items, album_ids)
+            if album_id.casefold() not in local_by_album
+            and request.mode == "hybrid"
+            and item.artist_name
+            and item.album_name
+            and self._preview_repo is not None
+        ]
+        per_album = max(1, min(5, count // max(len(items), 1)))
+        external_results = await asyncio.gather(
+            *(
+                self._preview_repo.get_album_preview_tracks(
+                    item.artist_name, item.album_name, limit=per_album
+                )
+                for item in external_items
+            ),
+            return_exceptions=True,
+        )
+        external_by_album: dict[str, list[RadioPlanTrack]] = {}
+        for item, result in zip(external_items, external_results):
+            if isinstance(result, BaseException):
+                continue
+            album_id = self._mbid.normalize_mbid(item.album_mbid) or ""
+            external_by_album[album_id.casefold()] = [
+                RadioPlanTrack(
+                    track_name=track.title,
+                    artist_name=track.artist_name or item.artist_name,
+                    artist_mbid=self._mbid.normalize_mbid(item.artist_mbid) or "",
+                    album_mbid=album_id,
+                    album_name=item.album_name,
+                    in_library=False,
+                )
+                for track in result
+            ]
+
+        tracks: list[RadioPlanTrack] = []
+        seen: set[str] = set()
+        for album_id in album_ids:
+            for track in local_by_album.get(
+                album_id.casefold(), []
+            ) + external_by_album.get(album_id.casefold(), []):
+                key = f"{track.artist_name.casefold()}|{track.track_name.casefold()}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                tracks.append(track)
+                if len(tracks) >= count:
+                    return RadioPlanResponse(title="Radio: This Shelf", tracks=tracks)
+        return RadioPlanResponse(title="Radio: This Shelf", tracks=tracks)
 
     async def _expand_genre_seeds(
         self, user_id: str, genre: str, seed_cap: int
@@ -167,9 +274,13 @@ class RadioPlanService:
 
         return seeds[:seed_cap], title
 
-    async def _similar_artists(self, seed_mbid: str, limit: int) -> list[tuple[str, str]]:
+    async def _similar_artists(
+        self, seed_mbid: str, limit: int
+    ) -> list[tuple[str, str]]:
         try:
-            similar = await self._lb_repo.get_similar_artists(seed_mbid, max_similar=limit + 2)
+            similar = await self._lb_repo.get_similar_artists(
+                seed_mbid, max_similar=limit + 2
+            )
         except Exception as e:  # noqa: BLE001
             logger.debug("Similar-artist expansion failed for %s: %s", seed_mbid[:8], e)
             return []
@@ -205,18 +316,7 @@ class RadioPlanService:
             if title_key in seen_titles:
                 continue
             seen_titles.add(title_key)
-            tracks.append(RadioPlanTrack(
-                track_name=row.get("track_title") or "Unknown",
-                artist_name=row.get("artist_name") or row.get("album_artist_name") or "Unknown",
-                artist_mbid=row.get("artist_mbid") or row.get("album_artist_mbid") or "",
-                recording_mbid=row.get("recording_mbid"),
-                album_mbid=row.get("release_group_mbid"),
-                album_name=row.get("album_title"),
-                in_library=True,
-                local_file_id=row.get("id"),
-                file_format=row.get("file_format"),
-                duration_s=row.get("duration_seconds"),
-            ))
+            tracks.append(self._library_row_to_track(row))
         return tracks
 
     async def _artist_top_tracks(
@@ -253,7 +353,10 @@ class RadioPlanService:
                     artist_name, limit=_TRACKS_PER_ARTIST_EXTERNAL
                 )
                 if deezer_tracks:
-                    return [(t.title, t.artist_name or artist_name, None) for t in deezer_tracks]
+                    return [
+                        (t.title, t.artist_name or artist_name, None)
+                        for t in deezer_tracks
+                    ]
             except Exception as e:  # noqa: BLE001 - end of the chain
                 logger.debug("Deezer top tracks failed for %s: %s", artist_name, e)
         return []
@@ -278,13 +381,15 @@ class RadioPlanService:
                 if key in seen:
                     continue
                 seen.add(key)
-                tracks.append(RadioPlanTrack(
-                    track_name=track_name,
-                    artist_name=track_artist or artist_name,
-                    artist_mbid=artist_mbid,
-                    recording_mbid=recording_mbid,
-                    in_library=False,
-                ))
+                tracks.append(
+                    RadioPlanTrack(
+                        track_name=track_name,
+                        artist_name=track_artist or artist_name,
+                        artist_mbid=artist_mbid,
+                        recording_mbid=recording_mbid,
+                        in_library=False,
+                    )
+                )
         return tracks
 
     @staticmethod
@@ -329,7 +434,9 @@ class RadioPlanService:
                 stall += 1
                 continue
             recent = [artist_key(t) for t in selected[-_MAX_CONSECUTIVE_SAME_ARTIST:]]
-            if len(recent) == _MAX_CONSECUTIVE_SAME_ARTIST and all(r == a_key for r in recent):
+            if len(recent) == _MAX_CONSECUTIVE_SAME_ARTIST and all(
+                r == a_key for r in recent
+            ):
                 stall += 1
                 continue
             seen_keys.add(key)

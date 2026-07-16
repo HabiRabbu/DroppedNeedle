@@ -1,4 +1,4 @@
-"""RadioPlanService: seed expansion, pool mixing, fast mode, exclusions."""
+"""RadioPlanService seed expansion, shelf playback, mixing, and exclusions."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -23,13 +23,18 @@ def _svc(**overrides) -> RadioPlanService:
     mbid.normalize_mbid = staticmethod(lambda m: m.lower() if m else None)
     library_db = MagicMock()
     library_db.get_files_by_artist_mbids = AsyncMock(return_value=[])
+    library_db.get_files_by_release_group_mbids = AsyncMock(return_value=[])
     genre_index = MagicMock()
     genre_index.get_artists_for_genres = AsyncMock(return_value={})
     lfm = MagicMock()
     lfm.get_tag_top_artists = AsyncMock(return_value=[])
     deps = dict(
-        lb_repo=lb, mb_repo=mb, mbid_svc=mbid,
-        library_db=library_db, genre_index=genre_index, lfm_repo=lfm,
+        lb_repo=lb,
+        mb_repo=mb,
+        mbid_svc=mbid,
+        library_db=library_db,
+        genre_index=genre_index,
+        lfm_repo=lfm,
     )
     deps.update(overrides)
     return RadioPlanService(**deps)
@@ -60,7 +65,9 @@ class TestSeedExpansion:
         svc = _svc()
         svc._lb_repo.get_similar_artists = AsyncMock(
             return_value=[
-                SimpleNamespace(artist_mbid=f"sim-{i}", artist_name=f"Sim {i}", listen_count=1)
+                SimpleNamespace(
+                    artist_mbid=f"sim-{i}", artist_name=f"Sim {i}", listen_count=1
+                )
                 for i in range(10)
             ]
         )
@@ -71,11 +78,16 @@ class TestSeedExpansion:
         assert len(called_mbids) == 8  # seed + 7 similar (capped)
 
     @pytest.mark.asyncio
-    async def test_fast_mode_skips_similar_expansion(self):
+    async def test_legacy_fast_flag_still_builds_the_complete_plan(self):
         svc = _svc()
-        req = RadioPlanRequest(seed_type="artist", seed_id="seed-1", mode="library", fast=True)
+        svc._lb_repo.get_similar_artists = AsyncMock(
+            return_value=[SimpleNamespace(artist_mbid="sim-1", artist_name="Similar")]
+        )
+        req = RadioPlanRequest(
+            seed_type="artist", seed_id="seed-1", mode="library", fast=True
+        )
         await svc.build_plan(_UID, req)
-        svc._lb_repo.get_similar_artists.assert_not_awaited()
+        svc._lb_repo.get_similar_artists.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_items_seed_uses_given_artists(self):
@@ -92,6 +104,52 @@ class TestSeedExpansion:
         await svc.build_plan(_UID, req)
         called_mbids = svc._library_db.get_files_by_artist_mbids.await_args.args[0]
         assert called_mbids == ["a-1", "a-2"]
+
+    @pytest.mark.asyncio
+    async def test_items_with_albums_play_the_displayed_shelf(self):
+        preview = MagicMock()
+        preview.get_album_preview_tracks = AsyncMock(
+            return_value=[SimpleNamespace(title="New Track", artist_name="New Artist")]
+        )
+        svc = _svc(preview_repo=preview)
+        svc._library_db.get_files_by_release_group_mbids = AsyncMock(
+            return_value=[
+                {
+                    **_lib_row("Owned Track", "Owned Artist", "artist-owned"),
+                    "id": "file-owned",
+                    "release_group_mbid": "album-owned",
+                }
+            ]
+        )
+        req = RadioPlanRequest(
+            seed_type="items",
+            items=[
+                RadioSeedItem(
+                    artist_mbid="artist-owned",
+                    artist_name="Owned Artist",
+                    album_mbid="album-owned",
+                    album_name="Owned Album",
+                ),
+                RadioSeedItem(
+                    artist_mbid="artist-new",
+                    artist_name="New Artist",
+                    album_mbid="album-new",
+                    album_name="New Album",
+                ),
+            ],
+            mode="hybrid",
+        )
+
+        response = await svc.build_plan(_UID, req)
+
+        assert [(track.track_name, track.album_mbid) for track in response.tracks] == [
+            ("Owned Track", "album-owned"),
+            ("New Track", "album-new"),
+        ]
+        preview.get_album_preview_tracks.assert_awaited_once_with(
+            "New Artist", "New Album", limit=5
+        )
+        svc._lb_repo.get_artist_top_recordings.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_genre_seed_uses_library_index_then_lastfm(self):
@@ -113,7 +171,9 @@ class TestSeedExpansion:
     async def test_empty_seed_id_rejected(self):
         svc = _svc()
         with pytest.raises(ValidationError):
-            await svc.build_plan(_UID, RadioPlanRequest(seed_type="artist", seed_id="  "))
+            await svc.build_plan(
+                _UID, RadioPlanRequest(seed_type="artist", seed_id="  ")
+            )
 
 
 class TestPoolsAndMixing:
@@ -123,7 +183,9 @@ class TestPoolsAndMixing:
         svc._library_db.get_files_by_artist_mbids = AsyncMock(
             return_value=[_lib_row(f"T{i}", "A", "a-1") for i in range(5)]
         )
-        req = RadioPlanRequest(seed_type="artist", seed_id="a-1", mode="library", fast=True)
+        req = RadioPlanRequest(
+            seed_type="artist", seed_id="a-1", mode="library", fast=True
+        )
         resp = await svc.build_plan(_UID, req)
         assert all(t.in_library for t in resp.tracks)
         svc._lb_repo.get_artist_top_recordings.assert_not_awaited()
@@ -132,12 +194,18 @@ class TestPoolsAndMixing:
     async def test_hybrid_interleaves_library_and_external(self):
         svc = _svc()
         svc._library_db.get_files_by_artist_mbids = AsyncMock(
-            return_value=[_lib_row(f"Lib{i}", f"LibArtist{i}", f"la-{i}") for i in range(10)]
+            return_value=[
+                _lib_row(f"Lib{i}", f"LibArtist{i}", f"la-{i}") for i in range(10)
+            ]
         )
         svc._lb_repo.get_artist_top_recordings = AsyncMock(
-            return_value=[_recording(f"Ext{i}", f"ExtArtist{i}", f"rec-{i}") for i in range(5)]
+            return_value=[
+                _recording(f"Ext{i}", f"ExtArtist{i}", f"rec-{i}") for i in range(5)
+            ]
         )
-        req = RadioPlanRequest(seed_type="artist", seed_id="a-1", mode="hybrid", fast=True, count=10)
+        req = RadioPlanRequest(
+            seed_type="artist", seed_id="a-1", mode="hybrid", fast=True, count=10
+        )
         resp = await svc.build_plan(_UID, req)
         assert any(t.in_library for t in resp.tracks)
         assert any(not t.in_library for t in resp.tracks)
@@ -150,7 +218,9 @@ class TestPoolsAndMixing:
         svc._library_db.get_files_by_artist_mbids = AsyncMock(
             return_value=[_lib_row(f"T{i}", "Same", "same-1") for i in range(10)]
         )
-        req = RadioPlanRequest(seed_type="artist", seed_id="same-1", mode="library", fast=True, count=10)
+        req = RadioPlanRequest(
+            seed_type="artist", seed_id="same-1", mode="library", fast=True, count=10
+        )
         resp = await svc.build_plan(_UID, req)
         assert len(resp.tracks) <= 4  # _MAX_PER_ARTIST
 
@@ -181,7 +251,9 @@ class TestPoolsAndMixing:
         svc._library_db.get_files_by_artist_mbids = AsyncMock(
             return_value=[_lib_row(f"T{i}", f"A{i}", f"a-{i}") for i in range(80)]
         )
-        req = RadioPlanRequest(seed_type="artist", seed_id="a-0", mode="library", fast=True, count=500)
+        req = RadioPlanRequest(
+            seed_type="artist", seed_id="a-0", mode="library", fast=True, count=500
+        )
         resp = await svc.build_plan(_UID, req)
         assert len(resp.tracks) <= 50
 
@@ -192,7 +264,9 @@ class TestExternalFallbackChain:
         # LB's popularity API goes down under load (observed live 2026-07-03):
         # the station must still fill from Last.fm
         svc = _svc()
-        svc._lb_repo.get_artist_top_recordings = AsyncMock(side_effect=RuntimeError("disabled"))
+        svc._lb_repo.get_artist_top_recordings = AsyncMock(
+            side_effect=RuntimeError("disabled")
+        )
         svc._lfm_repo.get_artist_top_tracks = AsyncMock(
             return_value=[SimpleNamespace(name="Lucky Man", mbid="rec-lfm")]
         )
@@ -207,7 +281,9 @@ class TestExternalFallbackChain:
     @pytest.mark.asyncio
     async def test_deezer_is_the_last_resort(self):
         svc = _svc()
-        svc._lb_repo.get_artist_top_recordings = AsyncMock(side_effect=RuntimeError("disabled"))
+        svc._lb_repo.get_artist_top_recordings = AsyncMock(
+            side_effect=RuntimeError("disabled")
+        )
         svc._lfm_repo.get_artist_top_tracks = AsyncMock(return_value=[])
         preview_repo = MagicMock()
         preview_repo.get_artist_top_tracks = AsyncMock(
@@ -223,4 +299,6 @@ class TestExternalFallbackChain:
         )
         resp = await svc.build_plan(_UID, req)
         assert [t.track_name for t in resp.tracks] == ["Bitter Sweet Symphony"]
-        preview_repo.get_artist_top_tracks.assert_awaited_once_with("The Verve", limit=5)
+        preview_repo.get_artist_top_tracks.assert_awaited_once_with(
+            "The Verve", limit=5
+        )

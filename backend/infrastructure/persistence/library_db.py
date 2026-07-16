@@ -1178,6 +1178,37 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
+    async def get_files_by_release_group_mbids(
+        self, mbids: list[str], *, limit: int = 120
+    ) -> list[dict[str, Any]]:
+        if not mbids:
+            return []
+
+        normalized = [mbid.casefold() for mbid in mbids]
+
+        def operation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            placeholders = ", ".join("?" for _ in normalized)
+            rows = conn.execute(
+                f"SELECT * FROM library_files WHERE deleted_at IS NULL "
+                f"AND LOWER(release_group_mbid) IN ({placeholders}) "
+                "ORDER BY disc_number, track_number, id LIMIT ?",
+                (*normalized, max(limit, 1)),
+            ).fetchall()
+            order = {mbid: index for index, mbid in enumerate(normalized)}
+            return sorted(
+                (dict(row) for row in rows),
+                key=lambda row: (
+                    order.get(
+                        str(row.get("release_group_mbid") or "").casefold(), len(order)
+                    ),
+                    int(row.get("disc_number") or 0),
+                    int(row.get("track_number") or 0),
+                    str(row.get("id") or ""),
+                ),
+            )
+
+        return await self._read(operation)
+
     async def get_files_by_album_artist_mbids(
         self, mbids: list[str], *, limit: int = 500
     ) -> list[dict[str, Any]]:

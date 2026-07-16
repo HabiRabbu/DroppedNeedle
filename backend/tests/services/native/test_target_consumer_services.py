@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 import shutil
 import threading
@@ -18,6 +19,8 @@ from api.compat.jellyfin.builders import JellyfinBuilder
 from api.compat.subsonic.models import to_album_id3, to_child
 from api.v1.routes import library, library_target, local_library, requests
 from api.v1.schemas.library_policies import LibraryRootSettings, TypedLibrarySettings
+from api.v1.schemas.discover import RadioPlanRequest, RadioSeedItem
+from api.v1.schemas.scrobble import ScrobbleRequest
 from core.dependencies import (
     get_library_manager,
     get_local_files_service,
@@ -582,6 +585,47 @@ async def test_target_cover_projects_provider_warming_to_local_ids(
 
 
 @pytest.mark.asyncio
+async def test_target_cover_forwards_provider_only_cover_operations(
+    target_services, tmp_path: Path
+) -> None:
+    store, _view, _favorites, _history, _root = target_services
+    provider = AsyncMock()
+    provider.get_release_cover.return_value = (
+        b"release-cover",
+        "image/jpeg",
+        "coverartarchive",
+    )
+    provider.get_release_cover_etag.return_value = "release-etag"
+    provider.debug_artist_image.return_value = {"artist_found": True}
+    service = TargetCoverArtService(
+        store,
+        provider,
+        CachedLocalArtworkService(store, tmp_path / "covers"),
+    )
+
+    cover = await service.get_release_cover("release-id", "250", defer=True)
+    etag = await service.get_release_cover_etag("release-id", "250")
+    await service.batch_prefetch_covers(
+        [IDENTIFIED_ALBUM_ID, RELEASE_GROUP_MBID], "250", 2
+    )
+    debug = await service.debug_artist_image(
+        IDENTIFIED_ARTIST_ID, {"artist_found": False}
+    )
+
+    assert cover == (b"release-cover", "image/jpeg", "coverartarchive")
+    assert etag == "release-etag"
+    assert debug == {"artist_found": True}
+    provider.get_release_cover.assert_awaited_once_with("release-id", "250", defer=True)
+    provider.get_release_cover_etag.assert_awaited_once_with("release-id", "250")
+    provider.batch_prefetch_covers.assert_awaited_once_with(
+        [RELEASE_GROUP_MBID], "250", 2
+    )
+    provider.debug_artist_image.assert_awaited_once_with(
+        ARTIST_MBID, {"artist_found": False}
+    )
+
+
+@pytest.mark.asyncio
 async def test_target_genre_and_radio_pool_use_target_membership_only(
     target_services,
 ) -> None:
@@ -612,7 +656,9 @@ async def test_target_genre_and_radio_pool_use_target_membership_only(
     radio = RadioPlanService(
         AsyncMock(),
         AsyncMock(),
-        AsyncMock(),
+        SimpleNamespace(
+            normalize_mbid=lambda value: value.casefold() if value else None
+        ),
         library_db=repository,
         genre_index=genre_index,
     )
@@ -636,6 +682,22 @@ async def test_target_genre_and_radio_pool_use_target_membership_only(
     }
     tracks = await radio._library_tracks([(ARTIST_MBID, "Identified Artist")], set())
     assert [track.local_file_id for track in tracks] == [IDENTIFIED_TRACK_ID]
+    shelf = await radio.build_plan(
+        "user-1",
+        RadioPlanRequest(
+            seed_type="items",
+            mode="library",
+            items=[
+                RadioSeedItem(
+                    artist_mbid=ARTIST_MBID,
+                    artist_name="Identified Artist",
+                    album_mbid=RELEASE_GROUP_MBID,
+                    album_name="Identified",
+                )
+            ],
+        ),
+    )
+    assert [track.local_file_id for track in shelf.tracks] == [IDENTIFIED_TRACK_ID]
 
 
 @pytest.mark.asyncio
@@ -1531,6 +1593,7 @@ async def test_isolated_target_compat_routes_browse_play_and_write_stable_refere
     provider_covers.get_release_group_cover_etag.return_value = None
     provider_covers.get_artist_image.return_value = None
     provider_covers.get_artist_image_etag.return_value = None
+    plugin_host = SimpleNamespace(dispatch_scrobble=AsyncMock())
     target = build_target_consumer_composition(
         store=store,
         preferences=preferences,
@@ -1555,7 +1618,9 @@ async def test_isolated_target_compat_routes_browse_play_and_write_stable_refere
             remove=AsyncMock(),
             compat_now_playing=lambda: [],
         ),
+        plugin_host=plugin_host,
     )
+
     artwork_context = await store.get_target_artwork_context("album", LOCAL_ALBUM_ID)
     direct_embedded_cover = await target.covers.get_release_group_cover(LOCAL_ALBUM_ID)
     assert direct_embedded_cover is not None, artwork_context
@@ -1755,3 +1820,16 @@ async def test_isolated_target_compat_routes_browse_play_and_write_stable_refere
         assert connection.execute(
             "SELECT local_track_id FROM library_compat_play_queue_items"
         ).fetchone() == (LOCAL_TRACK_ID,)
+
+    plugin_calls = plugin_host.dispatch_scrobble.await_count
+    await target.scrobble_service.submit_scrobble(
+        ScrobbleRequest(
+            track_name="Target Track",
+            artist_name="Target Artist",
+            timestamp=int(time.time()),
+            duration_ms=180_000,
+        ),
+        user_id="user-1",
+    )
+    await asyncio.gather(*target.scrobble_service._plugin_tasks)
+    assert plugin_host.dispatch_scrobble.await_count == plugin_calls + 1

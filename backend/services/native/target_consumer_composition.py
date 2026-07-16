@@ -50,6 +50,7 @@ class TargetConsumerComposition:
     id_map: CompatIdMapService
     bookmarks: CompatBookmarkService
     play_queue: CompatPlayQueueService
+    scrobble_service: ScrobbleService
     scrobble: CompatScrobbleAdapter
     playback_report: PlaybackReportService
     covers: TargetCoverArtService
@@ -69,6 +70,7 @@ def build_target_consumer_composition(
     listening_prefs_store: Any,
     now_playing: Any,
     request_history: Any | None = None,
+    plugin_host: Any | None = None,
 ) -> TargetConsumerComposition:
     repository = TargetLibraryRepository(store, request_history)
     favorites = FavoritesService(TargetFavoritesStore(store))
@@ -76,11 +78,10 @@ def build_target_consumer_composition(
     view = TargetLibraryViewService(store, favorites, history)
     local_files = LocalFilesService(repository, preferences, cache)
     native_library = TargetNativeLibraryService(store)
-    scrobble = CompatScrobbleAdapter(
-        ScrobbleService(client_factory, listening_prefs_store, history),
-        view,
-        now_playing,
+    scrobble_service = ScrobbleService(
+        client_factory, listening_prefs_store, history, plugin_host=plugin_host
     )
+    scrobble = CompatScrobbleAdapter(scrobble_service, view, now_playing)
     playlist_repository = TargetPlaylistRepository(store)
 
     def recycle_bin() -> Path | None:
@@ -118,6 +119,7 @@ def build_target_consumer_composition(
         id_map=CompatIdMapService(TargetCompatIdMapStore(store)),
         bookmarks=CompatBookmarkService(TargetBookmarkStore(store)),
         play_queue=CompatPlayQueueService(TargetPlayQueueStore(store)),
+        scrobble_service=scrobble_service,
         scrobble=scrobble,
         playback_report=PlaybackReportService(scrobble, view),
         covers=TargetCoverArtService(

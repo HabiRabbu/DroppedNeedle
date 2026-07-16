@@ -91,6 +91,41 @@ class TargetCoverArtService:
             return await self._provider.get_release_group_cover_etag(provider_id, size)
         return None
 
+    async def get_release_cover(
+        self,
+        release_id: str,
+        size: str | None = "500",
+        **kwargs,
+    ) -> tuple[bytes, str, str] | None:
+        return await self._provider.get_release_cover(release_id, size, **kwargs)
+
+    async def get_release_cover_etag(
+        self, release_id: str, size: str | None = "500"
+    ) -> str | None:
+        return await self._provider.get_release_cover_etag(release_id, size)
+
+    async def batch_prefetch_covers(
+        self,
+        album_ids: list[str],
+        size: str = "250",
+        max_concurrent: int = 5,
+    ) -> None:
+        provider_ids: list[str] = []
+        seen: set[str] = set()
+        for album_id in album_ids:
+            context = await self._store.get_target_artwork_context("album", album_id)
+            provider_id = (
+                album_id
+                if context is None
+                else self._remember_provider_id(
+                    self._album_provider_ids, album_id, context
+                )
+            )
+            if provider_id and provider_id not in seen:
+                seen.add(provider_id)
+                provider_ids.append(provider_id)
+        await self._provider.batch_prefetch_covers(provider_ids, size, max_concurrent)
+
     async def get_artist_image(
         self, artist_id: str, size: int | None = None, **kwargs
     ) -> tuple[bytes, str, str] | None:
@@ -116,3 +151,13 @@ class TargetCoverArtService:
         if not provider_id:
             return None
         return await self._provider.get_artist_image_etag(provider_id, size)
+
+    async def debug_artist_image(self, artist_id: str, debug_info: dict) -> dict:
+        context = await self._store.get_target_artwork_context("artist", artist_id)
+        if context is not None:
+            provider_id = self._remember_provider_id(
+                self._artist_provider_ids, artist_id, context
+            )
+            if provider_id:
+                artist_id = provider_id
+        return await self._provider.debug_artist_image(artist_id, debug_info)
