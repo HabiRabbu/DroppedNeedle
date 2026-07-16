@@ -12,7 +12,8 @@ const {
 	mockAlbumLastFmCache,
 	mockAlbumYouTubeCache,
 	mockAlbumSourceMatchCache,
-	mockDownloadsData
+	mockDownloadsData,
+	mockLibraryStatusData
 } = vi.hoisted(() => ({
 	mockGoto: vi.fn(),
 	mockPageFetch: vi.fn(),
@@ -23,7 +24,8 @@ const {
 	mockAlbumLastFmCache: { set: vi.fn() },
 	mockAlbumYouTubeCache: { get: vi.fn(), set: vi.fn() },
 	mockAlbumSourceMatchCache: { get: vi.fn(), set: vi.fn() },
-	mockDownloadsData: { value: undefined as unknown }
+	mockDownloadsData: { value: undefined as unknown },
+	mockLibraryStatusData: { value: undefined as unknown }
 }));
 
 vi.mock('$app/environment', () => ({ browser: true }));
@@ -94,7 +96,12 @@ vi.mock('$lib/utils/serviceStatus', () => ({
 
 // Stub the library status query so the page renders without a QueryClientProvider.
 vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
-	getLibraryAlbumStatusQuery: () => ({ data: undefined, refetch: vi.fn() })
+	getLibraryAlbumStatusQuery: () => ({
+		get data() {
+			return mockLibraryStatusData.value;
+		},
+		refetch: vi.fn()
+	})
 }));
 
 // Where-to-buy section (Get it): stub so the page renders without a QueryClientProvider
@@ -233,11 +240,6 @@ vi.mock('$lib/components/DeleteAlbumModal.svelte', () => {
 	Comp.prototype = {};
 	return { default: Comp };
 });
-vi.mock('$lib/components/ArtistRemovedModal.svelte', () => {
-	const Comp = function () {};
-	Comp.prototype = {};
-	return { default: Comp };
-});
 vi.mock('$lib/components/NowPlayingIndicator.svelte', () => {
 	const Comp = function () {};
 	Comp.prototype = {};
@@ -301,6 +303,7 @@ describe('album detail page track rendering', () => {
 		mockPageFetch.mockReset();
 		mockHydrateDetailCacheEntry.mockReset();
 		mockDownloadsData.value = undefined;
+		mockLibraryStatusData.value = undefined;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock with generic cache type
 		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: any) => {
 			if (cache === mockAlbumBasicCache) {
@@ -513,6 +516,25 @@ describe('album detail page track rendering', () => {
 
 			return Promise.resolve(jsonResponse({}));
 		});
+	});
+
+	it('lets authoritative library status override stale owned album metadata', async () => {
+		mockLibraryStatusData.value = {
+			in_library: false,
+			track_count: 0,
+			tracks: [],
+			expected_tracks: 4,
+			covered_tracks: 0,
+			matched_file_ids: [],
+			orphans: []
+		};
+
+		render(AlbumPage, {
+			props: { data: { albumId } }
+		} as Parameters<typeof render<typeof AlbumPage>>[1]);
+
+		await expect.element(page.getByRole('button', { name: 'Add to Library' })).toBeVisible();
+		await expect.element(page.getByText('In Library', { exact: true })).not.toBeInTheDocument();
 	});
 
 	it('renders visible grouped track rows alongside source bars', async () => {

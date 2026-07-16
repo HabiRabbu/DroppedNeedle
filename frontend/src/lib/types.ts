@@ -1527,6 +1527,14 @@ export interface LibraryAlbumStatus {
 	orphans: LibraryTrack[];
 }
 
+export interface AlbumRemoveResponse {
+	success: boolean;
+	album_mbid: string;
+	removed_mbids: string[];
+	artist_removed: boolean;
+	artist_name: string | null;
+}
+
 export interface AlbumEditionItem {
 	release_mbid: string;
 	track_count: number;

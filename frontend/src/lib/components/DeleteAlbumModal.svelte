@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { getAlbumRemovePreview, removeAlbum } from '$lib/utils/albumRemove';
+	import { removeLibraryAlbum } from '$lib/queries/library/LibraryMutations.svelte';
 
 	interface Props {
 		albumTitle: string;
 		artistName: string;
 		musicbrainzId: string;
-		ondeleted: (result: { artist_removed: boolean; artist_name?: string | null }) => void;
+		ondeleted: () => void | Promise<void>;
 		onclose: () => void;
 	}
 
@@ -13,27 +13,14 @@
 
 	let dialogEl: HTMLDialogElement | undefined = $state();
 	let removing = $state(false);
-	let loadingPreview = $state(false);
-	let willRemoveArtist = $state(false);
-	let previewArtistName = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	const removal = removeLibraryAlbum();
 
 	$effect(() => {
 		if (dialogEl && musicbrainzId) {
 			dialogEl.showModal();
-			loadRemovalPreview();
 		}
 	});
-
-	async function loadRemovalPreview() {
-		loadingPreview = true;
-		const preview = await getAlbumRemovePreview(musicbrainzId);
-		if (preview.success) {
-			willRemoveArtist = preview.artist_will_be_removed;
-			previewArtistName = preview.artist_name ?? artistName;
-		}
-		loadingPreview = false;
-	}
 
 	function handleClose() {
 		dialogEl?.close();
@@ -44,19 +31,14 @@
 		removing = true;
 		error = null;
 
-		const result = await removeAlbum(musicbrainzId, true);
-
-		if (result.success) {
-			dialogEl?.close();
-			ondeleted({
-				artist_removed: result.artist_removed,
-				artist_name: result.artist_name
-			});
-		} else {
-			error = result.error || "Couldn't remove this album";
+		try {
+			await removal.mutateAsync(musicbrainzId);
+			await ondeleted();
+		} catch (e) {
+			error = e instanceof Error ? e.message : "Couldn't remove this album";
+		} finally {
+			removing = false;
 		}
-
-		removing = false;
 	}
 </script>
 
@@ -65,22 +47,9 @@
 		<h3 class="text-lg font-bold">Remove Album</h3>
 		<p class="py-4 text-base-content/70">
 			Remove <span class="font-semibold text-base-content">{albumTitle}</span> by
-			<span class="font-semibold text-base-content">{artistName}</span> from your library? Its local files
-			will be permanently deleted from disk - this can't be undone.
+			<span class="font-semibold text-base-content">{artistName}</span> from your library? The album's
+			local files will be permanently deleted from disk - this can't be undone.
 		</p>
-
-		{#if loadingPreview}
-			<div class="alert alert-info mt-3 text-sm">
-				<span>Checking artist impact...</span>
-			</div>
-		{:else if willRemoveArtist}
-			<div class="alert alert-warning mt-3 text-sm">
-				<span>
-					This will also remove <span class="font-semibold">{previewArtistName || artistName}</span> from
-					your library.
-				</span>
-			</div>
-		{/if}
 
 		{#if error}
 			<div class="alert alert-error mt-3 text-sm">

@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 
 from api.v1.routes.library import router
+from api.v1.schemas.library import AlbumRemoveResponse
 from core.dependencies import get_album_service, get_library_manager, get_library_scanner
 from core.exceptions import ResourceNotFoundError
 from infrastructure.persistence.library_db import LibraryDB
@@ -285,12 +286,11 @@ def test_get_track_tags_forbidden_for_non_admin(app):
 
 
 def _override_remove_album(app, *, removal=None, retries_side_effect=None):
-    from api.v1.schemas.library import AlbumRemoveResponse
     from core.dependencies import get_download_service, get_library_service
 
     library_service = AsyncMock()
     library_service.remove_album.return_value = removal or AlbumRemoveResponse(
-        success=True, artist_removed=False
+        success=True, album_mbid="rg-ok", artist_removed=False
     )
     download_service = AsyncMock()
     if retries_side_effect is not None:
@@ -302,12 +302,17 @@ def _override_remove_album(app, *, removal=None, retries_side_effect=None):
     return build_test_client(app), download_service
 
 
-def test_remove_album_stops_pending_retries(app):
-    client, download_service = _override_remove_album(app)
-    resp = client.delete("/library/album/rg-ok?delete_files=true")
+def test_remove_album_stops_pending_retries_for_canonical_album(app):
+    removal = AlbumRemoveResponse(
+        success=True,
+        album_mbid="rg-canonical",
+        removed_mbids=["release-alias", "rg-canonical"],
+    )
+    client, download_service = _override_remove_album(app, removal=removal)
+    resp = client.delete("/library/album/release-alias?delete_files=true")
     assert resp.status_code == 200
     assert resp.json()["success"] is True
-    download_service.purge_album_downloads.assert_awaited_once_with("rg-ok")
+    download_service.purge_album_downloads.assert_awaited_once_with("rg-canonical")
 
 
 def test_remove_album_succeeds_even_if_stopping_retries_fails(app):

@@ -16,8 +16,6 @@ export interface EventHandlerDeps {
 	setRequesting: (v: boolean) => void;
 	getRequesting: () => boolean;
 	setShowDeleteModal: (v: boolean) => void;
-	setShowArtistRemovedModal: (v: boolean) => void;
-	setRemovedArtistName: (v: string) => void;
 	setToast: (msg: string, type: 'success' | 'error' | 'info' | 'warning') => void;
 	setShowToast: (v: boolean) => void;
 	onRequestSuccess?: () => void;
@@ -74,23 +72,6 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 		deps.setShowDeleteModal(true);
 	}
 
-	function handleDeleted(result: { artist_removed: boolean; artist_name?: string | null }): void {
-		deps.setShowDeleteModal(false);
-		const album = deps.getAlbum();
-		if (album) {
-			album.in_library = false;
-			album.requested = false;
-			deps.setAlbum(album);
-			deps.albumBasicCacheSet(album, deps.getAlbumId());
-		}
-		deps.setToast('Removed from Library', 'success');
-		deps.setShowToast(true);
-		if (result.artist_removed && result.artist_name) {
-			deps.setRemovedArtistName(result.artist_name);
-			deps.setShowArtistRemovedModal(true);
-		}
-	}
-
 	function goToArtist(): void {
 		const album = deps.getAlbum();
 		// eslint-disable-next-line svelte/no-navigation-without-resolve -- artistHref uses resolve() internally
@@ -104,7 +85,6 @@ export function createEventHandlers(deps: EventHandlerDeps) {
 		handleQuotaUpdate,
 		handleRequest,
 		handleDeleteClick,
-		handleDeleted,
 		goToArtist
 	};
 }

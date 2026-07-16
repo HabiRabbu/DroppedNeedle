@@ -92,8 +92,6 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 	let toastType = $state<'success' | 'error' | 'info' | 'warning'>('success');
 	let requesting = $state(false);
 	let showDeleteModal = $state(false);
-	let showArtistRemovedModal = $state(false);
-	let removedArtistName = $state('');
 	let moreByArtist = $state<MoreByArtistResponse | null>(null);
 	let similarAlbums = $state<SimilarAlbumsResponse | null>(null);
 	let loadingDiscovery = $state(true);
@@ -196,7 +194,8 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 	const navidromeTrackMap = $derived(buildSortedTrackMap(navidromeMatch?.tracks ?? []));
 	const plexTrackMap = $derived(buildSortedTrackMap(plexMatch?.tracks ?? []));
 	const inLibrary = $derived(
-		libraryStore.isInLibrary(album?.musicbrainz_id) || album?.in_library || false
+		libraryStatus?.in_library ??
+			(libraryStore.isInLibrary(album?.musicbrainz_id) || album?.in_library || false)
 	);
 	const isRequested = $derived(
 		!!(album && !inLibrary && (album.requested || libraryStore.isRequested(album.musicbrainz_id)))
@@ -633,23 +632,17 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		}
 	}
 
-	// Removal succeeded server-side (files + library rows gone; removeAlbum already cleared
-	// libraryStore + invalidated the TanStack trees). Reload the page so the In-Library
-	// badge, the Remove control and the owned play buttons all reflect it without a manual
-	// refresh, and surface the artist-removed modal when this was the artist's last album.
-	async function handleDeleted(result: {
-		artist_removed: boolean;
-		artist_name?: string | null;
-	}): Promise<void> {
+	function handleDeleted(): void {
 		showDeleteModal = false;
+		if (album) {
+			album = { ...album, in_library: false, requested: false };
+			albumBasicCache.set(album, albumIdGetter());
+		}
+		localMatch = null;
+		albumSourceMatchCache.remove(albumIdGetter());
 		toastMessage = 'Removed from Library';
 		toastType = 'success';
 		showToast = true;
-		if (result.artist_removed && result.artist_name) {
-			removedArtistName = result.artist_name;
-			showArtistRemovedModal = true;
-		}
-		await refreshAll();
 	}
 
 	$effect(() => {
@@ -680,8 +673,6 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		setRequesting: (v) => (requesting = v),
 		getRequesting: () => requesting,
 		setShowDeleteModal: (v) => (showDeleteModal = v),
-		setShowArtistRemovedModal: (v) => (showArtistRemovedModal = v),
-		setRemovedArtistName: (v) => (removedArtistName = v),
 		setToast: (msg, type) => {
 			toastMessage = msg;
 			toastType = type;
@@ -843,15 +834,6 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		},
 		set showDeleteModal(v: boolean) {
 			showDeleteModal = v;
-		},
-		get showArtistRemovedModal() {
-			return showArtistRemovedModal;
-		},
-		set showArtistRemovedModal(v: boolean) {
-			showArtistRemovedModal = v;
-		},
-		get removedArtistName() {
-			return removedArtistName;
 		},
 		get moreByArtist() {
 			return moreByArtist;

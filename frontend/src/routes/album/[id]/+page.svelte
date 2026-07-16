@@ -4,7 +4,6 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import LastFmAlbumEnrichmentComponent from '$lib/components/LastFmAlbumEnrichment.svelte';
 	import DeleteAlbumModal from '$lib/components/DeleteAlbumModal.svelte';
-	import ArtistRemovedModal from '$lib/components/ArtistRemovedModal.svelte';
 	import AddToPlaylistModal from '$lib/components/AddToPlaylistModal.svelte';
 	import { createAlbumPageState } from './albumPageState.svelte';
 	import AlbumHeader from './AlbumHeader.svelte';
@@ -242,15 +241,6 @@
 		ondeleted={state.handleDeleted}
 		onclose={() => {
 			state.showDeleteModal = false;
-		}}
-	/>
-{/if}
-
-{#if state.showArtistRemovedModal}
-	<ArtistRemovedModal
-		artistName={state.removedArtistName}
-		onclose={() => {
-			state.showArtistRemovedModal = false;
 		}}
 	/>
 {/if}

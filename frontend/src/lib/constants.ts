@@ -212,7 +212,6 @@ export const API = {
 		settings: () => '/api/v1/settings/library',
 		addPath: () => '/api/v1/settings/library/paths',
 		removePath: (path: string) => `/api/v1/settings/library/paths?path=${encodeURIComponent(path)}`,
-		removeAlbumPreview: (mbid: string) => `/api/v1/library/album/${mbid}/removal-preview`,
 		removeAlbum: (mbid: string) => `/api/v1/library/album/${mbid}`,
 		resolveTracks: () => '/api/v1/library/resolve-tracks'
 	},

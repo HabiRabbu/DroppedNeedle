@@ -4,6 +4,7 @@ import pytest
 
 from core.exceptions import ResourceNotFoundError
 from infrastructure.queue.priority_queue import RequestPriority
+from models.album import AlbumInfo
 from services.album_service import AlbumService
 
 
@@ -71,6 +72,29 @@ async def test_get_album_basic_info_not_in_library_when_files_gone_despite_ledge
     result = await service.get_album_basic_info("8e1e9e51-38dc-4df3-8027-a0ada37d4674")
 
     assert result.in_library is False
+
+
+@pytest.mark.asyncio
+async def test_cached_album_membership_is_overlaid_from_active_files():
+    service, library_repo, library_db = _make_service()
+    cached = AlbumInfo(
+        title="Album",
+        musicbrainz_id="8e1e9e51-38dc-4df3-8027-a0ada37d4674",
+        artist_name="Artist",
+        artist_id="artist-1",
+        in_library=True,
+        album_thumb_url="cached-thumb",
+    )
+    service._get_cached_album_info = AsyncMock(return_value=cached)
+    service._apply_audiodb_album_images = AsyncMock(side_effect=lambda info, *a, **k: info)
+    library_repo.is_configured.return_value = False
+    library_db.resolve_library_album_identifier = AsyncMock(return_value=None)
+
+    basic = await service.get_album_basic_info(cached.musicbrainz_id)
+    full = await service.get_album_info(cached.musicbrainz_id)
+
+    assert basic.in_library is False
+    assert full.in_library is False
 
 
 _MBID = "8e1e9e51-38dc-4df3-8027-a0ada37d4674"

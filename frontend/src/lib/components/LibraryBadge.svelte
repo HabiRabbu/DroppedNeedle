@@ -3,7 +3,6 @@
 	import { colors } from '$lib/colors';
 	import { STATUS_COLORS } from '$lib/constants';
 	import DeleteAlbumModal from './DeleteAlbumModal.svelte';
-	import ArtistRemovedModal from './ArtistRemovedModal.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 
 	interface Props {
@@ -13,7 +12,7 @@
 		artistName: string;
 		size?: 'sm' | 'md' | 'lg';
 		positioning?: string;
-		ondeleted?: (result: { artist_removed: boolean; artist_name?: string | null }) => void;
+		ondeleted?: () => void;
 	}
 
 	let {
@@ -27,8 +26,6 @@
 	}: Props = $props();
 
 	let showDeleteModal = $state(false);
-	let showArtistRemovedModal = $state(false);
-	let removedArtistName = $state('');
 
 	const sizeClasses = $derived(
 		{
@@ -53,13 +50,9 @@
 		showDeleteModal = true;
 	}
 
-	function handleDeleted(result: { artist_removed: boolean; artist_name?: string | null }) {
+	function handleDeleted() {
 		showDeleteModal = false;
-		if (result.artist_removed && result.artist_name) {
-			removedArtistName = result.artist_name;
-			showArtistRemovedModal = true;
-		}
-		ondeleted?.(result);
+		ondeleted?.();
 	}
 </script>
 
@@ -126,15 +119,6 @@
 		ondeleted={handleDeleted}
 		onclose={() => {
 			showDeleteModal = false;
-		}}
-	/>
-{/if}
-
-{#if showArtistRemovedModal}
-	<ArtistRemovedModal
-		artistName={removedArtistName}
-		onclose={() => {
-			showArtistRemovedModal = false;
 		}}
 	/>
 {/if}

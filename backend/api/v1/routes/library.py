@@ -6,7 +6,6 @@ from api.v1.schemas.library import (
     LibraryResponse,
     RecentlyAddedResponse,
     AlbumRemoveResponse,
-    AlbumRemovePreviewResponse,
     SyncLibraryResponse,
     LibraryMbidsResponse,
     LibraryGroupedResponse,
@@ -164,19 +163,6 @@ async def get_library_grouped(
     return LibraryGroupedResponse(library=grouped)
 
 
-@router.get("/album/{album_mbid}/removal-preview", response_model=AlbumRemovePreviewResponse)
-async def get_album_removal_preview(
-    _admin: CurrentAdminDep,
-    album_mbid: str,
-    library_service: LibraryService = Depends(get_library_service)
-):
-    try:
-        return await library_service.get_album_removal_preview(album_mbid)
-    except ExternalServiceError as e:
-        logger.error(f"Failed to get album removal preview: {e}")
-        raise HTTPException(status_code=500, detail="Failed to load removal preview")
-
-
 @router.delete("/album/{album_mbid}", response_model=AlbumRemoveResponse)
 async def remove_album(
     _admin: CurrentAdminDep,
@@ -195,7 +181,7 @@ async def remove_album(
     # tracks (rows + files), and blocklist entries. Best-effort: a failure here must not
     # fail the removal the user already confirmed.
     try:
-        await download_service.purge_album_downloads(album_mbid)
+        await download_service.purge_album_downloads(result.album_mbid)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Album {album_mbid} removed but download-state cleanup failed: {e}")
     return result

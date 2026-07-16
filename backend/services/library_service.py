@@ -11,7 +11,6 @@ from api.v1.schemas.library import (
     LibraryGroupedArtist,
     LibraryStatsResponse,
     SyncLibraryResponse,
-    AlbumRemovePreviewResponse,
     AlbumRemoveResponse,
     ResolvedTrack,
     TrackResolveResponse,
@@ -489,7 +488,7 @@ class LibraryService:
         artist_name = first.get("album_artist_name") or first.get("artist_name") or "Unknown"
         return artist_mbid, artist_name
 
-    def _recycle_paths(self, paths: list[str]) -> int:
+    def _recycle_paths(self, paths: list[str]) -> tuple[list[str], list[str]]:
         """Move files to the recycle bin (falls back to hard delete when no bin
         can be resolved - e.g. no library path configured)."""
         from services.native.recycle_bin import recycle, resolve_bin_path
@@ -500,17 +499,19 @@ class LibraryService:
         if bin_path is None:
             logger.warning("No recycle bin available; hard-deleting %d files", len(paths))
             return self._unlink_paths(paths)
-        moved = 0
+        moved: list[str] = []
+        failed: list[str] = []
         parents: set[str] = set()
         for path in paths:
             parents.add(os.path.dirname(path))
             try:
                 recycle(Path(path), bin_path)
-                moved += 1
+                moved.append(path)
             except FileNotFoundError:
-                moved += 1
+                moved.append(path)
             except OSError as e:
                 logger.warning("Couldn't recycle library file: %s (%s)", path, e)
+                failed.append(path)
         for parent in sorted(parents, key=len, reverse=True):
             current = parent
             while current and current != os.path.dirname(current):
@@ -519,23 +520,25 @@ class LibraryService:
                 except OSError:
                     break
                 current = os.path.dirname(current)
-        return moved
+        return moved, failed
 
     @staticmethod
-    def _unlink_paths(paths: list[str]) -> int:
+    def _unlink_paths(paths: list[str]) -> tuple[list[str], list[str]]:
         # a missing file counts as success (already gone); other OS errors are logged
         # and skipped so one bad path doesn't abort the rest
-        removed = 0
+        removed: list[str] = []
+        failed: list[str] = []
         parents: set[str] = set()
         for path in paths:
             parents.add(os.path.dirname(path))
             try:
                 os.remove(path)
-                removed += 1
+                removed.append(path)
             except FileNotFoundError:
-                removed += 1
+                removed.append(path)
             except OSError as e:
                 logger.warning("Couldn't delete library file from disk: %s (%s)", path, e)
+                failed.append(path)
         # tidy up now-empty album folders, climbing to catch multi-disc roots
         # (Album/CD1 -> Album). rmdir only removes an EMPTY dir, so the climb self-limits
         # at the first non-empty ancestor (the artist/library root, or a folder still
@@ -548,84 +551,82 @@ class LibraryService:
                 except OSError:
                     break  # not empty, gone, or not ours - stop climbing
                 current = os.path.dirname(current)
-        return removed
-
-    async def get_album_removal_preview(self, album_mbid: str) -> AlbumRemovePreviewResponse:
-        try:
-            rows = await self._library_db.get_library_files_for_album(album_mbid)
-            if not rows:
-                # not in the native library, nothing to remove
-                return AlbumRemovePreviewResponse(success=True, artist_will_be_removed=False)
-
-            artist_mbid, artist_name = self._album_artist_identity(rows)
-            # exclude this album (still present at preview time): if the artist has no
-            # other albums, removing this one empties the artist
-            remaining = await self._library_db.count_artist_albums(
-                artist_mbid=artist_mbid,
-                artist_name=artist_name,
-                exclude_release_group_mbid=album_mbid,
-            )
-            artist_will_be_removed = remaining == 0
-
-            return AlbumRemovePreviewResponse(
-                success=True,
-                artist_will_be_removed=artist_will_be_removed,
-                artist_name=artist_name if artist_will_be_removed else None,
-            )
-        except ExternalServiceError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Failed to build removal preview for album {album_mbid}: {e}")
-            raise ExternalServiceError(f"Failed to load removal preview: {e}")
+        return removed, failed
 
     async def remove_album(
         self, album_mbid: str, delete_files: bool = False, *, to_recycle: bool = False
     ) -> AlbumRemoveResponse:
         try:
-            rows = await self._library_db.get_library_files_for_album(album_mbid)
+            canonical_mbid = (
+                await self._library_db.resolve_library_album_identifier(album_mbid)
+                or album_mbid.lower()
+            )
+            rows = await self._library_db.get_library_files_for_album(canonical_mbid)
+            removed_mbids = {canonical_mbid}
+            removed_mbids.update(
+                str(row["release_mbid"]).lower()
+                for row in rows
+                if row.get("release_mbid")
+            )
             artist_mbid: str | None = None
             artist_name: str | None = None
             paths: list[str] = []
+            removed_paths: list[str] = []
+            failed_paths: list[str] = []
 
             if rows:
                 artist_mbid, artist_name = self._album_artist_identity(rows)
-                # soft-delete the DB rows (recoverable via re-import); delete_files
-                # (which the UI now always requests) also unlinks from disk.
-                # to_recycle (discovery-batch removal) moves files to the recycle
-                # bin instead, so an undone discovery spree is restorable.
-                paths = await self._library_db.soft_delete_album_files(album_mbid)
+                paths = [str(row["file_path"]) for row in rows]
                 if to_recycle and paths:
-                    await asyncio.to_thread(self._recycle_paths, paths)
+                    removed_paths, failed_paths = await asyncio.to_thread(
+                        self._recycle_paths, paths
+                    )
                 elif delete_files and paths:
-                    await asyncio.to_thread(self._unlink_paths, paths)
+                    removed_paths, failed_paths = await asyncio.to_thread(
+                        self._unlink_paths, paths
+                    )
+                else:
+                    removed_paths = paths
             else:
                 # ghost album: no active files, but a stale library_albums row may
                 # persist (e.g. failed queued download, or files removed without a
                 # reconcile). fall back to the materialised row for artist identity.
-                cached = await self._library_db.get_album_by_mbid(album_mbid)
+                cached = await self._library_db.get_album_by_mbid(canonical_mbid)
                 if cached:
                     artist_mbid = cached.get("artist_mbid") or None
                     artist_name = cached.get("artist_name") or None
 
-            # drop the materialised library_albums row too: /basic derives in_library
-            # from this row and the table has no soft-delete, so otherwise the album
-            # keeps reporting "In Library" (blocking re-download) until a full sync
-            await self._library_db.delete_album_by_mbid(album_mbid)
-
-            # artists are aggregated on read from library_files, so an artist with no
-            # remaining (non-soft-deleted) albums is effectively removed too
-            remaining = await self._library_db.count_artist_albums(
-                artist_mbid=artist_mbid, artist_name=artist_name,
+            album_files_remaining, artist_albums_remaining = (
+                await self._library_db.finalize_album_removal(
+                    canonical_mbid,
+                    removed_paths,
+                    artist_mbid=artist_mbid,
+                    artist_name=artist_name,
+                )
             )
-            artist_removed = remaining == 0
+            artist_removed = bool(artist_mbid or artist_name) and artist_albums_remaining == 0
 
             try:
-                await self._invalidate_caches_after_removal(album_mbid, artist_mbid, artist_removed=artist_removed)
+                await self._invalidate_caches_after_removal(
+                    canonical_mbid, artist_mbid, artist_removed=artist_removed
+                )
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"Album '{album_mbid}' removed but cache invalidation failed: {e}")
+                logger.warning(
+                    f"Album '{canonical_mbid}' changed but cache invalidation failed: {e}"
+                )
+
+            if failed_paths or album_files_remaining:
+                logger.warning(
+                    "Album %s removal incomplete: %d file(s) remain",
+                    canonical_mbid,
+                    album_files_remaining,
+                )
+                raise ExternalServiceError("Couldn't remove this album")
 
             return AlbumRemoveResponse(
                 success=True,
+                album_mbid=canonical_mbid,
+                removed_mbids=sorted(removed_mbids),
                 artist_removed=artist_removed,
                 artist_name=artist_name if artist_removed else None,
             )
@@ -648,16 +649,20 @@ class LibraryService:
         if row is None or row.get("deleted_at"):
             raise ResourceNotFoundError("Library file not found")
         try:
-            await self._library_db.soft_delete_library_file(row["file_path"])
-            await asyncio.to_thread(self._unlink_paths, [row["file_path"]])
+            removed, failed = await asyncio.to_thread(self._unlink_paths, [row["file_path"]])
+            if failed:
+                raise ExternalServiceError("Couldn't remove this file")
 
             album_mbid = row.get("release_group_mbid")
             if album_mbid:
-                remaining = await self._library_db.get_library_files_for_album(album_mbid)
-                if not remaining:
-                    # mirror remove_album: /basic derives in_library from this row
-                    await self._library_db.delete_album_by_mbid(album_mbid)
-                artist_mbid = row.get("album_artist_mbid") or row.get("artist_mbid")
+                artist_mbid = row.get("album_artist_mbid") or None
+                artist_name = row.get("album_artist_name") or row.get("artist_name")
+                await self._library_db.finalize_album_removal(
+                    album_mbid,
+                    removed,
+                    artist_mbid=artist_mbid,
+                    artist_name=artist_name,
+                )
                 try:
                     await self._invalidate_caches_after_removal(
                         album_mbid, artist_mbid, artist_removed=False
@@ -666,6 +671,8 @@ class LibraryService:
                     logger.warning(
                         f"File {file_id} removed but cache invalidation failed: {e}"
                     )
+            else:
+                await self._library_db.soft_delete_library_file(row["file_path"])
             return StatusMessageResponse(status="ok", message="File removed")
         except ResourceNotFoundError:
             raise

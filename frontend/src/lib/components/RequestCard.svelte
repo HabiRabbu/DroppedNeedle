@@ -2,7 +2,6 @@
 	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 	import AlbumImage from './AlbumImage.svelte';
 	import DeleteAlbumModal from './DeleteAlbumModal.svelte';
-	import ArtistRemovedModal from './ArtistRemovedModal.svelte';
 	import type { ActiveRequestItem, RequestHistoryItem } from '$lib/types';
 	import { reimportDownload } from '$lib/queries/downloads/DownloadMutations.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
@@ -45,8 +44,6 @@
 
 	let confirmingCancel = $state(false);
 	let showDeleteModal = $state(false);
-	let showArtistRemovedModal = $state(false);
-	let removedArtistName = $state('');
 
 	function formatRelativeTime(dateStr: string): string {
 		const date = new Date(dateStr);
@@ -185,12 +182,8 @@
 		showDeleteModal = true;
 	}
 
-	function handleDeleted(result: { artist_removed: boolean; artist_name?: string | null }) {
+	function handleDeleted() {
 		showDeleteModal = false;
-		if (result.artist_removed && result.artist_name) {
-			removedArtistName = result.artist_name;
-			showArtistRemovedModal = true;
-		}
 		onremoved?.();
 	}
 
@@ -453,15 +446,6 @@
 		ondeleted={handleDeleted}
 		onclose={() => {
 			showDeleteModal = false;
-		}}
-	/>
-{/if}
-
-{#if showArtistRemovedModal}
-	<ArtistRemovedModal
-		artistName={removedArtistName}
-		onclose={() => {
-			showArtistRemovedModal = false;
 		}}
 	/>
 {/if}

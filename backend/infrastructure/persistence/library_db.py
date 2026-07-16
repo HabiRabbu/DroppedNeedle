@@ -1157,6 +1157,22 @@ class LibraryDB(PersistenceBase):
 
         return await self._read(operation)
 
+    async def resolve_library_album_identifier(self, album_mbid: str) -> str | None:
+        """Return the active release-group MBID addressed by a group or release MBID."""
+        normalized = _normalize(album_mbid)
+
+        def operation(conn: sqlite3.Connection) -> str | None:
+            row = conn.execute(
+                "SELECT release_group_mbid FROM library_files "
+                "WHERE deleted_at IS NULL AND "
+                "(release_group_mbid = ? OR lower(release_mbid) = ?) "
+                "ORDER BY imported_at DESC LIMIT 1",
+                (normalized, normalized),
+            ).fetchone()
+            return str(row["release_group_mbid"]) if row else None
+
+        return await self._read(operation)
+
     async def get_attributions_for_paths(
         self, paths: list[str]
     ) -> dict[str, dict[str, Any]]:
@@ -1391,18 +1407,42 @@ class LibraryDB(PersistenceBase):
 
         return await self._write(operation)
 
-    async def count_artist_albums(
+    async def finalize_album_removal(
         self,
+        release_group_mbid: str,
+        removed_paths: list[str],
         *,
-        artist_mbid: str | None = None,
-        artist_name: str | None = None,
-        exclude_release_group_mbid: str | None = None,
-    ) -> int:
-        """Distinct non-deleted albums for an album-artist (matched by MBID when
-        present, else by name). ``exclude_release_group_mbid`` drops one album from
-        the count, used by the removal preview before its files are soft-deleted."""
+        artist_mbid: str | None,
+        artist_name: str | None,
+    ) -> tuple[int, int]:
+        """Commit confirmed file removals and return album files/artist albums left.
 
-        def operation(conn: sqlite3.Connection) -> int:
+        File operations happen before this transaction. Only paths confirmed absent
+        are hidden, so a failed unlink stays visible and a retry can finish it.
+        """
+        normalized = _normalize(release_group_mbid)
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> tuple[int, int]:
+            if removed_paths:
+                conn.executemany(
+                    "UPDATE library_files SET deleted_at = ? "
+                    "WHERE release_group_mbid = ? AND file_path = ? AND deleted_at IS NULL",
+                    [(now, normalized, path) for path in removed_paths],
+                )
+
+            album_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM library_files "
+                "WHERE release_group_mbid = ? AND deleted_at IS NULL",
+                (normalized,),
+            ).fetchone()
+            album_files_remaining = int(album_row["cnt"]) if album_row else 0
+            if album_files_remaining == 0:
+                conn.execute(
+                    "DELETE FROM library_albums WHERE mbid_lower = ?",
+                    (normalized,),
+                )
+
             filters = ["deleted_at IS NULL", "release_group_mbid IS NOT NULL"]
             params: list[object] = []
             if artist_mbid:
@@ -1412,19 +1452,16 @@ class LibraryDB(PersistenceBase):
                 filters.append("album_artist_name = ?")
                 params.append(artist_name)
             else:
-                return 0
-            if exclude_release_group_mbid:
-                filters.append("release_group_mbid != ?")
-                params.append(exclude_release_group_mbid)
-            where = " AND ".join(filters)
-            row = conn.execute(
-                f"SELECT COUNT(DISTINCT release_group_mbid) AS cnt "
-                f"FROM library_files WHERE {where}",
+                return album_files_remaining, 0
+            artist_row = conn.execute(
+                "SELECT COUNT(DISTINCT release_group_mbid) AS cnt "
+                f"FROM library_files WHERE {' AND '.join(filters)}",
                 params,
             ).fetchone()
-            return int(row["cnt"]) if row else 0
+            artist_albums_remaining = int(artist_row["cnt"]) if artist_row else 0
+            return album_files_remaining, artist_albums_remaining
 
-        return await self._read(operation)
+        return await self._write(operation)
 
     async def mark_missing_files(
         self,

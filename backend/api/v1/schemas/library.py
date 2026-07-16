@@ -30,13 +30,9 @@ class LibraryStatsResponse(AppStruct):
 
 class AlbumRemoveResponse(AppStruct):
     success: bool
+    album_mbid: str
+    removed_mbids: list[str] = []
     artist_removed: bool = False
-    artist_name: str | None = None
-
-
-class AlbumRemovePreviewResponse(AppStruct):
-    success: bool
-    artist_will_be_removed: bool = False
     artist_name: str | None = None
 
 

@@ -139,6 +139,10 @@ class AlbumService:
         await self._cache.set(cache_key, album_info, ttl_seconds=ttl)
         await self._disk_cache.set_album(release_group_id, album_info, is_monitored=album_info.in_library, ttl_seconds=ttl if not album_info.in_library else None)
 
+    async def _current_library_membership(self, album_id: str) -> bool:
+        """Membership is mutable library state, never authoritative cache metadata."""
+        return await self._library_db.resolve_library_album_identifier(album_id) is not None
+
     async def warm_full_album_cache(self, release_group_id: str) -> None:
         try:
             cache_key = f"{ALBUM_INFO_PREFIX}{release_group_id}"
@@ -168,6 +172,9 @@ class AlbumService:
             cache_key = f"{ALBUM_INFO_PREFIX}{release_group_id}"
             cached = await self._get_cached_album_info(release_group_id, cache_key)
             if cached:
+                current_in_library = await self._current_library_membership(release_group_id)
+                if cached.in_library != current_in_library:
+                    cached = msgspec.structs.replace(cached, in_library=current_in_library)
                 cached = await self._apply_audiodb_album_images(
                     cached, release_group_id, cached.artist_name, cached.title,
                     allow_fetch=True, is_monitored=cached.in_library,
@@ -230,6 +237,7 @@ class AlbumService:
 
             cached_album_info = await self._get_cached_album_info(release_group_id, cache_key)
             if cached_album_info:
+                in_library = await self._current_library_membership(release_group_id)
                 album_thumb = cached_album_info.album_thumb_url
                 if not album_thumb:
                     album_thumb = await self._get_audiodb_album_thumb(
@@ -245,8 +253,8 @@ class AlbumService:
                     year=cached_album_info.year,
                     type=cached_album_info.type,
                     disambiguation=cached_album_info.disambiguation,
-                    in_library=cached_album_info.in_library,
-                    requested=is_requested and not cached_album_info.in_library,
+                    in_library=in_library,
+                    requested=is_requested and not in_library,
                     cover_url=cached_album_info.cover_url,
                     album_thumb_url=album_thumb,
                 )

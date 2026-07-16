@@ -15,11 +15,6 @@
 		requested?: boolean;
 	}
 
-	interface RemoveResult {
-		artist_removed: boolean;
-		artist_name?: string | null;
-	}
-
 	interface Props {
 		title: string;
 		releases: Release[];
@@ -29,7 +24,7 @@
 		artistName?: string;
 		onRequest: (id: string, title?: string) => void;
 		onToggleCollapse: () => void;
-		onRemoved?: ((result: RemoveResult) => void) | undefined;
+		onRemoved?: (() => void) | undefined;
 		onDownloadAll?: (() => void) | undefined;
 	}
 
@@ -55,11 +50,11 @@
 		).length
 	);
 
-	function handleDeleted(rg: Release, result: RemoveResult) {
+	function handleDeleted(rg: Release) {
 		rg.in_library = false;
 		rg.requested = false;
 		releases = releases;
-		onRemoved?.(result);
+		onRemoved?.();
 	}
 </script>
 
@@ -149,7 +144,7 @@
 									albumTitle={rg.title}
 									{artistName}
 									size="lg"
-									ondeleted={(result) => handleDeleted(rg, result)}
+									ondeleted={() => handleDeleted(rg)}
 								/>
 							{:else if !libraryStore.isInLibrary(rg.id) && (rg.requested || libraryStore.isRequested(rg.id))}
 								<LibraryBadge
@@ -158,7 +153,7 @@
 									albumTitle={rg.title}
 									{artistName}
 									size="lg"
-									ondeleted={(result) => handleDeleted(rg, result)}
+									ondeleted={() => handleDeleted(rg)}
 								/>
 							{:else}
 								{@render requestButton(rg, `Request ${title.toLowerCase().slice(0, -1)}`)}

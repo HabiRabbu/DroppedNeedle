@@ -1,11 +1,17 @@
 import { createMutation } from '@tanstack/svelte-query';
 import { API } from '$lib/constants';
 import { api } from '$lib/api/client';
-import { invalidateQueriesWithPersister } from '../QueryClient';
+import { libraryStore } from '$lib/stores/library';
+import { ArtistQueryKeyFactory } from '../artist/ArtistQueryKeyFactory';
+import { DiscoverQueryKeyFactory } from '../discover/DiscoverQueryKeyFactory';
+import { HomeQueryKeyFactory } from '../HomeQueryKeyFactory';
+import { invalidateQueriesWithPersister, setQueryDataWithPersister } from '../QueryClient';
 import { LOCAL_KEYS } from '../local/LocalQueries.svelte';
 import { LibraryQueryKeyFactory } from './LibraryQueryKeyFactory';
 import type {
+	AlbumRemoveResponse,
 	LibraryActionResponse,
+	LibraryAlbumStatus,
 	StatusMessageResponse,
 	LibraryScanSchedule,
 	LibrarySettings,
@@ -15,6 +21,52 @@ import type {
 	UnmatchedBatchResolveResponse,
 	UnmatchedResolution
 } from '$lib/types';
+
+export function removeLibraryAlbum() {
+	return createMutation(() => ({
+		mutationFn: (mbid: string) =>
+			api.global.delete<AlbumRemoveResponse>(`${API.library.removeAlbum(mbid)}?delete_files=true`),
+		onSuccess: async (result, requestedMbid) => {
+			const removedMbids = [requestedMbid, result.album_mbid, ...result.removed_mbids].filter(
+				(mbid, index, all) => all.indexOf(mbid) === index
+			);
+			for (const mbid of removedMbids) {
+				libraryStore.removeMbid(mbid);
+			}
+			try {
+				await setQueryDataWithPersister<LibraryAlbumStatus>(
+					LibraryQueryKeyFactory.album(requestedMbid),
+					(previous) =>
+						previous
+							? {
+									...previous,
+									in_library: false,
+									track_count: 0,
+									tracks: [],
+									covered_tracks: 0,
+									matched_file_ids: [],
+									orphans: []
+								}
+							: previous
+				);
+			} catch (error) {
+				console.error('Album removal cache update failed', error);
+			}
+			const refreshes = await Promise.allSettled([
+				invalidateQueriesWithPersister({ queryKey: LibraryQueryKeyFactory.all }),
+				invalidateQueriesWithPersister({ queryKey: ArtistQueryKeyFactory.prefix }),
+				invalidateQueriesWithPersister({ queryKey: HomeQueryKeyFactory.prefix }),
+				invalidateQueriesWithPersister({ queryKey: DiscoverQueryKeyFactory.prefix }),
+				invalidateQueriesWithPersister({ queryKey: LOCAL_KEYS.root })
+			]);
+			for (const refresh of refreshes) {
+				if (refresh.status === 'rejected') {
+					console.error('Album removal cache refresh failed', refresh.reason);
+				}
+			}
+		}
+	}));
+}
 
 export function startLibraryScan() {
 	return createMutation(() => ({

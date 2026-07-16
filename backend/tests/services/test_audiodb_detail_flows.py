@@ -95,10 +95,12 @@ def _album_service(audiodb=None) -> AlbumService:
     adv.cache_ttl_album_library = 86400
     adv.cache_ttl_album_non_library = 3600
     prefs.get_advanced_settings.return_value = adv
+    library_db = MagicMock()
+    library_db.resolve_library_album_identifier = AsyncMock(return_value=None)
     return AlbumService(
         library_repo=MagicMock(),
         mb_repo=MagicMock(),
-        library_db=MagicMock(),
+        library_db=library_db,
         memory_cache=MagicMock(),
         disk_cache=MagicMock(),
         preferences_service=prefs,

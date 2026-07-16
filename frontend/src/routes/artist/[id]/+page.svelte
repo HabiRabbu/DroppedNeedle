@@ -12,7 +12,6 @@
 	import SimilarArtistsCarousel from '$lib/components/SimilarArtistsCarousel.svelte';
 	import TopSongsList from '$lib/components/TopSongsList.svelte';
 	import TopAlbumsList from '$lib/components/TopAlbumsList.svelte';
-	import ArtistRemovedModal from '$lib/components/ArtistRemovedModal.svelte';
 	import LastFmEnrichment from '$lib/components/LastFmEnrichment.svelte';
 	import LibraryAlbumsCarousel from '$lib/components/LibraryAlbumsCarousel.svelte';
 	import ArtistPageToc from '$lib/components/ArtistPageToc.svelte';
@@ -56,8 +55,6 @@
 
 	let showToast = $state(false);
 	let toastMessage = 'Added to Library';
-	let showArtistRemovedModal = $state(false);
-	let removedArtistName = $state('');
 	let requestedReleaseIds = $state(new Set<string>());
 	let albumsCollapsed = $state(false);
 	let epsCollapsed = $state(false);
@@ -192,15 +189,8 @@
 		}
 	}
 
-	function handleReleaseRemoved(result: { artist_removed: boolean; artist_name?: string | null }) {
-		if (!artist) return;
-
-		if (result.artist_removed) {
-			artist.in_library = false;
-			removedArtistName = result.artist_name || artist.name;
-			showArtistRemovedModal = true;
-		}
-		invalidateQueriesWithPersister({ queryKey: ArtistQueryKeyFactory.basic(data.artistId) });
+	function handleReleaseRemoved() {
+		void invalidateQueriesWithPersister({ queryKey: ArtistQueryKeyFactory.basic(data.artistId) });
 	}
 
 	let allReleases = $derived([...releases.albums, ...releases.eps, ...releases.singles]);
@@ -472,12 +462,3 @@
 </div>
 
 <Toast bind:show={showToast} message={toastMessage} />
-
-{#if showArtistRemovedModal}
-	<ArtistRemovedModal
-		artistName={removedArtistName}
-		onclose={() => {
-			showArtistRemovedModal = false;
-		}}
-	/>
-{/if}
