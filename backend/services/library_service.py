@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from services.local_files_service import LocalFilesService
     from services.jellyfin_library_service import JellyfinLibraryService
     from services.navidrome_library_service import NavidromeLibraryService
+    from services.navidrome_folder_scope_service import NavidromeFolderScopeService
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class LibraryService:
         local_files_service: 'LocalFilesService | None' = None,
         jellyfin_library_service: 'JellyfinLibraryService | None' = None,
         navidrome_library_service: 'NavidromeLibraryService | None' = None,
+        navidrome_folder_scope_service: 'NavidromeFolderScopeService | None' = None,
         sync_state_store: SyncStateStore | None = None,
         genre_index: GenreIndex | None = None,
     ):
@@ -71,6 +73,7 @@ class LibraryService:
         self._local_files_service = local_files_service
         self._jellyfin_library_service = jellyfin_library_service
         self._navidrome_library_service = navidrome_library_service
+        self._navidrome_folder_scope_service = navidrome_folder_scope_service
         self._sync_state_store = sync_state_store
         self._can_precache = sync_state_store is not None and genre_index is not None
         self._precache_service: LibraryPrecacheService | None = None
@@ -726,13 +729,20 @@ class LibraryService:
     async def _resolve_album_tracks(
         self,
         album_mbid: str,
+        *,
+        user_id: str = "global",
+        music_folder_ids: tuple[str, ...] | None = None,
+        scope_segment: str = "all",
     ) -> dict[str, tuple[str, str, str | None, float | None]]:
         # resolve to {disc:track: (source, source_id, format, duration)};
         # priority local -> navidrome -> jellyfin; source_resolution cache (1h TTL)
         if self._memory_cache is None:
             raise ExternalServiceError("Memory cache not available for track resolution")
 
-        cache_key = f"{SOURCE_RESOLUTION_PREFIX}_tracks:{album_mbid}"
+        cache_key = (
+            f"{SOURCE_RESOLUTION_PREFIX}_tracks:user:{user_id}:"
+            f"scope:{scope_segment}:{album_mbid}"
+        )
         cached = await self._memory_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -767,19 +777,47 @@ class LibraryService:
 
         if nd_enabled and self._navidrome_library_service:
             try:
-                nav_id = self._navidrome_library_service.lookup_navidrome_id(album_mbid)
-                if nav_id:
-                    detail = await self._navidrome_library_service.get_album_detail(nav_id)
-                    if detail:
-                        for t in detail.tracks:
-                            key = _track_key(getattr(t, "disc_number", 1) or 1, t.track_number)
-                            if key not in result:
-                                result[key] = (
-                                    "navidrome",
-                                    t.navidrome_id,
-                                    t.codec,
-                                    t.duration_seconds,
-                                )
+                navidrome_tracks = []
+                if music_folder_ids is None:
+                    nav_id = self._navidrome_library_service.lookup_navidrome_id(
+                        album_mbid
+                    )
+                    if nav_id:
+                        detail = await self._navidrome_library_service.get_album_detail(
+                            nav_id
+                        )
+                        if detail:
+                            navidrome_tracks = detail.tracks
+                else:
+                    album_name = ""
+                    artist_name = ""
+                    rows, _ = await self._library_db.get_albums_aggregated(
+                        limit=1,
+                        offset=0,
+                        release_group_mbids=[album_mbid],
+                    )
+                    if rows:
+                        album_name = rows[0].get("album_title") or ""
+                        artist_name = rows[0].get("album_artist_name") or ""
+                    scoped = await self._navidrome_library_service.get_album_match(
+                        album_id=album_mbid,
+                        album_name=album_name,
+                        artist_name=artist_name,
+                        music_folder_ids=music_folder_ids,
+                    )
+                    if scoped.found:
+                        navidrome_tracks = scoped.tracks
+                for t in navidrome_tracks:
+                    key = _track_key(
+                        getattr(t, "disc_number", 1) or 1, t.track_number
+                    )
+                    if key not in result:
+                        result[key] = (
+                            "navidrome",
+                            t.navidrome_id,
+                            t.codec,
+                            t.duration_seconds,
+                        )
             except Exception:  # noqa: BLE001
                 logger.debug("Navidrome track resolution failed for %s", album_mbid, exc_info=True)
 
@@ -814,6 +852,7 @@ class LibraryService:
     async def resolve_tracks_batch(
         self,
         items: list,
+        user_id: str = "global",
     ) -> TrackResolveResponse:
         items = items[:MAX_RESOLVE_ITEMS]
         if not items:
@@ -821,11 +860,27 @@ class LibraryService:
 
         album_mbids = {it.release_group_mbid for it in items if it.release_group_mbid}
 
+        music_folder_ids: tuple[str, ...] | None = None
+        scope_segment = "all"
+        if self._navidrome_folder_scope_service is not None and user_id != "global":
+            resolution = await self._navidrome_folder_scope_service.resolve(user_id)
+            music_folder_ids = (
+                None
+                if resolution.scope.mode == "all"
+                else resolution.scope.folder_ids
+            )
+            scope_segment = resolution.scope.cache_segment
+
         sem = asyncio.Semaphore(5)
 
         async def _resolve_one(mbid: str) -> tuple[str, dict]:
             async with sem:
-                return mbid, await self._resolve_album_tracks(mbid)
+                return mbid, await self._resolve_album_tracks(
+                    mbid,
+                    user_id=user_id,
+                    music_folder_ids=music_folder_ids,
+                    scope_segment=scope_segment,
+                )
 
         tasks = [_resolve_one(mbid) for mbid in album_mbids]
         album_maps: dict[str, dict] = {}

@@ -127,6 +127,11 @@ const COVERAGE: Array<[string, string, string]> = [
 	['mark concerts seen', API.following.markConcertsSeen(), '/api/v1/following/concerts/seen'],
 	// Media-server account links (per-user playback attribution, issue #138)
 	['connect navidrome', API.me.navidrome(), '/api/v1/me/connections/navidrome'],
+	[
+		'navidrome music folder preferences',
+		API.me.navidromeMusicFolderPreferences(),
+		'/api/v1/me/navidrome/music-folder-preferences'
+	],
 	['connect jellyfin', API.me.jellyfin(), '/api/v1/me/connections/jellyfin'],
 	['plex link pin', API.me.plexAuthPin(), '/api/v1/me/connections/plex/auth/pin'],
 	['plex link poll', API.me.plexAuthPoll(7), '/api/v1/me/connections/plex/auth/poll?pin_id=7'],

@@ -140,3 +140,57 @@ async def test_library_file_id_roundtrip_to_stream(compat_env):
     tracks = await compat_env.playlists.get_tracks(pid[3:])
     assert tracks[0].library_file_id == songs[0][3:]
     assert tracks[0].source_type == "droppedneedle-local"
+
+
+async def test_uploaded_playlist_cover_is_advertised_and_served(compat_env, auth_store):
+    alice = await auth_store.get_user_by_id("user-alice")
+    record = await compat_env.playlists.create_playlist("Covered", user_id=alice.id)
+    data = b"\x89PNG\r\n\x1a\nplaylist-cover"
+    await compat_env.playlists.upload_cover(record.id, alice, data, "image/png")
+
+    playlist = _sub(_get(compat_env, "getPlaylist", id=f"pl-{record.id}"))["playlist"]
+    assert playlist["coverArt"] == f"pl-{record.id}"
+    response = _get(compat_env, "getCoverArt", id=playlist["coverArt"])
+    assert response.status_code == 200
+    assert response.content == data
+    assert response.headers["content-type"].startswith("image/png")
+
+    q = {"f": "json", "apiKey": compat_env.secret, "id": playlist["coverArt"]}
+    head = compat_env.client.head("/subsonic/rest/getCoverArt", params=q)
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == str(len(data))
+
+
+async def test_private_playlist_cover_is_hidden_from_another_user(
+    compat_env, auth_store, app_password_service
+):
+    alice = await auth_store.get_user_by_id("user-alice")
+    record = await compat_env.playlists.create_playlist("Private", user_id=alice.id)
+    await compat_env.playlists.upload_cover(
+        record.id, alice, b"\x89PNG\r\n\x1a\nprivate", "image/png"
+    )
+    _record, bob_secret = await app_password_service.create("user-bob", "Bob client")
+    response = compat_env.client.get(
+        "/subsonic/rest/getCoverArt",
+        params={"f": "json", "apiKey": bob_secret, "id": f"pl-{record.id}"},
+    )
+    assert response.status_code == 404
+
+
+async def test_public_playlist_cover_is_visible_to_another_user(
+    compat_env, auth_store, app_password_service
+):
+    alice = await auth_store.get_user_by_id("user-alice")
+    record = await compat_env.playlists.create_playlist("Public", user_id=alice.id)
+    await compat_env.playlists.upload_cover(
+        record.id, alice, b"\x89PNG\r\n\x1a\npublic", "image/png"
+    )
+    await compat_env.playlists.set_public(record.id, alice, True)
+    _record, bob_secret = await app_password_service.create("user-bob", "Bob client")
+    response = compat_env.client.get(
+        "/subsonic/rest/getCoverArt",
+        params={"f": "json", "apiKey": bob_secret, "id": f"pl-{record.id}"},
+    )
+    assert response.status_code == 200
+    assert response.content.endswith(b"public")

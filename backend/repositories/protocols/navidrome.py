@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from repositories.navidrome_models import (
     SubsonicAlbum,
@@ -15,13 +13,15 @@ from repositories.navidrome_models import (
     SubsonicPlaylist,
     SubsonicSearchResult,
     SubsonicSong,
+    StreamProxyResult,
 )
-
-if TYPE_CHECKING:
-    from repositories.navidrome_models import StreamProxyResult
 
 
 class NavidromeRepositoryProtocol(Protocol):
+
+    @property
+    def server_identity(self) -> str:
+        ...
 
     def is_configured(self) -> bool:
         ...
@@ -33,14 +33,23 @@ class NavidromeRepositoryProtocol(Protocol):
         ...
 
     async def get_album_list(
-        self, type: str, size: int = 20, offset: int = 0, genre: str | None = None
+        self,
+        type: str,
+        size: int = 20,
+        offset: int = 0,
+        genre: str | None = None,
+        from_year: int | None = None,
+        to_year: int | None = None,
+        music_folder_ids: tuple[str, ...] | None = None,
     ) -> list[SubsonicAlbum]:
         ...
 
     async def get_album(self, id: str) -> SubsonicAlbum:
         ...
 
-    async def get_artists(self) -> list[SubsonicArtist]:
+    async def get_artists(
+        self, music_folder_ids: tuple[str, ...] | None = None
+    ) -> list[SubsonicArtist]:
         ...
 
     async def get_artist(self, id: str) -> SubsonicArtist:
@@ -55,20 +64,38 @@ class NavidromeRepositoryProtocol(Protocol):
         artist_count: int = 20,
         album_count: int = 20,
         song_count: int = 20,
+        music_folder_ids: tuple[str, ...] | None = None,
     ) -> SubsonicSearchResult:
         ...
 
-    async def get_starred(self) -> SubsonicSearchResult:
+    async def get_starred(
+        self, music_folder_ids: tuple[str, ...] | None = None
+    ) -> SubsonicSearchResult:
         ...
 
     async def get_genres(self) -> list[SubsonicGenre]:
         ...
 
-    async def get_artists_index(self) -> list[SubsonicArtistIndex]:
+    async def get_artists_index(
+        self, music_folder_ids: tuple[str, ...] | None = None
+    ) -> list[SubsonicArtistIndex]:
         ...
 
     async def get_songs_by_genre(
-        self, genre: str, count: int = 50, offset: int = 0
+        self,
+        genre: str,
+        count: int = 50,
+        offset: int = 0,
+        music_folder_ids: tuple[str, ...] | None = None,
+    ) -> list[SubsonicSong]:
+        ...
+
+    async def search_songs(
+        self,
+        query: str = "",
+        count: int = 50,
+        offset: int = 0,
+        music_folder_ids: tuple[str, ...] | None = None,
     ) -> list[SubsonicSong]:
         ...
 
@@ -82,7 +109,10 @@ class NavidromeRepositoryProtocol(Protocol):
         ...
 
     async def get_random_songs(
-        self, size: int = 20, genre: str | None = None
+        self,
+        size: int = 20,
+        genre: str | None = None,
+        music_folder_ids: tuple[str, ...] | None = None,
     ) -> list[SubsonicSong]:
         ...
 

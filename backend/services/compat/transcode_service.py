@@ -14,6 +14,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, AsyncGenerator, Callable
 
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
 from core.exceptions import ClientDisconnectedError
 from infrastructure.constants import STREAM_CHUNK_SIZE
@@ -21,6 +22,7 @@ from infrastructure.msgspec_fastapi import AppStruct
 
 if TYPE_CHECKING:
     from api.v1.schemas.settings import ConnectAppsSettings
+    from services.compat.stream_concurrency import StreamConcurrencyService, StreamLease
     from services.compat.view_models import ViewTrack
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 _SUPPORTED_OUT = {"mp3", "opus"}
 _MIN_BITRATE_KBPS = 64
 _READ_TIMEOUT_S = 30.0
+_STDERR_CAPTURE_BYTES = 2000
 _HUGE = 10**9  # "no cap" sentinel (Subsonic maxBitRate=0, Finamp 999999999)
 
 
@@ -124,51 +127,80 @@ def _estimate_size(plan: StreamPlan) -> int:
 
 
 class TranscodeService:
-    def __init__(self, semaphore: asyncio.Semaphore) -> None:
-        self._sem = semaphore
+    def __init__(self, concurrency: "StreamConcurrencyService") -> None:
+        self._concurrency = concurrency
 
-    def stream(
+    async def stream(
         self,
         path: str,
         plan: StreamPlan,
         *,
+        principal: str,
         is_disconnected: Callable | None = None,
         estimate: bool = False,
     ) -> StreamingResponse:
-        cmd = build_cmd(path, plan)
-        content_type = out_media_type(plan.out_format or "mp3")
-        headers = {"Accept-Ranges": "none", "Cache-Control": "no-store",
-                   "Content-Encoding": "identity"}
-        if estimate:
-            headers["Content-Length"] = str(_estimate_size(plan))
-        return StreamingResponse(
-            self._body(cmd, path, is_disconnected), status_code=200,
-            media_type=content_type, headers=headers,
-        )
+        lease = await self._concurrency.acquire_transcode(principal)
+        try:
+            cmd = build_cmd(path, plan)
+            content_type = out_media_type(plan.out_format or "mp3")
+            headers = {"Accept-Ranges": "none", "Cache-Control": "no-store",
+                       "Content-Encoding": "identity"}
+            if estimate:
+                headers["Content-Length"] = str(_estimate_size(plan))
+            return StreamingResponse(
+                self._body(cmd, is_disconnected, lease), status_code=200,
+                media_type=content_type, headers=headers,
+                background=BackgroundTask(lease.release),
+            )
+        except BaseException:
+            await lease.release()
+            raise
 
     async def _body(
-        self, cmd: list[str], path: str, is_disconnected: Callable | None
+        self,
+        cmd: list[str],
+        is_disconnected: Callable | None,
+        lease: "StreamLease",
     ) -> AsyncGenerator[bytes, None]:
-        async with self._sem:  # cap concurrent ffmpeg subprocesses
+        proc = None
+        stderr_task = None
+        try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-            try:
-                while True:
-                    chunk = await asyncio.wait_for(
-                        proc.stdout.read(STREAM_CHUNK_SIZE), timeout=_READ_TIMEOUT_S
-                    )
-                    if not chunk:
-                        break
-                    if is_disconnected is not None and await is_disconnected():
-                        raise ClientDisconnectedError("client gone mid-transcode")
-                    yield chunk
-                rc = await asyncio.wait_for(proc.wait(), timeout=5)
-                if rc not in (0, None):
-                    err = (await proc.stderr.read()).decode("utf-8", "replace")[:2000]
-                    logger.warning("ffmpeg exited %s for %s: %s", rc, path, err)
-            finally:
+            stderr_task = asyncio.create_task(self._drain_stderr(proc.stderr))
+            while True:
+                chunk = await asyncio.wait_for(
+                    proc.stdout.read(STREAM_CHUNK_SIZE), timeout=_READ_TIMEOUT_S
+                )
+                if not chunk:
+                    break
+                if is_disconnected is not None and await is_disconnected():
+                    raise ClientDisconnectedError("client gone mid-transcode")
+                yield chunk
+            rc = await asyncio.wait_for(proc.wait(), timeout=5)
+            err = await stderr_task
+            if rc not in (0, None):
+                logger.warning("ffmpeg exited %s: %s", rc, err)
+        finally:
+            if proc is not None:
                 await self._terminate(proc)
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+                await asyncio.gather(stderr_task, return_exceptions=True)
+            await lease.release()
+
+    @staticmethod
+    async def _drain_stderr(stderr) -> str:
+        captured = bytearray()
+        while True:
+            chunk = await stderr.read(STREAM_CHUNK_SIZE)
+            if not chunk:
+                break
+            remaining = _STDERR_CAPTURE_BYTES - len(captured)
+            if remaining > 0:
+                captured.extend(chunk[:remaining])
+        return captured.decode("utf-8", "replace")
 
     @staticmethod
     async def _terminate(proc) -> None:

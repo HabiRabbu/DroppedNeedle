@@ -44,6 +44,12 @@ class ValidationError(DroppedNeedleException):
     pass
 
 
+class RangeNotSatisfiableError(ValidationError):
+    def __init__(self, file_size: int):
+        super().__init__("Requested byte range is not satisfiable")
+        self.file_size = file_size
+
+
 class PermissionDeniedError(DroppedNeedleException):
     """Ownership/authorization violation. Mapped to HTTP 403 by the registered handler."""
     pass

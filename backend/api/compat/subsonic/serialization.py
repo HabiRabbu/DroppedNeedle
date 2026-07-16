@@ -9,7 +9,6 @@ import msgspec
 from fastapi.responses import Response
 
 SUBSONIC_API_VERSION = "1.16.1"
-APP_VERSION = "1.0.0"
 _NS = "http://subsonic.org/restapi"
 
 # JSONP callback is reflected into JS; restrict to a bare identifier path or drop
@@ -89,12 +88,12 @@ def _emit(body: dict, fmt: str, callback: str | None) -> Response:
     return Response(_render_xml(body), media_type="application/xml")
 
 
-def _envelope(status: str, server_name: str) -> dict:
+def _envelope(status: str, server_name: str, server_version: str) -> dict:
     return {
         "status": status,
         "version": SUBSONIC_API_VERSION,
         "type": server_name,
-        "serverVersion": APP_VERSION,
+        "serverVersion": server_version,
         "openSubsonic": True,
     }
 
@@ -106,8 +105,9 @@ def render(
     fmt: str = "xml",
     callback: str | None = None,
     server_name: str = "DroppedNeedle",
+    server_version: str = "dev",
 ) -> Response:
-    body = _envelope("ok", server_name)
+    body = _envelope("ok", server_name, server_version)
     if endpoint_key is not None and payload is not None:
         body[endpoint_key] = msgspec.to_builtins(payload)
     return _emit(_strip_none(body), fmt, callback)
@@ -120,7 +120,8 @@ def render_error(
     fmt: str = "xml",
     callback: str | None = None,
     server_name: str = "DroppedNeedle",
+    server_version: str = "dev",
 ) -> Response:
-    body = _envelope("failed", server_name)
+    body = _envelope("failed", server_name, server_version)
     body["error"] = {"code": code, "message": message}
     return _emit(_strip_none(body), fmt, callback)

@@ -821,6 +821,27 @@ export type NavidromeLibraryStats = {
 	total_artists: number;
 };
 
+export type NavidromeMusicFolder = {
+	id: string;
+	name: string;
+};
+
+export type NavidromeFolderPreferenceMode = 'all' | 'selected';
+
+export type NavidromeFolderPreference = {
+	mode: NavidromeFolderPreferenceMode;
+	selected_folder_ids: string[];
+	available_folders: NavidromeMusicFolder[];
+	stale_folder_ids: string[];
+	source_available: boolean;
+	scope_revision: string;
+};
+
+export type NavidromeFolderPreferenceUpdate = {
+	mode: NavidromeFolderPreferenceMode;
+	selected_folder_ids: string[];
+};
+
 export type NavidromePaginatedResponse = {
 	items: NavidromeAlbumSummary[];
 	total: number;
@@ -1452,6 +1473,18 @@ export type NativeTrackListItem = {
 	track_number: number;
 	disc_number: number;
 	duration_seconds?: number | null;
+	recording_mbid?: string | null;
+	artist_mbid?: string | null;
+	album_artist_name?: string | null;
+	album_artist_mbid?: string | null;
+	year?: number | null;
+	genre?: string | null;
+	bit_rate?: number | null;
+	sample_rate?: number | null;
+	bit_depth?: number | null;
+	channels?: number | null;
+	file_size_bytes?: number;
+	created_at?: number | null;
 };
 
 export type NativeTrackPage = {
@@ -1472,6 +1505,9 @@ export interface LibraryAlbumSummary {
 	is_compilation: boolean;
 	cover_url: string | null;
 	last_imported_at: number | null;
+	album_artist_mbid?: string | null;
+	album_sort_name?: string | null;
+	original_release_date?: string | null;
 }
 
 export interface NativeAlbumsResponse {

@@ -51,6 +51,7 @@ from api.v1.routes import requests_page as requests_page_routes
 from api.v1.routes import stream as stream_routes
 from api.v1.routes import jellyfin_library as jellyfin_library_routes
 from api.v1.routes import navidrome_library as navidrome_library_routes
+from api.v1.routes import navidrome_preferences as navidrome_preferences_routes
 from api.v1.routes import local_library as local_library_routes
 from api.v1.routes import lastfm as lastfm_routes
 from api.v1.routes import scrobble as scrobble_routes
@@ -109,6 +110,9 @@ logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
 # those secrets land in the container logs on every call. WARNING keeps
 # transport errors visible without the URL lines.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+from api.compat.common.redact import install_uvicorn_access_credential_filter  # noqa: E402
+
+install_uvicorn_access_credential_filter()
 logger = logging.getLogger(__name__)
 
 _ORPHAN_STAGING_MAX_AGE_SECONDS = 7 * 24 * 3600
@@ -701,10 +705,8 @@ if app_settings.debug:
 
 # Compat hardening, scoped to /subsonic + /jellyfin. Added last so CompatCORS is
 # outermost and OPTIONS preflights short-circuit before rate-limit + auth.
-from api.compat.common.ratelimit import CompatRateLimitMiddleware  # noqa: E402
 from api.compat.common.cors import CompatCORSMiddleware  # noqa: E402
 
-app.add_middleware(CompatRateLimitMiddleware)
 app.add_middleware(CompatCORSMiddleware)
 
 
@@ -737,6 +739,7 @@ v1_router.include_router(requests_page_routes.router)
 v1_router.include_router(stream_routes.router)
 v1_router.include_router(jellyfin_library_routes.router)
 v1_router.include_router(navidrome_library_routes.router)
+v1_router.include_router(navidrome_preferences_routes.router)
 v1_router.include_router(plex_library_routes.router)
 v1_router.include_router(plex_auth_routes.router)
 v1_router.include_router(local_library_routes.router)

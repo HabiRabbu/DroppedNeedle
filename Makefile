@@ -88,6 +88,8 @@ NPM    ?= pnpm
 	backend-test-content-enrichment \
 	backend-test-username-login \
 	backend-test-user-import \
+	backend-test-subsonic-security backend-test-subsonic-hosted backend-test-navidrome-folders \
+	test-subsonic \
 	backend-test-peer-review-fixes \
 	backend-test-discover-all \
 	test-discover-all \
@@ -104,6 +106,7 @@ NPM    ?= pnpm
 	frontend-test-jellyfin \
 	frontend-test-follow \
 	frontend-test-navidrome \
+	frontend-test-navidrome-folders \
 	frontend-test-plex \
 	frontend-test-playlist-detail \
 	frontend-test-queuehelpers \
@@ -258,6 +261,21 @@ backend-test-scrobble: $(BACKEND_VENV_STAMP) ## Run per-user scrobble service + 
 
 backend-test-connections: $(BACKEND_VENV_STAMP) ## Run per-user connection stores + factory + /me routes + D10 backfill tests
 	$(PYTEST) tests/infrastructure/test_user_connections_store.py tests/infrastructure/test_user_listening_prefs_store.py tests/infrastructure/test_play_history_store.py tests/services/test_per_user_client_factory.py tests/routes/test_me_connections.py tests/services/test_global_connection_backfill.py tests/services/test_media_server_auto_link.py -v
+
+backend-test-subsonic-security: $(BACKEND_VENV_STAMP) ## Hosted compat credential logging, limits, strict parameters, and stream resources
+	$(PYTEST) tests/compat/test_security.py tests/compat/test_subsonic_parameters.py tests/compat/test_stream_concurrency.py tests/compat/test_transcode_service.py tests/compat/test_subsonic_streaming.py -v
+
+backend-test-subsonic-hosted: $(BACKEND_VENV_STAMP) ## Hosted Subsonic/OpenSubsonic contracts and native capability stores/services
+	$(PYTEST) tests/compat tests/infrastructure/test_compat_playback_state_stores.py tests/infrastructure/test_library_rich_metadata_schema.py tests/services/test_native_lyrics_service.py tests/services/test_playback_report_service.py tests/services/test_advanced_transcode_service.py -v
+
+backend-test-navidrome-folders: $(BACKEND_VENV_STAMP) ## Issue #120 per-user Navidrome folder persistence, service, repository, and routes
+	$(PYTEST) tests/infrastructure/test_navidrome_folder_preferences_store.py tests/services/test_navidrome_folder_scope_service.py tests/services/test_navidrome_library_service.py tests/services/test_library_service.py tests/services/test_library_track_resolution.py tests/services/test_playlist_service.py tests/services/test_playlist_source_resolution.py tests/services/test_source_playlist_import.py tests/services/test_local_files_service.py tests/repositories/test_navidrome_repository.py tests/routes/test_navidrome_preferences_routes.py tests/routes/test_navidrome_routes.py -v
+
+frontend-test-navidrome-folders: frontend-install ## Issue #120 Profile query/UI and route integration coverage
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server src/lib/queries/navidrome-folders src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/profile/NavidromeMusicFoldersCard.svelte.spec.ts src/routes/profile/page.svelte.spec.ts
+
+test-subsonic: backend-test-subsonic-security backend-test-subsonic-hosted backend-test-navidrome-folders frontend-test-navidrome-folders ## Complete focused Subsonic and issue #120 verification
 
 backend-test-deep-discovery: $(BACKEND_VENV_STAMP) ## Run deep discovery and analytics tests
 	$(PYTEST) tests/services/test_deep_discovery.py -v

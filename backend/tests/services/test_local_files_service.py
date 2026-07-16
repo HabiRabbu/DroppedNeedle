@@ -2,7 +2,11 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from core.exceptions import ExternalServiceError, ResourceNotFoundError
+from core.exceptions import (
+    ExternalServiceError,
+    RangeNotSatisfiableError,
+    ResourceNotFoundError,
+)
 from services.local_files_service import LocalFilesService
 
 
@@ -173,16 +177,16 @@ async def test_stream_track_handles_suffix_range(service):
 
 
 @pytest.mark.asyncio
-async def test_stream_track_fallback_on_malformed_range(service):
+async def test_stream_track_rejects_malformed_range(service):
     svc, library_repo, music_dir, cache = service
     audio_file = music_dir / "song.mp3"
     audio_file.write_bytes(b"\xff\xfb" + b"\x00" * 998)
 
     library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(audio_file)})
 
-    chunks_iter, headers, status = await svc.stream_track("f1", range_header="bytes=abc-xyz")
-    assert status == 200
-    assert int(headers["Content-Length"]) == 1000
+    with pytest.raises(RangeNotSatisfiableError) as exc:
+        await svc.stream_track("f1", range_header="bytes=abc-xyz")
+    assert exc.value.file_size == 1000
 
 
 @pytest.mark.asyncio
@@ -193,8 +197,22 @@ async def test_stream_track_rejects_invalid_range(service):
 
     library_repo.get_file_row_by_id = AsyncMock(return_value={"file_path": str(audio_file)})
 
-    with pytest.raises(ExternalServiceError, match="Range not satisfiable"):
+    with pytest.raises(RangeNotSatisfiableError) as exc:
         await svc.stream_track("f1", range_header="bytes=5000-6000")
+    assert exc.value.file_size == 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("range_header", ["bytes=0-1,4-5", "items=0-1", "bytes=-0"])
+async def test_stream_track_rejects_unsupported_range_forms(service, range_header):
+    svc, library_repo, music_dir, _cache = service
+    audio_file = music_dir / "song.mp3"
+    audio_file.write_bytes(b"\xff\xfb" + b"\x00" * 98)
+    library_repo.get_file_row_by_id = AsyncMock(
+        return_value={"file_path": str(audio_file)}
+    )
+    with pytest.raises(RangeNotSatisfiableError):
+        await svc.stream_track("f1", range_header=range_header)
 
 
 @pytest.mark.asyncio

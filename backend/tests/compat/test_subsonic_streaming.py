@@ -92,6 +92,66 @@ async def test_unsatisfiable_range_is_416(streaming_env):
         headers={"Range": f"bytes={big}-"},
     )
     assert r.status_code == 416
+    assert r.headers["Content-Range"] == f"bytes */{len(streaming_env.raw)}"
+
+
+@pytest.mark.parametrize(
+    "range_header", ["bytes=abc-def", "bytes=0-1,4-5", "items=0-1", "bytes=-0"]
+)
+async def test_malformed_and_multi_range_are_explicit_416(streaming_env, range_header):
+    r = streaming_env.client.get(
+        "/subsonic/rest/stream",
+        params=_q(streaming_env, id=streaming_env.track_id),
+        headers={"Range": range_header},
+    )
+    assert r.status_code == 416
+    assert r.headers["Content-Range"] == f"bytes */{len(streaming_env.raw)}"
+
+
+async def test_suffix_range_returns_last_bytes(streaming_env):
+    r = streaming_env.client.get(
+        "/subsonic/rest/stream",
+        params=_q(streaming_env, id=streaming_env.track_id),
+        headers={"Range": "bytes=-64"},
+    )
+    assert r.status_code == 206
+    assert r.content == streaming_env.raw[-64:]
+
+
+@pytest.mark.parametrize("endpoint", ["stream", "download"])
+async def test_head_returns_headers_without_reading_body(streaming_env, endpoint):
+    r = streaming_env.client.head(
+        f"/subsonic/rest/{endpoint}",
+        params=_q(streaming_env, id=streaming_env.track_id),
+    )
+    assert r.status_code == 200
+    assert r.content == b""
+    assert r.headers["Content-Length"] == str(len(streaming_env.raw))
+    assert r.headers["Accept-Ranges"] == "bytes"
+
+
+async def test_download_uses_safe_attachment_filename(streaming_env):
+    r = streaming_env.client.get(
+        "/subsonic/rest/download",
+        params=_q(streaming_env, id=streaming_env.track_id),
+    )
+    assert r.headers["Content-Disposition"] == 'attachment; filename="Airbag.flac"'
+
+
+async def test_direct_stream_ignores_time_offset_and_keeps_real_length(streaming_env):
+    r = streaming_env.client.get(
+        "/subsonic/rest/stream",
+        params=_q(
+            streaming_env,
+            id=streaming_env.track_id,
+            format="raw",
+            timeOffset="10",
+            estimateContentLength="true",
+        ),
+    )
+    assert r.status_code == 200
+    assert r.content == streaming_env.raw
+    assert r.headers["Content-Length"] == str(len(streaming_env.raw))
 
 
 # ----- T3.2: transcode wiring + graceful degradation -----
@@ -134,9 +194,12 @@ async def test_format_mp3_invokes_transcode_when_available(streaming_env, monkey
     captured = {}
 
     class _StubTranscode:
-        def stream(self, path, plan, *, is_disconnected=None, estimate=False):
+        async def stream(
+            self, path, plan, *, principal, is_disconnected=None, estimate=False
+        ):
             captured["path"] = path
             captured["plan"] = plan
+            captured["principal"] = principal
             return Response(content=b"TRANSCODED", media_type="audio/mpeg",
                             headers={"Accept-Ranges": "none"})
 
@@ -154,6 +217,7 @@ async def test_format_mp3_invokes_transcode_when_available(streaming_env, monkey
     assert plan.transcode is True
     assert plan.out_format == "mp3"
     assert plan.out_bitrate_kbps == 128
+    assert captured["principal"] == "user-alice"
     assert captured["path"].endswith("flac_full_01.flac")
 
 
@@ -167,4 +231,3 @@ async def test_child_advertises_transcoded_fields_when_available(streaming_env, 
     )["subsonic-response"]["song"]
     assert song["transcodedSuffix"] == "mp3"
     assert song["transcodedContentType"] == "audio/mpeg"
-

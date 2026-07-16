@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from infrastructure.persistence.play_history_store import PlayHistoryStore
     from services.artist_discovery_service import ArtistDiscoveryService
     from services.compat.library_view_service import LibraryViewService
-    from services.compat.view_models import ViewTrack
+    from services.compat.view_models import ViewAlbum, ViewTrack
     from services.per_user_client_factory import PerUserClientFactory
     from services.preferences_service import PreferencesService
 
@@ -74,6 +74,20 @@ class CompatDiscoverService:
         # stable sort: most-played first, recency (query order) breaks ties
         files.sort(key=plays, reverse=True)
         return await self._view.tracks_from_rows(files[:count], user=user)
+
+    async def get_history_albums(
+        self,
+        *,
+        user_id: str,
+        frequent: bool,
+        limit: int,
+        offset: int,
+        user: "UserRecord | None" = None,
+    ) -> list["ViewAlbum"]:
+        ids = await self._play_history.album_ids(
+            user_id, frequent=frequent, limit=limit, offset=offset
+        )
+        return await self._view.get_albums_by_ids(ids, user=user)
 
     async def get_random_songs(
         self, *, count: int = 50, genre: str | None = None,

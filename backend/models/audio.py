@@ -35,6 +35,16 @@ class AudioTag(AppStruct):
     musicbrainz_album_artist_id: str | None = None
     acoustid_id: str | None = None
     compilation: bool = False
+    title_sort: str | None = None
+    artist_sort: str | None = None
+    album_sort: str | None = None
+    album_artist_sort: str | None = None
+    disc_subtitle: str | None = None
+    original_release_date: str | None = None
+    replaygain_track_gain: float | None = None
+    replaygain_album_gain: float | None = None
+    replaygain_track_peak: float | None = None
+    replaygain_album_peak: float | None = None
 
 
 class AudioInfo(AppStruct):

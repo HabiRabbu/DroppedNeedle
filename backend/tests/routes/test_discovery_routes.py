@@ -19,11 +19,29 @@ from api.v1.schemas.navidrome import NavidromeTrackInfo
 from api.v1.schemas.jellyfin import JellyfinTrackInfo
 from api.v1.schemas.plex import PlexDiscoveryAlbum, PlexDiscoveryHub, PlexDiscoveryResponse
 from core.dependencies import (
+    get_navidrome_folder_scope_service,
     get_navidrome_library_service,
     get_jellyfin_library_service,
     get_plex_library_service,
     get_plex_repository,
 )
+from infrastructure.persistence.navidrome_folder_preferences_store import (
+    NavidromeFolderPreference,
+)
+from services.navidrome_folder_scope_service import (
+    NavidromeFolderResolution,
+    NavidromeFolderScope,
+)
+from tests.helpers import override_user_auth
+
+
+def _all_folder_scope_service() -> AsyncMock:
+    service = AsyncMock()
+    service.resolve.return_value = NavidromeFolderResolution(
+        preference=NavidromeFolderPreference("all", (), "server-1", 1.0),
+        scope=NavidromeFolderScope("all", ()),
+    )
+    return service
 
 
 def _nd_track(id: str = "t1", title: str = "Track") -> NavidromeTrackInfo:
@@ -45,6 +63,10 @@ class TestNavidromeRandomRoute:
         app = FastAPI()
         app.include_router(navidrome_router)
         app.dependency_overrides[get_navidrome_library_service] = lambda: self.mock_svc
+        app.dependency_overrides[get_navidrome_folder_scope_service] = (
+            _all_folder_scope_service
+        )
+        override_user_auth(app)
         self.client = TestClient(app)
 
     def test_random_default(self, _setup):
@@ -58,7 +80,9 @@ class TestNavidromeRandomRoute:
         self.mock_svc.get_random_songs = AsyncMock(return_value=[_nd_track(), _nd_track(id="t2")])
         resp = self.client.get("/navidrome/random?size=5&genre=Rock")
         assert resp.status_code == 200
-        self.mock_svc.get_random_songs.assert_awaited_once_with(size=5, genre="Rock")
+        self.mock_svc.get_random_songs.assert_awaited_once_with(
+            size=5, genre="Rock", music_folder_ids=None
+        )
 
     def test_random_empty(self, _setup):
         self.mock_svc.get_random_songs = AsyncMock(return_value=[])

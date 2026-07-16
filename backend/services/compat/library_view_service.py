@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from infrastructure.persistence.library_db import LibraryDB
     from repositories.coverart_repository import CoverArtRepository
     from services.compat.favorites_service import FavoritesService
+    from infrastructure.persistence.play_history_store import PlayHistoryStore
     from services.native.library_manager import (
         LibraryAlbumSummary,
         LibraryArtistSummary,
@@ -44,11 +45,13 @@ class LibraryViewService:
         library_db: "LibraryDB",
         coverart_repository: "CoverArtRepository",
         favorites_service: "FavoritesService",
+        play_history_store: "PlayHistoryStore | None" = None,
     ) -> None:
         self._lm = library_manager
         self._db = library_db
         self._cover = coverart_repository
         self._fav = favorites_service
+        self._history = play_history_store
 
     async def get_artists(
         self,
@@ -67,7 +70,25 @@ class LibraryViewService:
         )
         artists = [self._artist_from_summary(s) for s in items]
         await self._overlay_favorites(artists, "artist", lambda a: a.artist_mbid, user)
+        await self._overlay_plays(artists, "artist", lambda a: a.name, user)
         return artists, total
+
+    async def get_library_revision(self) -> int:
+        return await self._db.get_library_revision()
+
+    async def missing_targets(
+        self, targets: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        by_kind = {
+            kind: list(dict.fromkeys(item_id for item_kind, item_id in targets if item_kind == kind))
+            for kind in ("artist", "album", "track")
+        }
+        existing = await self._db.existing_compat_ids(
+            artist_ids=by_kind["artist"],
+            album_ids=by_kind["album"],
+            track_ids=by_kind["track"],
+        )
+        return [target for target in targets if target[1] not in existing[target[0]]]
 
     async def get_albums(
         self,
@@ -86,7 +107,50 @@ class LibraryViewService:
         )
         albums = [self._album_from_summary(s) for s in items]
         await self._overlay_favorites(albums, "album", lambda a: a.rg_mbid, user)
+        await self._overlay_plays(albums, "album", lambda a: a.rg_mbid, user)
         return albums, total
+
+    async def get_albums_offset(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        sort: str = "recent",
+        q: str | None = None,
+        from_year: int | None = None,
+        to_year: int | None = None,
+        genre: str | None = None,
+        user: "UserRecord | None" = None,
+    ) -> tuple[list[ViewAlbum], int]:
+        items, total = await self._lm.get_albums_offset(
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            q=q,
+            from_year=from_year,
+            to_year=to_year,
+            genre=genre,
+        )
+        albums = [self._album_from_summary(item) for item in items]
+        await self._overlay_favorites(albums, "album", lambda album: album.rg_mbid, user)
+        await self._overlay_plays(albums, "album", lambda album: album.rg_mbid, user)
+        return albums, total
+
+    async def get_albums_by_ids(
+        self, release_group_mbids: list[str], *, user: "UserRecord | None" = None
+    ) -> list[ViewAlbum]:
+        items = await self._lm.get_albums_by_ids(release_group_mbids)
+        albums = [self._album_from_summary(item) for item in items]
+        await self._overlay_favorites(albums, "album", lambda album: album.rg_mbid, user)
+        await self._overlay_plays(albums, "album", lambda album: album.rg_mbid, user)
+        return albums
+
+    async def get_starred_albums(
+        self, user: "UserRecord", *, limit: int, offset: int
+    ) -> list[ViewAlbum]:
+        favorites = await self._fav.list(user.id, "album")
+        ids = [item_id for item_id, _created_at in favorites[offset : offset + limit]]
+        return await self.get_albums_by_ids(ids, user=user)
 
     async def get_albums_for_artist(
         self, artist_mbid: str, *, user: "UserRecord | None" = None
@@ -107,6 +171,7 @@ class LibraryViewService:
             for r in rows
         ]
         await self._overlay_favorites(albums, "album", lambda a: a.rg_mbid, user)
+        await self._overlay_plays(albums, "album", lambda a: a.rg_mbid, user)
         return albums
 
     async def get_artist_with_albums(
@@ -121,6 +186,7 @@ class LibraryViewService:
             artist_mbid=artist_mbid, name=name, album_count=len(albums)
         )
         await self._overlay_favorites([artist], "artist", lambda a: a.artist_mbid, user)
+        await self._overlay_plays([artist], "artist", lambda a: a.name, user)
         return artist, albums
 
     async def get_album(
@@ -131,6 +197,7 @@ class LibraryViewService:
             return None
         album = await self._album_from_rows(rg_mbid, rows)
         await self._overlay_favorites([album], "album", lambda a: a.rg_mbid, user)
+        await self._overlay_plays([album], "album", lambda a: a.rg_mbid, user)
         return album
 
     async def get_album_tracks(
@@ -139,6 +206,7 @@ class LibraryViewService:
         rows = await self._db.get_library_files_for_album(rg_mbid)
         tracks = [self._track_from_row(r) for r in rows]
         await self._overlay_favorites(tracks, "track", lambda t: t.file_id, user)
+        await self._overlay_plays(tracks, "track", lambda t: t.recording_mbid, user)
         return tracks
 
     async def get_track(
@@ -149,7 +217,17 @@ class LibraryViewService:
             return None
         track = self._track_from_row(row)
         await self._overlay_favorites([track], "track", lambda t: t.file_id, user)
+        await self._overlay_plays([track], "track", lambda t: t.recording_mbid, user)
         return track
+
+    async def get_tracks_by_file_ids(
+        self, file_ids: list[str], *, user: "UserRecord | None" = None
+    ) -> dict[str, ViewTrack]:
+        rows = await self._db.get_library_files_by_ids(file_ids)
+        tracks = [self._track_from_row(row) for row in rows.values()]
+        await self._overlay_favorites(tracks, "track", lambda track: track.file_id, user)
+        await self._overlay_plays(tracks, "track", lambda track: track.recording_mbid, user)
+        return {track.file_id: track for track in tracks}
 
     async def get_tracks_page(
         self,
@@ -165,6 +243,7 @@ class LibraryViewService:
         )
         tracks = [self._track_from_list_item(i) for i in items]
         await self._overlay_favorites(tracks, "track", lambda t: t.file_id, user)
+        await self._overlay_plays(tracks, "track", lambda t: t.recording_mbid, user)
         return tracks, total
 
     async def get_genres(self) -> list[ViewGenre]:
@@ -205,6 +284,7 @@ class LibraryViewService:
         """Build complete ViewTracks from raw library_files dicts + favorites overlay."""
         tracks = [self._track_from_row(r) for r in rows]
         await self._overlay_favorites(tracks, "track", lambda t: t.file_id, user)
+        await self._overlay_plays(tracks, "track", lambda t: t.recording_mbid, user)
         return tracks
 
     @staticmethod
@@ -227,6 +307,9 @@ class LibraryViewService:
             cover_available=bool(s.cover_url),
             date_added=int(s.last_imported_at) if s.last_imported_at is not None else None,
             is_compilation=s.is_compilation,
+            artist_mbid=s.album_artist_mbid,
+            sort_name=s.album_sort_name,
+            original_release_date=s.original_release_date,
         )
 
     async def _album_from_rows(self, rg_mbid: str, rows: list[dict]) -> ViewAlbum:
@@ -246,6 +329,15 @@ class LibraryViewService:
             cover_available=etag is not None,
             date_added=int(date_added) if date_added else None,
             is_compilation=bool(first.get("is_compilation")),
+            sort_name=first.get("album_sort_name"),
+            original_release_date=first.get("original_release_date"),
+            disc_titles=list(
+                dict.fromkeys(
+                    (int(row.get("disc_number") or 1), row["disc_subtitle"])
+                    for row in rows
+                    if row.get("disc_subtitle")
+                )
+            ),
         )
 
     @staticmethod
@@ -273,6 +365,16 @@ class LibraryViewService:
             recording_mbid=row.get("recording_mbid"),
             file_path=row.get("file_path") or "",
             created_at=row.get("imported_at"),
+            sort_name=row.get("track_sort_name"),
+            artist_sort_name=row.get("artist_sort_name"),
+            album_artist_sort_name=row.get("album_artist_sort_name"),
+            album_sort_name=row.get("album_sort_name"),
+            disc_subtitle=row.get("disc_subtitle"),
+            original_release_date=row.get("original_release_date"),
+            replaygain_track_gain=row.get("replaygain_track_gain"),
+            replaygain_album_gain=row.get("replaygain_album_gain"),
+            replaygain_track_peak=row.get("replaygain_track_peak"),
+            replaygain_album_peak=row.get("replaygain_album_peak"),
         )
 
     @staticmethod
@@ -289,6 +391,18 @@ class LibraryViewService:
             disc_number=item.disc_number,
             duration_seconds=item.duration_seconds or 0.0,
             file_format=(item.format or "").lower(),
+            recording_mbid=item.recording_mbid,
+            artist_mbid=item.artist_mbid,
+            album_artist_name=item.album_artist_name,
+            album_artist_mbid=item.album_artist_mbid,
+            year=item.year,
+            genre=item.genre,
+            bitrate=item.bit_rate,
+            sample_rate=item.sample_rate,
+            bit_depth=item.bit_depth,
+            channels=item.channels,
+            file_size_bytes=item.file_size_bytes,
+            created_at=item.created_at,
         )
 
     async def _overlay_favorites(self, items, kind, key, user) -> None:
@@ -300,3 +414,21 @@ class LibraryViewService:
         mapping = await self._fav.map_for_items(user.id, kind, ids)
         for item in items:
             item.starred_at = mapping.get(key(item))
+
+    async def _overlay_plays(self, items, kind, key, user) -> None:
+        if self._history is None or user is None or not items:
+            return
+        keys = [key(item) for item in items if key(item)]
+        if not keys:
+            return
+        stats = await self._history.compat_stats(
+            user.id,
+            recording_mbids=keys if kind == "track" else [],
+            release_group_mbids=keys if kind == "album" else [],
+            artist_names=keys if kind == "artist" else [],
+        )
+        mapping = stats[kind]
+        for item in items:
+            value = mapping.get(key(item))
+            if value is not None:
+                item.play_count, item.played_at = value

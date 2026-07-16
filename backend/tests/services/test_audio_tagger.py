@@ -72,6 +72,34 @@ def test_read_descriptive_fields(tagger):
     assert tag.year == 1997
 
 
+def test_read_rich_metadata_from_independently_written_flac_tags(tagger, tmp_copy):
+    from mutagen.flac import FLAC
+
+    path = tmp_copy("flac_full_01.flac")
+    audio = FLAC(path)
+    audio["TITLESORT"] = "Airbag, The"
+    audio["ARTISTSORT"] = "Radiohead"
+    audio["ALBUMSORT"] = "OK Computer"
+    audio["ALBUMARTISTSORT"] = "Radiohead"
+    audio["DISCSUBTITLE"] = "Bonus Disc"
+    audio["ORIGINALDATE"] = "1997-05-21"
+    audio["REPLAYGAIN_TRACK_GAIN"] = "-7.25 dB"
+    audio["REPLAYGAIN_ALBUM_GAIN"] = "-6.50 dB"
+    audio["REPLAYGAIN_TRACK_PEAK"] = "0.987"
+    audio["REPLAYGAIN_ALBUM_PEAK"] = "0.999"
+    audio.save()
+
+    tag, _ = tagger.read_tags(path)
+
+    assert tag.title_sort == "Airbag, The"
+    assert tag.disc_subtitle == "Bonus Disc"
+    assert tag.original_release_date == "1997-05-21"
+    assert tag.replaygain_track_gain == -7.25
+    assert tag.replaygain_album_gain == -6.5
+    assert tag.replaygain_track_peak == 0.987
+    assert tag.replaygain_album_peak == 0.999
+
+
 def test_read_audio_info(tagger):
     _, info = tagger.read_tags(FIXTURES / "flac_full_01.flac")
     assert info.file_format == "flac"

@@ -71,6 +71,8 @@ import { getLibraryAlbumStatusQuery } from '$lib/queries/library/LibraryQueries.
 import { getAlbumDownloadsQuery } from '$lib/queries/downloads/DownloadQueries.svelte';
 import { getHeldImportsQuery } from '$lib/queries/downloads/HeldQueries.svelte';
 import { isActiveDownloadStatus } from '$lib/queries/downloads/downloadStatus';
+import { authStore } from '$lib/stores/authStore.svelte';
+import { getNavidromeFolderScopeRevision } from '$lib/utils/navidromeLibraryCache';
 
 export interface SourceCallbacks {
 	onPlayAll: () => void;
@@ -81,6 +83,14 @@ export interface SourceCallbacks {
 }
 
 export function createAlbumPageState(albumIdGetter: () => string) {
+	const sourceCacheKey = (albumId: string) =>
+		[
+			authStore.user?.id ?? 'anonymous',
+			getNavidromeFolderScopeRevision(authStore.user?.id ?? ''),
+			albumId
+		]
+			.map(encodeURIComponent)
+			.join(':');
 	let album = $state<AlbumBasicInfo | null>(null);
 	let tracksInfo = $state<AlbumTracksInfo | null>(null);
 	let error = $state<string | null>(null);
@@ -330,7 +340,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 			}
 		});
 		const refreshSourceMatch = (() => {
-			const cached = albumSourceMatchCache.get(albumId);
+			const cached = albumSourceMatchCache.get(sourceCacheKey(albumId));
 			if (cached && !albumSourceMatchCache.isStale(cached.timestamp)) {
 				jellyfinMatch = cached.data.jellyfin;
 				localMatch = cached.data.local;
@@ -430,13 +440,14 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		try {
 			const result = await fetcher();
 			setter(result);
-			const existing = albumSourceMatchCache.get(albumId)?.data ?? {
+			const cacheKey = sourceCacheKey(albumId);
+			const existing = albumSourceMatchCache.get(cacheKey)?.data ?? {
 				jellyfin: null,
 				local: null,
 				navidrome: null,
 				plex: null
 			};
-			albumSourceMatchCache.set({ ...existing, [cacheField]: result }, albumId);
+			albumSourceMatchCache.set({ ...existing, [cacheField]: result }, cacheKey);
 		} catch (e) {
 			if (isAbortError(e)) return;
 		} finally {
@@ -573,7 +584,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		const albumId = albumIdGetter();
 		const signal = abortController?.signal;
 		if (!albumId || !signal || signal.aborted) return;
-		albumSourceMatchCache.remove(albumId);
+		albumSourceMatchCache.remove(sourceCacheKey(albumId));
 		void fetchMbidSourceMatches(albumId, signal);
 		void fetchNamedSourceMatches(albumId, signal);
 	}
@@ -599,7 +610,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 	async function forceLoadAlbum(albumId: string): Promise<void> {
 		albumBasicCache.remove(albumId);
 		albumTracksCache.remove(albumId);
-		albumSourceMatchCache.remove(albumId);
+		albumSourceMatchCache.remove(sourceCacheKey(albumId));
 
 		if (abortController) abortController.abort();
 		abortController = new AbortController();
@@ -639,7 +650,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 			albumBasicCache.set(album, albumIdGetter());
 		}
 		localMatch = null;
-		albumSourceMatchCache.remove(albumIdGetter());
+		albumSourceMatchCache.remove(sourceCacheKey(albumIdGetter()));
 		toastMessage = 'Removed from Library';
 		toastType = 'success';
 		showToast = true;
@@ -679,7 +690,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		},
 		setShowToast: (v) => (showToast = v),
 		onRequestSuccess: () => {
-			albumSourceMatchCache.remove(albumIdGetter());
+			albumSourceMatchCache.remove(sourceCacheKey(albumIdGetter()));
 			// pick up the freshly-created download task so the header strip + polling kick in
 			void downloadsQuery.refetch();
 		}

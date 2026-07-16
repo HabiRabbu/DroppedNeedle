@@ -1,4 +1,5 @@
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
 from fastapi.responses import Response
@@ -31,6 +32,7 @@ from core.dependencies import (
     get_jellyfin_library_service,
     get_local_files_service,
     get_navidrome_library_service,
+    get_navidrome_folder_scope_service,
     get_navidrome_repository,
     get_plex_library_service,
     get_playlist_service,
@@ -40,6 +42,7 @@ from infrastructure.msgspec_fastapi import MsgSpecRoute
 from infrastructure.resilience.retry import CircuitOpenError
 from repositories.navidrome_repository import NavidromeRepository
 from services.navidrome_library_service import NavidromeLibraryService
+from services.navidrome_folder_scope_service import NavidromeFolderScopeService
 from services.playlist_service import PlaylistService
 
 logger = logging.getLogger(__name__)
@@ -60,14 +63,30 @@ _NEEDS_REVERSE: dict[tuple[str, str], bool] = {
 }
 
 
+async def _get_user_music_folder_ids(
+    current_user: CurrentUserDep,
+    scope_service: NavidromeFolderScopeService = Depends(
+        get_navidrome_folder_scope_service
+    ),
+) -> tuple[str, ...] | None:
+    resolution = await scope_service.resolve(current_user.id)
+    return None if resolution.scope.mode == "all" else resolution.scope.folder_ids
+
+
+UserMusicFolderIdsDep = Annotated[
+    tuple[str, ...] | None, Depends(_get_user_music_folder_ids)
+]
+
+
 @router.get("/hub", response_model=NavidromeHubResponse)
 async def get_navidrome_hub(
     current_user: CurrentUserDep,
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> NavidromeHubResponse:
     try:
-        hub = await service.get_hub_data()
+        hub = await service.get_hub_data(music_folder_ids)
         imported_ids = await playlist_service.get_imported_source_ids("navidrome:", user_id=current_user.id)
         for p in hub.playlists:
             if p.id in imported_ids:
@@ -80,6 +99,7 @@ async def get_navidrome_hub(
 
 @router.get("/albums", response_model=NavidromeAlbumPage)
 async def get_navidrome_albums(
+    music_folder_ids: UserMusicFolderIdsDep,
     limit: int = Query(default=48, ge=1, le=500, alias="limit"),
     offset: int = Query(default=0, ge=0),
     sort_by: str = Query(default="name"),
@@ -98,6 +118,7 @@ async def get_navidrome_albums(
         items = await service.get_albums(
             type=subsonic_type, size=limit, offset=offset, genre=genre if genre else None,
             **year_kwargs,
+            music_folder_ids=music_folder_ids,
         )
     except ExternalServiceError as e:
         logger.error("Navidrome service error getting albums: %s", e)
@@ -107,7 +128,7 @@ async def get_navidrome_albums(
         items = list(reversed(items))
 
     try:
-        stats = await service.get_stats()
+        stats = await service.get_stats(music_folder_ids)
         total = stats.total_albums if len(items) >= limit else offset + len(items)
     except (ExternalServiceError, CircuitOpenError):
         logger.warning("Navidrome stats unavailable, using heuristic pagination total")
@@ -119,9 +140,10 @@ async def get_navidrome_albums(
 @router.get("/albums/{album_id}", response_model=NavidromeAlbumDetail)
 async def get_navidrome_album_detail(
     album_id: str,
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeAlbumDetail:
-    result = await service.get_album_detail(album_id)
+    result = await service.get_album_detail(album_id, music_folder_ids)
     if not result:
         raise HTTPException(status_code=404, detail="Album not found")
     return result
@@ -129,13 +151,19 @@ async def get_navidrome_album_detail(
 
 @router.get("/artists/browse", response_model=NavidromeArtistPage)
 async def browse_navidrome_artists(
+    music_folder_ids: UserMusicFolderIdsDep,
     limit: int = Query(48, ge=1, le=100),
     offset: int = Query(0, ge=0),
     search: str = Query(""),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeArtistPage:
     try:
-        items, total = await service.browse_artists(size=limit, offset=offset, search=search)
+        items, total = await service.browse_artists(
+            size=limit,
+            offset=offset,
+            search=search,
+            music_folder_ids=music_folder_ids,
+        )
         return NavidromeArtistPage(items=items, total=total, offset=offset, limit=limit)
     except ExternalServiceError as e:
         logger.error("Navidrome service error browsing artists: %s", e)
@@ -144,17 +172,19 @@ async def browse_navidrome_artists(
 
 @router.get("/artists", response_model=list[NavidromeArtistSummary])
 async def get_navidrome_artists(
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> list[NavidromeArtistSummary]:
-    return await service.get_artists()
+    return await service.get_artists(music_folder_ids)
 
 
 @router.get("/artists/index", response_model=NavidromeArtistIndexResponse)
 async def get_navidrome_artists_index(
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeArtistIndexResponse:
     try:
-        return await service.get_artists_index()
+        return await service.get_artists_index(music_folder_ids)
     except ExternalServiceError as e:
         logger.error("Navidrome service error getting artist index: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Navidrome")
@@ -163,9 +193,10 @@ async def get_navidrome_artists_index(
 @router.get("/artists/{artist_id}")
 async def get_navidrome_artist_detail(
     artist_id: str,
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> dict:
-    result = await service.get_artist_detail(artist_id)
+    result = await service.get_artist_detail(artist_id, music_folder_ids)
     if not result:
         raise HTTPException(status_code=404, detail="Artist not found")
     return result
@@ -173,13 +204,19 @@ async def get_navidrome_artist_detail(
 
 @router.get("/tracks", response_model=NavidromeTrackPage)
 async def browse_navidrome_tracks(
+    music_folder_ids: UserMusicFolderIdsDep,
     limit: int = Query(48, ge=1, le=100),
     offset: int = Query(0, ge=0),
     search: str = Query(""),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeTrackPage:
     try:
-        items, total = await service.browse_tracks(size=limit, offset=offset, search=search)
+        items, total = await service.browse_tracks(
+            size=limit,
+            offset=offset,
+            search=search,
+            music_folder_ids=music_folder_ids,
+        )
         return NavidromeTrackPage(items=items, total=total, offset=offset, limit=limit)
     except ExternalServiceError as e:
         logger.error("Navidrome service error browsing tracks: %s", e)
@@ -188,41 +225,46 @@ async def browse_navidrome_tracks(
 
 @router.get("/search", response_model=NavidromeSearchResponse)
 async def search_navidrome(
+    music_folder_ids: UserMusicFolderIdsDep,
     q: str = Query(..., min_length=1),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeSearchResponse:
-    return await service.search(q)
+    return await service.search(q, music_folder_ids)
 
 
 @router.get("/recent", response_model=list[NavidromeAlbumSummary])
 async def get_navidrome_recent(
+    music_folder_ids: UserMusicFolderIdsDep,
     limit: int = Query(default=20, ge=1, le=50),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> list[NavidromeAlbumSummary]:
-    return await service.get_recent(limit=limit)
+    return await service.get_recent(limit=limit, music_folder_ids=music_folder_ids)
 
 
 @router.get("/favorites", response_model=list[NavidromeAlbumSummary])
 async def get_navidrome_favorites(
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> list[NavidromeAlbumSummary]:
-    result = await service.get_favorites()
+    result = await service.get_favorites(music_folder_ids)
     return result.albums
 
 
 @router.get("/favorites/expanded", response_model=NavidromeSearchResponse)
 async def get_navidrome_favorites_expanded(
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeSearchResponse:
-    return await service.get_favorites()
+    return await service.get_favorites(music_folder_ids)
 
 
 @router.get("/genres", response_model=list[str])
 async def get_navidrome_genres(
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> list[str]:
     try:
-        return await service.get_genres()
+        return await service.get_genres(music_folder_ids)
     except ExternalServiceError as e:
         logger.error("Navidrome service error getting genres: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Navidrome")
@@ -230,6 +272,7 @@ async def get_navidrome_genres(
 
 @router.get("/genres/songs", response_model=NavidromeGenreSongsResponse)
 async def get_navidrome_multi_genre_songs(
+    music_folder_ids: UserMusicFolderIdsDep,
     genres: str = Query(..., min_length=1),
     count: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -239,19 +282,35 @@ async def get_navidrome_multi_genre_songs(
     if not genre_list:
         return NavidromeGenreSongsResponse(songs=[], genre="")
     if len(genre_list) == 1:
-        return await service.get_songs_by_genre(genre=genre_list[0], count=count, offset=offset)
-    return await service.get_songs_by_genres(genres=genre_list, count=count, offset=offset)
+        return await service.get_songs_by_genre(
+            genre=genre_list[0],
+            count=count,
+            offset=offset,
+            music_folder_ids=music_folder_ids,
+        )
+    return await service.get_songs_by_genres(
+        genres=genre_list,
+        count=count,
+        offset=offset,
+        music_folder_ids=music_folder_ids,
+    )
 
 
 @router.get("/genres/{genre}/songs", response_model=NavidromeGenreSongsResponse)
 async def get_navidrome_genre_songs(
+    music_folder_ids: UserMusicFolderIdsDep,
     genre: str = Path(...),
     count: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeGenreSongsResponse:
     try:
-        return await service.get_songs_by_genre(genre=genre, count=count, offset=offset)
+        return await service.get_songs_by_genre(
+            genre=genre,
+            count=count,
+            offset=offset,
+            music_folder_ids=music_folder_ids,
+        )
     except ExternalServiceError as e:
         logger.error("Navidrome service error getting songs by genre: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Navidrome")
@@ -270,18 +329,22 @@ async def get_navidrome_music_folders(
 
 @router.get("/random", response_model=list[NavidromeTrackInfo])
 async def get_navidrome_random(
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     size: int = Query(default=20, ge=1, le=50),
     genre: str | None = Query(default=None),
 ) -> list[NavidromeTrackInfo]:
-    return await service.get_random_songs(size=size, genre=genre)
+    return await service.get_random_songs(
+        size=size, genre=genre, music_folder_ids=music_folder_ids
+    )
 
 
 @router.get("/stats", response_model=NavidromeLibraryStats)
 async def get_navidrome_stats(
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeLibraryStats:
-    return await service.get_stats()
+    return await service.get_stats(music_folder_ids)
 
 
 @router.get("/cover/{cover_art_id}")
@@ -305,6 +368,7 @@ async def get_navidrome_cover(
 @router.get("/album-match/{album_id}", response_model=NavidromeAlbumMatch)
 async def match_navidrome_album(
     album_id: str,
+    music_folder_ids: UserMusicFolderIdsDep,
     name: str = Query(default=""),
     artist: str = Query(default=""),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
@@ -312,6 +376,7 @@ async def match_navidrome_album(
     try:
         return await service.get_album_match(
             album_id=album_id, album_name=name, artist_name=artist,
+            music_folder_ids=music_folder_ids,
         )
     except ExternalServiceError as e:
         logger.error("Failed to match Navidrome album %s: %s", album_id, e)
@@ -321,12 +386,15 @@ async def match_navidrome_album(
 @router.get("/playlists", response_model=list[NavidromePlaylistSummary])
 async def get_navidrome_playlists(
     current_user: CurrentUserDep,
+    music_folder_ids: UserMusicFolderIdsDep,
     limit: int = Query(default=50, ge=1, le=200),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> list[NavidromePlaylistSummary]:
     try:
-        playlists = await service.list_playlists(limit=limit)
+        playlists = await service.list_playlists(
+            limit=limit, music_folder_ids=music_folder_ids
+        )
         imported_ids = await playlist_service.get_imported_source_ids("navidrome:", user_id=current_user.id)
         for p in playlists:
             if p.id in imported_ids:
@@ -340,10 +408,11 @@ async def get_navidrome_playlists(
 @router.get("/playlists/{playlist_id}", response_model=NavidromePlaylistDetail)
 async def get_navidrome_playlist_detail(
     playlist_id: str,
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromePlaylistDetail:
     try:
-        return await service.get_playlist_detail(playlist_id)
+        return await service.get_playlist_detail(playlist_id, music_folder_ids)
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Navidrome playlist not found")
     except ExternalServiceError as e:
@@ -356,6 +425,7 @@ async def import_navidrome_playlist(
     playlist_id: str,
     background_tasks: BackgroundTasks,
     current_user: CurrentUserDep,
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
     jf_service=Depends(get_jellyfin_library_service),
@@ -363,7 +433,12 @@ async def import_navidrome_playlist(
     plex_service=Depends(get_plex_library_service),
 ) -> NavidromeImportResult:
     try:
-        result = await service.import_playlist(playlist_id, playlist_service, requesting=current_user)
+        result = await service.import_playlist(
+            playlist_id,
+            playlist_service,
+            requesting=current_user,
+            music_folder_ids=music_folder_ids,
+        )
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Navidrome playlist not found")
     except ExternalServiceError as e:
@@ -374,10 +449,12 @@ async def import_navidrome_playlist(
         background_tasks.add_task(
             playlist_service.resolve_track_sources,
             result.droppedneedle_playlist_id,
+            requesting=current_user,
             jf_service=jf_service,
             local_service=local_service,
             nd_service=service,
             plex_service=plex_service,
+            navidrome_folder_ids=music_folder_ids,
         )
     return result
 
@@ -391,28 +468,35 @@ async def get_navidrome_now_playing(
 
 @router.get("/top-songs/{artist_name}", response_model=list[NavidromeTrackInfo])
 async def get_navidrome_top_songs(
+    music_folder_ids: UserMusicFolderIdsDep,
     artist_name: str = Path(..., min_length=1, max_length=256),
     count: int = Query(20, ge=1, le=50),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> list[NavidromeTrackInfo]:
-    return await service.get_top_songs(artist_name, count=count)
+    return await service.get_top_songs(
+        artist_name, count=count, music_folder_ids=music_folder_ids
+    )
 
 
 @router.get("/similar-songs/{song_id}", response_model=list[NavidromeTrackInfo])
 async def get_navidrome_similar_songs(
     song_id: str,
+    music_folder_ids: UserMusicFolderIdsDep,
     count: int = Query(20, ge=1, le=50),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> list[NavidromeTrackInfo]:
-    return await service.get_similar_songs(song_id, count=count)
+    return await service.get_similar_songs(
+        song_id, count=count, music_folder_ids=music_folder_ids
+    )
 
 
 @router.get("/artist-info/{artist_id}", response_model=NavidromeArtistInfoSchema)
 async def get_navidrome_artist_info(
     artist_id: str,
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeArtistInfoSchema:
-    info = await service.get_artist_info(artist_id)
+    info = await service.get_artist_info(artist_id, music_folder_ids)
     if info is None:
         return NavidromeArtistInfoSchema(navidrome_id=artist_id)
     return info
@@ -421,9 +505,10 @@ async def get_navidrome_artist_info(
 @router.get("/album-info/{album_id}", response_model=NavidromeAlbumInfoSchema)
 async def get_navidrome_album_info(
     album_id: str,
+    music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromeAlbumInfoSchema:
-    info = await service.get_album_info(album_id)
+    info = await service.get_album_info(album_id, music_folder_ids)
     if info is None:
         return NavidromeAlbumInfoSchema(album_id=album_id)
     return info

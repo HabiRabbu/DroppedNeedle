@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import time
 
 import pytest
 
@@ -48,6 +49,53 @@ async def test_scrobble_requires_id(compat_env):
     assert body["error"]["code"] == 10
 
 
+async def test_scrobble_repeated_ids_require_equal_timestamp_cardinality(compat_env):
+    songs = _sub(_get(compat_env, "search3", query=""))["searchResult3"]["song"]
+    now_ms = str(int(time.time() * 1000))
+    body = _sub(
+        _get(
+            compat_env,
+            "scrobble",
+            id=[songs[0]["id"], songs[1]["id"]],
+            time=now_ms,
+        )
+    )
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 0
+    assert _play_rows(compat_env) == []
+
+
+async def test_scrobble_repeated_ids_and_parallel_times(compat_env):
+    songs = _sub(_get(compat_env, "search3", query=""))["searchResult3"]["song"]
+    now_ms = int(time.time() * 1000)
+    body = _sub(
+        _get(
+            compat_env,
+            "scrobble",
+            id=[songs[0]["id"], songs[1]["id"]],
+            time=[str(now_ms - 1000), str(now_ms)],
+        )
+    )
+    assert body["status"] == "ok"
+    assert len(_play_rows(compat_env)) == 2
+
+
+async def test_scrobble_duplicate_timestamp_is_deduplicated(compat_env):
+    song = _sub(_get(compat_env, "search3", query=""))["searchResult3"]["song"][0]
+    timestamp = str(int(time.time() * 1000))
+    _sub(_get(compat_env, "scrobble", id=song["id"], time=timestamp))
+    _sub(_get(compat_env, "scrobble", id=song["id"], time=timestamp))
+    assert len(_play_rows(compat_env)) == 1
+
+
+@pytest.mark.parametrize("timestamp", ["not-a-time", "1.5", "-1"])
+async def test_scrobble_rejects_malformed_timestamp(compat_env, timestamp):
+    song = _sub(_get(compat_env, "search3", query=""))["searchResult3"]["song"][0]
+    body = _sub(_get(compat_env, "scrobble", id=song["id"], time=timestamp))
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 10
+
+
 async def test_get_now_playing_lists_compat_session(compat_env):
     # a submission=false scrobble registers presence; getNowPlaying serves it
     # as a full Child with session attribution (issue #159)
@@ -87,6 +135,12 @@ async def test_get_artist_info2_empty_but_valid(compat_env):
     assert "error" not in body2
 
 
+async def test_get_artist_info_rejects_unknown_artist(compat_env):
+    body = _sub(_get(compat_env, "getArtistInfo2", id="ar-does-not-exist"))
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 70
+
+
 async def test_get_genres(compat_env):
     genres = _sub(_get(compat_env, "getGenres"))["genres"]["genre"]
     rock = next(g for g in genres if g["value"] == "Alternative Rock")
@@ -121,6 +175,26 @@ async def test_get_user_flags(compat_env):
     assert user["maxBitRate"] == 320
 
 
-async def test_get_user_other_user_forbidden(compat_env):
-    body = json.loads(_get(compat_env, "getUser", username="bob").content)["subsonic-response"]
-    assert body["error"]["code"] == 50
+async def test_get_user_other_username_still_returns_authenticated_user(compat_env):
+    body = _sub(_get(compat_env, "getUser", username="bob"))
+    assert body["status"] == "ok"
+    assert body["user"]["username"] == "alice"
+    assert body["user"]["folder"] == [1]
+    assert body["user"]["settingsRole"] is False
+
+
+async def test_get_user_admin_other_username_still_returns_admin_self(
+    compat_env, app_password_service, auth_store
+):
+    await auth_store.create_user(
+        id="user-admin", display_name="Admin", role="admin", username="admin"
+    )
+    _record, secret = await app_password_service.create("user-admin", "Admin client")
+    response = compat_env.client.get(
+        "/subsonic/rest/getUser",
+        params={"f": "json", "apiKey": secret, "username": "alice"},
+    )
+    user = _sub(response)["user"]
+    assert user["username"] == "admin"
+    assert user["adminRole"] is True
+    assert user["settingsRole"] is True

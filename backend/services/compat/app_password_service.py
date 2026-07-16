@@ -11,6 +11,8 @@ import hashlib
 import hmac
 import logging
 import secrets
+import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -32,6 +34,14 @@ from infrastructure.persistence.auth_store import AuthStore, UserRecord
 logger = logging.getLogger(__name__)
 
 MAX_ACTIVE_APP_PASSWORDS = 25
+MAX_USERNAME_LENGTH = 256
+MAX_AUTH_VALUE_LENGTH = 1024
+MAX_ENCODED_PASSWORD_LENGTH = 2 * MAX_AUTH_VALUE_LENGTH + 4
+MAX_SALT_LENGTH = 128
+MAX_TOKEN_LENGTH = 128
+MAX_CLIENT_NAME_LENGTH = 256
+_TOUCH_INTERVAL_SECONDS = 5 * 60.0
+_MAX_TOUCH_IDENTITIES = 10_000
 
 
 class AppPasswordView(msgspec.Struct):
@@ -85,6 +95,7 @@ class AppPasswordService:
         self._store = store
         self._auth_store = auth_store
         self._bg_tasks: set[asyncio.Task] = set()
+        self._last_touch: OrderedDict[str, float] = OrderedDict()
 
     async def create(self, user_id: str, name: str) -> tuple[AppPasswordRecord, str]:
         """Returns (record, plaintext); the plaintext is shown to the user once."""
@@ -124,6 +135,7 @@ class AppPasswordService:
         if row is None or row.user_id != user_id:
             raise PermissionDeniedError("App-password not found")
         await self._store.revoke(app_password_id)
+        self._last_touch.pop(row.secret_sha256, None)
         logger.info(
             "Connect Apps audit: app-password revoked user=%s id=%s name=%r",
             user_id, row.id, row.name,
@@ -158,7 +170,7 @@ class AppPasswordService:
             )
         return views
 
-    async def admin_revoke(self, admin_user_id: str, app_password_id: str) -> None:
+    async def admin_revoke(self, admin_user_id: str, app_password_id: str) -> str:
         """Admin revokes ANY user's app-password (no ownership check). Missing or
         already-revoked id raises ResourceNotFoundError (route -> 404). Distinct
         from the owner-scoped revoke, which cannot act on another user's row."""
@@ -166,18 +178,23 @@ class AppPasswordService:
         if row is None or row.revoked:
             raise ResourceNotFoundError("App-password not found")
         await self._store.revoke(app_password_id)
+        self._last_touch.pop(row.secret_sha256, None)
         logger.info(
             "Connect Apps audit: app-password admin-revoked admin=%s owner=%s id=%s name=%r",
             admin_user_id, row.user_id, row.id, row.name,
         )
+        return row.user_id
 
     async def verify_token(self, token: str) -> UserRecord | None:
         """SHA-256(token) -> active row -> UserRecord. None on miss; never raises.
         Key-rotation safe (no decryption)."""
-        if not token:
+        if not token or len(token) > MAX_AUTH_VALUE_LENGTH:
             return None
-        row = await self._store.get_active_by_sha256(_sha256(token))
+        digest = _sha256(token)
+        row = await self._store.get_active_by_sha256(digest)
         if row is None:
+            return None
+        if not hmac.compare_digest(row.secret_sha256, digest):
             return None
         user = await self._auth_store.get_user_by_id(row.user_id)
         if user is None:
@@ -196,6 +213,10 @@ class AppPasswordService:
         client: str | None,
     ) -> UserRecord:
         """All three Subsonic auth schemes. Raises SubsonicError(code) on failure."""
+        if client is not None and len(client) > MAX_CLIENT_NAME_LENGTH:
+            raise SubsonicError(10)
+        if api_key is not None and len(api_key) > MAX_AUTH_VALUE_LENGTH:
+            raise SubsonicError(44)
         if api_key and u:
             raise SubsonicError(43)
         if api_key:
@@ -205,6 +226,14 @@ class AppPasswordService:
             return user
         if not u:
             raise SubsonicError(10)
+        if len(u) > MAX_USERNAME_LENGTH:
+            raise SubsonicError(40)
+        if t is not None and len(t) > MAX_TOKEN_LENGTH:
+            raise SubsonicError(40)
+        if s is not None and len(s) > MAX_SALT_LENGTH:
+            raise SubsonicError(40)
+        if p is not None and len(p) > MAX_ENCODED_PASSWORD_LENGTH:
+            raise SubsonicError(40)
         user = await self._auth_store.get_user_by_username(u.strip().lower())
         if user is None:
             raise SubsonicError(40)
@@ -228,8 +257,15 @@ class AppPasswordService:
 
         if p is not None:
             secret = _decode_subsonic_password(p)
-            row = await self._store.get_active_by_sha256(_sha256(secret))
-            if row is not None and row.user_id == user.id:
+            if len(secret) > MAX_AUTH_VALUE_LENGTH:
+                raise SubsonicError(40)
+            digest = _sha256(secret)
+            row = await self._store.get_active_by_sha256(digest)
+            if (
+                row is not None
+                and hmac.compare_digest(row.secret_sha256, digest)
+                and row.user_id == user.id
+            ):
                 self._spawn_touch(row.secret_sha256, client)
                 return user
             raise SubsonicError(40)
@@ -241,10 +277,16 @@ class AppPasswordService:
     ) -> UserRecord:
         """Jellyfin AuthenticateByName. Raises PermissionDeniedError on a bad
         credential (the detector maps to 401)."""
-        if not password:
+        if (
+            not password
+            or len(password) > MAX_AUTH_VALUE_LENGTH
+            or len(username) > MAX_USERNAME_LENGTH
+            or (client is not None and len(client) > MAX_CLIENT_NAME_LENGTH)
+        ):
             raise PermissionDeniedError("Invalid username or app-password")
-        row = await self._store.get_active_by_sha256(_sha256(password))
-        if row is not None:
+        digest = _sha256(password)
+        row = await self._store.get_active_by_sha256(digest)
+        if row is not None and hmac.compare_digest(row.secret_sha256, digest):
             user = await self._auth_store.get_user_by_id(row.user_id)
             if user is not None and (user.username or "") == username.strip().lower():
                 self._spawn_touch(row.secret_sha256, client)
@@ -260,6 +302,13 @@ class AppPasswordService:
             logger.debug("app-password touch failed", exc_info=True)
 
     def _spawn_touch(self, secret_sha256: str, client: str | None) -> None:
+        now = time.monotonic()
+        previous = self._last_touch.pop(secret_sha256, None)
+        self._last_touch[secret_sha256] = now
+        if len(self._last_touch) > _MAX_TOUCH_IDENTITIES:
+            self._last_touch.popitem(last=False)
+        if previous is not None and now - previous < _TOUCH_INTERVAL_SECONDS:
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:

@@ -32,6 +32,15 @@ class FavoritesService:
         self._check_kind(kind)
         await self._store.remove(user_id, kind, item_id)
 
+    async def apply_many(
+        self, user_id: str, targets: list[tuple[str, str]], *, add: bool
+    ) -> None:
+        for kind, _item_id in targets:
+            self._check_kind(kind)
+        await self._store.apply_many(
+            user_id, targets, add=add, created_at=time.time()
+        )
+
     async def is_favorite(self, user_id: str, kind: FavoriteKind, item_id: str) -> bool:
         self._check_kind(kind)
         return await self._store.is_favorite(user_id, kind, item_id)

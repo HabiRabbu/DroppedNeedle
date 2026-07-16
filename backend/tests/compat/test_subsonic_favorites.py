@@ -70,3 +70,34 @@ async def test_set_rating_is_accepted_noop(compat_env):
     # nothing persisted - song still has no rating surfaced; just assert it didn't error
     song = _sub(_get(compat_env, "getSong", id=song_id))["song"]
     assert "userRating" not in song
+
+
+async def test_favorite_validation_is_atomic(compat_env):
+    song_id, _, _ = _first_ids(compat_env)
+    body = _sub(_get(compat_env, "star", id=[song_id, "al-does-not-exist"]))
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 70
+    starred = _sub(_get(compat_env, "getStarred2"))["starred2"]
+    assert all(song["id"] != song_id for song in starred.get("song", []))
+
+
+async def test_favorite_duplicate_ids_are_deduplicated(compat_env):
+    song_id, _, _ = _first_ids(compat_env)
+    body = _sub(_get(compat_env, "star", id=[song_id, song_id]))
+    assert body["status"] == "ok"
+    starred = _sub(_get(compat_env, "getStarred2"))["starred2"]
+    assert [song["id"] for song in starred.get("song", [])].count(song_id) == 1
+
+
+@pytest.mark.parametrize("rating", ["-1", "6", "1.5", "true", ""])
+async def test_set_rating_rejects_invalid_values(compat_env, rating):
+    song_id, _, _ = _first_ids(compat_env)
+    body = _sub(_get(compat_env, "setRating", id=song_id, rating=rating))
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 10
+
+
+async def test_set_rating_rejects_unknown_target(compat_env):
+    body = _sub(_get(compat_env, "setRating", id="tr-does-not-exist", rating="3"))
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 70

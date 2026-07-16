@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from repositories.playlist_repository import PlaylistRecord, PlaylistTrackRecord
+from core.exceptions import SourceResolutionError
 from services.playlist_service import PlaylistService
 
 
@@ -89,21 +90,67 @@ class TestResolveAlbumSourcesPassesMetadata:
         )
 
         nd.get_album_match.assert_called_once_with(
-            album_id="mbid-abc", album_name="Sheet Music", artist_name="10cc",
+            album_id="mbid-abc",
+            album_name="Sheet Music",
+            artist_name="10cc",
+            music_folder_ids=None,
         )
-        assert True
 
-    @pytest.mark.asyncio
-    async def test_passes_empty_strings_when_not_provided(self, tmp_path):
-        service, _ = _make_service(tmp_path)
-        nd = _make_nd_service()
 
-        await service._resolve_album_sources("mbid-abc", None, None, nd)
+@pytest.mark.asyncio
+async def test_selected_folder_scope_removes_unverified_stored_navidrome_source(tmp_path):
+    service, repo = _make_service(tmp_path)
+    repo.get_tracks.return_value = [
+        _make_track(available_sources=["local", "navidrome"])
+    ]
+    nd = _make_nd_service(found=False, tracks=[])
 
-        nd.get_album_match.assert_called_once_with(
-            album_id="mbid-abc", album_name="", artist_name="",
+    result = await service.resolve_track_sources(
+        "p-1",
+        requesting=_OWNER,
+        nd_service=nd,
+        navidrome_folder_ids=("folder-a",),
+    )
+
+    assert result == {"t-1": []}
+    repo.batch_update_available_sources.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_same_navidrome_source_is_revalidated_for_selected_scope(tmp_path):
+    service, repo = _make_service(tmp_path)
+    repo.get_track.return_value = _make_track()
+    service._resolve_new_source_id = AsyncMock(
+        side_effect=SourceResolutionError("outside selected folders")
+    )
+
+    with pytest.raises(SourceResolutionError, match="outside selected folders"):
+        await service.update_track_source(
+            "p-1",
+            _OWNER,
+            "t-1",
+            source_type="navidrome",
+            nd_service=AsyncMock(),
+            navidrome_folder_ids=("folder-a",),
         )
-        assert True
+
+    service._resolve_new_source_id.assert_awaited_once()
+    repo.update_track_source.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_passes_empty_strings_when_not_provided(tmp_path):
+    service, _ = _make_service(tmp_path)
+    nd = _make_nd_service()
+
+    await service._resolve_album_sources("mbid-abc", None, None, nd)
+
+    nd.get_album_match.assert_called_once_with(
+        album_id="mbid-abc",
+        album_name="",
+        artist_name="",
+        music_folder_ids=None,
+    )
 
 
 class TestResolveTrackSourcesDiscovery:
@@ -137,7 +184,10 @@ class TestResolveTrackSourcesDiscovery:
         await service.resolve_track_sources("p-1", nd_service=nd)
 
         nd.get_album_match.assert_called_once_with(
-            album_id="mbid-abc", album_name="Sheet Music", artist_name="10cc",
+            album_id="mbid-abc",
+            album_name="Sheet Music",
+            artist_name="10cc",
+            music_folder_ids=None,
         )
         assert True
 
@@ -313,7 +363,11 @@ class TestStringTrackNumberRegression:
             {"6": ("Speed Kills", "2608"), "1": ("Johnny", "2601")},
             {6: ("Speed Kills", "nd-456"), 1: ("Johnny", "nd-401")},
         )
-        await cache.set("source_resolution:mbid-abc", stale_data, ttl_seconds=3600)
+        await cache.set(
+            "source_resolution:user:global:scope:all:mbid-abc",
+            stale_data,
+            ttl_seconds=3600,
+        )
 
         jf, local, nd, plex = await service._resolve_album_sources(
             "mbid-abc", None, None, None,
@@ -345,7 +399,9 @@ class TestResolveTrackSourcesConcurrency:
         in_flight = 0
         max_in_flight = 0
 
-        async def _slow_match(album_id, album_name, artist_name):
+        async def _slow_match(
+            album_id, album_name, artist_name, music_folder_ids
+        ):
             nonlocal in_flight, max_in_flight
             in_flight += 1
             max_in_flight = max(max_in_flight, in_flight)

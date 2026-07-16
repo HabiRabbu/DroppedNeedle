@@ -19,6 +19,7 @@ const CACHE_KEY_GROUPS = {
 		JELLYFIN_ALBUMS_LIST: 'droppedneedle_jellyfin_albums_list',
 		NAVIDROME_SIDEBAR: 'droppedneedle_navidrome_sidebar',
 		NAVIDROME_ALBUMS_LIST: 'droppedneedle_navidrome_albums_list',
+		NAVIDROME_FOLDER_SCOPE: 'droppedneedle_navidrome_folder_scope',
 		PLEX_SIDEBAR: 'droppedneedle_plex_sidebar',
 		PLEX_ALBUMS_LIST: 'droppedneedle_plex_albums_list',
 		LOCAL_FILES_ALBUMS_LIST: 'droppedneedle_local_files_albums_list'
@@ -301,6 +302,7 @@ export const API = {
 		lastfmAuthSession: () => '/api/v1/me/connections/lastfm/auth/session',
 		listenbrainz: () => '/api/v1/me/connections/listenbrainz',
 		navidrome: () => '/api/v1/me/connections/navidrome',
+		navidromeMusicFolderPreferences: () => '/api/v1/me/navidrome/music-folder-preferences',
 		jellyfin: () => '/api/v1/me/connections/jellyfin',
 		plexAuthPin: () => '/api/v1/me/connections/plex/auth/pin',
 		plexAuthPoll: (pinId: number) => `/api/v1/me/connections/plex/auth/poll?pin_id=${pinId}`,

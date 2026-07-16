@@ -10,6 +10,7 @@ from core.dependencies import (
     get_jellyfin_library_service,
     get_local_files_service,
     get_navidrome_library_service,
+    get_navidrome_folder_scope_service,
     get_plex_library_service,
     get_playlist_service,
     get_spotify_import_service,
@@ -70,14 +71,21 @@ async def _background_import(
         jf_service = get_jellyfin_library_service()
         local_service = get_local_files_service()
         nd_service = get_navidrome_library_service()
+        folder_resolution = await get_navidrome_folder_scope_service().resolve(user_id)
+        navidrome_folder_ids = (
+            None
+            if folder_resolution.scope.mode == "all"
+            else folder_resolution.scope.folder_ids
+        )
         plex_service = get_plex_library_service()
         sources_map = await playlist_service.resolve_track_sources(
             playlist_id,
-            requesting=None,
+            requesting=current_user,
             jf_service=jf_service,
             local_service=local_service,
             nd_service=nd_service,
             plex_service=plex_service,
+            navidrome_folder_ids=navidrome_folder_ids,
         )
         for track_id, sources in sources_map.items():
             if not sources:
@@ -94,6 +102,7 @@ async def _background_import(
                         local_service=local_service,
                         nd_service=nd_service,
                         plex_service=plex_service,
+                        navidrome_folder_ids=navidrome_folder_ids,
                     )
                 except Exception:  # noqa: BLE001
                     pass

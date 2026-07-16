@@ -142,6 +142,20 @@ def get_navidrome_repository() -> "NavidromeRepository":
 
 
 @singleton
+def get_navidrome_folder_preferences_store() -> "NavidromeFolderPreferencesStore":
+    from infrastructure.persistence.navidrome_folder_preferences_store import (
+        NavidromeFolderPreferencesStore,
+    )
+
+    from .cache_providers import get_persistence_write_lock
+
+    return NavidromeFolderPreferencesStore(
+        db_path=get_settings().library_db_path,
+        write_lock=get_persistence_write_lock(),
+    )
+
+
+@singleton
 def get_plex_repository() -> "PlexRepository":
     from repositories.plex_repository import PlexRepository
 

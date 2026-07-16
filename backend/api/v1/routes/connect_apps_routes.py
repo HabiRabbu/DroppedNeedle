@@ -17,6 +17,7 @@ from api.v1.schemas.connect_apps import (
     AppPasswordListResponse,
 )
 from api.v1.schemas.settings import ConnectAppsSettings
+from api.compat.common.ratelimit import compat_rate_limits
 from core.dependencies import get_app_password_service, get_preferences_service
 from core.exceptions import ConfigurationError, ConflictError, PermissionDeniedError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
@@ -99,6 +100,7 @@ async def revoke_app_password(
 ) -> None:
     try:
         await service.revoke(current_user.id, app_password_id)
+        compat_rate_limits.clear_principal(current_user.id)
     except PermissionDeniedError:
         # 404 (not 403) avoids leaking the id
         raise HTTPException(status_code=404, detail="App-password not found")
@@ -123,4 +125,5 @@ async def admin_revoke_app_password(
     service=Depends(get_app_password_service),
 ) -> None:
     # ResourceNotFoundError (unknown/already-revoked id) is handler-mapped to 404
-    await service.admin_revoke(current_admin.id, app_password_id)
+    owner_id = await service.admin_revoke(current_admin.id, app_password_id)
+    compat_rate_limits.clear_principal(owner_id)

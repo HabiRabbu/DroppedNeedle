@@ -20,6 +20,15 @@ from infrastructure.persistence.favorites_store import FavoritesStore
 
 
 @pytest.fixture(autouse=True)
+def _reset_compat_rate_limits():
+    from api.compat.common.ratelimit import compat_rate_limits
+
+    compat_rate_limits.reset()
+    yield
+    compat_rate_limits.reset()
+
+
+@pytest.fixture(autouse=True)
 def _crypto(tmp_path: Path) -> None:
     init_crypto(tmp_path / "config")
 
@@ -223,6 +232,16 @@ async def seeded_library(
                 title=title, artist="Radiohead", album="OK Computer",
                 track_number=trackno, album_artist="Radiohead", year=1997,
                 genre="Alternative Rock",
+                title_sort=f"{title}, The",
+                artist_sort="Radiohead",
+                album_sort="OK Computer",
+                album_artist_sort="Radiohead",
+                disc_subtitle="Main Album",
+                original_release_date="1997-05-21",
+                replaygain_track_gain=-7.25,
+                replaygain_album_gain=-6.5,
+                replaygain_track_peak=0.98,
+                replaygain_album_peak=0.99,
             ),
             AudioInfo(
                 duration_seconds=200.0 + trackno, bitrate=900, sample_rate=44100,
@@ -290,11 +309,17 @@ async def compat_env(
     from core.config import Settings
     from core import dependencies as deps
     from infrastructure.persistence.library_db import LibraryDB
+    from infrastructure.persistence.compat_bookmark_store import CompatBookmarkStore
+    from infrastructure.persistence.compat_play_queue_store import CompatPlayQueueStore
     from infrastructure.persistence.play_history_store import PlayHistoryStore
     from repositories.playlist_repository import PlaylistRepository
     from services.compat.compat_scrobble_adapter import CompatScrobbleAdapter
     from services.compat.discover_service import CompatDiscoverService
     from services.compat.library_view_service import LibraryViewService
+    from services.compat.bookmark_service import CompatBookmarkService
+    from services.compat.play_queue_service import CompatPlayQueueService
+    from services.compat.avatar_service import CompatAvatarService
+    from services.compat.playback_report_service import PlaybackReportService
     from services.playlist_service import PlaylistService
     from services.preferences_service import PreferencesService
     from services.scrobble_service import ScrobbleService
@@ -311,12 +336,12 @@ async def compat_env(
         ConnectAppsSettings(subsonic_enabled=True, jellyfin_enabled=True)
     )
 
-    view = LibraryViewService(_lm, db, cover, favorites_service)
+    phs = PlayHistoryStore(db_path=db_path, write_lock=write_lock)
+    view = LibraryViewService(_lm, db, cover, favorites_service, phs)
     playlists = PlaylistService(
         repo=PlaylistRepository(db_path=db_path, write_lock=write_lock),
         cache_dir=tmp_path, auth_store=auth_store, library_db=db,
     )
-    phs = PlayHistoryStore(db_path=db_path, write_lock=write_lock)
     listening_prefs = AsyncMock()
     listening_prefs.get = AsyncMock(return_value=SimpleNamespace(
         scrobble_to_lastfm=False, scrobble_to_listenbrainz=False))
@@ -337,6 +362,19 @@ async def compat_env(
         library_db=db, library_view_service=view, preferences_service=preferences,
         play_history_store=phs,
     )
+    play_queue = CompatPlayQueueService(CompatPlayQueueStore(db_path, write_lock))
+    bookmarks = CompatBookmarkService(CompatBookmarkStore(db_path, write_lock))
+    lyrics = AsyncMock()
+    lyrics.get = AsyncMock(return_value=None)
+    avatars = CompatAvatarService(tmp_path)
+    playback_report = PlaybackReportService(scrobble, view)
+    scan = AsyncMock()
+    scan.status = AsyncMock(return_value=(False, 0))
+    from services.compat.advanced_transcode_service import AdvancedTranscodeService
+
+    advanced_transcode = AdvancedTranscodeService()
+    transcode = AsyncMock()
+    local_files = AsyncMock()
 
     record, secret = await app_password_service.create("user-alice", "pytest client")
 
@@ -357,10 +395,18 @@ async def compat_env(
         deps.get_compat_scrobble_adapter: lambda: scrobble,
         deps.get_compat_discover_service: lambda: discover,
         deps.get_compat_id_map_service: lambda: compat_id_map_service,
-        deps.get_local_files_service: lambda: Mock(),
+        deps.get_local_files_service: lambda: local_files,
         deps.get_coverart_repository: lambda: cover,
         deps.get_preferences_service: lambda: preferences,
         deps.get_now_playing_service: lambda: now_playing,
+        deps.get_compat_play_queue_service: lambda: play_queue,
+        deps.get_compat_bookmark_service: lambda: bookmarks,
+        deps.get_native_lyrics_service: lambda: lyrics,
+        deps.get_compat_avatar_service: lambda: avatars,
+        deps.get_playback_report_service: lambda: playback_report,
+        deps.get_compat_scan_service: lambda: scan,
+        deps.get_advanced_transcode_service: lambda: advanced_transcode,
+        deps.get_transcode_service: lambda: transcode,
     }
     app.dependency_overrides.update(overrides)
     client = build_test_client(app)
@@ -369,4 +415,13 @@ async def compat_env(
         preferences=preferences, app=app, view=view, favorites=favorites_service,
         playlists=playlists, phs=phs, discover=discover,
         lm=_lm, db=db, id_map=compat_id_map_service, now_playing=now_playing,
+        play_queue=play_queue, bookmarks=bookmarks,
+        app_passwords=app_password_service,
+        lyrics=lyrics,
+        avatars=avatars, avatar_dir=tmp_path / "avatars",
+        playback_report=playback_report,
+        scan=scan,
+        auth_store=auth_store,
+        advanced_transcode=advanced_transcode, transcode=transcode,
+        local_files=local_files,
     )

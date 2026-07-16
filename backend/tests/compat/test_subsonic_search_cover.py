@@ -92,10 +92,9 @@ async def test_get_cover_art_artist_returns_image(compat_env):
     assert r.headers["content-type"].startswith("image/")
 
 
-async def test_get_cover_art_playlist_placeholder(compat_env):
+async def test_get_cover_art_unknown_playlist_is_404(compat_env):
     r = _get(compat_env, "getCoverArt", id="pl-anything")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("image/")
+    assert r.status_code == 404
 
 
 async def test_get_cover_art_unknown_prefix_404(compat_env):

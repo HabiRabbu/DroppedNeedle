@@ -9,6 +9,7 @@ from repositories.navidrome_models import (
     SubsonicAlbum,
     SubsonicArtist,
     SubsonicGenre,
+    SubsonicPlaylist,
     SubsonicSearchResult,
     SubsonicSong,
 )
@@ -24,6 +25,9 @@ def _make_service() -> tuple[NavidromeLibraryService, MagicMock]:
     repo.get_starred = AsyncMock(return_value=SubsonicSearchResult())
     repo.get_genres = AsyncMock(return_value=[])
     repo.search = AsyncMock(return_value=SubsonicSearchResult())
+    repo.search_songs = AsyncMock(return_value=[])
+    repo.get_playlists = AsyncMock(return_value=[])
+    repo.get_playlist = AsyncMock()
     prefs = MagicMock()
     prefs.get_advanced_settings.return_value = MagicMock()
     service = NavidromeLibraryService(navidrome_repo=repo, preferences_service=prefs)
@@ -110,6 +114,23 @@ class TestGetAlbumDetail:
         assert result.tracks[0].track_number == 1
         assert result.tracks[1].track_number == 2
 
+    @pytest.mark.asyncio
+    async def test_selected_scope_rejects_album_outside_folder(self):
+        service, repo = _make_service()
+        repo.get_album.return_value = _album(id="outside", name="Hidden")
+        repo.search.return_value = SubsonicSearchResult(album=[])
+
+        result = await service.get_album_detail("outside", ("folder-a",))
+
+        assert result is None
+        repo.search.assert_awaited_once_with(
+            "Hidden",
+            artist_count=0,
+            album_count=500,
+            song_count=0,
+            music_folder_ids=("folder-a",),
+        )
+
 
 class TestGetArtists:
     @pytest.mark.asyncio
@@ -145,6 +166,16 @@ class TestGetArtistDetail:
         result = await service.get_artist_detail("ar1")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_selected_scope_rejects_artist_outside_folder(self):
+        service, repo = _make_service()
+        repo.get_artists.return_value = [_artist(id="visible")]
+
+        result = await service.get_artist_detail("outside", ("folder-a",))
+
+        assert result is None
+        repo.get_artist.assert_not_awaited()
+
 
 class TestSearch:
     @pytest.mark.asyncio
@@ -171,7 +202,9 @@ class TestGetRecent:
         repo.get_album_list = AsyncMock(return_value=[_album(id="al1")])
         result = await service.get_recent(limit=5)
         assert len(result) == 1
-        repo.get_album_list.assert_awaited_once_with(type="recent", size=5, offset=0)
+        repo.get_album_list.assert_awaited_once_with(
+            type="recent", size=5, offset=0, music_folder_ids=None
+        )
 
 
 class TestGetFavorites:
@@ -199,6 +232,49 @@ class TestGetGenres:
         result = await service.get_genres()
         assert result == ["Rock", "Jazz"]
 
+    @pytest.mark.asyncio
+    async def test_selected_scope_derives_only_scoped_album_genres(self):
+        service, repo = _make_service()
+        repo.get_album_list.return_value = [
+            SubsonicAlbum(id="a", name="A", genre="Ambient"),
+            SubsonicAlbum(id="b", name="B", genre="Rock"),
+        ]
+
+        result = await service.get_genres(("folder-a",))
+
+        assert result == ["Ambient", "Rock"]
+        repo.get_genres.assert_not_awaited()
+
+
+class TestScopedPlaylists:
+    @pytest.mark.asyncio
+    async def test_playlist_spanning_folders_is_filtered_for_summary_and_detail(self):
+        service, repo = _make_service()
+        inside = _song(id="inside", duration=10)
+        outside = _song(id="outside", duration=20)
+        repo.search_songs.return_value = [inside]
+        repo.get_playlists.return_value = [
+            SubsonicPlaylist(id="p1", name="Mixed", songCount=2, duration=30)
+        ]
+        repo.get_playlist.return_value = SubsonicPlaylist(
+            id="p1",
+            name="Mixed",
+            songCount=2,
+            duration=30,
+            entry=[inside, outside],
+        )
+
+        summaries = await service.list_playlists(
+            music_folder_ids=("folder-a",)
+        )
+        detail = await service.get_playlist_detail("p1", ("folder-a",))
+
+        assert summaries[0].track_count == 1
+        assert summaries[0].duration_seconds == 10
+        assert [track.id for track in detail.tracks] == ["inside"]
+        assert detail.track_count == 1
+        assert detail.duration_seconds == 10
+
 
 class TestGetStats:
     @pytest.mark.asyncio
@@ -216,6 +292,32 @@ class TestGetStats:
 
 
 class TestAlbumMatch:
+    @pytest.mark.asyncio
+    async def test_scoped_reverse_index_match_scans_beyond_first_album_page(self):
+        service, repo = _make_service()
+        service._mbid_to_navidrome_id = {"mb-target": "nd-target"}
+        first_page = [_album(id=f"other-{index}") for index in range(500)]
+        repo.get_album_list = AsyncMock(
+            side_effect=[first_page, [_album(id="nd-target", mbid="mb-target")]]
+        )
+        repo.get_album = AsyncMock(
+            return_value=SubsonicAlbum(
+                id="nd-target",
+                name="Album",
+                musicBrainzId="mb-target",
+                song=[_song(id="song-target")],
+            )
+        )
+
+        result = await service.get_album_match(
+            "mb-target", "", "", music_folder_ids=("folder-a",)
+        )
+
+        assert result.found is True
+        assert result.navidrome_album_id == "nd-target"
+        assert repo.get_album_list.await_count == 2
+        repo.search.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_mbid_match(self):
         service, repo = _make_service()

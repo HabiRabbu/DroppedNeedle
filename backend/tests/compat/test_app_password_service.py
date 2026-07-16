@@ -109,6 +109,44 @@ async def test_invalid_apikey_is_44(app_password_service):
     assert e.value.code == 44
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code"),
+    [
+        ("u", "u" * 257, 40),
+        ("t", "t" * 129, 40),
+        ("s", "s" * 129, 40),
+        ("p", "p" * 2053, 40),
+        ("api_key", "k" * 1025, 44),
+        ("client", "c" * 257, 10),
+    ],
+)
+async def test_subsonic_auth_fields_are_bounded_before_lookup(
+    app_password_service, field, value, expected_code
+):
+    values = {
+        "u": "alice",
+        "t": None,
+        "s": None,
+        "p": "wrong",
+        "api_key": None,
+        "client": "client",
+    }
+    values[field] = value
+    if field == "api_key":
+        values["u"] = None
+        values["p"] = None
+    with pytest.raises(SubsonicError) as exc:
+        await app_password_service.verify_subsonic(**values)
+    assert exc.value.code == expected_code
+
+
+async def test_jellyfin_auth_fields_are_bounded(app_password_service):
+    with pytest.raises(PermissionDeniedError):
+        await app_password_service.authenticate_username_password(
+            "u" * 257, "p" * 1025, "c" * 257
+        )
+
+
 async def test_missing_required_param_is_10(app_password_service, app_password_store):
     await _seed_secret(app_password_store, "user-alice", "sesame")
     # only u, no t/s/p/apiKey -> 10

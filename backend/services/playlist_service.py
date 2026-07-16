@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import re
 from collections import defaultdict
@@ -420,6 +421,7 @@ class PlaylistService:
         local_service: object = None,
         nd_service: object = None,
         plex_service: object = None,
+        navidrome_folder_ids: tuple[str, ...] | None = None,
     ) -> PlaylistTrackRecord:
         await self._load_owned_or_raise(playlist_id, requesting)
         if source_type is not None and source_type not in _SOURCE_TYPE_ALIASES:
@@ -445,10 +447,13 @@ class PlaylistService:
             current_track = await self._repo.get_track(playlist_id, track_id)
             if current_track is None:
                 raise PlaylistNotFoundError(f"Track {track_id} not found in playlist {playlist_id}")
-            if normalized_source != current_track.source_type:
+            if normalized_source != current_track.source_type or (
+                normalized_source == "navidrome"
+                and navidrome_folder_ids is not None
+            ):
                 new_track_source_id, new_plex_rating_key = await self._resolve_new_source_id(
                     current_track, normalized_source, jf_service, local_service, nd_service,
-                    plex_service,
+                    plex_service, requesting.id, navidrome_folder_ids,
                 )
                 new_plex_rating_key_resolved = True
 
@@ -516,6 +521,7 @@ class PlaylistService:
         local_service: object = None,
         nd_service: object = None,
         plex_service: object = None,
+        navidrome_folder_ids: tuple[str, ...] | None = None,
     ) -> dict[str, list[str]]:
         # Ownership gates the user-triggered endpoint; the post-import background task
         # runs server-side as the importer (requesting=None) and skips the check (D2).
@@ -554,6 +560,8 @@ class PlaylistService:
                         representative.album_id, jf_service, local_service, nd_service, plex_service,
                         album_name=representative.album_name or "",
                         artist_name=representative.artist_name or "",
+                        user_id=requesting.id if requesting is not None else "background",
+                        navidrome_folder_ids=navidrome_folder_ids,
                     )
                 except Exception:  # noqa: BLE001
                     # Now that album groups resolve concurrently, one group failing
@@ -583,7 +591,10 @@ class PlaylistService:
         ) in zip(grouped, resolved_maps):
             for t in album_tracks:
                 sources = set()
-                if t.source_type:
+                if t.source_type and not (
+                    t.source_type == "navidrome"
+                    and navidrome_folder_ids is not None
+                ):
                     sources.add(t.source_type)
 
                 disc_key = (t.disc_number or 1, t.track_number)
@@ -608,7 +619,15 @@ class PlaylistService:
                 result[t.id] = sorted(sources)
 
         for t in no_album_tracks:
-            result[t.id] = [t.source_type] if t.source_type else []
+            result[t.id] = (
+                [t.source_type]
+                if t.source_type
+                and not (
+                    t.source_type == "navidrome"
+                    and navidrome_folder_ids is not None
+                )
+                else []
+            )
 
         persist_updates: dict[str, list[str]] = {}
         for t in tracks:
@@ -618,7 +637,7 @@ class PlaylistService:
             existing = set(t.available_sources) if t.available_sources else set()
             if set(resolved) >= existing and set(resolved) != existing:
                 persist_updates[t.id] = resolved
-        if persist_updates:
+        if persist_updates and navidrome_folder_ids is None:
             await self._repo.batch_update_available_sources(playlist_id, persist_updates)
         if file_links:
             await self._repo.batch_link_library_files(playlist_id, file_links)
@@ -634,8 +653,20 @@ class PlaylistService:
         plex_service: object = None,
         album_name: str = "",
         artist_name: str = "",
+        user_id: str = "global",
+        navidrome_folder_ids: tuple[str, ...] | None = None,
     ) -> tuple[dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str, str]]]:
-        cache_key = f"{SOURCE_RESOLUTION_PREFIX}:{album_id}"
+        scope_segment = "all"
+        if navidrome_folder_ids is not None:
+            scope_segment = "selected-empty"
+            if navidrome_folder_ids:
+                scope_segment = "selected-" + hashlib.sha256(
+                    "\0".join(navidrome_folder_ids).encode()
+                ).hexdigest()[:20]
+        cache_key = (
+            f"{SOURCE_RESOLUTION_PREFIX}:user:{user_id}:"
+            f"scope:{scope_segment}:{album_id}"
+        )
         if self._cache:
             cached = await self._cache.get(cache_key)
             if cached is not None:
@@ -686,6 +717,7 @@ class PlaylistService:
             try:
                 match = await nd_service.get_album_match(
                     album_id=album_id, album_name=album_name, artist_name=artist_name,
+                    music_folder_ids=navidrome_folder_ids,
                 )
                 if match.found:
                     for t in match.tracks:
@@ -721,6 +753,8 @@ class PlaylistService:
         local_service: object,
         nd_service: object = None,
         plex_service: object = None,
+        user_id: str = "global",
+        navidrome_folder_ids: tuple[str, ...] | None = None,
     ) -> tuple[str, str | None]:
         """Return (source_id, plex_rating_key_or_none)."""
         if not track.album_id or track.track_number is None:
@@ -732,6 +766,8 @@ class PlaylistService:
             track.album_id, jf_service, local_service, nd_service, plex_service,
             album_name=track.album_name or "",
             artist_name=track.artist_name or "",
+            user_id=user_id,
+            navidrome_folder_ids=navidrome_folder_ids,
         )
 
         disc_key = (track.disc_number or 1, track.track_number)

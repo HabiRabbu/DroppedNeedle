@@ -104,3 +104,39 @@ async def test_cascade_on_user_delete(store: PlayHistoryStore, tmp_path: Path):
     finally:
         conn.close()
     assert await store.recent("user-a") == []
+
+
+@pytest.mark.asyncio
+async def test_compat_stats_batches_tracks_albums_and_artists(store):
+    await store.insert(
+        "user-a",
+        track_name="Song",
+        artist_name="Artist",
+        album_name="Album",
+        recording_mbid="recording-1",
+        release_group_mbid="album-1",
+        played_at="2026-01-01T12:00:00+00:00",
+    )
+    await store.insert(
+        "user-a",
+        track_name="Song",
+        artist_name="Artist",
+        album_name="Album",
+        recording_mbid="recording-1",
+        release_group_mbid="album-1",
+        played_at="2026-01-02T12:00:00+00:00",
+    )
+
+    stats = await store.compat_stats(
+        "user-a",
+        recording_mbids=["recording-1"],
+        release_group_mbids=["album-1"],
+        artist_names=["Artist"],
+    )
+
+    assert stats["track"]["recording-1"] == (
+        2,
+        "2026-01-02T12:00:00+00:00",
+    )
+    assert stats["album"]["album-1"][0] == 2
+    assert stats["artist"]["Artist"][0] == 2

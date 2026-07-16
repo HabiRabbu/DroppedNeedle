@@ -14,6 +14,8 @@
 	import NowPlayingIndicator from '$lib/components/NowPlayingIndicator.svelte';
 	import { getCoverUrl } from '$lib/utils/errorHandling';
 	import { getLyricsQuery } from '$lib/queries/lyrics/LyricsQuery.svelte';
+	import { authStore } from '$lib/stores/authStore.svelte';
+	import { getNavidromeFolderScopeRevision } from '$lib/utils/navidromeLibraryCache';
 	import {
 		X,
 		Music,
@@ -40,7 +42,11 @@
 
 	let lyricsPanelOpen = $state(false);
 
-	const lyricsQuery = getLyricsQuery(() => playerStore.nowPlaying);
+	const lyricsQuery = getLyricsQuery(
+		() => playerStore.nowPlaying,
+		() => authStore.user?.id,
+		() => getNavidromeFolderScopeRevision(authStore.user?.id ?? '')
+	);
 
 	const supportsLyrics = $derived(lyricsQuery.isSuccess && lyricsQuery.data !== null);
 

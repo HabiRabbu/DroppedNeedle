@@ -73,6 +73,16 @@ _LIBRARY_FILE_VALUE_COLUMNS = (
     "tagged_at",
     "genre",
     "channels",
+    "track_sort_name",
+    "artist_sort_name",
+    "album_sort_name",
+    "album_artist_sort_name",
+    "disc_subtitle",
+    "original_release_date",
+    "replaygain_track_gain",
+    "replaygain_album_gain",
+    "replaygain_track_peak",
+    "replaygain_album_peak",
 )
 
 # SQL mirror of quality_tiers.tier_for (lossless extension set + kbps bands), ranked
@@ -100,9 +110,12 @@ _LIBRARY_FILE_FOLDED_COLUMNS = {
 }
 
 _ALBUM_AGG_SORTS = {
-    "recent": "last_imported_at DESC",
-    "title": "album_title COLLATE NOCASE ASC",
-    "artist": "album_artist_name COLLATE NOCASE ASC",
+    "recent": "last_imported_at DESC, release_group_mbid",
+    "oldest": "last_imported_at ASC, release_group_mbid",
+    "title": "album_title COLLATE NOCASE ASC, release_group_mbid",
+    "artist": "album_artist_name COLLATE NOCASE ASC, album_title COLLATE NOCASE ASC, release_group_mbid",
+    "year_asc": "year ASC, album_title COLLATE NOCASE ASC, release_group_mbid",
+    "year_desc": "year DESC, album_title COLLATE NOCASE ASC, release_group_mbid",
     "random": "RANDOM()",
 }
 
@@ -217,6 +230,69 @@ class LibraryDB(PersistenceBase):
         finally:
             conn.close()
 
+    async def get_library_revision(self) -> int:
+        """Millisecond revision advanced by imports, tag writes, and removals."""
+
+        def operation(conn: sqlite3.Connection) -> int:
+            row = conn.execute(
+                """
+                SELECT MAX(changed_at) AS revision
+                FROM (
+                    SELECT imported_at AS changed_at FROM library_files
+                    UNION ALL SELECT tagged_at FROM library_files
+                    UNION ALL SELECT deleted_at FROM library_files
+                )
+                """
+            ).fetchone()
+            return int(float(row["revision"] or 0) * 1000) if row else 0
+
+        return await self._read(operation)
+
+    async def existing_compat_ids(
+        self,
+        *,
+        artist_ids: list[str],
+        album_ids: list[str],
+        track_ids: list[str],
+    ) -> dict[str, set[str]]:
+        def selected(
+            conn: sqlite3.Connection, sql: str, values: list[str]
+        ) -> set[str]:
+            if not values:
+                return set()
+            placeholders = ", ".join("?" for _ in values)
+            rows = conn.execute(sql.format(placeholders=placeholders), values).fetchall()
+            return {str(row[0]) for row in rows}
+
+        def operation(conn: sqlite3.Connection) -> dict[str, set[str]]:
+            artists: set[str] = set()
+            if artist_ids:
+                placeholders = ", ".join("?" for _ in artist_ids)
+                rows = conn.execute(
+                    "SELECT DISTINCT artist_id FROM ("
+                    "SELECT artist_mbid AS artist_id FROM library_files "
+                    f"WHERE deleted_at IS NULL AND artist_mbid IN ({placeholders}) "
+                    "UNION SELECT album_artist_mbid AS artist_id FROM library_files "
+                    f"WHERE deleted_at IS NULL AND album_artist_mbid IN ({placeholders}))",
+                    (*artist_ids, *artist_ids),
+                ).fetchall()
+                artists = {str(row[0]) for row in rows}
+            albums = selected(
+                conn,
+                "SELECT DISTINCT release_group_mbid FROM library_files "
+                "WHERE deleted_at IS NULL AND release_group_mbid IN ({placeholders})",
+                album_ids,
+            )
+            tracks = selected(
+                conn,
+                "SELECT id FROM library_files "
+                "WHERE deleted_at IS NULL AND id IN ({placeholders})",
+                track_ids,
+            )
+            return {"artist": artists, "album": albums, "track": tracks}
+
+        return await self._read(operation)
+
     def _ensure_native_tables(self, conn: sqlite3.Connection) -> None:
         """DDL copied verbatim from plan.md §Database Schema."""
         conn.execute(
@@ -330,6 +406,21 @@ class LibraryDB(PersistenceBase):
         # (no separate backfill). Existing NULL rows fill on the next re-scan.
         _safe_alter(conn, "ALTER TABLE library_files ADD COLUMN genre TEXT")
         _safe_alter(conn, "ALTER TABLE library_files ADD COLUMN channels INTEGER")
+        for column, column_type in (
+            ("track_sort_name", "TEXT"),
+            ("artist_sort_name", "TEXT"),
+            ("album_sort_name", "TEXT"),
+            ("album_artist_sort_name", "TEXT"),
+            ("disc_subtitle", "TEXT"),
+            ("original_release_date", "TEXT"),
+            ("replaygain_track_gain", "REAL"),
+            ("replaygain_album_gain", "REAL"),
+            ("replaygain_track_peak", "REAL"),
+            ("replaygain_album_peak", "REAL"),
+        ):
+            _safe_alter(
+                conn, f"ALTER TABLE library_files ADD COLUMN {column} {column_type}"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_lf_genre ON library_files(genre) "
             "WHERE deleted_at IS NULL"
@@ -734,6 +825,10 @@ class LibraryDB(PersistenceBase):
         q: str | None = None,
         file_format: str | None = None,
         decade: int | None = None,
+        from_year: int | None = None,
+        to_year: int | None = None,
+        genre: str | None = None,
+        release_group_mbids: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Aggregation-on-read: group non-deleted files by release group.
 
@@ -760,6 +855,21 @@ class LibraryDB(PersistenceBase):
         if decade is not None:
             filters.append("lf.year >= ? AND lf.year <= ?")
             params.extend([decade, decade + 9])
+        if from_year is not None:
+            filters.append("lf.year >= ?")
+            params.append(from_year)
+        if to_year is not None:
+            filters.append("lf.year <= ?")
+            params.append(to_year)
+        if genre is not None:
+            filters.append("fold(lf.genre) = fold(?)")
+            params.append(genre)
+        if release_group_mbids is not None:
+            if not release_group_mbids:
+                return [], 0
+            placeholders = ", ".join("?" for _ in release_group_mbids)
+            filters.append(f"lf.release_group_mbid IN ({placeholders})")
+            params.extend(release_group_mbids)
         where = " AND ".join(filters)
 
         def operation(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], int]:
@@ -774,6 +884,9 @@ class LibraryDB(PersistenceBase):
                 SELECT lf.release_group_mbid AS release_group_mbid,
                        MAX(lf.album_title) AS album_title,
                        MAX(lf.album_artist_name) AS album_artist_name,
+                       MAX(lf.album_artist_mbid) AS album_artist_mbid,
+                       MAX(lf.album_sort_name) AS album_sort_name,
+                       MIN(lf.original_release_date) AS original_release_date,
                        MAX(lf.imported_at) AS last_imported_at,
                        COUNT(*) AS track_count,
                        SUM(lf.file_size_bytes) AS total_size_bytes,
@@ -839,8 +952,11 @@ class LibraryDB(PersistenceBase):
             rows = conn.execute(
                 f"""
                 SELECT lf.id, lf.track_title, lf.album_title, lf.artist_name,
-                       lf.album_artist_name, lf.release_group_mbid, lf.file_format,
+                       lf.artist_mbid, lf.album_artist_name, lf.album_artist_mbid,
+                       lf.release_group_mbid, lf.recording_mbid, lf.file_format,
                        lf.track_number, lf.disc_number, lf.duration_seconds,
+                       lf.year, lf.genre, lf.bit_rate, lf.sample_rate, lf.bit_depth,
+                       lf.channels, lf.file_size_bytes, lf.imported_at,
                        lam.cover_url
                 FROM library_files lf
                 LEFT JOIN library_album_meta lam
@@ -1139,6 +1255,24 @@ class LibraryDB(PersistenceBase):
                 "SELECT * FROM library_files WHERE id = ?", (file_id,)
             ).fetchone()
             return dict(row) if row is not None else None
+
+        return await self._read(operation)
+
+    async def get_library_files_by_ids(
+        self, file_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        ids = list(dict.fromkeys(file_ids))
+        if not ids:
+            return {}
+
+        def operation(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+            placeholders = ", ".join("?" for _ in ids)
+            rows = conn.execute(
+                f"SELECT * FROM library_files WHERE deleted_at IS NULL "
+                f"AND id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            return {str(row["id"]): dict(row) for row in rows}
 
         return await self._read(operation)
 

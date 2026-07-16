@@ -84,14 +84,18 @@ class TestNavidromeRandomSongs:
         assert len(tracks) == 2
         assert tracks[0].title == "Track A"
         assert tracks[1].navidrome_id == "s2"
-        repo.get_random_songs.assert_awaited_once_with(size=10, genre=None)
+        repo.get_random_songs.assert_awaited_once_with(
+            size=10, genre=None, music_folder_ids=None
+        )
 
     @pytest.mark.asyncio
     async def test_forwards_genre_filter(self):
         service, repo = _make_navidrome_service()
         repo.get_random_songs = AsyncMock(return_value=[_song()])
         await service.get_random_songs(size=5, genre="Rock")
-        repo.get_random_songs.assert_awaited_once_with(size=5, genre="Rock")
+        repo.get_random_songs.assert_awaited_once_with(
+            size=5, genre="Rock", music_folder_ids=None
+        )
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_error(self):
@@ -105,7 +109,9 @@ class TestNavidromeRandomSongs:
         service, repo = _make_navidrome_service()
         repo.get_random_songs = AsyncMock(return_value=[])
         await service.get_random_songs()
-        repo.get_random_songs.assert_awaited_once_with(size=20, genre=None)
+        repo.get_random_songs.assert_awaited_once_with(
+            size=20, genre=None, music_folder_ids=None
+        )
 
 
 class TestJellyfinInstantMix:

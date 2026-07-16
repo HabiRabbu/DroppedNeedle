@@ -45,7 +45,8 @@ async def test_get_similar_songs_file_structure(compat_env):
     assert len(res["song"]) == 2
 
 
-async def test_similar_songs_unknown_artist_is_empty_not_error(compat_env):
-    res = _sub(_get(compat_env, "getSimilarSongs2", id="ar-00000000000000000000000000000000"))
-    # empty result is OK (clients show empty list, never error)
-    assert res["similarSongs2"].get("song", []) == []
+async def test_similar_songs_rejects_unknown_artist(compat_env):
+    res = _sub(
+        _get(compat_env, "getSimilarSongs2", id="ar-00000000000000000000000000000000")
+    )
+    assert res["error"]["code"] == 70

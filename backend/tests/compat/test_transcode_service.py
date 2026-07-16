@@ -18,6 +18,7 @@ from services.compat.transcode_service import (
     out_media_type,
     out_suffix,
 )
+from services.compat.stream_concurrency import StreamConcurrencyService
 from services.compat.view_models import ViewTrack
 
 _HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
@@ -179,10 +180,10 @@ async def test_transcode_produces_decodable_mp3():
     src = Path(__file__).parent.parent / "fixtures" / "library" / "flac_full_01.flac"
     from services.compat.transcode_service import StreamPlan
 
-    svc = TranscodeService(asyncio.Semaphore(2))
+    svc = TranscodeService(StreamConcurrencyService())
     plan = StreamPlan(transcode=True, out_format="mp3", out_bitrate_kbps=128,
                       start_seconds=0, source_duration_seconds=0.3)
-    resp = svc.stream(str(src), plan)
+    resp = await svc.stream(str(src), plan, principal="user-1")
     assert resp.headers["Accept-Ranges"] == "none"
     assert resp.media_type == "audio/mpeg"
     body = b"".join([chunk async for chunk in resp.body_iterator])
@@ -205,14 +206,166 @@ async def test_disconnect_reaps_process():
     from services.compat.transcode_service import StreamPlan
     from core.exceptions import ClientDisconnectedError
 
-    svc = TranscodeService(asyncio.Semaphore(2))
+    svc = TranscodeService(StreamConcurrencyService())
     plan = StreamPlan(transcode=True, out_format="mp3", out_bitrate_kbps=128,
                       start_seconds=0)
 
     async def disconnected():
         return True  # client already gone
 
-    resp = svc.stream(str(src), plan, is_disconnected=disconnected)
+    resp = await svc.stream(
+        str(src), plan, principal="user-1", is_disconnected=disconnected
+    )
     with pytest.raises(ClientDisconnectedError):
         async for _ in resp.body_iterator:
             pass
+
+
+@pytest.mark.asyncio
+async def test_subprocess_start_failure_releases_transcode_slot(monkeypatch):
+    from services.compat.transcode_service import StreamPlan
+
+    concurrency = StreamConcurrencyService(transcode_global_limit=1)
+    svc = TranscodeService(concurrency)
+
+    async def fail_start(*_args, **_kwargs):
+        raise OSError("ffmpeg unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_start)
+    response = await svc.stream(
+        "/validated/input.flac",
+        StreamPlan(transcode=True, out_format="mp3", out_bitrate_kbps=128),
+        principal="alice",
+    )
+    with pytest.raises(OSError, match="ffmpeg unavailable"):
+        await anext(response.body_iterator)
+    assert concurrency.transcode.active == 0
+
+
+@pytest.mark.asyncio
+async def test_response_setup_failure_releases_transcode_slot(monkeypatch):
+    import services.compat.transcode_service as module
+    from services.compat.transcode_service import StreamPlan
+
+    concurrency = StreamConcurrencyService(transcode_global_limit=1)
+    svc = TranscodeService(concurrency)
+
+    def fail_build(*_args, **_kwargs):
+        raise ValueError("invalid plan")
+
+    monkeypatch.setattr(module, "build_cmd", fail_build)
+    with pytest.raises(ValueError, match="invalid plan"):
+        await svc.stream(
+            "/validated/input.flac",
+            StreamPlan(transcode=True, out_format="mp3", out_bitrate_kbps=128),
+            principal="alice",
+        )
+    assert concurrency.transcode.active == 0
+
+
+class _Pipe:
+    def __init__(self, chunks=None, wait_forever: bool = False):
+        self.chunks = list(chunks or [])
+        self.wait_forever = wait_forever
+
+    async def read(self, _size):
+        if self.wait_forever:
+            await asyncio.Event().wait()
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+class _Process:
+    def __init__(self, *, stdout, stderr=None, returncode=None):
+        self.stdout = stdout
+        self.stderr = stderr or _Pipe()
+        self.returncode = returncode
+        self.terminated = False
+
+    async def wait(self):
+        if self.returncode is None:
+            self.returncode = -15 if self.terminated else 0
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.returncode = -9
+
+
+@pytest.mark.asyncio
+async def test_cancelled_transcode_reaps_process_and_releases_slot(monkeypatch):
+    from services.compat.transcode_service import StreamPlan
+
+    concurrency = StreamConcurrencyService(transcode_global_limit=1)
+    svc = TranscodeService(concurrency)
+    process = _Process(stdout=_Pipe(wait_forever=True))
+
+    async def start(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    response = await svc.stream(
+        "/validated/input.flac",
+        StreamPlan(transcode=True, out_format="mp3", out_bitrate_kbps=128),
+        principal="alice",
+    )
+    consume = asyncio.create_task(anext(response.body_iterator))
+    await asyncio.sleep(0)
+    consume.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consume
+    assert process.terminated is True
+    assert concurrency.transcode.active == 0
+
+
+@pytest.mark.asyncio
+async def test_transcode_read_timeout_reaps_process_and_releases_slot(monkeypatch):
+    import services.compat.transcode_service as module
+    from services.compat.transcode_service import StreamPlan
+
+    concurrency = StreamConcurrencyService(transcode_global_limit=1)
+    svc = TranscodeService(concurrency)
+    process = _Process(stdout=_Pipe(wait_forever=True))
+
+    async def start(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    monkeypatch.setattr(module, "_READ_TIMEOUT_S", 0.01)
+    response = await svc.stream(
+        "/validated/input.flac",
+        StreamPlan(transcode=True, out_format="mp3", out_bitrate_kbps=128),
+        principal="alice",
+    )
+    with pytest.raises(TimeoutError):
+        await anext(response.body_iterator)
+    assert process.terminated is True
+    assert concurrency.transcode.active == 0
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_stderr_is_drained_but_capture_is_bounded(monkeypatch, caplog):
+    from services.compat.transcode_service import StreamPlan
+
+    concurrency = StreamConcurrencyService(transcode_global_limit=1)
+    svc = TranscodeService(concurrency)
+    process = _Process(
+        stdout=_Pipe(), stderr=_Pipe([b"x" * 5000]), returncode=1
+    )
+
+    async def start(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    response = await svc.stream(
+        "/validated/private/input.flac",
+        StreamPlan(transcode=True, out_format="mp3", out_bitrate_kbps=128),
+        principal="alice",
+    )
+    with caplog.at_level("WARNING"):
+        assert b"".join([chunk async for chunk in response.body_iterator]) == b""
+    message = next(record.message for record in caplog.records if "ffmpeg exited" in record.message)
+    assert len(message) < 2100
+    assert "/validated/private/input.flac" not in message
+    assert concurrency.transcode.active == 0

@@ -18,9 +18,30 @@ from api.v1.schemas.navidrome import (
     NavidromeAlbumPage,
 )
 from api.v1.schemas.jellyfin import JellyfinFavoritesExpanded
-from core.dependencies import get_navidrome_library_service, get_jellyfin_library_service
+from core.dependencies import (
+    get_jellyfin_library_service,
+    get_navidrome_folder_scope_service,
+    get_navidrome_library_service,
+)
 from core.exceptions import ExternalServiceError
+from infrastructure.persistence.navidrome_folder_preferences_store import (
+    NavidromeFolderPreference,
+)
 from repositories.navidrome_models import SubsonicLyrics, SubsonicLyricLine
+from services.navidrome_folder_scope_service import (
+    NavidromeFolderResolution,
+    NavidromeFolderScope,
+)
+from tests.helpers import override_user_auth
+
+
+def _all_folder_scope_service() -> AsyncMock:
+    service = AsyncMock()
+    service.resolve.return_value = NavidromeFolderResolution(
+        preference=NavidromeFolderPreference("all", (), "server-1", 1.0),
+        scope=NavidromeFolderScope("all", ()),
+    )
+    return service
 
 
 def _navidrome_app(mock_service) -> TestClient:
@@ -28,6 +49,10 @@ def _navidrome_app(mock_service) -> TestClient:
     app = FastAPI()
     app.include_router(navidrome_router)
     app.dependency_overrides[get_navidrome_library_service] = lambda: mock_service
+    app.dependency_overrides[get_navidrome_folder_scope_service] = (
+        _all_folder_scope_service
+    )
+    override_user_auth(app)
     return TestClient(app)
 
 
@@ -56,7 +81,7 @@ class TestNavidromeArtistIndexRouteOrder:
         resp = client.get("/navidrome/artists/index")
         assert resp.status_code == 200
         assert "index" in resp.json()
-        mock.get_artists_index.assert_awaited_once()
+        mock.get_artists_index.assert_awaited_once_with(None)
         mock.get_artist_detail = AsyncMock()
         mock.get_artist_detail.assert_not_awaited()
 
@@ -69,7 +94,7 @@ class TestNavidromeArtistIndexRouteOrder:
         client = _navidrome_app(mock)
         resp = client.get("/navidrome/artists/real-id")
         assert resp.status_code == 200
-        mock.get_artist_detail.assert_awaited_once_with("real-id")
+        mock.get_artist_detail.assert_awaited_once_with("real-id", None)
 
 
 class TestNavidromeByYearSort:

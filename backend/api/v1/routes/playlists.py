@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
@@ -23,7 +25,7 @@ from api.v1.schemas.playlists import (
     UpdateTrackRequest,
 )
 from api.v1.schemas.request import BatchRequestResponse
-from core.dependencies import JellyfinLibraryServiceDep, LocalFilesServiceDep, NavidromeLibraryServiceDep, PlexLibraryServiceDep, PlaylistServiceDep, get_request_service
+from core.dependencies import JellyfinLibraryServiceDep, LocalFilesServiceDep, NavidromeLibraryServiceDep, PlexLibraryServiceDep, PlaylistServiceDep, get_navidrome_folder_scope_service, get_request_service
 from core.dependencies.type_aliases import CurrentUserDep
 from core.exceptions import PlaylistNotFoundError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
@@ -32,12 +34,28 @@ from services.playlist_service import (
     RedactedDetailView,
     RedactedSummaryView,
 )
+from services.navidrome_folder_scope_service import NavidromeFolderScopeService
 
 router = APIRouter(
     route_class=MsgSpecRoute,
     prefix="/playlists",
     tags=["playlists"],
 )
+
+
+async def _get_user_navidrome_folder_ids(
+    current_user: CurrentUserDep,
+    scope_service: NavidromeFolderScopeService = Depends(
+        get_navidrome_folder_scope_service
+    ),
+) -> tuple[str, ...] | None:
+    resolution = await scope_service.resolve(current_user.id)
+    return None if resolution.scope.mode == "all" else resolution.scope.folder_ids
+
+
+UserNavidromeFolderIdsDep = Annotated[
+    tuple[str, ...] | None, Depends(_get_user_navidrome_folder_ids)
+]
 
 
 def _normalize_cover_url(url: str | None) -> str | None:
@@ -306,6 +324,7 @@ async def update_track(
     track_id: str,
     service: PlaylistServiceDep,
     current_user: CurrentUserDep,
+    navidrome_folder_ids: UserNavidromeFolderIdsDep,
     jf_service: JellyfinLibraryServiceDep,
     local_service: LocalFilesServiceDep,
     nd_service: NavidromeLibraryServiceDep,
@@ -320,6 +339,7 @@ async def update_track(
         local_service=local_service,
         nd_service=nd_service,
         plex_service=plex_service,
+        navidrome_folder_ids=navidrome_folder_ids,
     )
     return _track_to_response(result)
 
@@ -332,6 +352,7 @@ async def resolve_sources(
     playlist_id: str,
     service: PlaylistServiceDep,
     current_user: CurrentUserDep,
+    navidrome_folder_ids: UserNavidromeFolderIdsDep,
     jf_service: JellyfinLibraryServiceDep,
     local_service: LocalFilesServiceDep,
     nd_service: NavidromeLibraryServiceDep,
@@ -340,6 +361,7 @@ async def resolve_sources(
     sources = await service.resolve_track_sources(
         playlist_id, requesting=current_user, jf_service=jf_service, local_service=local_service,
         nd_service=nd_service, plex_service=plex_service,
+        navidrome_folder_ids=navidrome_folder_ids,
     )
     return ResolveSourcesResponse(sources=sources)
 

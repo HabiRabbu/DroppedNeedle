@@ -157,6 +157,41 @@ async def test_jellyfin_settings_change_clears_user_import_service():
 
 
 @pytest.mark.asyncio(loop_scope="function")
+async def test_navidrome_settings_change_rebuilds_every_captured_repository():
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    service, _cache = await _build_service()
+    mbid = MagicMock()
+    mbid.clear_navidrome_mbid_indexes = AsyncMock()
+    new_repo = MagicMock()
+    new_repo.clear_cache = AsyncMock()
+    providers = {
+        name: MagicMock()
+        for name in (
+            "get_navidrome_library_service",
+            "get_navidrome_folder_scope_service",
+            "get_navidrome_playback_service",
+            "get_library_service",
+            "get_home_service",
+            "get_home_charts_service",
+        )
+    }
+    repository = MagicMock(return_value=new_repo)
+
+    with (
+        patch("core.dependencies.get_navidrome_repository", repository),
+        patch("core.dependencies.get_mbid_store", MagicMock(return_value=mbid)),
+        patch.multiple("core.dependencies", **providers),
+    ):
+        await service.on_navidrome_settings_changed(enabled=False)
+
+    repository.cache_clear.assert_called_once()
+    for provider in providers.values():
+        provider.cache_clear.assert_called_once()
+    new_repo.clear_cache.assert_awaited_once()
+
+
+@pytest.mark.asyncio(loop_scope="function")
 async def test_plex_settings_change_clears_user_import_service():
     """Phase 6: configuring Plex must rebuild the import service singleton too."""
     from unittest.mock import patch, MagicMock, AsyncMock

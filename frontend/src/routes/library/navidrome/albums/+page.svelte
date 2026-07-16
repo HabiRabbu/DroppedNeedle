@@ -27,6 +27,12 @@
 		NavidromeLibraryStats,
 		NavidromeTrackInfo
 	} from '$lib/types';
+	import { authStore } from '$lib/stores/authStore.svelte';
+	import { getNavidromeFolderPreferenceQuery } from '$lib/queries/navidrome-folders/NavidromeFolderQueries.svelte';
+
+	const userId = authStore.user?.id ?? '';
+	const folderPreferenceQuery = getNavidromeFolderPreferenceQuery(() => userId);
+	const scopeRevision = $derived(folderPreferenceQuery.data?.scope_revision ?? 'unresolved');
 
 	const adapter: LibraryAdapter<NavidromeAlbumSummary> = {
 		sourceType: 'navidrome',
@@ -120,11 +126,12 @@
 			});
 		},
 
-		getAlbumsListCached: (key) => getNavidromeAlbumsListCachedData(key),
-		setAlbumsListCached: (key, data) => setNavidromeAlbumsListCachedData(data, key),
+		getAlbumsListCached: (key) => getNavidromeAlbumsListCachedData(userId, scopeRevision, key),
+		setAlbumsListCached: (key, data) =>
+			setNavidromeAlbumsListCachedData(data, userId, scopeRevision, key),
 		isAlbumsListCacheStale: (ts) => isNavidromeAlbumsListCacheStale(ts),
 		getSidebarCached: () => {
-			const c = getNavidromeSidebarCachedData();
+			const c = getNavidromeSidebarCachedData(userId, scopeRevision);
 			if (!c) return null;
 			return {
 				data: {
@@ -137,12 +144,16 @@
 			};
 		},
 		setSidebarCached: (data) =>
-			setNavidromeSidebarCachedData({
-				recentAlbums: data.recentAlbums,
-				favoriteAlbums: data.favoriteAlbums,
-				genres: data.genres,
-				stats: data.stats as NavidromeLibraryStats | null
-			}),
+			setNavidromeSidebarCachedData(
+				{
+					recentAlbums: data.recentAlbums,
+					favoriteAlbums: data.favoriteAlbums,
+					genres: data.genres,
+					stats: data.stats as NavidromeLibraryStats | null
+				},
+				userId,
+				scopeRevision
+			),
 		isSidebarCacheStale: (ts) => isNavidromeSidebarCacheStale(ts),
 
 		sortOptions: [

@@ -6,6 +6,8 @@ filled only when a user context is supplied.
 
 from __future__ import annotations
 
+import msgspec
+
 from infrastructure.msgspec_fastapi import AppStruct
 
 
@@ -15,6 +17,8 @@ class ViewArtist(AppStruct):
     album_count: int | None = None
     date_added: int | None = None      # unix seconds
     starred_at: float | None = None    # per-user
+    play_count: int | None = None
+    played_at: str | None = None
 
 
 class ViewAlbum(AppStruct):
@@ -31,6 +35,10 @@ class ViewAlbum(AppStruct):
     is_compilation: bool = False
     starred_at: float | None = None    # per-user
     play_count: int | None = None      # per-user (optional)
+    played_at: str | None = None
+    sort_name: str | None = None
+    original_release_date: str | None = None
+    disc_titles: list[tuple[int, str]] = msgspec.field(default_factory=list)
 
 
 class ViewTrack(AppStruct):
@@ -58,6 +66,17 @@ class ViewTrack(AppStruct):
     created_at: float | None = None    # unix seconds (imported_at)
     starred_at: float | None = None    # per-user
     play_count: int | None = None      # per-user
+    played_at: str | None = None
+    sort_name: str | None = None
+    artist_sort_name: str | None = None
+    album_artist_sort_name: str | None = None
+    album_sort_name: str | None = None
+    disc_subtitle: str | None = None
+    original_release_date: str | None = None
+    replaygain_track_gain: float | None = None
+    replaygain_album_gain: float | None = None
+    replaygain_track_peak: float | None = None
+    replaygain_album_peak: float | None = None
 
 
 class ViewPlaylist(AppStruct):

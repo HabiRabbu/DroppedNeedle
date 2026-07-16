@@ -12,8 +12,16 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from api.compat.common.deps import CompatServices, get_compat_services
+from api.compat.common.ratelimit import (
+    compat_rate_limits,
+    is_media_request,
+    is_mutation_request,
+    reject_jellyfin,
+    trusted_client_ip,
+)
 from api.compat.jellyfin import models as jm
 from api.compat.jellyfin.auth import (
     extract_client,
@@ -28,7 +36,11 @@ from api.compat.jellyfin.serialization import (
     jellyfin_response,
     no_content,
 )
-from core.exceptions import DroppedNeedleException, ExternalServiceError, JellyfinError
+from core.exceptions import (
+    DroppedNeedleException,
+    JellyfinError,
+    RangeNotSatisfiableError,
+)
 from infrastructure.constants import JELLYFIN_TICKS_PER_SECOND
 from infrastructure.msgspec_fastapi import MsgSpecRoute
 
@@ -55,16 +67,48 @@ async def _handle(
     auth: bool = True,
     **extra,
 ) -> Response:
+    client_ip = trusted_client_ip(request)
     try:
         settings = services.preferences.get_connect_apps_settings()
         if not settings.jellyfin_enabled:
             raise JellyfinError(404, "Jellyfin API is disabled")
-        user = await resolve_user(request, services.app_passwords) if auth else None
+        user = None
+        if auth:
+            retry_after = compat_rate_limits.auth_failure_retry_after(client_ip)
+            if retry_after is not None:
+                return reject_jellyfin(retry_after)
+            try:
+                user = await resolve_user(request, services.app_passwords)
+            except JellyfinError as exc:
+                if exc.status == 401:
+                    retry_after = compat_rate_limits.record_auth_failure(client_ip)
+                    if retry_after is not None:
+                        return reject_jellyfin(retry_after)
+                raise
+            if not is_media_request(request.url.path):
+                retry_after = await compat_rate_limits.principal_retry_after(
+                    user.id,
+                    mutation=is_mutation_request(request.method, request.url.path),
+                )
+                if retry_after is not None:
+                    return reject_jellyfin(retry_after)
+        elif fn is _authenticate:
+            retry_after = compat_rate_limits.auth_failure_retry_after(client_ip)
+            if retry_after is not None:
+                return reject_jellyfin(retry_after)
+        elif not is_media_request(request.url.path):
+            retry_after = await compat_rate_limits.public_retry_after(client_ip)
+            if retry_after is not None:
+                return reject_jellyfin(retry_after)
         result = fn(request, services, user, **extra)
         if inspect.isawaitable(result):
             result = await result
         return _to_response(result)
     except Exception as exc:  # noqa: BLE001 - boundary: never reach global handlers
+        if fn is _authenticate and isinstance(exc, JellyfinError) and exc.status == 401:
+            retry_after = compat_rate_limits.record_auth_failure(client_ip)
+            if retry_after is not None:
+                return reject_jellyfin(retry_after)
         if not isinstance(exc, DroppedNeedleException):
             logger.exception("Unhandled error in Jellyfin handler %s", getattr(fn, "__name__", fn))
         status, body = to_jellyfin_status(exc)
@@ -678,20 +722,42 @@ def _audio_stream_model(track) -> jm.MediaStream:
 
 
 async def _serve_direct(services, file_id, request) -> Response:
+    from services.compat.stream_concurrency import StreamCapacityError, leased_chunks
+
     range_header = request.headers.get("Range")
     try:
         chunks, headers, status = await services.local_files.stream_track(
             file_id, range_header=range_header
         )
-    except ExternalServiceError as exc:
-        if "Range not satisfiable" in str(exc):
-            return Response(status_code=416)
-        raise
+    except RangeNotSatisfiableError as exc:
+        return Response(
+            status_code=416,
+            headers={"Content-Range": f"bytes */{exc.file_size}"},
+        )
+    principal = await _media_principal(request, services)
+    try:
+        lease = await services.stream_concurrency.acquire_direct(principal)
+    except StreamCapacityError:
+        return Response(status_code=429, headers={"Retry-After": "1"})
     out = {**headers, "Content-Encoding": "identity"}  # keep GZip off audio (05 s10)
-    return StreamingResponse(
-        chunks, status_code=status, headers=out,
-        media_type=headers.get("Content-Type", "application/octet-stream"),
-    )
+    try:
+        return StreamingResponse(
+            leased_chunks(chunks, lease), status_code=status, headers=out,
+            media_type=headers.get("Content-Type", "application/octet-stream"),
+            background=BackgroundTask(lease.release),
+        )
+    except BaseException:
+        await lease.release()
+        raise
+
+
+async def _media_principal(request, services) -> str:
+    token = extract_token(request)
+    if token:
+        user = await services.app_passwords.verify_token(token)
+        if user is not None:
+            return user.id
+    return f"ip:{trusted_client_ip(request)}"
 
 
 async def _stream_decided(request, services, internal, *, req_fmt, max_kbps, start_s, force):
@@ -709,9 +775,15 @@ async def _stream_decided(request, services, internal, *, req_fmt, max_kbps, sta
     if not plan.transcode:
         return await _serve_direct(services, internal, request)
     path = await services.local_files.resolve_validated_path(internal)
-    return services.transcode.stream(
-        str(path), plan, is_disconnected=request.is_disconnected, estimate=False
-    )
+    from services.compat.stream_concurrency import StreamCapacityError
+
+    try:
+        return await services.transcode.stream(
+            str(path), plan, principal=await _media_principal(request, services),
+            is_disconnected=request.is_disconnected, estimate=False,
+        )
+    except StreamCapacityError:
+        return Response(status_code=429, headers={"Retry-After": "1"})
 
 
 async def _decode_track(services, item_id) -> str:

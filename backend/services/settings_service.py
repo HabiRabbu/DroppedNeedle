@@ -207,13 +207,16 @@ class SettingsService:
         from repositories.navidrome_repository import NavidromeRepository
         from core.dependencies import (
             get_navidrome_repository, get_navidrome_library_service,
-            get_navidrome_playback_service, get_home_service,
+            get_navidrome_folder_scope_service, get_navidrome_playback_service,
+            get_library_service, get_home_service,
             get_home_charts_service, get_mbid_store,
         )
         NavidromeRepository.reset_circuit_breaker()
         get_navidrome_repository.cache_clear()
         get_navidrome_library_service.cache_clear()
+        get_navidrome_folder_scope_service.cache_clear()
         get_navidrome_playback_service.cache_clear()
+        get_library_service.cache_clear()
         get_home_service.cache_clear()
         get_home_charts_service.cache_clear()
         mbid_store = get_mbid_store()

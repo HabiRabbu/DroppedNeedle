@@ -137,6 +137,19 @@ async def test_stream_is_anonymous_like_real_jellyfin(streaming_env):
     assert r.content == streaming_env.raw
 
 
+async def test_anonymous_stream_ranges_are_exempt_from_public_limiter(streaming_env):
+    from api.compat.common.ratelimit import compat_rate_limits
+
+    compat_rate_limits.reset()
+    path = f"/jellyfin/Audio/{streaming_env.jf_track_id}/stream"
+    responses = [
+        streaming_env.client.get(path, headers={"Range": "bytes=0-0"})
+        for _ in range(25)
+    ]
+    assert all(response.status_code == 206 for response in responses)
+    assert all(response.content == streaming_env.raw[:1] for response in responses)
+
+
 async def test_stream_head(streaming_env):
     r = streaming_env.client.head(
         f"/jellyfin/Audio/{streaming_env.jf_track_id}/stream",

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 from typing import TYPE_CHECKING
 
-from api.v1.schemas.scrobble import NowPlayingRequest, ScrobbleRequest
+from api.v1.schemas.scrobble import NowPlayingRequest, ScrobbleRequest, ScrobbleResponse
 from core.exceptions import ResourceNotFoundError
 
 if TYPE_CHECKING:
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _START_TTL_SECONDS = 2 * 60 * 60  # a stuck session can't leak its start time
+_MIXED_REPORT_DEDUP_SECONDS = 5
+_MIXED_REPORT_DEDUP_MAX = 1_000
 
 
 def _norm_client(client: str | None) -> str | None:
@@ -45,10 +48,16 @@ class CompatScrobbleAdapter:
         self._presence = now_playing_service
         # (user_id, ItemId|PlaySessionId) -> started_at unix
         self._starts: dict[tuple[str, str], float] = {}
+        self._recent_submissions: OrderedDict[tuple[str, str, str], float] = (
+            OrderedDict()
+        )
 
     async def now_playing(
         self, file_id: str, *, user_id: str, client: str | None, user_name: str = ""
     ) -> "ScrobbleResponse":
+        self._recent_submissions.pop(
+            (user_id, _norm_client(client) or "", file_id), None
+        )
         track = await self._resolve(file_id)
         req = NowPlayingRequest(
             track_name=track.title,
@@ -103,6 +112,13 @@ class CompatScrobbleAdapter:
         played_at: float | None = None,
         user_name: str = "",
     ) -> "ScrobbleResponse":
+        source = _norm_client(client)
+        dedup_key = (user_id, source or "", file_id)
+        now = time.time()
+        self._evict_recent_submissions(now)
+        if played_at is None and dedup_key in self._recent_submissions:
+            await self._clear_presence(user_id, source)
+            return ScrobbleResponse(accepted=True, services={})
         track = await self._resolve(file_id)
         ts = int(played_at if played_at is not None else time.time())
         req = ScrobbleRequest(
@@ -112,13 +128,25 @@ class CompatScrobbleAdapter:
             album_name=track.album_title,
             duration_ms=round(track.duration_seconds * 1000),
             mbid=track.recording_mbid,
-            source=_norm_client(client),
+            source=source,
             release_group_mbid=track.rg_mbid,
         )
         result = await self._scrobble.submit_scrobble(req, user_id=user_id)
+        if played_at is None:
+            self._recent_submissions[dedup_key] = now
+            while len(self._recent_submissions) > _MIXED_REPORT_DEDUP_MAX:
+                self._recent_submissions.popitem(last=False)
         # the track finished/stopped, so the session is no longer "now playing"
-        await self._clear_presence(user_id, _norm_client(client))
+        await self._clear_presence(user_id, source)
         return result
+
+    def _evict_recent_submissions(self, now: float) -> None:
+        cutoff = now - _MIXED_REPORT_DEDUP_SECONDS
+        while self._recent_submissions:
+            key, submitted_at = next(iter(self._recent_submissions.items()))
+            if submitted_at >= cutoff:
+                break
+            self._recent_submissions.pop(key, None)
 
     async def clear_presence(self, user_id: str, client: str | None) -> None:
         """Drop a client's now-playing presence (called on stop, any reason)."""

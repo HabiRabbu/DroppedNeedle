@@ -605,6 +605,7 @@ def get_library_service() -> "LibraryService":
         local_files_service=local_files_service,
         jellyfin_library_service=jellyfin_library_service,
         navidrome_library_service=navidrome_library_service,
+        navidrome_folder_scope_service=get_navidrome_folder_scope_service(),
         sync_state_store=sync_state_store,
         genre_index=genre_index,
     )
@@ -969,6 +970,20 @@ def get_navidrome_library_service() -> "NavidromeLibraryService":
     library_db = get_library_db()
     mbid_store = get_mbid_store()
     return NavidromeLibraryService(navidrome_repo, preferences_service, library_db, mbid_store)
+
+
+@singleton
+def get_navidrome_folder_scope_service() -> "NavidromeFolderScopeService":
+    from services.navidrome_folder_scope_service import NavidromeFolderScopeService
+
+    from .repo_providers import (
+        get_navidrome_folder_preferences_store,
+        get_navidrome_repository,
+    )
+
+    return NavidromeFolderScopeService(
+        get_navidrome_folder_preferences_store(), get_navidrome_repository()
+    )
 
 
 @singleton

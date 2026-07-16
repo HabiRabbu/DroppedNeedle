@@ -189,10 +189,11 @@ async def remove_album(
 
 @router.post("/resolve-tracks", response_model=TrackResolveResponse)
 async def resolve_tracks(
+    current_user: CurrentUserDep,
     body: TrackResolveRequest = MsgSpecBody(TrackResolveRequest),
     library_service: LibraryService = Depends(get_library_service),
 ):
-    return await library_service.resolve_tracks_batch(body.items)
+    return await library_service.resolve_tracks_batch(body.items, current_user.id)
 
 
 @router.get("/albums/{mbid}/tracks", response_model=NativeTracksResponse)

@@ -6,7 +6,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.v1.routes.navidrome_library import router as library_router
+from api.v1.routes.navidrome_library import (
+    _get_user_music_folder_ids,
+    router as library_router,
+)
 from api.v1.routes.stream import router as stream_router
 from api.v1.schemas.navidrome import (
     NavidromeAlbumDetail,
@@ -17,9 +20,20 @@ from api.v1.schemas.navidrome import (
     NavidromeSearchResponse,
     NavidromeTrackInfo,
 )
-from core.dependencies import get_navidrome_library_service, get_navidrome_playback_service
+from core.dependencies import (
+    get_navidrome_folder_scope_service,
+    get_navidrome_library_service,
+    get_navidrome_playback_service,
+)
 from core.exceptions import ExternalServiceError
 from infrastructure.resilience.retry import CircuitOpenError
+from infrastructure.persistence.navidrome_folder_preferences_store import (
+    NavidromeFolderPreference,
+)
+from services.navidrome_folder_scope_service import (
+    NavidromeFolderResolution,
+    NavidromeFolderScope,
+)
 from tests.helpers import override_user_auth
 
 
@@ -73,6 +87,8 @@ def library_client(mock_library_service):
     app = FastAPI()
     app.include_router(library_router)
     app.dependency_overrides[get_navidrome_library_service] = lambda: mock_library_service
+    app.dependency_overrides[_get_user_music_folder_ids] = lambda: None
+    override_user_auth(app)
     return TestClient(app)
 
 
@@ -176,6 +192,46 @@ class TestLibrarySearch:
     def test_search_missing_query(self, library_client):
         resp = library_client.get("/navidrome/search")
         assert resp.status_code == 422
+
+    def test_two_users_receive_only_their_selected_folder_scope(self):
+        scope_service = AsyncMock()
+
+        async def resolve(user_id):
+            folder_id = "folder-a" if user_id == "alice" else "folder-b"
+            preference = NavidromeFolderPreference(
+                "selected", (folder_id,), "server-1", 1.0
+            )
+            return NavidromeFolderResolution(
+                preference=preference,
+                scope=NavidromeFolderScope("selected", (folder_id,)),
+            )
+
+        scope_service.resolve.side_effect = resolve
+        service = MagicMock()
+
+        async def search(_query, folder_ids):
+            track_id = "track-a" if folder_ids == ("folder-a",) else "track-b"
+            return NavidromeSearchResponse(tracks=[_track_info(track_id)])
+
+        service.search = AsyncMock(side_effect=search)
+
+        def client_for(user_id):
+            app = FastAPI()
+            app.include_router(library_router)
+            app.dependency_overrides[get_navidrome_library_service] = lambda: service
+            app.dependency_overrides[get_navidrome_folder_scope_service] = (
+                lambda: scope_service
+            )
+            override_user_auth(app, user_id=user_id)
+            return TestClient(app)
+
+        alice = client_for("alice").get("/navidrome/search?q=song").json()
+        bob = client_for("bob").get("/navidrome/search?q=song").json()
+
+        assert [track["navidrome_id"] for track in alice["tracks"]] == ["track-a"]
+        assert [track["navidrome_id"] for track in bob["tracks"]] == ["track-b"]
+        assert service.search.await_args_list[0].args[1] == ("folder-a",)
+        assert service.search.await_args_list[1].args[1] == ("folder-b",)
 
 
 class TestLibraryRecent:

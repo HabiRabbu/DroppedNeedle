@@ -21,6 +21,7 @@ from core.dependencies import (
     get_jellyfin_library_service,
     get_local_files_service,
     get_navidrome_library_service,
+    get_compat_avatar_service,
 )
 from core.dependencies.auth_providers import get_auth_service
 from core.config import get_settings
@@ -32,6 +33,7 @@ from services.preferences_service import PreferencesService
 from services.jellyfin_library_service import JellyfinLibraryService
 from services.local_files_service import LocalFilesService
 from services.navidrome_library_service import NavidromeLibraryService
+from services.compat.avatar_service import CompatAvatarService
 
 logger = logging.getLogger(__name__)
 
@@ -276,18 +278,21 @@ async def upload_avatar(
 
 
 @router.get("/avatar/{user_id}")
-async def get_avatar(user_id: str, current_user: CurrentUserDep):
+async def get_avatar(
+    user_id: str,
+    current_user: CurrentUserDep,
+    avatars: CompatAvatarService = Depends(get_compat_avatar_service),
+):
     # Self-or-admin (D9): admins read any user's avatar so the admin user list renders.
     if current_user.id != user_id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    avatar_dir = _get_avatar_dir()
-    for ext, media_type in _MEDIA_TYPE_BY_EXT.items():
-        file_path = avatar_dir / f"{user_id}{ext}"
-        if file_path.exists():
-            return FileResponse(
-                file_path,
-                media_type=media_type,
-                headers={"Cache-Control": "private, max-age=3600"},
-            )
+    resolved = await asyncio.to_thread(avatars.resolve, user_id)
+    if resolved is not None:
+        file_path, media_type = resolved
+        return FileResponse(
+            file_path,
+            media_type=media_type,
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
     raise HTTPException(status_code=404, detail="No avatar found")

@@ -15,7 +15,26 @@ from typing import Any
 
 import mutagen
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, TALB, TCMP, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, TXXX, UFID
+from mutagen.id3 import (
+    APIC,
+    TALB,
+    TCMP,
+    TCON,
+    TDOR,
+    TDRC,
+    TIT2,
+    TPE1,
+    TPE2,
+    TPOS,
+    TRCK,
+    TSO2,
+    TSOA,
+    TSOP,
+    TSOT,
+    TSST,
+    TXXX,
+    UFID,
+)
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
 
@@ -135,6 +154,20 @@ def _year(value: Any) -> int | None:
         return int(text[:4])
     except ValueError:
         return None
+
+
+def _float_tag(value: Any, *, positive: bool = False) -> float | None:
+    text = _first(value)
+    if text is None:
+        return None
+    normalized = text.lower().removesuffix("db").strip()
+    try:
+        result = float(normalized)
+    except ValueError:
+        return None
+    if positive and result < 0:
+        return None
+    return result
 
 
 class AudioTagger:
@@ -280,6 +313,20 @@ class AudioTagger:
             year=_year(tags.get("TDRC")),
             genre=_join_all(tags.get("TCON")),
             compilation=_first(tags.get("TCMP")) == "1",
+            title_sort=_first(tags.get("TSOT")),
+            artist_sort=_first(tags.get("TSOP")),
+            album_sort=_first(tags.get("TSOA")),
+            album_artist_sort=_first(tags.get("TSO2")),
+            disc_subtitle=_first(tags.get("TSST")),
+            original_release_date=_first(tags.get("TDOR")),
+            replaygain_track_gain=_float_tag(tags.get("TXXX:REPLAYGAIN_TRACK_GAIN")),
+            replaygain_album_gain=_float_tag(tags.get("TXXX:REPLAYGAIN_ALBUM_GAIN")),
+            replaygain_track_peak=_float_tag(
+                tags.get("TXXX:REPLAYGAIN_TRACK_PEAK"), positive=True
+            ),
+            replaygain_album_peak=_float_tag(
+                tags.get("TXXX:REPLAYGAIN_ALBUM_PEAK"), positive=True
+            ),
             **self._read_id3_mb(tags),
         )
 
@@ -311,6 +358,34 @@ class AudioTagger:
         if tag.genre is not None:
             tags.setall("TCON", [TCON(encoding=3, text=[tag.genre])])
         tags.setall("TCMP", [TCMP(encoding=3, text=["1" if tag.compilation else "0"])])
+        optional_frames = (
+            ("TSOT", TSOT, tag.title_sort),
+            ("TSOP", TSOP, tag.artist_sort),
+            ("TSOA", TSOA, tag.album_sort),
+            ("TSO2", TSO2, tag.album_artist_sort),
+            ("TSST", TSST, tag.disc_subtitle),
+            ("TDOR", TDOR, tag.original_release_date),
+        )
+        for key, frame_type, value in optional_frames:
+            if value:
+                tags.setall(key, [frame_type(encoding=3, text=[value])])
+            else:
+                tags.delall(key)
+        replaygain = (
+            ("REPLAYGAIN_TRACK_GAIN", tag.replaygain_track_gain),
+            ("REPLAYGAIN_ALBUM_GAIN", tag.replaygain_album_gain),
+            ("REPLAYGAIN_TRACK_PEAK", tag.replaygain_track_peak),
+            ("REPLAYGAIN_ALBUM_PEAK", tag.replaygain_album_peak),
+        )
+        for description, value in replaygain:
+            key = f"TXXX:{description}"
+            if value is not None:
+                tags.setall(
+                    key,
+                    [TXXX(encoding=3, desc=description, text=[str(value)])],
+                )
+            else:
+                tags.delall(key)
         for field, desc in _ID3_MB.items():
             value = getattr(tag, field)
             key = f"TXXX:{desc}"
@@ -345,6 +420,16 @@ class AudioTagger:
             year=_year(g("DATE")),
             genre=_join_all(g("GENRE")),
             compilation=_first(g("COMPILATION")) == "1",
+            title_sort=_first(g("TITLESORT")),
+            artist_sort=_first(g("ARTISTSORT")),
+            album_sort=_first(g("ALBUMSORT")),
+            album_artist_sort=_first(g("ALBUMARTISTSORT")),
+            disc_subtitle=_first(g("DISCSUBTITLE")),
+            original_release_date=_first(g("ORIGINALDATE")),
+            replaygain_track_gain=_float_tag(g("REPLAYGAIN_TRACK_GAIN")),
+            replaygain_album_gain=_float_tag(g("REPLAYGAIN_ALBUM_GAIN")),
+            replaygain_track_peak=_float_tag(g("REPLAYGAIN_TRACK_PEAK"), positive=True),
+            replaygain_album_peak=_float_tag(g("REPLAYGAIN_ALBUM_PEAK"), positive=True),
             **mb,
         )
 
@@ -361,6 +446,23 @@ class AudioTagger:
         if tag.genre is not None:
             audio["GENRE"] = tag.genre
         audio["COMPILATION"] = "1" if tag.compilation else "0"
+        optional = {
+            "TITLESORT": tag.title_sort,
+            "ARTISTSORT": tag.artist_sort,
+            "ALBUMSORT": tag.album_sort,
+            "ALBUMARTISTSORT": tag.album_artist_sort,
+            "DISCSUBTITLE": tag.disc_subtitle,
+            "ORIGINALDATE": tag.original_release_date,
+            "REPLAYGAIN_TRACK_GAIN": tag.replaygain_track_gain,
+            "REPLAYGAIN_ALBUM_GAIN": tag.replaygain_album_gain,
+            "REPLAYGAIN_TRACK_PEAK": tag.replaygain_track_peak,
+            "REPLAYGAIN_ALBUM_PEAK": tag.replaygain_album_peak,
+        }
+        for key, value in optional.items():
+            if value is not None:
+                audio[key] = str(value)
+            elif key in audio:
+                del audio[key]
         for field, key in _VORBIS_MB.items():
             value = getattr(tag, field)
             if value:
@@ -382,6 +484,15 @@ class AudioTagger:
                 return int(value[0][0])
             return None
 
+        def freeform(key: str) -> str | None:
+            raw = tags.get(key)
+            if not raw:
+                return None
+            value = raw[0]
+            if isinstance(value, bytes):
+                return value.decode("utf-8", "replace").strip() or None
+            return _first(value)
+
         mb: dict[str, str | None] = {}
         for field, key in _MP4_MB.items():
             raw = tags.get(key)
@@ -399,6 +510,20 @@ class AudioTagger:
             year=_year(text("\xa9day")),
             genre=_join_all(tags.get("\xa9gen")),
             compilation=bool(cpil),
+            title_sort=text("sonm"),
+            artist_sort=text("soar"),
+            album_sort=text("soal"),
+            album_artist_sort=text("soaa"),
+            disc_subtitle=freeform(f"{_MP4_PREFIX}DISCSUBTITLE"),
+            original_release_date=freeform(f"{_MP4_PREFIX}ORIGINALDATE"),
+            replaygain_track_gain=_float_tag(freeform(f"{_MP4_PREFIX}REPLAYGAIN_TRACK_GAIN")),
+            replaygain_album_gain=_float_tag(freeform(f"{_MP4_PREFIX}REPLAYGAIN_ALBUM_GAIN")),
+            replaygain_track_peak=_float_tag(
+                freeform(f"{_MP4_PREFIX}REPLAYGAIN_TRACK_PEAK"), positive=True
+            ),
+            replaygain_album_peak=_float_tag(
+                freeform(f"{_MP4_PREFIX}REPLAYGAIN_ALBUM_PEAK"), positive=True
+            ),
             **mb,
         )
 
@@ -418,6 +543,30 @@ class AudioTagger:
         if tag.genre is not None:
             tags["\xa9gen"] = [tag.genre]
         tags["cpil"] = tag.compilation
+        optional = {
+            "sonm": tag.title_sort,
+            "soar": tag.artist_sort,
+            "soal": tag.album_sort,
+            "soaa": tag.album_artist_sort,
+            f"{_MP4_PREFIX}DISCSUBTITLE": tag.disc_subtitle,
+            f"{_MP4_PREFIX}ORIGINALDATE": tag.original_release_date,
+        }
+        for key, value in optional.items():
+            if value is not None:
+                tags[key] = [value]
+            elif key in tags:
+                del tags[key]
+        replaygain = {
+            f"{_MP4_PREFIX}REPLAYGAIN_TRACK_GAIN": tag.replaygain_track_gain,
+            f"{_MP4_PREFIX}REPLAYGAIN_ALBUM_GAIN": tag.replaygain_album_gain,
+            f"{_MP4_PREFIX}REPLAYGAIN_TRACK_PEAK": tag.replaygain_track_peak,
+            f"{_MP4_PREFIX}REPLAYGAIN_ALBUM_PEAK": tag.replaygain_album_peak,
+        }
+        for key, value in replaygain.items():
+            if value is not None:
+                tags[key] = [str(value).encode()]
+            elif key in tags:
+                del tags[key]
         for field, key in _MP4_MB.items():
             value = getattr(tag, field)
             if value:

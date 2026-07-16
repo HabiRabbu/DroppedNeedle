@@ -44,6 +44,25 @@ async def test_ping_ok_both_forms(compat_env):
 
 
 @_aio
+async def test_endpoint_dispatch_is_case_insensitive_and_strips_one_view_suffix(compat_env):
+    q = {"v": "1.16.1", "c": "pytest", "f": "json", "apiKey": compat_env.secret}
+    assert _sub(compat_env.client.get("/subsonic/rest/PiNg.ViEw", params=q))["status"] == "ok"
+    doubled = _sub(
+        compat_env.client.get("/subsonic/rest/ping.view.view", params=q)
+    )
+    assert doubled["status"] == "failed"
+    assert doubled["error"]["code"] == 0
+
+
+@_aio
+async def test_server_version_uses_installed_build_version(compat_env, monkeypatch):
+    monkeypatch.setenv("COMMIT_TAG", "v9.8.7-test")
+    q = {"f": "json", "apiKey": compat_env.secret}
+    body = _sub(compat_env.client.get("/subsonic/rest/ping", params=q))
+    assert body["serverVersion"] == "v9.8.7-test"
+
+
+@_aio
 async def test_ping_token_scheme(compat_env):
     from tests.compat.conftest import subsonic_query
 
@@ -118,3 +137,41 @@ async def test_form_post_auth(compat_env):
         data={"v": "1.16.1", "c": "pytest", "f": "json", "apiKey": compat_env.secret},
     )
     assert _sub(r)["status"] == "ok"
+
+
+@_aio
+async def test_duplicate_auth_parameter_is_rejected(compat_env):
+    r = compat_env.client.get(
+        "/subsonic/rest/ping?f=json&apiKey=first&apiKey=second"
+    )
+    body = _sub(r)
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 10
+
+
+@_aio
+async def test_auth_split_across_query_and_form_is_rejected(compat_env):
+    r = compat_env.client.post(
+        f"/subsonic/rest/ping?apiKey={compat_env.secret}",
+        data={"f": "json", "apiKey": compat_env.secret},
+    )
+    body = _sub(r)
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 10
+
+
+@_aio
+async def test_contradictory_password_and_token_auth_is_rejected(compat_env):
+    r = compat_env.client.get(
+        "/subsonic/rest/ping",
+        params={
+            "f": "json",
+            "u": "alice",
+            "p": compat_env.secret,
+            "t": "0" * 32,
+            "s": "salt",
+        },
+    )
+    body = _sub(r)
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 10

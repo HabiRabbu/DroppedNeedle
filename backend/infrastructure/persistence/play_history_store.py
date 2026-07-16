@@ -182,3 +182,69 @@ class PlayHistoryStore:
             return counts
 
         return await self._read(operation)
+
+    async def album_ids(
+        self,
+        user_id: str,
+        *,
+        frequent: bool,
+        limit: int,
+        offset: int,
+    ) -> list[str]:
+        order = (
+            "COUNT(*) DESC, MAX(played_at) DESC, release_group_mbid"
+            if frequent
+            else "MAX(played_at) DESC, release_group_mbid"
+        )
+
+        def operation(conn: sqlite3.Connection) -> list[str]:
+            rows = conn.execute(
+                "SELECT release_group_mbid FROM play_history "
+                "WHERE user_id = ? AND release_group_mbid IS NOT NULL "
+                "GROUP BY release_group_mbid "
+                f"ORDER BY {order} LIMIT ? OFFSET ?",
+                (user_id, max(limit, 1), max(offset, 0)),
+            ).fetchall()
+            return [str(row["release_group_mbid"]) for row in rows]
+
+        return await self._read(operation)
+
+    async def compat_stats(
+        self,
+        user_id: str,
+        *,
+        recording_mbids: list[str],
+        release_group_mbids: list[str],
+        artist_names: list[str],
+    ) -> dict[str, dict[str, tuple[int, str]]]:
+        """Batch play counts/last-played overlays for compat response pages."""
+        recordings = list(dict.fromkeys(item for item in recording_mbids if item))
+        albums = list(dict.fromkeys(item for item in release_group_mbids if item))
+        artists = list(dict.fromkeys(item for item in artist_names if item))
+
+        def grouped(
+            conn: sqlite3.Connection, column: str, values: list[str]
+        ) -> dict[str, tuple[int, str]]:
+            if not values:
+                return {}
+            placeholders = ", ".join("?" for _ in values)
+            rows = conn.execute(
+                f"SELECT {column} AS item_key, COUNT(*) AS plays, "
+                f"MAX(played_at) AS played_at FROM play_history "
+                f"WHERE user_id = ? AND {column} IN ({placeholders}) "
+                f"GROUP BY {column}",
+                (user_id, *values),
+            ).fetchall()
+            return {
+                str(row["item_key"]): (int(row["plays"]), str(row["played_at"]))
+                for row in rows
+            }
+
+        def operation(conn: sqlite3.Connection):
+            return {
+                "track": grouped(conn, "recording_mbid", recordings),
+                "album": grouped(conn, "release_group_mbid", albums),
+                "artist": grouped(conn, "artist_name", artists),
+            }
+
+        return await self._read(operation)

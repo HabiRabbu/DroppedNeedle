@@ -33,6 +33,7 @@ from api.v1.routes import lidarr_import as lidarr_import_routes
 from api.v1.routes import discovery_batches as discovery_batches_routes
 from api.v1.routes import library_scan as library_scan_routes
 from api.v1.routes import me_connections as me_routes
+from api.v1.routes import navidrome_preferences as navidrome_preferences_routes
 from api.v1.routes import playlists as playlists_routes
 from api.v1.routes import quarantine as quarantine_routes
 from api.v1.routes import requests_page as requests_page_routes
@@ -65,6 +66,7 @@ from core.dependencies import (
     get_lidarr_import_repository,
     get_lidarr_import_service,
     get_navidrome_playback_service,
+    get_navidrome_folder_scope_service,
     get_now_playing_service,
     get_per_user_client_factory,
     get_personal_mix_service,
@@ -110,6 +112,7 @@ _SERVICE_PROVIDERS = (
     get_lidarr_import_repository,
     get_lidarr_import_service,
     get_navidrome_playback_service,
+    get_navidrome_folder_scope_service,
     get_now_playing_service,
     get_per_user_client_factory,
     get_personal_mix_service,
@@ -197,6 +200,12 @@ _ADMIN_ENDPOINTS = [
 ]
 
 _USER_ENDPOINTS = [
+    ("GET", "/api/v1/me/navidrome/music-folder-preferences", None),
+    (
+        "PUT",
+        "/api/v1/me/navidrome/music-folder-preferences",
+        {"mode": "all", "selected_folder_ids": []},
+    ),
     ("GET", "/api/v1/library/scan/status", None),
     ("GET", "/api/v1/download-client/status", None),
     ("GET", "/api/v1/downloads", None),
@@ -306,6 +315,7 @@ def _client(scenario: str):
         tracks_routes.router,
         library_routes.router,
         me_routes.router,
+        navidrome_preferences_routes.router,
         connect_apps_routes.router,
         discovery_batches_routes.router,
         system_routes.router,

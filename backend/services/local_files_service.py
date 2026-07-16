@@ -22,7 +22,11 @@ from api.v1.schemas.local_files import (
     LocalStorageStats,
     LocalTrackInfo,
 )
-from core.exceptions import ExternalServiceError, ResourceNotFoundError
+from core.exceptions import (
+    ExternalServiceError,
+    RangeNotSatisfiableError,
+    ResourceNotFoundError,
+)
 from infrastructure.cache.cache_keys import LOCAL_FILES_PREFIX
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.cover_urls import prefer_release_group_cover_url
@@ -168,35 +172,27 @@ class LocalFilesService:
         file_size = stat_result.st_size
         content_type = CONTENT_TYPE_MAP.get(suffix, "application/octet-stream")
 
-        if range_header and range_header.startswith("bytes="):
-            range_spec = range_header[6:]
-            start_str, _, end_str = range_spec.partition("-")
-
-            try:
-                if not start_str and end_str:
-                    suffix_len = int(end_str)
-                    start = max(0, file_size - suffix_len)
-                    end = file_size - 1
-                elif start_str and not end_str:
-                    start = int(start_str)
-                    end = file_size - 1
-                elif start_str and end_str:
-                    start = int(start_str)
-                    end = int(end_str)
-                else:
-                    raise ValueError("Empty range")
-            except ValueError:
-                return self._iter_file(file_path, 0, file_size), {
-                    "Content-Type": content_type,
-                    "Content-Length": str(file_size),
-                    "Accept-Ranges": "bytes",
-                }, 200
+        if range_header:
+            match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", range_header)
+            if match is None or not any(match.groups()) or file_size == 0:
+                raise RangeNotSatisfiableError(file_size)
+            start_str, end_str = match.groups()
+            if not start_str:
+                suffix_len = int(end_str)
+                if suffix_len <= 0:
+                    raise RangeNotSatisfiableError(file_size)
+                start = max(0, file_size - suffix_len)
+                end = file_size - 1
+            elif not end_str:
+                start = int(start_str)
+                end = file_size - 1
+            else:
+                start = int(start_str)
+                end = int(end_str)
 
             end = min(end, file_size - 1)
             if start < 0 or start > end or start >= file_size:
-                raise ExternalServiceError(
-                    f"Range not satisfiable: {range_header} (file size: {file_size})"
-                )
+                raise RangeNotSatisfiableError(file_size)
 
             length = end - start + 1
 
@@ -613,4 +609,3 @@ class LocalFilesService:
                 return f"{size:.1f} {unit}"
             size /= 1024.0
         return f"{size:.1f} PB"
-

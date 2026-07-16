@@ -81,6 +81,34 @@ class FavoritesStore:
 
         await self._write(operation)
 
+    async def apply_many(
+        self,
+        user_id: str,
+        targets: list[tuple[str, str]],
+        *,
+        add: bool,
+        created_at: float,
+    ) -> None:
+        def operation(conn: sqlite3.Connection) -> None:
+            if add:
+                conn.executemany(
+                    "INSERT INTO user_favorites "
+                    "(user_id, item_kind, item_id, created_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT DO NOTHING",
+                    [
+                        (user_id, kind, item_id, created_at)
+                        for kind, item_id in targets
+                    ],
+                )
+            else:
+                conn.executemany(
+                    "DELETE FROM user_favorites "
+                    "WHERE user_id = ? AND item_kind = ? AND item_id = ?",
+                    [(user_id, kind, item_id) for kind, item_id in targets],
+                )
+
+        await self._write(operation)
+
     async def remove(self, user_id: str, item_kind: str, item_id: str) -> None:
         def operation(conn: sqlite3.Connection) -> None:
             conn.execute(

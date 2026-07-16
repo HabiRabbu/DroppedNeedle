@@ -197,3 +197,17 @@ class NavidromeGenreSongsResponse(AppStruct):
 class NavidromeMusicFolder(AppStruct):
     id: str = ""
     name: str = ""
+
+
+class NavidromeFolderPreferenceUpdate(AppStruct):
+    mode: str
+    selected_folder_ids: list[str] = []
+
+
+class NavidromeFolderPreferenceResponse(AppStruct):
+    mode: str
+    selected_folder_ids: list[str] = []
+    available_folders: list[NavidromeMusicFolder] = []
+    stale_folder_ids: list[str] = []
+    source_available: bool = True
+    scope_revision: str = "all"

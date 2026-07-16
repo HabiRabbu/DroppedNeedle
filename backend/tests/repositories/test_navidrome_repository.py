@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -21,6 +23,8 @@ from repositories.navidrome_models import (
     parse_subsonic_response,
 )
 from repositories.navidrome_repository import NavidromeRepository
+from infrastructure.cache.memory_cache import InMemoryCache
+from tests.mocks.navidrome_mock import Navidrome062Mock
 
 
 def _make_cache() -> MagicMock:
@@ -78,6 +82,105 @@ class TestBuildAuthParams:
         repo, _, _ = _make_repo()
         salts = {repo._build_auth_params()["s"] for _ in range(10)}
         assert len(salts) > 1
+
+    def test_server_identity_is_stable_and_does_not_expose_url(self):
+        repo, _, _ = _make_repo()
+        assert repo.server_identity == repo.server_identity
+        assert "navidrome" not in repo.server_identity
+
+
+class TestMusicFolderScope:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "kwargs", "response"),
+        [
+            (
+                "get_album_list",
+                {"type": "newest"},
+                {"albumList2": {"album": []}},
+            ),
+            ("get_artists", {}, {"artists": {"index": []}}),
+            ("search", {"query": "radiohead"}, {"searchResult3": {}}),
+            ("get_starred", {}, {"starred2": {}}),
+            ("get_artists_index", {}, {"artists": {"index": []}}),
+            (
+                "get_songs_by_genre",
+                {"genre": "Rock"},
+                {"songsByGenre": {"song": []}},
+            ),
+            ("search_songs", {}, {"searchResult3": {}}),
+            ("get_random_songs", {}, {"randomSongs": {"song": []}}),
+        ],
+    )
+    async def test_selected_scope_serializes_repeated_folder_ids(
+        self, method, kwargs, response
+    ):
+        repo, _, _ = _make_repo()
+        repo._request = AsyncMock(return_value=response)
+
+        await getattr(repo, method)(
+            **kwargs, music_folder_ids=("folder-a", "folder-b")
+        )
+
+        params = repo._request.await_args.args[1]
+        assert params["musicFolderId"] == ["folder-a", "folder-b"]
+
+    @pytest.mark.asyncio
+    async def test_all_scope_omits_music_folder_parameter(self):
+        repo, _, _ = _make_repo()
+        repo._request = AsyncMock(return_value={"artists": {"index": []}})
+        await repo.get_artists()
+        assert "musicFolderId" not in repo._request.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_empty_selected_scope_fails_closed_without_request(self):
+        repo, _, _ = _make_repo()
+        repo._request = AsyncMock()
+        assert await repo.search("anything", music_folder_ids=()) == SubsonicSearchResult()
+        repo._request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_live_verified_062_asgi_repeats_same_folder_and_ignores_unknown(
+        self,
+    ):
+        mock = Navidrome062Mock()
+        transport = httpx.ASGITransport(app=mock.app)
+        async with httpx.AsyncClient(transport=transport) as client:
+            repo = NavidromeRepository(client, InMemoryCache())
+            repo.configure("http://navidrome.test", "user", "password")
+            folders = await repo.get_music_folders()
+            same = (folders[0].id, folders[0].id)
+            missing = ("missing-folder",)
+
+            assert await repo.get_artists(same)
+            assert await repo.get_album_list(
+                "alphabeticalByName", music_folder_ids=same
+            )
+            assert await repo.search_songs("", music_folder_ids=same)
+            assert await repo.get_songs_by_genre("Genre", music_folder_ids=same)
+            assert await repo.get_random_songs(music_folder_ids=same)
+            assert await repo.get_artists(missing)
+
+        for endpoint in (
+            "getArtists",
+            "getAlbumList2",
+            "search3",
+            "getSongsByGenre",
+            "getRandomSongs",
+        ):
+            assert mock.music_folder_requests[endpoint][0] == [
+                "folder-1",
+                "folder-1",
+            ]
+        assert mock.music_folder_requests["getArtists"][1] == ["missing-folder"]
+
+        fixture_path = (
+            Path(__file__).parents[1]
+            / "fixtures/navidrome/0.62.0/music_folder_observations.json"
+        )
+        observations = json.loads(fixture_path.read_text())
+        assert observations["server_version"].startswith("0.62.0")
+        assert observations["unknown_folder"]["artists"] == "ignored_nonempty"
 
 
 class TestParseSubsonicResponse:

@@ -39,13 +39,19 @@ export async function fetchLyrics(np: NowPlaying, signal: AbortSignal): Promise<
 	}
 }
 
-export const getLyricsQuery = (getNowPlaying: Getter<NowPlaying | null>) =>
+export const getLyricsQuery = (
+	getNowPlaying: Getter<NowPlaying | null>,
+	getUserId: Getter<string | undefined>,
+	getNavidromeScope: Getter<string | undefined>
+) =>
 	createQuery(() => {
 		const np = getNowPlaying();
 		return {
 			staleTime: CACHE_TTL.LYRICS,
 			gcTime: CACHE_TTL.LYRICS,
 			queryKey: LyricsQueryKeyFactory.lyrics(
+				getUserId(),
+				np?.sourceType === 'navidrome' ? getNavidromeScope() : undefined,
 				np?.sourceType,
 				np?.trackSourceId,
 				np?.artistName,

@@ -41,6 +41,7 @@
 	import PlexIcon from '$lib/components/PlexIcon.svelte';
 	import type { ProfileServiceConnection } from '$lib/queries/profile/types';
 	import MediaServerAccountsCard from '$lib/components/profile/MediaServerAccountsCard.svelte';
+	import NavidromeMusicFoldersCard from '$lib/components/profile/NavidromeMusicFoldersCard.svelte';
 	import ScrobblingDiscoveryCard from '$lib/components/profile/ScrobblingDiscoveryCard.svelte';
 	import SpotifyConnectionCard from '$lib/components/profile/SpotifyConnectionCard.svelte';
 	import ProfileConnectApps from '$lib/components/profile/ProfileConnectApps.svelte';
@@ -730,6 +731,10 @@
 
 				<div id="media-accounts" class="scroll-mt-20">
 					<MediaServerAccountsCard services={profile.services} />
+				</div>
+
+				<div id="navidrome-music-folders" class="scroll-mt-20">
+					<NavidromeMusicFoldersCard {userId} />
 				</div>
 
 				<div id="connect-apps" class="scroll-mt-20">
