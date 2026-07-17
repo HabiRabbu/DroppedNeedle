@@ -1449,6 +1449,27 @@ async def test_target_artist_browse_sorts_by_aggregate_album_count(
 
 
 @pytest.mark.asyncio
+async def test_album_status_resolves_provider_identity_without_alias(
+    target_services,
+) -> None:
+    store, _view, _favorites, _history, _root = target_services
+    service = TargetNativeLibraryService(store)
+
+    assert await service.canonical_id("album", RELEASE_GROUP_MBID) is None
+
+    status = await service.album_status(
+        RELEASE_GROUP_MBID,
+        quality_cutoff="lossless",
+        upgrade_allowed=True,
+    )
+
+    assert status.in_library is True
+    assert status.album_id == IDENTIFIED_ALBUM_ID
+    assert status.track_count == 1
+    assert [track.id for track in status.tracks] == [IDENTIFIED_TRACK_ID]
+
+
+@pytest.mark.asyncio
 async def test_album_rescan_scope_freezes_its_root_path(target_services) -> None:
     store, _view, _favorites, _history, root = target_services
     resolver = LibraryPolicyResolver(

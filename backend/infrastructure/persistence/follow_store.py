@@ -19,6 +19,33 @@ import msgspec
 
 logger = logging.getLogger(__name__)
 
+_LEGACY_OWNED_RELEASE_GROUPS_SQL = """
+    SELECT lower(release_group_mbid) AS release_group_mbid_lower FROM library_files
+    WHERE release_group_mbid IS NOT NULL AND deleted_at IS NULL
+"""
+_TARGET_OWNED_RELEASE_GROUPS_SQL = """
+    SELECT lower(identity.release_group_mbid)
+    FROM local_album_external_identities identity
+    JOIN local_tracks track ON track.local_album_id = identity.local_album_id
+    WHERE identity.provider = 'musicbrainz' AND track.availability = 'indexed'
+"""
+
+
+def _owned_release_groups_sql(conn: sqlite3.Connection) -> str:
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('library_files', 'local_album_external_identities', 'local_tracks')"
+        ).fetchall()
+    }
+    sources: list[str] = []
+    if "library_files" in tables:
+        sources.append(_LEGACY_OWNED_RELEASE_GROUPS_SQL)
+    if {"local_album_external_identities", "local_tracks"}.issubset(tables):
+        sources.append(_TARGET_OWNED_RELEASE_GROUPS_SQL)
+    return " UNION ".join(sources) or "SELECT NULL AS release_group_mbid_lower WHERE 0"
+
 
 class FollowState(msgspec.Struct, frozen=True):
     # auto_download_state (none|pending|approved|rejected|revoked) is derived
@@ -839,13 +866,13 @@ class FollowStore:
         safe_offset = max(0, offset)
 
         def operation(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], int]:
-            where = """
+            owned_sql = _owned_release_groups_sql(conn)
+            where = f"""
                 FROM new_release_feed nrf
                 JOIN user_followed_artists ufa
                     ON ufa.artist_mbid_lower = nrf.artist_mbid_lower AND ufa.user_id = ?
                 WHERE nrf.release_group_mbid_lower NOT IN (
-                    SELECT lower(release_group_mbid) FROM library_files
-                    WHERE release_group_mbid IS NOT NULL AND deleted_at IS NULL
+                    {owned_sql}
                 )
             """
             total = conn.execute("SELECT COUNT(*) AS c " + where, (user_id,)).fetchone()["c"]
@@ -892,6 +919,7 @@ class FollowStore:
         cutoff_ts = time.time() - max(1, days) * 86400
 
         def operation(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], int]:
+            owned_sql = _owned_release_groups_sql(conn)
             where = """
                 FROM new_release_feed nrf
                 JOIN user_followed_artists ufa
@@ -902,10 +930,9 @@ class FollowStore:
                 )
             """
             if not include_owned:
-                where += """
+                where += f"""
                 AND nrf.release_group_mbid_lower NOT IN (
-                    SELECT lower(release_group_mbid) FROM library_files
-                    WHERE release_group_mbid IS NOT NULL AND deleted_at IS NULL
+                    {owned_sql}
                 )
                 """
             params = (user_id, cutoff_date, cutoff_ts)
@@ -917,9 +944,7 @@ class FollowStore:
                 "nrf.secondary_types AS secondary_types, "
                 "nrf.first_release_date AS first_release_date, "
                 "nrf.discovered_at AS discovered_at, "
-                "EXISTS (SELECT 1 FROM library_files lf "
-                "        WHERE lower(lf.release_group_mbid) = nrf.release_group_mbid_lower "
-                "          AND lf.deleted_at IS NULL) AS in_library "
+                f"nrf.release_group_mbid_lower IN ({owned_sql}) AS in_library "
                 + where
                 + " ORDER BY nrf.first_release_date DESC, nrf.discovered_at DESC LIMIT ?",
                 (*params, safe_limit),
@@ -948,15 +973,15 @@ class FollowStore:
         # rows discovered after the seen marker; no marker row counts everything
 
         def operation(conn: sqlite3.Connection) -> int:
+            owned_sql = _owned_release_groups_sql(conn)
             return conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS c
                 FROM new_release_feed nrf
                 JOIN user_followed_artists ufa
                     ON ufa.artist_mbid_lower = nrf.artist_mbid_lower AND ufa.user_id = ?
                 WHERE nrf.release_group_mbid_lower NOT IN (
-                    SELECT lower(release_group_mbid) FROM library_files
-                    WHERE release_group_mbid IS NOT NULL AND deleted_at IS NULL
+                    {owned_sql}
                 )
                 AND nrf.discovered_at > COALESCE(
                     (SELECT seen_at FROM user_new_release_seen WHERE user_id = ?), 0

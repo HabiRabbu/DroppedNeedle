@@ -46,6 +46,37 @@ def _seed_library_files(db_path: Path, owned_rg_mbids: list[str]) -> None:
         conn.close()
 
 
+def _seed_target_album_identity(db_path: Path, release_group_mbid: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE local_album_external_identities (
+                local_album_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                release_group_mbid TEXT NOT NULL
+            );
+            CREATE TABLE local_tracks (
+                id TEXT PRIMARY KEY,
+                local_album_id TEXT NOT NULL,
+                availability TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO local_album_external_identities "
+            "(local_album_id, provider, release_group_mbid) VALUES (?, 'musicbrainz', ?)",
+            ("local-owned", release_group_mbid),
+        )
+        conn.execute(
+            "INSERT INTO local_tracks (id, local_album_id, availability) "
+            "VALUES ('target-track', 'local-owned', 'indexed')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> FollowStore:
     db_path = tmp_path / "library.db"
@@ -468,3 +499,43 @@ async def test_recent_releases_log_includes_owned_with_flag(
     )
     assert hidden_total == 2
     assert {i.title for i in hidden} == {"Fresh Album", "Dateless Album"}
+
+
+@pytest.mark.asyncio
+async def test_target_catalog_ownership_drives_all_new_release_views(
+    store: FollowStore, tmp_path: Path
+) -> None:
+    from datetime import date
+
+    db_path = tmp_path / "library.db"
+    _seed_library_files(db_path, [])
+    _seed_target_album_identity(db_path, "RG-TARGET-OWNED")
+    await store.follow_artist("user-a", "MBID-A", "Radiohead")
+    await store.record_new_releases(
+        "mbid-a",
+        [
+            _ri(
+                "RG-TARGET-OWNED",
+                "mbid-a",
+                "Target-owned Album",
+                first_release_date=date.today().isoformat(),
+            )
+        ],
+        [],
+    )
+
+    recent, recent_total = await store.list_recent_releases_for_user(
+        "user-a", days=30, limit=10
+    )
+    todo, todo_total = await store.list_new_releases_for_user("user-a", 10, 0)
+    hidden, hidden_total = await store.list_recent_releases_for_user(
+        "user-a", days=30, limit=10, include_owned=False
+    )
+
+    assert recent_total == 1
+    assert recent[0].in_library is True
+    assert todo_total == 0
+    assert todo == []
+    assert hidden_total == 0
+    assert hidden == []
+    assert await store.count_unseen_new_releases_for_user("user-a") == 0

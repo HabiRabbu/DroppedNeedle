@@ -237,10 +237,12 @@ class TargetNativeLibraryService:
         quality_cutoff: str | None,
         upgrade_allowed: bool,
     ) -> TargetNativeAlbumStatusResponse:
-        canonical = await self.canonical_id("album", album_id)
-        if canonical is None:
-            return TargetNativeAlbumStatusResponse(in_library=False, album_id=album_id)
-        tracks = await self.album_tracks(canonical)
+        tracks = await self.album_tracks(album_id)
+        canonical = (
+            tracks[0].album_id
+            if tracks
+            else (await self.canonical_id("album", album_id) or album_id)
+        )
         for track in tracks:
             track.current_tier = tier_for(track.format, track.bit_rate)
             track.below_cutoff = bool(
