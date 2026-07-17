@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.config import get_settings
+from core.exceptions import MediaAccountRelinkRequiredError
 from infrastructure.crypto import init_crypto
 from infrastructure.persistence.user_connections_store import UserConnectionsStore
 from services.per_user_client_factory import PerUserClientFactory
@@ -28,7 +29,10 @@ def _seed_auth_users(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("CREATE TABLE IF NOT EXISTS auth_users (id TEXT PRIMARY KEY, username TEXT, role TEXT)")
-        conn.execute("INSERT OR IGNORE INTO auth_users (id, username, role) VALUES (?, ?, ?)", ("u1", "u1", "user"))
+        conn.executemany(
+            "INSERT OR IGNORE INTO auth_users (id, username, role) VALUES (?, ?, ?)",
+            [("u1", "u1", "user"), ("u2", "u2", "user")],
+        )
         conn.commit()
     finally:
         conn.close()
@@ -201,6 +205,170 @@ async def test_resolve_plex_none_when_unlinked_or_admin_disabled(store):
     assert await _factory(store).resolve_plex("u1") is None
     await store.upsert("u1", "plex", {"auth_token": "plex-tok"})
     assert await _factory(store, media_enabled=False).resolve_plex("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_playlist_resolvers_use_linked_credentials_and_user_cache_scope(store):
+    await store.upsert(
+        "u1", "navidrome", {"username": "nduser", "password": "ndpass"}
+    )
+    await store.upsert(
+        "u1",
+        "jellyfin",
+        {
+            "access_token": "jf-tok",
+            "jellyfin_user_id": "jf-uid",
+            "username": "jfuser",
+        },
+    )
+    await store.upsert(
+        "u1",
+        "plex",
+        {
+            "auth_token": "account-tok",
+            "server_access_token": "server-tok",
+            "username": "plexuser",
+        },
+    )
+    factory = _factory(store)
+
+    navidrome = await factory.resolve_navidrome_playlist("u1")
+    jellyfin = await factory.resolve_jellyfin_playlist("u1")
+    plex = await factory.resolve_plex_playlist("u1")
+
+    assert navidrome is not None
+    assert navidrome.account_mode == "linked"
+    assert navidrome.account_label == "nduser"
+    assert navidrome.repository._cache_scope.startswith("user:u1:")
+    assert jellyfin is not None
+    assert jellyfin.account_label == "jfuser"
+    assert jellyfin.repository._api_key == "jf-tok"
+    assert jellyfin.repository._cache_scope.startswith("user:u1:")
+    assert plex is not None
+    assert plex.account_label == "plexuser"
+    assert plex.repository._token == "server-tok"
+    assert plex.repository._cache_scope.startswith("user:u1:")
+
+
+@pytest.mark.asyncio
+async def test_playlist_resolvers_return_none_only_when_user_has_no_link(store):
+    factory = _factory(store)
+    assert await factory.resolve_navidrome_playlist("u1") is None
+    assert await factory.resolve_jellyfin_playlist("u1") is None
+    assert await factory.resolve_plex_playlist("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_enabled_but_unreadable_media_link_fails_closed(store):
+    await store.upsert(
+        "u1",
+        "jellyfin",
+        {"access_token": "jf-tok", "jellyfin_user_id": "jf-uid"},
+    )
+    conn = sqlite3.connect(store.db_path)
+    try:
+        conn.execute(
+            "UPDATE user_connections SET connection_data = ? "
+            "WHERE user_id = ? AND service = ?",
+            ("unreadable", "u1", "jellyfin"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(MediaAccountRelinkRequiredError):
+        await _factory(store).resolve_jellyfin_playlist("u1")
+
+
+@pytest.mark.asyncio
+async def test_two_users_get_distinct_playlist_cache_scopes(store):
+    for user_id, username in (("u1", "alice"), ("u2", "bob")):
+        await store.upsert(
+            user_id,
+            "jellyfin",
+            {
+                "access_token": f"token-{user_id}",
+                "jellyfin_user_id": f"jf-{user_id}",
+                "username": username,
+            },
+        )
+    factory = _factory(store)
+    alice = await factory.resolve_jellyfin_playlist("u1")
+    bob = await factory.resolve_jellyfin_playlist("u2")
+
+    assert alice is not None and bob is not None
+    assert alice.repository._cache_scope.startswith("user:u1:")
+    assert bob.repository._cache_scope.startswith("user:u2:")
+    assert alice.repository._cache_scope != bob.repository._cache_scope
+    assert alice.repository._api_key != bob.repository._api_key
+
+
+@pytest.mark.asyncio
+async def test_relink_changes_playlist_cache_generation(store):
+    await store.upsert(
+        "u1",
+        "jellyfin",
+        {
+            "access_token": "old-token",
+            "jellyfin_user_id": "jf-u1",
+            "username": "alice",
+        },
+    )
+    factory = _factory(store)
+    before = await factory.resolve_jellyfin_playlist("u1")
+
+    await store.upsert(
+        "u1",
+        "jellyfin",
+        {
+            "access_token": "new-token",
+            "jellyfin_user_id": "jf-u1",
+            "username": "alice",
+        },
+    )
+    after = await factory.resolve_jellyfin_playlist("u1")
+
+    assert before is not None and after is not None
+    assert before.repository._cache_scope.startswith("user:u1:")
+    assert after.repository._cache_scope.startswith("user:u1:")
+    assert before.repository._cache_scope != after.repository._cache_scope
+
+
+@pytest.mark.asyncio
+async def test_legacy_plex_link_is_upgraded_to_server_specific_token(
+    store, monkeypatch
+):
+    await store.upsert(
+        "u1",
+        "plex",
+        {
+            "auth_token": "account-token",
+            "plex_user_id": "plex-user",
+            "username": "alice",
+        },
+    )
+
+    from repositories.plex_repository import PlexRepository
+
+    async def machine_id(_self):
+        return "machine-1"
+
+    async def server_token(_self, auth_token, client_id, machine_id):
+        assert (auth_token, client_id, machine_id) == (
+            "account-token",
+            "app-client-id",
+            "machine-1",
+        )
+        return "server-token"
+
+    monkeypatch.setattr(PlexRepository, "get_machine_identifier", machine_id)
+    monkeypatch.setattr(PlexRepository, "get_server_access_token", server_token)
+
+    resolution = await _factory(store).resolve_plex_playlist("u1")
+
+    assert resolution is not None
+    assert resolution.repository._token == "server-token"
+    assert (await store.get("u1", "plex"))["server_access_token"] == "server-token"
 
 
 @pytest.mark.asyncio

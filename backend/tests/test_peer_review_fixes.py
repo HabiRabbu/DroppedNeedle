@@ -145,6 +145,7 @@ class TestJellyfinPlaylistAudioFilter:
         repo = MagicMock(spec=JellyfinRepository)
         repo._configured = True
         repo._user_id = "u1"
+        repo._cache_scope = "shared"
         repo._cache = MagicMock()
         repo._cache.get = AsyncMock(return_value=None)
         repo._cache.set = AsyncMock()

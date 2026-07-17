@@ -19,7 +19,7 @@ from api.v1.schemas.jellyfin import (
     JellyfinLyricsResponse,
     JellyfinPaginatedResponse,
     JellyfinPlaylistDetail,
-    JellyfinPlaylistSummary,
+    JellyfinPlaylistCollection,
     JellyfinSearchResponse,
     JellyfinSessionsResponse,
     JellyfinTrackInfo,
@@ -49,15 +49,9 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/jellyfin", tags=["jellyfin
 async def get_jellyfin_hub(
     current_user: CurrentUserDep,
     service: JellyfinLibraryService = Depends(get_jellyfin_library_service),
-    playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> JellyfinHubResponse:
     try:
-        hub = await service.get_hub_data()
-        imported_ids = await playlist_service.get_imported_source_ids("jellyfin:", user_id=current_user.id)
-        for p in hub.playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return hub
+        return await service.get_hub_data()
     except ExternalServiceError as e:
         logger.error("Jellyfin service error getting hub data: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Jellyfin")
@@ -78,6 +72,30 @@ async def get_jellyfin_image(
         )
     except ExternalServiceError as e:
         logger.warning("Jellyfin image failed for %s: %s", item_id, e)
+        raise HTTPException(status_code=502, detail="Failed to fetch image")
+
+
+@router.get("/playlist-image/{playlist_id}/{item_id}")
+async def get_jellyfin_playlist_image(
+    playlist_id: str,
+    item_id: str,
+    current_user: CurrentUserDep,
+    size: int = Query(default=500, ge=32, le=1200),
+    service: JellyfinLibraryService = Depends(get_jellyfin_library_service),
+) -> Response:
+    try:
+        image_bytes, content_type = await service.get_playlist_image(
+            playlist_id, item_id, current_user, size
+        )
+        return Response(
+            content=image_bytes,
+            media_type=content_type,
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Jellyfin playlist image not found")
+    except ExternalServiceError as e:
+        logger.warning("Jellyfin playlist image failed for %s: %s", playlist_id, e)
         raise HTTPException(status_code=502, detail="Failed to fetch image")
 
 
@@ -345,20 +363,17 @@ async def get_jellyfin_stats(
     return await service.get_stats()
 
 
-@router.get("/playlists", response_model=list[JellyfinPlaylistSummary])
+@router.get("/playlists", response_model=JellyfinPlaylistCollection)
 async def get_jellyfin_playlists(
     current_user: CurrentUserDep,
     limit: int = Query(default=50, ge=1, le=200),
     service: JellyfinLibraryService = Depends(get_jellyfin_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
-) -> list[JellyfinPlaylistSummary]:
+) -> JellyfinPlaylistCollection:
     try:
-        playlists = await service.list_playlists(limit=limit)
-        imported_ids = await playlist_service.get_imported_source_ids("jellyfin:", user_id=current_user.id)
-        for p in playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return playlists
+        return await service.list_user_playlists(
+            current_user, playlist_service, limit=limit
+        )
     except ExternalServiceError as e:
         logger.error("Failed to get Jellyfin playlists: %s", e)
         raise HTTPException(status_code=502, detail="Failed to get Jellyfin playlists")
@@ -367,10 +382,11 @@ async def get_jellyfin_playlists(
 @router.get("/playlists/{playlist_id}", response_model=JellyfinPlaylistDetail)
 async def get_jellyfin_playlist_detail(
     playlist_id: str,
+    current_user: CurrentUserDep,
     service: JellyfinLibraryService = Depends(get_jellyfin_library_service),
 ) -> JellyfinPlaylistDetail:
     try:
-        return await service.get_playlist_detail(playlist_id)
+        return await service.get_user_playlist_detail(playlist_id, current_user)
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Jellyfin playlist not found")
     except ExternalServiceError as e:

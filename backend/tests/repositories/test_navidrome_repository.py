@@ -35,10 +35,14 @@ def _make_cache() -> MagicMock:
     return cache
 
 
-def _make_repo(configured: bool = True) -> tuple[NavidromeRepository, AsyncMock, MagicMock]:
+def _make_repo(
+    configured: bool = True, cache_scope: str = "shared"
+) -> tuple[NavidromeRepository, AsyncMock, MagicMock]:
     client = AsyncMock(spec=httpx.AsyncClient)
     cache = _make_cache()
-    repo = NavidromeRepository(http_client=client, cache=cache)
+    repo = NavidromeRepository(
+        http_client=client, cache=cache, cache_scope=cache_scope
+    )
     if configured:
         repo.configure("http://navidrome:4533", "admin", "secret")
     return repo, client, cache
@@ -244,12 +248,14 @@ class TestParseHelpers:
             "id": "s1", "title": "Uprising", "album": "The Resistance",
             "albumId": "al1", "artist": "Muse", "artistId": "a1",
             "track": 1, "year": 2009, "duration": 305, "bitRate": 320,
-            "suffix": "mp3", "contentType": "audio/mpeg", "musicBrainzId": "mb-s1",
+            "suffix": "mp3", "contentType": "audio/mpeg", "coverArt": "cover-1",
+            "musicBrainzId": "mb-s1",
         }
         song = parse_song(data)
         assert song.id == "s1"
         assert song.title == "Uprising"
         assert song.duration == 305
+        assert song.coverArt == "cover-1"
         assert song.musicBrainzId == "mb-s1"
 
     def test_parse_song_empty(self):
@@ -550,3 +556,31 @@ class TestConfigure:
         repo, _, _ = _make_repo(configured=False)
         repo.configure("", "u", "p")
         assert repo.is_configured() is False
+
+
+class TestPlaylistCacheScope:
+    @pytest.mark.asyncio
+    async def test_list_and_detail_keys_include_requesting_user(self):
+        repo, _, cache = _make_repo(cache_scope="user:alice")
+        repo._request = AsyncMock(
+            side_effect=[{"playlists": {"playlist": []}}, {"playlist": {}}]
+        )
+
+        await repo.get_playlists()
+        await repo.get_playlist("playlist-1")
+
+        assert [call.args[0] for call in cache.get.await_args_list] == [
+            "navidrome:playlists:user:alice",
+            "navidrome:playlist:user:alice:playlist-1",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_playlist_folder_filter_search_key_includes_requesting_user(self):
+        repo, _, cache = _make_repo(cache_scope="user:alice")
+        repo._request = AsyncMock(return_value={"searchResult3": {"song": []}})
+
+        await repo.search_songs(query="", count=500, offset=0)
+
+        cache.get.assert_awaited_once_with(
+            "navidrome:songs_browse:user:alice:scope:all::500:0"
+        )

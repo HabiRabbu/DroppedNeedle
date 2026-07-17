@@ -69,9 +69,11 @@ class PlexRepository:
         self,
         http_client: httpx.AsyncClient,
         cache: CacheInterface,
+        cache_scope: str = "shared",
     ) -> None:
         self._client = http_client
         self._cache = cache
+        self._cache_scope = cache_scope
         self._url: str = ""
         self._token: str = ""
         self._client_id: str = ""
@@ -488,7 +490,7 @@ class PlexRepository:
         return albums
 
     async def get_playlists(self) -> list[PlexPlaylist]:
-        cache_key = f"{PLEX_PREFIX}playlists"
+        cache_key = f"{PLEX_PREFIX}playlists:{self._cache_scope}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -503,7 +505,7 @@ class PlexRepository:
         return playlists
 
     async def get_playlist_items(self, rating_key: str) -> list[PlexTrack]:
-        cache_key = f"{PLEX_PREFIX}playlist:{rating_key}"
+        cache_key = f"{PLEX_PREFIX}playlist:{self._cache_scope}:{rating_key}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -922,22 +924,50 @@ class PlexRepository:
         # clientIdentifiers of servers the account can reach (plex.tv /resources).
         # Lenient parse - Plex lists client devices with no accessToken, which the
         # generated SDK model rejected, breaking login for everyone.
+        devices = await self._get_account_resources(auth_token, client_id)
+        server_ids: set[str] = set()
+        for device in devices:
+            cid = device.get("clientIdentifier")
+            provides = device.get("provides") or ""
+            if cid and "server" in provides:
+                server_ids.add(str(cid))
+        return server_ids
+
+    async def get_server_access_token(
+        self,
+        auth_token: str,
+        client_id: str,
+        machine_id: str,
+    ) -> str | None:
+        """Resolve the PMS-specific token documented on plex.tv resources.
+
+        Verified against the Plex API 1.2.2 resource contract on 2026-07-17:
+        account tokens authorize ``/api/v2/resources`` and each PMS resource's
+        ``accessToken`` is used for requests to that server.
+        """
+        devices = await self._get_account_resources(auth_token, client_id)
+        for device in devices:
+            provides = str(device.get("provides") or "")
+            if (
+                device.get("clientIdentifier") == machine_id
+                and "server" in provides
+            ):
+                token = device.get("accessToken")
+                return str(token) if token else None
+        return None
+
+    async def _get_account_resources(
+        self, auth_token: str, client_id: str
+    ) -> list[dict[str, Any]]:
         data = await self._plex_tv_get(
             "/resources",
             auth_token,
             client_id,
             params={"includeHttps": 1, "includeRelay": 1},
         )
-        devices = data if isinstance(data, list) else []
-        server_ids: set[str] = set()
-        for device in devices:
-            if not isinstance(device, dict):
-                continue
-            cid = device.get("clientIdentifier")
-            provides = device.get("provides") or ""
-            if cid and "server" in provides:
-                server_ids.add(cid)
-        return server_ids
+        if not isinstance(data, list):
+            return []
+        return [device for device in data if isinstance(device, dict)]
 
     async def enumerate_users(self) -> list[PlexAccount]:
         # Enumerate Plex Home/managed users + shared friends for admin import

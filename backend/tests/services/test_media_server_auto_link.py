@@ -120,7 +120,9 @@ def plex_service():
         connections_store=connections,
     )
     svc._get_user_profile = AsyncMock(return_value=dict(_PLEX_PROFILE))
-    svc._get_server_machine_id = AsyncMock(return_value=None)
+    svc._get_server_machine_id = AsyncMock(return_value="machine-1")
+    svc._check_server_membership = AsyncMock(return_value=True)
+    svc._get_server_access_token = AsyncMock(return_value="server-tok")
     svc._find_or_create_user = AsyncMock(return_value=_user())
     return svc, repo, connections
 
@@ -133,7 +135,12 @@ async def test_plex_login_auto_links_connection(plex_service):
     connections.upsert.assert_awaited_once_with(
         "user-1",
         "plex",
-        {"auth_token": "px-tok", "plex_user_id": "px-uid-1", "username": "Alice Plex"},
+        {
+            "auth_token": "px-tok",
+            "server_access_token": "server-tok",
+            "plex_user_id": "px-uid-1",
+            "username": "Alice Plex",
+        },
     )
 
 
@@ -157,7 +164,7 @@ async def test_plex_poll_for_link_pending_returns_none(plex_service):
 async def test_plex_poll_for_link_returns_profile_without_login_side_effects(plex_service):
     svc, _, connections = plex_service
     profile = await svc.poll_for_link(pin_id=1)
-    assert profile == _PLEX_PROFILE
+    assert profile == {**_PLEX_PROFILE, "server_access_token": "server-tok"}
     # link flow persists nothing itself (the route owns the upsert) and never logs in
     connections.upsert.assert_not_awaited()
     svc._find_or_create_user.assert_not_awaited()

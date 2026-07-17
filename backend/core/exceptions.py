@@ -66,6 +66,12 @@ class ConflictError(DroppedNeedleException):
     pass
 
 
+class MediaAccountRelinkRequiredError(ConflictError):
+    """A linked media-server account exists but cannot be used safely."""
+
+    error_code = "MEDIA_ACCOUNT_RELINK_REQUIRED"
+
+
 class PlaylistNotFoundError(ResourceNotFoundError):
     pass
 

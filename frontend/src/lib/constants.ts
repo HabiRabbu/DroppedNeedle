@@ -639,6 +639,8 @@ export const API = {
 		playlists: (limit = 50) => `/api/v1/jellyfin/playlists?limit=${limit}`,
 		playlistDetail: (id: string) => `/api/v1/jellyfin/playlists/${id}`,
 		playlistImport: (id: string) => `/api/v1/jellyfin/playlists/${id}/import`,
+		playlistImage: (playlistId: string, itemId: string, size = 500) =>
+			`/api/v1/jellyfin/playlist-image/${playlistId}/${itemId}?size=${size}`,
 		instantMix: (itemId: string, limit = 50) =>
 			`/api/v1/jellyfin/instant-mix/${itemId}?limit=${limit}`,
 		instantMixByArtist: (artistId: string, limit = 50) =>
@@ -688,6 +690,8 @@ export const API = {
 		playlists: (limit = 50) => `/api/v1/navidrome/playlists?limit=${limit}`,
 		playlistDetail: (id: string) => `/api/v1/navidrome/playlists/${id}`,
 		playlistImport: (id: string) => `/api/v1/navidrome/playlists/${id}/import`,
+		playlistCover: (playlistId: string, coverArtId: string, size = 500) =>
+			`/api/v1/navidrome/playlist-cover/${playlistId}/${coverArtId}?size=${size}`,
 		random: (size = 20, genre?: string) => {
 			let url = `/api/v1/navidrome/random?size=${size}`;
 			if (genre) url += `&genre=${encodeURIComponent(genre)}`;
@@ -755,6 +759,8 @@ export const API = {
 		playlists: (limit = 50) => `/api/v1/plex/playlists?limit=${limit}`,
 		playlistDetail: (id: string) => `/api/v1/plex/playlists/${id}`,
 		playlistImport: (id: string) => `/api/v1/plex/playlists/${id}/import`,
+		playlistImage: (playlistId: string, itemId: string, size = 500) =>
+			`/api/v1/plex/playlist-image/${playlistId}/${itemId}?size=${size}`,
 		discovery: (count = 10) => `/api/v1/plex/discovery?count=${count}`,
 		sessions: () => '/api/v1/plex/sessions',
 		history: (limit = 50, offset = 0) => `/api/v1/plex/history?limit=${limit}&offset=${offset}`,

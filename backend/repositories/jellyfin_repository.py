@@ -70,6 +70,7 @@ class JellyfinRepository:
         api_key: str = "",
         user_id: str = "",
         mbid_store: MBIDStore | None = None,
+        cache_scope: str = "shared",
     ):
         self._client = http_client
         self._cache = cache
@@ -77,6 +78,7 @@ class JellyfinRepository:
         self._base_url = base_url.rstrip("/") if base_url else ""
         self._api_key = api_key
         self._user_id = user_id
+        self._cache_scope = cache_scope
     
     def configure(self, base_url: str, api_key: str, user_id: str = "") -> None:
         self._base_url = base_url.rstrip("/") if base_url else ""
@@ -154,9 +156,10 @@ class JellyfinRepository:
             
             try:
                 return _decode_json_response(response)
-            except (msgspec.DecodeError, ValueError, TypeError):
-                _record_degradation(f"Jellyfin returned invalid JSON for {method} {endpoint}")
-                return None
+            except (msgspec.DecodeError, ValueError, TypeError) as exc:
+                raise ExternalServiceError(
+                    "Jellyfin returned an invalid response"
+                ) from exc
         
         except httpx.HTTPError as e:
             raise ExternalServiceError(f"Jellyfin request failed: {str(e)}")
@@ -792,7 +795,7 @@ class JellyfinRepository:
         limit: int = 50,
     ) -> list[JellyfinItem]:
         uid = user_id or self._user_id
-        cache_key = f"{JELLYFIN_PREFIX}playlists:{uid}:{limit}"
+        cache_key = f"{JELLYFIN_PREFIX}playlists:{self._cache_scope}:{limit}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -807,18 +810,13 @@ class JellyfinRepository:
         }
         if uid:
             params["UserId"] = uid
-        try:
-            result = await self._get("/Items", params=params)
-            if not result:
-                return []
-            raw_items = result.get("Items", [])
-            items = [parse_item(i) for i in raw_items]
-            await self._cache.set(cache_key, items, ttl_seconds=300)
-            return items
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Failed to get Jellyfin playlists: {e}")
-            _record_degradation(f"Failed to get playlists: {e}")
+        result = await self._get("/Items", params=params)
+        if not result:
             return []
+        raw_items = result.get("Items", [])
+        items = [parse_item(i) for i in raw_items]
+        await self._cache.set(cache_key, items, ttl_seconds=300)
+        return items
 
     async def get_playlist(
         self,
@@ -826,20 +824,23 @@ class JellyfinRepository:
         user_id: str | None = None,
     ) -> JellyfinItem | None:
         uid = user_id or self._user_id
+        cache_key = (
+            f"{JELLYFIN_PREFIX}playlist-meta:{self._cache_scope}:{playlist_id}"
+        )
+        cached = await self._cache.get(cache_key)
+        if cached is not None:
+            return cached
         params: dict[str, Any] = {
             "Fields": "ChildCount,DateCreated,ProviderIds",
         }
         if uid:
             params["UserId"] = uid
-        try:
-            result = await self._get(f"/Items/{playlist_id}", params=params)
-            if not result:
-                return None
-            return parse_item(result)
-        except Exception as e:  # noqa: BLE001
-            logger.error("Failed to get Jellyfin playlist %s: %s", playlist_id, e)
-            _record_degradation(f"Failed to get playlist detail: {e}")
+        result = await self._get(f"/Items/{playlist_id}", params=params)
+        if not result:
             return None
+        item = parse_item(result)
+        await self._cache.set(cache_key, item, ttl_seconds=120)
+        return item
 
     async def get_playlist_items(
         self,
@@ -848,7 +849,9 @@ class JellyfinRepository:
         limit: int = 1000,
     ) -> list[JellyfinItem]:
         uid = user_id or self._user_id
-        cache_key = f"{JELLYFIN_PREFIX}playlist:{playlist_id}"
+        cache_key = (
+            f"{JELLYFIN_PREFIX}playlist:{self._cache_scope}:{playlist_id}"
+        )
         cached = await self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -859,18 +862,13 @@ class JellyfinRepository:
         }
         if uid:
             params["UserId"] = uid
-        try:
-            result = await self._get(f"/Playlists/{playlist_id}/Items", params=params)
-            if not result:
-                return []
-            raw_items = result.get("Items", [])
-            items = [parse_item(i) for i in raw_items if i.get("Type") == "Audio"]
-            await self._cache.set(cache_key, items, ttl_seconds=120)
-            return items
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Failed to get Jellyfin playlist items for {playlist_id}: {e}")
-            _record_degradation(f"Failed to get playlist items: {e}")
+        result = await self._get(f"/Playlists/{playlist_id}/Items", params=params)
+        if not result:
             return []
+        raw_items = result.get("Items", [])
+        items = [parse_item(i) for i in raw_items if i.get("Type") == "Audio"]
+        await self._cache.set(cache_key, items, ttl_seconds=120)
+        return items
 
     async def get_instant_mix(
         self,

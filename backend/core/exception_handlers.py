@@ -112,7 +112,11 @@ async def conflict_error_handler(
     request: Request, exc: ConflictError
 ) -> MsgSpecJSONResponse:
     logger.warning("Conflict: %s - %s %s", exc, request.method, request.url.path)
-    return error_response(status.HTTP_409_CONFLICT, CONFLICT, str(exc))
+    return error_response(
+        status.HTTP_409_CONFLICT,
+        getattr(exc, "error_code", CONFLICT),
+        str(exc),
+    )
 
 
 async def stale_revision_error_handler(

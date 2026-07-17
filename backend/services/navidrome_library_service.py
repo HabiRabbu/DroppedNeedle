@@ -26,6 +26,7 @@ from api.v1.schemas.navidrome import (
     NavidromeNowPlayingEntrySchema,
     NavidromeNowPlayingResponse,
     NavidromePlaylistDetail,
+    NavidromePlaylistCollection,
     NavidromePlaylistSummary,
     NavidromePlaylistTrack,
     NavidromeSearchResponse,
@@ -33,10 +34,16 @@ from api.v1.schemas.navidrome import (
 )
 from infrastructure.cover_urls import prefer_artist_cover_url, prefer_release_group_cover_url
 from infrastructure.validators import clean_lastfm_bio
-from core.exceptions import ExternalServiceError
+from core.exceptions import (
+    ExternalServiceError,
+    MediaAccountRelinkRequiredError,
+    NavidromeAuthError,
+    ResourceNotFoundError,
+)
 from repositories.navidrome_models import SubsonicAlbum, SubsonicSong
 from repositories.protocols import NavidromeRepositoryProtocol
 from services.preferences_service import PreferencesService
+from services.per_user_client_factory import MediaClientResolution, PerUserClientFactory
 
 if TYPE_CHECKING:
     from infrastructure.persistence import LibraryDB, MBIDStore
@@ -61,7 +68,7 @@ def _clean_album_name(name: str) -> str:
     """Strip common suffixes like '(Remastered 2009)', '[Deluxe Edition]', year prefixes, etc."""
     cleaned = name.strip()
     cleaned = re.sub(r'\s*[\(\[][^)\]]*(?:remaster|deluxe|edition|bonus|expanded|mono|stereo|anniversary)[^)\]]*[\)\]]', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'^\d{4}\s*[-–—]\s*', '', cleaned)
+    cleaned = re.sub(r'^\d{4}\s*[-–\u2014]\s*', '', cleaned)
     cleaned = re.sub(r'\s*-\s*EP$', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\s*\[[^\]]*\]\s*$', '', cleaned)
     return cleaned.strip()
@@ -82,11 +89,13 @@ class NavidromeLibraryService:
         preferences_service: PreferencesService,
         library_db: 'LibraryDB | None' = None,
         mbid_store: 'MBIDStore | None' = None,
+        client_factory: PerUserClientFactory | None = None,
     ):
         self._navidrome = navidrome_repo
         self._preferences = preferences_service
         self._library_db = library_db
         self._mbid_store = mbid_store
+        self._client_factory = client_factory
         self._album_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._artist_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._mbid_to_navidrome_id: dict[str, str] = {}
@@ -695,15 +704,31 @@ class NavidromeLibraryService:
 
         return NavidromeAlbumMatch(found=False)
 
+    async def _playlist_resolution(
+        self, user_id: str
+    ) -> MediaClientResolution[NavidromeRepositoryProtocol]:
+        if self._client_factory is not None:
+            linked = await self._client_factory.resolve_navidrome_playlist(user_id)
+            if linked is not None:
+                return linked
+        return MediaClientResolution(
+            repository=self._navidrome,
+            account_mode="shared",
+            account_label="Shared Navidrome account",
+            cache_scope="shared",
+        )
+
     async def _scoped_song_ids(
-        self, music_folder_ids: tuple[str, ...]
+        self,
+        repo: NavidromeRepositoryProtocol,
+        music_folder_ids: tuple[str, ...],
     ) -> set[str]:
         if not music_folder_ids:
             return set()
         ids: set[str] = set()
         offset = 0
         while offset < 100_000:
-            songs = await self._navidrome.search_songs(
+            songs = await repo.search_songs(
                 query="",
                 count=500,
                 offset=offset,
@@ -715,23 +740,24 @@ class NavidromeLibraryService:
             offset += len(songs)
         return ids
 
-    async def list_playlists(
+    async def _list_playlists(
         self,
+        repo: NavidromeRepositoryProtocol,
         limit: int = 50,
         music_folder_ids: tuple[str, ...] | None = None,
     ) -> list[NavidromePlaylistSummary]:
-        raw = await self._navidrome.get_playlists()
+        raw = await repo.get_playlists()
         allowed_ids = (
             None
             if music_folder_ids is None
-            else await self._scoped_song_ids(music_folder_ids)
+            else await self._scoped_song_ids(repo, music_folder_ids)
         )
         summaries = []
         for p in raw[:limit]:
             song_count = p.songCount
             duration = p.duration
             if allowed_ids is not None:
-                detail = await self._navidrome.get_playlist(p.id)
+                detail = await repo.get_playlist(p.id)
                 entries = [
                     song for song in (detail.entry or []) if song.id in allowed_ids
                 ]
@@ -742,26 +768,71 @@ class NavidromeLibraryService:
                 name=p.name,
                 track_count=song_count,
                 duration_seconds=duration,
-                cover_url=f"/api/v1/navidrome/cover/{p.id}" if p.id else "",
+                cover_url=(
+                    f"/api/v1/navidrome/playlist-cover/{p.id}/{p.coverArt or p.id}"
+                    if p.id
+                    else ""
+                ),
                 owner=p.owner,
                 is_public=p.public,
                 updated_at=p.changed,
             ))
         return summaries
 
-    async def get_playlist_detail(
+    async def list_playlists(
         self,
+        limit: int = 50,
+        music_folder_ids: tuple[str, ...] | None = None,
+    ) -> list[NavidromePlaylistSummary]:
+        return await self._list_playlists(
+            self._navidrome, limit, music_folder_ids
+        )
+
+    async def list_user_playlists(
+        self,
+        requesting: 'UserRecord',
+        playlist_service: 'PlaylistService',
+        limit: int = 50,
+        music_folder_ids: tuple[str, ...] | None = None,
+    ) -> NavidromePlaylistCollection:
+        resolution = await self._playlist_resolution(requesting.id)
+        try:
+            playlists = await self._list_playlists(
+                resolution.repository, limit, music_folder_ids
+            )
+        except NavidromeAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Navidrome to check your playlists"
+                ) from exc
+            raise
+        imported_ids = await playlist_service.get_imported_source_ids(
+            "navidrome:", user_id=requesting.id
+        )
+        for playlist in playlists:
+            playlist.is_imported = playlist.id in imported_ids
+        return NavidromePlaylistCollection(
+            account_mode=resolution.account_mode,
+            account_label=resolution.account_label,
+            playlists=playlists,
+        )
+
+    async def _get_playlist_detail(
+        self,
+        repo: NavidromeRepositoryProtocol,
         playlist_id: str,
         music_folder_ids: tuple[str, ...] | None = None,
     ) -> NavidromePlaylistDetail:
-        raw = await self._navidrome.get_playlist(playlist_id)
+        visible = await repo.get_playlists()
+        if not any(playlist.id == playlist_id for playlist in visible):
+            raise ResourceNotFoundError("Navidrome playlist not found")
+        raw = await repo.get_playlist(playlist_id)
         if raw is None:
-            from core.exceptions import ResourceNotFoundError
-            raise ResourceNotFoundError(f"Navidrome playlist {playlist_id} not found")
+            raise ResourceNotFoundError("Navidrome playlist not found")
 
         entries = raw.entry or []
         if music_folder_ids is not None:
-            allowed_ids = await self._scoped_song_ids(music_folder_ids)
+            allowed_ids = await self._scoped_song_ids(repo, music_folder_ids)
             entries = [song for song in entries if song.id in allowed_ids]
         tracks = []
         for s in entries:
@@ -775,7 +846,12 @@ class NavidromeLibraryService:
                 duration_seconds=s.duration,
                 track_number=s.track,
                 disc_number=s.discNumber,
-                cover_url=f"/api/v1/navidrome/cover/{s.albumId}" if s.albumId else "",
+                cover_url=(
+                    f"/api/v1/navidrome/playlist-cover/{playlist_id}/"
+                    f"{s.coverArt or s.albumId}"
+                    if (s.coverArt or s.albumId)
+                    else ""
+                ),
             ))
 
         return NavidromePlaylistDetail(
@@ -783,9 +859,72 @@ class NavidromeLibraryService:
             name=raw.name,
             track_count=len(tracks),
             duration_seconds=sum(track.duration_seconds for track in tracks),
-            cover_url=f"/api/v1/navidrome/cover/{raw.id}" if raw.id else "",
+            cover_url=(
+                f"/api/v1/navidrome/playlist-cover/{raw.id}/{raw.coverArt or raw.id}"
+                if raw.id
+                else ""
+            ),
             tracks=tracks,
         )
+
+    async def get_playlist_detail(
+        self,
+        playlist_id: str,
+        music_folder_ids: tuple[str, ...] | None = None,
+    ) -> NavidromePlaylistDetail:
+        return await self._get_playlist_detail(
+            self._navidrome, playlist_id, music_folder_ids
+        )
+
+    async def get_user_playlist_detail(
+        self,
+        playlist_id: str,
+        requesting: 'UserRecord',
+        music_folder_ids: tuple[str, ...] | None = None,
+    ) -> NavidromePlaylistDetail:
+        resolution = await self._playlist_resolution(requesting.id)
+        try:
+            return await self._get_playlist_detail(
+                resolution.repository, playlist_id, music_folder_ids
+            )
+        except NavidromeAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Navidrome to check your playlists"
+                ) from exc
+            raise
+
+    async def get_playlist_cover(
+        self,
+        playlist_id: str,
+        cover_art_id: str,
+        requesting: 'UserRecord',
+        size: int,
+    ) -> tuple[bytes, str]:
+        resolution = await self._playlist_resolution(requesting.id)
+        repo = resolution.repository
+        try:
+            visible = await repo.get_playlists()
+            summary = next(
+                (playlist for playlist in visible if playlist.id == playlist_id),
+                None,
+            )
+            if summary is None:
+                raise ResourceNotFoundError("Navidrome playlist cover not found")
+            detail = await repo.get_playlist(playlist_id)
+            allowed = {playlist_id, summary.coverArt, detail.coverArt}
+            for item in detail.entry or []:
+                allowed.update((item.id, item.albumId, item.coverArt))
+            allowed.discard("")
+            if cover_art_id not in allowed:
+                raise ResourceNotFoundError("Navidrome playlist cover not found")
+            return await repo.get_cover_art(cover_art_id, size)
+        except NavidromeAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Navidrome to check your playlists"
+                ) from exc
+            raise
 
     async def import_playlist(
         self,
@@ -802,7 +941,9 @@ class NavidromeLibraryService:
                 already_imported=True,
             )
 
-        detail = await self.get_playlist_detail(playlist_id, music_folder_ids)
+        detail = await self.get_user_playlist_detail(
+            playlist_id, requesting, music_folder_ids
+        )
         try:
             created = await playlist_service.create_playlist(
                 detail.name, source_ref=source_ref, user_id=requesting.id,
@@ -910,12 +1051,6 @@ class NavidromeLibraryService:
                 self.get_stats(music_folder_ids), timeout=_HUB_TIMEOUT
             ),
             asyncio.wait_for(
-                self.list_playlists(
-                    limit=20, music_folder_ids=music_folder_ids
-                ),
-                timeout=_HUB_TIMEOUT,
-            ),
-            asyncio.wait_for(
                 self.get_genres(music_folder_ids), timeout=_HUB_TIMEOUT
             ),
             return_exceptions=True,
@@ -948,13 +1083,9 @@ class NavidromeLibraryService:
         if isinstance(results[3], BaseException):
             logger.warning("Hub: get_stats failed: %s", results[3])
 
-        playlists = results[4] if not isinstance(results[4], BaseException) else []
+        genres = results[4] if not isinstance(results[4], BaseException) else []
         if isinstance(results[4], BaseException):
-            logger.warning("Hub: list_playlists failed: %s", results[4])
-
-        genres = results[5] if not isinstance(results[5], BaseException) else []
-        if isinstance(results[5], BaseException):
-            logger.warning("Hub: get_genres failed: %s", results[5])
+            logger.warning("Hub: get_genres failed: %s", results[4])
 
         return NavidromeHubResponse(
             stats=stats,
@@ -963,7 +1094,6 @@ class NavidromeLibraryService:
             favorite_artists=favorite_artists,
             favorite_tracks=favorite_tracks,
             all_albums_preview=all_albums_preview,
-            playlists=playlists,
             genres=genres,
         )
 

@@ -395,6 +395,7 @@ async def connect_navidrome(
     await store.upsert(
         current_user.id, "navidrome", {"username": body.username, "password": body.password}
     )
+    await client_factory.invalidate_playlist_cache(current_user.id, "navidrome")
     return ConnectionStatus(service="navidrome", enabled=True, username=body.username)
 
 
@@ -403,6 +404,7 @@ async def connect_jellyfin(
     current_user: CurrentUserDep,
     body: MediaServerConnectRequest = MsgSpecBody(MediaServerConnectRequest),
     auth_service: JellyfinUserAuthService = Depends(get_jellyfin_user_auth_service),
+    client_factory: PerUserClientFactory = Depends(get_per_user_client_factory),
     store: UserConnectionsStore = Depends(get_user_connections_store),
     preferences_service: PreferencesService = Depends(get_preferences_service),
 ) -> ConnectionStatus:
@@ -427,6 +429,7 @@ async def connect_jellyfin(
             "username": profile["username"],
         },
     )
+    await client_factory.invalidate_playlist_cache(current_user.id, "jellyfin")
     return ConnectionStatus(service="jellyfin", enabled=True, username=profile["username"])
 
 
@@ -452,6 +455,7 @@ async def plex_link_poll(
     current_user: CurrentUserDep,
     auth_service: PlexUserAuthService = Depends(get_plex_user_auth_service),
     store: UserConnectionsStore = Depends(get_user_connections_store),
+    client_factory: PerUserClientFactory = Depends(get_per_user_client_factory),
 ) -> PlexLinkPollResponse:
     try:
         profile = await auth_service.poll_for_link(pin_id)
@@ -465,10 +469,12 @@ async def plex_link_poll(
         "plex",
         {
             "auth_token": profile["auth_token"],
+            "server_access_token": profile["server_access_token"],
             "plex_user_id": profile["uuid"],
             "username": profile["display_name"],
         },
     )
+    await client_factory.invalidate_playlist_cache(current_user.id, "plex")
     return PlexLinkPollResponse(completed=True, username=profile["display_name"])
 
 
@@ -477,10 +483,13 @@ async def disconnect(
     current_user: CurrentUserDep,
     service: str,
     store: UserConnectionsStore = Depends(get_user_connections_store),
+    client_factory: PerUserClientFactory = Depends(get_per_user_client_factory),
 ) -> ConnectionActionResponse:
     if service not in _SUPPORTED_SERVICES:
         raise HTTPException(status_code=404, detail="Unknown service")
     deleted = await store.delete(current_user.id, service)
+    if deleted:
+        await client_factory.invalidate_playlist_cache(current_user.id, service)
     return ConnectionActionResponse(service=service, deleted=deleted)
 
 

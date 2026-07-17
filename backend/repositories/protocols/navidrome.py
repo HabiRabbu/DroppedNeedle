@@ -108,6 +108,11 @@ class NavidromeRepositoryProtocol(Protocol):
     async def get_playlist(self, id: str) -> SubsonicPlaylist:
         ...
 
+    async def get_cover_art(
+        self, cover_art_id: str, size: int = 500
+    ) -> tuple[bytes, str]:
+        ...
+
     async def get_random_songs(
         self,
         size: int = 20,

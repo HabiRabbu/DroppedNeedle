@@ -308,6 +308,21 @@ const COVERAGE: Array<[string, string, string]> = [
 	['connect jellyfin', API.me.jellyfin(), '/api/v1/me/connections/jellyfin'],
 	['plex link pin', API.me.plexAuthPin(), '/api/v1/me/connections/plex/auth/pin'],
 	['plex link poll', API.me.plexAuthPoll(7), '/api/v1/me/connections/plex/auth/poll?pin_id=7'],
+	[
+		'Jellyfin user playlist image',
+		API.jellyfinLibrary.playlistImage('P1', 'I1', 300),
+		'/api/v1/jellyfin/playlist-image/P1/I1?size=300'
+	],
+	[
+		'Navidrome user playlist cover',
+		API.navidromeLibrary.playlistCover('P1', 'C1', 300),
+		'/api/v1/navidrome/playlist-cover/P1/C1?size=300'
+	],
+	[
+		'Plex user playlist image',
+		API.plexLibrary.playlistImage('P1', 'I1', 300),
+		'/api/v1/plex/playlist-image/P1/I1?size=300'
+	],
 	// Weekly Mix (user-scoped refresh + admin standing-grant queue)
 	['personal mix refresh', API.me.personalMixRefresh(), '/api/v1/me/personal-mix/refresh'],
 	[

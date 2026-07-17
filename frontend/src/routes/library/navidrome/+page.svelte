@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { API } from '$lib/constants';
-	import { api } from '$lib/api/client';
+	import { api, ApiError } from '$lib/api/client';
+	import { getSourcePlaylistsQuery } from '$lib/queries/source-playlists/SourcePlaylistQueries.svelte';
 	import SourceAlbumCardCompact from '$lib/components/SourceAlbumCardCompact.svelte';
 	import ArtistImage from '$lib/components/ArtistImage.svelte';
 	import HorizontalCarousel from '$lib/components/HorizontalCarousel.svelte';
@@ -42,6 +43,15 @@
 	let hub = $state<NavidromeHubResponse | null>(null);
 	let loading = $state(true);
 	let error = $state('');
+	const playlistsQuery = getSourcePlaylistsQuery(() => 'navidrome');
+	const playlistCollection = $derived(playlistsQuery.data);
+	const playlistErrorCode = $derived(
+		playlistsQuery.error instanceof ApiError
+			? playlistsQuery.error.code || 'SOURCE_PLAYLISTS_UNAVAILABLE'
+			: playlistsQuery.isError
+				? 'SOURCE_PLAYLISTS_UNAVAILABLE'
+				: ''
+	);
 
 	let selectedAlbum = $state<NavidromeAlbumSummary | null>(null);
 	let modalOpen = $state(false);
@@ -83,6 +93,7 @@
 	async function refreshHub() {
 		refreshing = true;
 		try {
+			await playlistsQuery.refetch();
 			hub = await api.get<NavidromeHubResponse>(API.navidromeLibrary.hub());
 			loadTopSongs();
 			loadSimilarSongs();
@@ -313,19 +324,22 @@
 
 	<BrowseHeroCards cards={browseCards} />
 
-	{#if hub && hub.playlists.length > 0}
-		<PlaylistImportBanner
-			playlists={hub.playlists}
-			sourceLabel="Navidrome"
-			playlistsHref="/library/navidrome/playlists"
-		>
-			{#snippet sourceIcon()}
-				<span style="color: rgb(var(--brand-navidrome));">
-					<NavidromeIcon class="h-4 w-4" />
-				</span>
-			{/snippet}
-		</PlaylistImportBanner>
-	{/if}
+	<PlaylistImportBanner
+		playlists={playlistCollection?.playlists ?? []}
+		accountMode={playlistCollection?.account_mode}
+		accountLabel={playlistCollection?.account_label}
+		loading={playlistsQuery.isPending}
+		errorCode={playlistErrorCode}
+		onretry={() => void playlistsQuery.refetch()}
+		sourceLabel="Navidrome"
+		playlistsHref="/library/navidrome/playlists"
+	>
+		{#snippet sourceIcon()}
+			<span style="color: rgb(var(--brand-navidrome));">
+				<NavidromeIcon class="h-4 w-4" />
+			</span>
+		{/snippet}
+	</PlaylistImportBanner>
 
 	<NowPlayingWidget sessions={navidromeSessions} />
 

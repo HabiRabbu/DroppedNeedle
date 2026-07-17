@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { API } from '$lib/constants';
-	import { api } from '$lib/api/client';
+	import { api, ApiError } from '$lib/api/client';
+	import { getSourcePlaylistsQuery } from '$lib/queries/source-playlists/SourcePlaylistQueries.svelte';
 	import { resetPlexScrobblePreference } from '$lib/player/plexPlaybackApi';
 	import SourceAlbumCardCompact from '$lib/components/SourceAlbumCardCompact.svelte';
 	import HorizontalCarousel from '$lib/components/HorizontalCarousel.svelte';
@@ -44,6 +45,15 @@
 	let hub = $state<PlexHubResponse | null>(null);
 	let loading = $state(true);
 	let error = $state('');
+	const playlistsQuery = getSourcePlaylistsQuery(() => 'plex');
+	const playlistCollection = $derived(playlistsQuery.data);
+	const playlistErrorCode = $derived(
+		playlistsQuery.error instanceof ApiError
+			? playlistsQuery.error.code || 'SOURCE_PLAYLISTS_UNAVAILABLE'
+			: playlistsQuery.isError
+				? 'SOURCE_PLAYLISTS_UNAVAILABLE'
+				: ''
+	);
 
 	let scrobbleEnabled = $state(true);
 	let scrobbleLoading = $state(false);
@@ -79,6 +89,7 @@
 	async function refreshHub() {
 		refreshing = true;
 		try {
+			await playlistsQuery.refetch();
 			hub = await api.get<PlexHubResponse>(API.plexLibrary.hub());
 			loadDiscovery();
 			loadHistory();
@@ -297,17 +308,20 @@
 
 	<BrowseHeroCards cards={browseCards} />
 
-	{#if hub && hub.playlists.length > 0}
-		<PlaylistImportBanner
-			playlists={hub.playlists}
-			sourceLabel="Plex"
-			playlistsHref="/library/plex/playlists"
-		>
-			{#snippet sourceIcon()}
-				<PlexIcon class="h-4 w-4" style="color: rgb(var(--brand-plex));" />
-			{/snippet}
-		</PlaylistImportBanner>
-	{/if}
+	<PlaylistImportBanner
+		playlists={playlistCollection?.playlists ?? []}
+		accountMode={playlistCollection?.account_mode}
+		accountLabel={playlistCollection?.account_label}
+		loading={playlistsQuery.isPending}
+		errorCode={playlistErrorCode}
+		onretry={() => void playlistsQuery.refetch()}
+		sourceLabel="Plex"
+		playlistsHref="/library/plex/playlists"
+	>
+		{#snippet sourceIcon()}
+			<PlexIcon class="h-4 w-4" style="color: rgb(var(--brand-plex));" />
+		{/snippet}
+	</PlaylistImportBanner>
 
 	<NowPlayingWidget sessions={plexSessions} />
 

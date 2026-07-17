@@ -18,7 +18,7 @@ from api.v1.schemas.plex import (
     PlexImportResult,
     PlexLibraryStats,
     PlexPlaylistDetail,
-    PlexPlaylistSummary,
+    PlexPlaylistCollection,
     PlexSearchResponse,
     PlexSessionsResponse,
     PlexTrackPage,
@@ -56,15 +56,9 @@ _PLEX_SORT_FIELD: dict[str, str] = {
 async def get_plex_hub(
     current_user: CurrentUserDep,
     service: PlexLibraryService = Depends(get_plex_library_service),
-    playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> PlexHubResponse:
     try:
-        hub = await service.get_hub_data()
-        imported_ids = await playlist_service.get_imported_source_ids("plex:", user_id=current_user.id)
-        for p in hub.playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return hub
+        return await service.get_hub_data()
     except ExternalServiceError as e:
         logger.error("Plex service error getting hub data: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Plex")
@@ -272,19 +266,48 @@ async def get_plex_thumb(
 @router.get("/playlist-thumb/{rating_key}")
 async def get_plex_playlist_thumb(
     rating_key: str,
+    current_user: CurrentUserDep,
     size: int = Query(default=500, ge=32, le=1200),
-    repo: PlexRepository = Depends(get_plex_repository),
+    service: PlexLibraryService = Depends(get_plex_library_service),
 ) -> Response:
     try:
-        image_bytes, content_type = await repo.proxy_playlist_composite(rating_key, size)
+        image_bytes, content_type = await service.get_playlist_image(
+            rating_key, rating_key, current_user, size
+        )
         return Response(
             content=image_bytes,
             media_type=content_type,
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, no-store"},
         )
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Plex playlist image not found")
     except ExternalServiceError as e:
         logger.warning("Plex playlist composite failed for %s: %s", rating_key, e)
         raise HTTPException(status_code=502, detail="Failed to fetch playlist thumbnail")
+
+
+@router.get("/playlist-image/{playlist_id}/{item_id}")
+async def get_plex_playlist_image(
+    playlist_id: str,
+    item_id: str,
+    current_user: CurrentUserDep,
+    size: int = Query(default=500, ge=32, le=1200),
+    service: PlexLibraryService = Depends(get_plex_library_service),
+) -> Response:
+    try:
+        image_bytes, content_type = await service.get_playlist_image(
+            playlist_id, item_id, current_user, size
+        )
+        return Response(
+            content=image_bytes,
+            media_type=content_type,
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Plex playlist image not found")
+    except ExternalServiceError as e:
+        logger.warning("Plex playlist image failed for %s: %s", playlist_id, e)
+        raise HTTPException(status_code=502, detail="Failed to fetch playlist image")
 
 
 @router.get("/album-match/{album_id}", response_model=PlexAlbumMatch)
@@ -303,20 +326,17 @@ async def match_plex_album(
         raise HTTPException(status_code=502, detail="Failed to match Plex album")
 
 
-@router.get("/playlists", response_model=list[PlexPlaylistSummary])
+@router.get("/playlists", response_model=PlexPlaylistCollection)
 async def get_plex_playlists(
     current_user: CurrentUserDep,
     limit: int = Query(default=50, ge=1, le=200),
     service: PlexLibraryService = Depends(get_plex_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
-) -> list[PlexPlaylistSummary]:
+) -> PlexPlaylistCollection:
     try:
-        playlists = await service.list_playlists(limit=limit)
-        imported_ids = await playlist_service.get_imported_source_ids("plex:", user_id=current_user.id)
-        for p in playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return playlists
+        return await service.list_user_playlists(
+            current_user, playlist_service, limit=limit
+        )
     except ExternalServiceError as e:
         logger.error("Failed to get Plex playlists: %s", e)
         raise HTTPException(status_code=502, detail="Failed to get Plex playlists")
@@ -325,10 +345,11 @@ async def get_plex_playlists(
 @router.get("/playlists/{playlist_id}", response_model=PlexPlaylistDetail)
 async def get_plex_playlist_detail(
     playlist_id: str,
+    current_user: CurrentUserDep,
     service: PlexLibraryService = Depends(get_plex_library_service),
 ) -> PlexPlaylistDetail:
     try:
-        return await service.get_playlist_detail(playlist_id)
+        return await service.get_user_playlist_detail(playlist_id, current_user)
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Plex playlist not found")
     except ExternalServiceError as e:

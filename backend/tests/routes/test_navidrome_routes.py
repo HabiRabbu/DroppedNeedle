@@ -71,6 +71,7 @@ def mock_library_service():
         total_tracks=100, total_albums=10, total_artists=5,
     ))
     mock.get_album_match = AsyncMock(return_value=NavidromeAlbumMatch(found=True, navidrome_album_id="nd-1"))
+    mock.get_playlist_cover = AsyncMock(return_value=(b"playlist-cover", "image/jpeg"))
     return mock
 
 
@@ -315,3 +316,20 @@ class TestNavidromeScrobble:
         resp = stream_client.post("/stream/navidrome/s1/scrobble")
         assert resp.status_code == 200
         assert resp.json()["status"] == "error"
+
+
+class TestPersonalPlaylistCover:
+    def test_cover_is_private_and_passes_requesting_user(
+        self, library_client, mock_library_service
+    ):
+        resp = library_client.get(
+            "/navidrome/playlist-cover/playlist-1/cover-1?size=320"
+        )
+
+        assert resp.status_code == 200
+        assert resp.content == b"playlist-cover"
+        assert resp.headers["cache-control"] == "private, no-store"
+        call = mock_library_service.get_playlist_cover.await_args
+        assert call.args[0:2] == ("playlist-1", "cover-1")
+        assert call.args[2].id == "test-user-id"
+        assert call.args[3] == 320

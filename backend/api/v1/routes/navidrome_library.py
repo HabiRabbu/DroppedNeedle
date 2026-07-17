@@ -22,7 +22,7 @@ from api.v1.schemas.navidrome import (
     NavidromeMusicFolder,
     NavidromeNowPlayingResponse,
     NavidromePlaylistDetail,
-    NavidromePlaylistSummary,
+    NavidromePlaylistCollection,
     NavidromeSearchResponse,
     NavidromeTrackInfo,
     NavidromeTrackPage,
@@ -83,15 +83,9 @@ async def get_navidrome_hub(
     current_user: CurrentUserDep,
     music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
-    playlist_service: PlaylistService = Depends(get_playlist_service),
 ) -> NavidromeHubResponse:
     try:
-        hub = await service.get_hub_data(music_folder_ids)
-        imported_ids = await playlist_service.get_imported_source_ids("navidrome:", user_id=current_user.id)
-        for p in hub.playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return hub
+        return await service.get_hub_data(music_folder_ids)
     except ExternalServiceError as e:
         logger.error("Navidrome service error getting hub data: %s", e)
         raise HTTPException(status_code=502, detail="Failed to communicate with Navidrome")
@@ -365,6 +359,30 @@ async def get_navidrome_cover(
         raise HTTPException(status_code=502, detail="Failed to fetch cover art")
 
 
+@router.get("/playlist-cover/{playlist_id}/{cover_art_id}")
+async def get_navidrome_playlist_cover(
+    playlist_id: str,
+    cover_art_id: str,
+    current_user: CurrentUserDep,
+    size: int = Query(default=500, ge=32, le=1200),
+    service: NavidromeLibraryService = Depends(get_navidrome_library_service),
+) -> Response:
+    try:
+        image_bytes, content_type = await service.get_playlist_cover(
+            playlist_id, cover_art_id, current_user, size
+        )
+        return Response(
+            content=image_bytes,
+            media_type=content_type,
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Navidrome playlist cover not found")
+    except ExternalServiceError as e:
+        logger.warning("Navidrome playlist cover failed for %s: %s", playlist_id, e)
+        raise HTTPException(status_code=502, detail="Failed to fetch cover art")
+
+
 @router.get("/album-match/{album_id}", response_model=NavidromeAlbumMatch)
 async def match_navidrome_album(
     album_id: str,
@@ -383,23 +401,21 @@ async def match_navidrome_album(
         raise HTTPException(status_code=502, detail="Failed to match Navidrome album")
 
 
-@router.get("/playlists", response_model=list[NavidromePlaylistSummary])
+@router.get("/playlists", response_model=NavidromePlaylistCollection)
 async def get_navidrome_playlists(
     current_user: CurrentUserDep,
     music_folder_ids: UserMusicFolderIdsDep,
     limit: int = Query(default=50, ge=1, le=200),
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
     playlist_service: PlaylistService = Depends(get_playlist_service),
-) -> list[NavidromePlaylistSummary]:
+) -> NavidromePlaylistCollection:
     try:
-        playlists = await service.list_playlists(
-            limit=limit, music_folder_ids=music_folder_ids
+        return await service.list_user_playlists(
+            current_user,
+            playlist_service,
+            limit=limit,
+            music_folder_ids=music_folder_ids,
         )
-        imported_ids = await playlist_service.get_imported_source_ids("navidrome:", user_id=current_user.id)
-        for p in playlists:
-            if p.id in imported_ids:
-                p.is_imported = True
-        return playlists
     except ExternalServiceError as e:
         logger.error("Failed to get Navidrome playlists: %s", e)
         raise HTTPException(status_code=502, detail="Failed to get Navidrome playlists")
@@ -408,11 +424,14 @@ async def get_navidrome_playlists(
 @router.get("/playlists/{playlist_id}", response_model=NavidromePlaylistDetail)
 async def get_navidrome_playlist_detail(
     playlist_id: str,
+    current_user: CurrentUserDep,
     music_folder_ids: UserMusicFolderIdsDep,
     service: NavidromeLibraryService = Depends(get_navidrome_library_service),
 ) -> NavidromePlaylistDetail:
     try:
-        return await service.get_playlist_detail(playlist_id, music_folder_ids)
+        return await service.get_user_playlist_detail(
+            playlist_id, current_user, music_folder_ids
+        )
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Navidrome playlist not found")
     except ExternalServiceError as e:

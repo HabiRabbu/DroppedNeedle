@@ -1802,7 +1802,9 @@ def get_jellyfin_library_service() -> "JellyfinLibraryService":
 
     jellyfin_repo = get_jellyfin_repository()
     preferences_service = get_preferences_service()
-    return JellyfinLibraryService(jellyfin_repo, preferences_service)
+    return JellyfinLibraryService(
+        jellyfin_repo, preferences_service, get_per_user_client_factory()
+    )
 
 
 @singleton
@@ -1814,7 +1816,11 @@ def get_navidrome_library_service() -> "NavidromeLibraryService":
     library_db = get_library_db()
     mbid_store = get_mbid_store()
     return NavidromeLibraryService(
-        navidrome_repo, preferences_service, library_db, mbid_store
+        navidrome_repo,
+        preferences_service,
+        library_db,
+        mbid_store,
+        get_per_user_client_factory(),
     )
 
 
@@ -1827,6 +1833,7 @@ def get_target_navidrome_library_service() -> "NavidromeLibraryService":
         get_preferences_service(),
         get_target_library_repository(),
         get_mbid_store(),
+        get_per_user_client_factory(),
     )
 
 
@@ -1863,7 +1870,13 @@ def get_plex_library_service() -> "PlexLibraryService":
     preferences_service = get_preferences_service()
     library_db = get_library_db()
     mbid_store = get_mbid_store()
-    return PlexLibraryService(plex_repo, preferences_service, library_db, mbid_store)
+    return PlexLibraryService(
+        plex_repo,
+        preferences_service,
+        library_db,
+        mbid_store,
+        get_per_user_client_factory(),
+    )
 
 
 @singleton
@@ -1875,6 +1888,7 @@ def get_target_plex_library_service() -> "PlexLibraryService":
         get_preferences_service(),
         get_target_library_repository(),
         get_mbid_store(),
+        get_per_user_client_factory(),
     )
 
 

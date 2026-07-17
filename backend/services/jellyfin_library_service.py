@@ -16,6 +16,7 @@ from api.v1.schemas.jellyfin import (
     JellyfinLyricsLineSchema,
     JellyfinLyricsResponse,
     JellyfinPlaylistDetail,
+    JellyfinPlaylistCollection,
     JellyfinPlaylistSummary,
     JellyfinPlaylistTrack,
     JellyfinSearchResponse,
@@ -24,10 +25,16 @@ from api.v1.schemas.jellyfin import (
     JellyfinTrackInfo,
 )
 from infrastructure.cover_urls import prefer_artist_cover_url, prefer_release_group_cover_url
-from core.exceptions import ExternalServiceError
+from core.exceptions import (
+    ExternalServiceError,
+    JellyfinAuthError,
+    MediaAccountRelinkRequiredError,
+    ResourceNotFoundError,
+)
 from repositories.protocols import JellyfinRepositoryProtocol
 from repositories.jellyfin_models import JellyfinItem
 from services.preferences_service import PreferencesService
+from services.per_user_client_factory import MediaClientResolution, PerUserClientFactory
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +49,11 @@ class JellyfinLibraryService:
         self,
         jellyfin_repo: JellyfinRepositoryProtocol,
         preferences_service: PreferencesService,
+        client_factory: PerUserClientFactory | None = None,
     ):
         self._jellyfin = jellyfin_repo
         self._preferences = preferences_service
+        self._client_factory = client_factory
 
     def _get_recently_played_ttl(self) -> int:
         try:
@@ -397,11 +406,27 @@ class JellyfinLibraryService:
         items = await self._jellyfin.get_most_played_albums(limit=limit)
         return [self._item_to_album_summary(i) for i in items]
 
-    async def list_playlists(self, limit: int = 50) -> list[JellyfinPlaylistSummary]:
-        items = await self._jellyfin.get_playlists(limit=limit)
+    async def _playlist_resolution(
+        self, user_id: str
+    ) -> MediaClientResolution[JellyfinRepositoryProtocol]:
+        if self._client_factory is not None:
+            linked = await self._client_factory.resolve_jellyfin_playlist(user_id)
+            if linked is not None:
+                return linked
+        return MediaClientResolution(
+            repository=self._jellyfin,
+            account_mode="shared",
+            account_label="Shared Jellyfin account",
+            cache_scope="shared",
+        )
+
+    async def _list_playlists(
+        self, repo: JellyfinRepositoryProtocol, limit: int
+    ) -> list[JellyfinPlaylistSummary]:
+        items = await repo.get_playlists(limit=limit)
         summaries = []
         for i in items:
-            cover = f"/api/v1/jellyfin/image/{i.id}"
+            cover = f"/api/v1/jellyfin/playlist-image/{i.id}/{i.id}"
             summaries.append(JellyfinPlaylistSummary(
                 id=i.id,
                 name=i.name,
@@ -412,13 +437,46 @@ class JellyfinLibraryService:
             ))
         return summaries
 
-    async def get_playlist_detail(self, playlist_id: str) -> JellyfinPlaylistDetail:
-        playlist = await self._jellyfin.get_playlist(playlist_id)
-        if playlist is None:
-            from core.exceptions import ResourceNotFoundError
-            raise ResourceNotFoundError(f"Jellyfin playlist {playlist_id} not found")
+    async def list_playlists(self, limit: int = 50) -> list[JellyfinPlaylistSummary]:
+        return await self._list_playlists(self._jellyfin, limit)
 
-        items = await self._jellyfin.get_playlist_items(playlist_id)
+    async def list_user_playlists(
+        self,
+        requesting: 'UserRecord',
+        playlist_service: 'PlaylistService',
+        limit: int = 50,
+    ) -> JellyfinPlaylistCollection:
+        resolution = await self._playlist_resolution(requesting.id)
+        try:
+            playlists = await self._list_playlists(resolution.repository, limit)
+        except JellyfinAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Jellyfin to check your playlists"
+                ) from exc
+            raise
+        imported_ids = await playlist_service.get_imported_source_ids(
+            "jellyfin:", user_id=requesting.id
+        )
+        for playlist in playlists:
+            playlist.is_imported = playlist.id in imported_ids
+        return JellyfinPlaylistCollection(
+            account_mode=resolution.account_mode,
+            account_label=resolution.account_label,
+            playlists=playlists,
+        )
+
+    async def _get_playlist_detail(
+        self, repo: JellyfinRepositoryProtocol, playlist_id: str
+    ) -> JellyfinPlaylistDetail:
+        visible = await repo.get_playlists(limit=10_000)
+        if not any(item.id == playlist_id for item in visible):
+            raise ResourceNotFoundError("Jellyfin playlist not found")
+        playlist = await repo.get_playlist(playlist_id)
+        if playlist is None:
+            raise ResourceNotFoundError("Jellyfin playlist not found")
+
+        items = await repo.get_playlist_items(playlist_id)
         tracks = []
         for t in items:
             tracks.append(JellyfinPlaylistTrack(
@@ -431,14 +489,21 @@ class JellyfinLibraryService:
                 duration_seconds=int(t.duration_ticks / 10_000_000) if t.duration_ticks else 0,
                 track_number=t.index_number or 0,
                 disc_number=t.parent_index_number or 1,
-                cover_url=f"/api/v1/jellyfin/image/{t.album_id}" if t.album_id else "",
+                cover_url=(
+                    f"/api/v1/jellyfin/playlist-image/{playlist_id}/{t.album_id}"
+                    if t.album_id
+                    else ""
+                ),
             ))
 
-        cover = f"/api/v1/jellyfin/image/{playlist.id}"
+        cover = f"/api/v1/jellyfin/playlist-image/{playlist.id}/{playlist.id}"
         if not playlist.image_tag and tracks:
             first_with_album = next((t for t in tracks if t.album_id), None)
             if first_with_album:
-                cover = f"/api/v1/jellyfin/image/{first_with_album.album_id}"
+                cover = (
+                    f"/api/v1/jellyfin/playlist-image/{playlist.id}/"
+                    f"{first_with_album.album_id}"
+                )
         return JellyfinPlaylistDetail(
             id=playlist.id,
             name=playlist.name,
@@ -448,6 +513,51 @@ class JellyfinLibraryService:
             created_at=playlist.date_created or "",
             tracks=tracks,
         )
+
+    async def get_playlist_detail(self, playlist_id: str) -> JellyfinPlaylistDetail:
+        return await self._get_playlist_detail(self._jellyfin, playlist_id)
+
+    async def get_user_playlist_detail(
+        self, playlist_id: str, requesting: 'UserRecord'
+    ) -> JellyfinPlaylistDetail:
+        resolution = await self._playlist_resolution(requesting.id)
+        try:
+            return await self._get_playlist_detail(resolution.repository, playlist_id)
+        except JellyfinAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Jellyfin to check your playlists"
+                ) from exc
+            raise
+
+    async def get_playlist_image(
+        self,
+        playlist_id: str,
+        item_id: str,
+        requesting: 'UserRecord',
+        size: int,
+    ) -> tuple[bytes, str]:
+        resolution = await self._playlist_resolution(requesting.id)
+        repo = resolution.repository
+        try:
+            visible = await repo.get_playlists(limit=10_000)
+            if not any(item.id == playlist_id for item in visible):
+                raise ResourceNotFoundError("Jellyfin playlist image not found")
+            items = await repo.get_playlist_items(playlist_id)
+            allowed = {playlist_id}
+            for item in items:
+                allowed.add(item.id)
+                if item.album_id:
+                    allowed.add(item.album_id)
+            if item_id not in allowed:
+                raise ResourceNotFoundError("Jellyfin playlist image not found")
+            return await repo.proxy_image(item_id, size)
+        except JellyfinAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Jellyfin to check your playlists"
+                ) from exc
+            raise
 
     async def import_playlist(
         self,
@@ -463,7 +573,7 @@ class JellyfinLibraryService:
                 already_imported=True,
             )
 
-        detail = await self.get_playlist_detail(playlist_id)
+        detail = await self.get_user_playlist_detail(playlist_id, requesting)
         try:
             created = await playlist_service.create_playlist(
                 detail.name, source_ref=source_ref, user_id=requesting.id,
@@ -578,7 +688,6 @@ class JellyfinLibraryService:
             asyncio.wait_for(self.get_recently_added(limit=20), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_most_played_artists(limit=10), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_most_played_albums(limit=10), timeout=_HUB_TIMEOUT),
-            asyncio.wait_for(self.list_playlists(limit=20), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_genres(), timeout=_HUB_TIMEOUT),
             return_exceptions=True,
         )
@@ -618,13 +727,9 @@ class JellyfinLibraryService:
         if isinstance(results[6], BaseException):
             logger.warning("Hub: get_most_played_albums failed: %s", results[6])
 
-        playlists = results[7] if not isinstance(results[7], BaseException) else []
+        genres = results[7] if not isinstance(results[7], BaseException) else []
         if isinstance(results[7], BaseException):
-            logger.warning("Hub: list_playlists failed: %s", results[7])
-
-        genres = results[8] if not isinstance(results[8], BaseException) else []
-        if isinstance(results[8], BaseException):
-            logger.warning("Hub: get_genres failed: %s", results[8])
+            logger.warning("Hub: get_genres failed: %s", results[7])
 
         return JellyfinHubResponse(
             stats=stats,
@@ -634,7 +739,6 @@ class JellyfinLibraryService:
             most_played_artists=most_played_artists,
             most_played_albums=most_played_albums,
             all_albums_preview=all_albums_preview,
-            playlists=playlists,
             genres=genres,
         )
 

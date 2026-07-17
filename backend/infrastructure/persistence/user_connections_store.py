@@ -141,6 +141,19 @@ class UserConnectionsStore:
         except (json.JSONDecodeError, ValueError):
             return None
 
+    async def has_enabled(self, user_id: str, service: str) -> bool:
+        """Whether an enabled row exists, even if its encrypted data is unusable."""
+
+        def operation(conn: sqlite3.Connection) -> bool:
+            row = conn.execute(
+                "SELECT 1 FROM user_connections "
+                "WHERE user_id = ? AND service = ? AND enabled = 1",
+                (user_id, service),
+            ).fetchone()
+            return row is not None
+
+        return await self._read(operation)
+
     async def list_for_user(self, user_id: str) -> list[UserConnectionRecord]:
         def operation(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             # enabled-only, matching get(), so a disabled row never shows as "linked"

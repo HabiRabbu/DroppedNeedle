@@ -67,9 +67,11 @@ class NavidromeRepository:
         self,
         http_client: httpx.AsyncClient,
         cache: CacheInterface,
+        cache_scope: str = "shared",
     ) -> None:
         self._client = http_client
         self._cache = cache
+        self._cache_scope = cache_scope
         self._url: str = ""
         self._username: str = ""
         self._password: str = ""
@@ -494,7 +496,10 @@ class NavidromeRepository:
         music_folder_ids: tuple[str, ...] | None = None,
     ) -> list[SubsonicSong]:
         scope = self._scope_segment(music_folder_ids)
-        cache_key = f"{NAVIDROME_PREFIX}songs_browse:scope:{scope}:{query}:{count}:{offset}"
+        cache_key = (
+            f"{NAVIDROME_PREFIX}songs_browse:{self._cache_scope}:"
+            f"scope:{scope}:{query}:{count}:{offset}"
+        )
         cached = await self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -530,7 +535,7 @@ class NavidromeRepository:
         return folders
 
     async def get_playlists(self) -> list[SubsonicPlaylist]:
-        cache_key = "navidrome:playlists"
+        cache_key = f"{NAVIDROME_PREFIX}playlists:{self._cache_scope}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -545,13 +550,18 @@ class NavidromeRepository:
                     name=p.get("name", ""),
                     songCount=p.get("songCount", 0),
                     duration=p.get("duration", 0),
+                    owner=p.get("owner", ""),
+                    public=p.get("public", False),
+                    created=p.get("created", ""),
+                    changed=p.get("changed", ""),
+                    coverArt=p.get("coverArt", ""),
                 )
             )
         await self._cache.set(cache_key, playlists, self._ttl_list)
         return playlists
 
     async def get_playlist(self, id: str) -> SubsonicPlaylist:
-        cache_key = f"{NAVIDROME_PREFIX}playlist:{id}"
+        cache_key = f"{NAVIDROME_PREFIX}playlist:{self._cache_scope}:{id}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
             return cached
@@ -564,6 +574,11 @@ class NavidromeRepository:
             name=raw.get("name", ""),
             songCount=raw.get("songCount", 0),
             duration=raw.get("duration", 0),
+            owner=raw.get("owner", ""),
+            public=raw.get("public", False),
+            created=raw.get("created", ""),
+            changed=raw.get("changed", ""),
+            coverArt=raw.get("coverArt", ""),
             entry=[parse_song(e) for e in entries] if entries else None,
         )
         await self._cache.set(cache_key, playlist, self._ttl_detail)

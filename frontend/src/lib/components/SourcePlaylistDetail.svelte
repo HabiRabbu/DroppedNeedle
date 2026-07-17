@@ -1,61 +1,59 @@
 <script lang="ts">
-	import { api } from '$lib/api/client';
+	import { ApiError } from '$lib/api/client';
 	import BackButton from '$lib/components/BackButton.svelte';
+	import { createSourcePlaylistImportMutation } from '$lib/queries/source-playlists/SourcePlaylistMutations.svelte';
+	import { getSourcePlaylistDetailQuery } from '$lib/queries/source-playlists/SourcePlaylistQueries.svelte';
 	import { toastStore } from '$lib/stores/toast';
 	import { formatTotalDurationSec } from '$lib/utils/formatting';
 	import { Disc3, Download } from 'lucide-svelte';
-	import type { SourcePlaylistDetail, SourceImportResult } from '$lib/types';
+	import type { SourcePlaylistSource } from '$lib/types';
 	import type { Snippet } from 'svelte';
 
 	interface Props {
 		playlistId: string;
-		detailUrl: (id: string) => string;
-		importUrl: (id: string) => string;
+		source: SourcePlaylistSource;
 		backFallback: string;
 		icon: Snippet;
 	}
 
-	let { playlistId, detailUrl, importUrl, backFallback, icon }: Props = $props();
-
-	let detail = $state<SourcePlaylistDetail | null>(null);
-	let loading = $state(true);
-	let error = $state('');
-	let importing = $state(false);
-	let importResult = $state<SourceImportResult | null>(null);
-
-	$effect(() => {
-		if (playlistId) loadDetail(playlistId);
-	});
-
-	async function loadDetail(id: string) {
-		loading = true;
-		error = '';
-		try {
-			detail = await api.get<SourcePlaylistDetail>(detailUrl(id));
-		} catch {
-			error = "Couldn't load this playlist.";
-		} finally {
-			loading = false;
-		}
-	}
+	let { playlistId, source, backFallback, icon }: Props = $props();
+	const detailQuery = getSourcePlaylistDetailQuery(
+		() => source,
+		() => playlistId
+	);
+	const importMutation = createSourcePlaylistImportMutation(() => source);
+	const detail = $derived(detailQuery.data);
+	const importResult = $derived(importMutation.data ?? null);
+	const relinkRequired = $derived(
+		detailQuery.error instanceof ApiError &&
+			detailQuery.error.code === 'MEDIA_ACCOUNT_RELINK_REQUIRED'
+	);
+	const notFound = $derived(
+		detailQuery.error instanceof ApiError && detailQuery.error.status === 404
+	);
+	const importRelinkRequired = $derived(
+		importMutation.error instanceof ApiError &&
+			importMutation.error.code === 'MEDIA_ACCOUNT_RELINK_REQUIRED'
+	);
 
 	async function handleImport() {
-		if (!playlistId || importing) return;
-		importing = true;
+		if (!playlistId || importMutation.isPending) return;
 		try {
-			importResult = await api.post<SourceImportResult>(importUrl(playlistId));
-			if (importResult.already_imported) {
+			const result = await importMutation.mutateAsync(playlistId);
+			if (result.already_imported) {
 				toastStore.show({ message: 'This playlist is already in DroppedNeedle.', type: 'info' });
 			} else {
 				toastStore.show({
-					message: `Imported ${importResult.tracks_imported} tracks into DroppedNeedle.`,
+					message: `Imported ${result.tracks_imported} tracks into DroppedNeedle.`,
 					type: 'success'
 				});
 			}
-		} catch {
-			toastStore.show({ message: "Couldn't import this playlist.", type: 'error' });
-		} finally {
-			importing = false;
+		} catch (error) {
+			const message =
+				error instanceof ApiError && error.code === 'MEDIA_ACCOUNT_RELINK_REQUIRED'
+					? 'Reconnect this account before importing the playlist.'
+					: "Couldn't import this playlist.";
+			toastStore.show({ message, type: 'error' });
 		}
 	}
 </script>
@@ -66,12 +64,34 @@
 		{@render icon()}
 	</div>
 
-	{#if loading}
-		<div class="flex justify-center py-12">
-			<span class="loading loading-spinner loading-lg"></span>
+	{#if detailQuery.isPending}
+		<div class="flex flex-col gap-6 sm:flex-row">
+			<div class="skeleton h-48 w-48 shrink-0 rounded-lg"></div>
+			<div class="flex-1 space-y-3 py-2">
+				<div class="skeleton h-8 w-2/3"></div>
+				<div class="skeleton h-4 w-40"></div>
+				<div class="skeleton h-8 w-44"></div>
+			</div>
 		</div>
-	{:else if error}
-		<div class="alert alert-error">{error}</div>
+	{:else if detailQuery.isError}
+		<div class="alert alert-warning alert-soft">
+			<span>
+				{relinkRequired
+					? 'Reconnect this account before opening the playlist.'
+					: notFound
+						? 'This playlist is no longer available to the connected account.'
+						: "Couldn't load this playlist."}
+			</span>
+			{#if relinkRequired}
+				<a class="btn btn-primary btn-sm" href="/profile#media-accounts">Reconnect</a>
+			{:else if notFound}
+				<a class="btn btn-primary btn-sm" href={backFallback}>Back to playlists</a>
+			{:else}
+				<button class="btn btn-ghost btn-sm" onclick={() => void detailQuery.refetch()}
+					>Retry</button
+				>
+			{/if}
+		</div>
 	{:else if detail}
 		<div class="flex flex-col sm:flex-row gap-6">
 			<div class="w-48 h-48 shrink-0 rounded-lg overflow-hidden shadow-md">
@@ -94,9 +114,9 @@
 				<button
 					class="btn btn-primary btn-sm gap-2"
 					onclick={handleImport}
-					disabled={importing || importResult?.already_imported}
+					disabled={importMutation.isPending || importResult?.already_imported}
 				>
-					{#if importing}
+					{#if importMutation.isPending}
 						<span class="loading loading-spinner loading-xs"></span>
 					{:else}
 						<Download class="w-4 h-4" />
@@ -111,6 +131,12 @@
 						{#if importResult.tracks_failed > 0}
 							({importResult.tracks_failed} skipped)
 						{/if}
+					</p>
+				{/if}
+				{#if importRelinkRequired}
+					<p class="text-sm text-error">
+						Reconnect the linked account to continue.
+						<a class="link font-medium" href="/profile#media-accounts">Reconnect</a>
 					</p>
 				{/if}
 			</div>

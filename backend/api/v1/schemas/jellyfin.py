@@ -1,3 +1,5 @@
+from typing import Literal
+
 from infrastructure.msgspec_fastapi import AppStruct
 
 
@@ -76,6 +78,12 @@ class JellyfinPlaylistSummary(AppStruct):
     is_imported: bool = False
 
 
+class JellyfinPlaylistCollection(AppStruct):
+    account_mode: Literal["linked", "shared"]
+    account_label: str
+    playlists: list[JellyfinPlaylistSummary] = []
+
+
 class JellyfinHubResponse(AppStruct):
     stats: JellyfinLibraryStats | None = None
     recently_played: list[JellyfinAlbumSummary] = []
@@ -85,7 +93,6 @@ class JellyfinHubResponse(AppStruct):
     most_played_albums: list[JellyfinAlbumSummary] = []
     all_albums_preview: list[JellyfinAlbumSummary] = []
     genres: list[str] = []
-    playlists: list[JellyfinPlaylistSummary] = []
 
 
 class JellyfinPaginatedResponse(AppStruct):

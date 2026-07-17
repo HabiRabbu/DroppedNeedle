@@ -82,6 +82,31 @@ async def test_get_returns_none_when_disabled(store: UserConnectionsStore):
 
 
 @pytest.mark.asyncio
+async def test_has_enabled_distinguishes_missing_disabled_and_unreadable_rows(
+    store: UserConnectionsStore, tmp_path: Path
+):
+    assert await store.has_enabled("user-a", "jellyfin") is False
+    await store.upsert("user-a", "jellyfin", {"access_token": "secret"})
+    assert await store.has_enabled("user-a", "jellyfin") is True
+
+    conn = sqlite3.connect(tmp_path / "library.db")
+    try:
+        conn.execute(
+            "UPDATE user_connections SET connection_data = ? "
+            "WHERE user_id = ? AND service = ?",
+            ("not-a-fernet-token", "user-a", "jellyfin"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert await store.get("user-a", "jellyfin") is None
+    assert await store.has_enabled("user-a", "jellyfin") is True
+
+    await store.set_enabled("user-a", "jellyfin", False)
+    assert await store.has_enabled("user-a", "jellyfin") is False
+
+
+@pytest.mark.asyncio
 async def test_upsert_replaces_not_duplicates(store: UserConnectionsStore):
     await store.upsert("user-a", "lastfm", {"session_key": "sk1", "username": "alice"})
     await store.upsert("user-a", "lastfm", {"session_key": "sk2", "username": "alice2"})

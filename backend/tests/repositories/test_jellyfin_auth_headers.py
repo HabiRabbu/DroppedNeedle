@@ -23,6 +23,26 @@ def _make_repo(http_client: AsyncMock | None = None) -> JellyfinRepository:
     )
 
 
+@pytest.mark.asyncio
+async def test_playlist_cache_key_includes_requesting_user_scope():
+    cache = AsyncMock()
+    cache.get = AsyncMock(return_value=None)
+    cache.set = AsyncMock()
+    repo = JellyfinRepository(
+        http_client=AsyncMock(),
+        cache=cache,
+        base_url="http://jellyfin:8096",
+        api_key="alice-token",
+        user_id="jf-alice",
+        cache_scope="user:alice",
+    )
+    repo._get = AsyncMock(return_value={"Items": []})
+
+    await repo.get_playlists()
+
+    cache.get.assert_awaited_once_with("jellyfin_playlists:user:alice:50")
+
+
 def _json_response(payload: bytes = b"{}") -> MagicMock:
     response = MagicMock()
     response.status_code = 200

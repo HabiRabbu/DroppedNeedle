@@ -25,10 +25,12 @@ def _make_cache() -> MagicMock:
     return cache
 
 
-def _make_repo(configured: bool = True) -> tuple[PlexRepository, AsyncMock, MagicMock]:
+def _make_repo(
+    configured: bool = True, cache_scope: str = "shared"
+) -> tuple[PlexRepository, AsyncMock, MagicMock]:
     client = AsyncMock(spec=httpx.AsyncClient)
     cache = _make_cache()
-    repo = PlexRepository(http_client=client, cache=cache)
+    repo = PlexRepository(http_client=client, cache=cache, cache_scope=cache_scope)
     if configured:
         repo.configure("http://plex:32400", "test-token", "client-id-123")
     _plex_circuit_breaker.reset()
@@ -48,6 +50,22 @@ def _mock_response(
     resp.headers = {"content-type": content_type}
     resp.history = []  # real httpx.Response sets this; no redirects by default
     return resp
+
+
+@pytest.mark.asyncio
+async def test_playlist_cache_keys_include_requesting_user_scope():
+    repo, _, cache = _make_repo(cache_scope="user:alice")
+    repo._request = AsyncMock(
+        side_effect=[{"Metadata": []}, {"Metadata": []}]
+    )
+
+    await repo.get_playlists()
+    await repo.get_playlist_items("playlist-1")
+
+    assert [call.args[0] for call in cache.get.await_args_list] == [
+        "plex:playlists:user:alice",
+        "plex:playlist:user:alice:playlist-1",
+    ]
 
 
 def _plex_container(metadata: list | None = None, total_size: int | None = None, directory: list | None = None) -> dict:
@@ -694,6 +712,32 @@ class TestAccountAuthCalls:
             MockClient.return_value = _mock_fresh_client(response)
             with pytest.raises(PlexAuthError):
                 await repo.get_account_server_ids("user-token", "client-123")
+
+    @pytest.mark.asyncio
+    async def test_resolves_server_specific_access_token(self):
+        repo, _, _ = _make_repo()
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = [
+            {
+                "clientIdentifier": "server-machine-id",
+                "provides": "server",
+                "accessToken": "server-specific-token",
+            },
+            {
+                "clientIdentifier": "other-server",
+                "provides": "server",
+                "accessToken": "wrong-token",
+            },
+        ]
+
+        with patch("httpx.AsyncClient") as MockClient:
+            MockClient.return_value = _mock_fresh_client(response)
+            token = await repo.get_server_access_token(
+                "account-token", "client-123", "server-machine-id"
+            )
+
+        assert token == "server-specific-token"
 
     @pytest.mark.asyncio
     async def test_account_profile_prefers_friendly_name(self):

@@ -27,11 +27,13 @@ class JellyfinUserAuthService:
         jellyfin_repository,
         preferences_service,
         connections_store=None,
+        cache=None,
     ) -> None:
         self._store = auth_store
         self._jellyfin_repo = jellyfin_repository
         self._prefs = preferences_service
         self._connections_store = connections_store
+        self._cache = cache
 
     async def login(
         self,
@@ -84,6 +86,12 @@ class JellyfinUserAuthService:
                     "username": profile["username"],
                 },
             )
+            if self._cache is not None:
+                from services.media_playlist_cache import invalidate_media_playlist_cache
+
+                await invalidate_media_playlist_cache(
+                    self._cache, user_id, "jellyfin"
+                )
         except Exception:  # noqa: BLE001 - a failed auto-link must never fail the login
             logger.warning(
                 "Failed to auto-link Jellyfin connection for user %s", user_id[:8], exc_info=True

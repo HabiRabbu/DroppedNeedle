@@ -86,6 +86,7 @@ def ctx(tmp_path: Path):
     plex_user_auth.create_login_pin.return_value = (123, "https://app.plex.tv/auth#?code=abc")
     plex_user_auth.poll_for_link.return_value = {
         "auth_token": "px-token-secret",
+        "server_access_token": "px-server-token-secret",
         "uuid": "px-uid-1",
         "display_name": "Alice Plex",
     }
@@ -420,11 +421,13 @@ def test_plex_link_poll_completed_persists_connection(ctx):
     data = asyncio.run(ctx.conn_store.get("user-a", "plex"))
     assert data == {
         "auth_token": "px-token-secret",
+        "server_access_token": "px-server-token-secret",
         "plex_user_id": "px-uid-1",
         "username": "Alice Plex",
     }
     body = ctx.client.get("/me/connections").text
     assert "px-token-secret" not in body
+    assert "px-server-token-secret" not in body
 
 
 def test_plex_link_poll_membership_denial_is_403(ctx):

@@ -30,6 +30,7 @@ class SubsonicSong(msgspec.Struct):
     bitRate: int = 0
     suffix: str = ""
     contentType: str = ""
+    coverArt: str = ""
     musicBrainzId: str = ""
 
 
@@ -129,6 +130,7 @@ def parse_song(data: dict[str, Any]) -> SubsonicSong:
         bitRate=data.get("bitRate", 0),
         suffix=data.get("suffix", ""),
         contentType=data.get("contentType", ""),
+        coverArt=data.get("coverArt", ""),
         musicBrainzId=data.get("musicBrainzId", ""),
     )
 

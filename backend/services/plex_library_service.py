@@ -25,6 +25,7 @@ from api.v1.schemas.plex import (
     PlexImportResult,
     PlexLibraryStats,
     PlexPlaylistDetail,
+    PlexPlaylistCollection,
     PlexPlaylistSummary,
     PlexPlaylistTrack,
     PlexSearchResponse,
@@ -33,10 +34,16 @@ from api.v1.schemas.plex import (
     PlexTrackInfo,
 )
 from infrastructure.cover_urls import prefer_artist_cover_url, prefer_release_group_cover_url
-from core.exceptions import ExternalServiceError
+from core.exceptions import (
+    ExternalServiceError,
+    MediaAccountRelinkRequiredError,
+    PlexAuthError,
+    ResourceNotFoundError,
+)
 from repositories.plex_models import PlexAlbum, PlexArtist, PlexTrack, extract_mbid_from_guids
 from repositories.protocols.plex import PlexRepositoryProtocol
 from services.preferences_service import PreferencesService
+from services.per_user_client_factory import MediaClientResolution, PerUserClientFactory
 
 if TYPE_CHECKING:
     from infrastructure.persistence import LibraryDB, MBIDStore
@@ -53,7 +60,7 @@ def _clean_album_name(name: str) -> str:
         r'\s*[\(\[][^)\]]*(?:remaster|deluxe|edition|bonus|expanded|mono|stereo|anniversary)[^)\]]*[\)\]]',
         '', cleaned, flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r'^\d{4}\s*[-–—]\s*', '', cleaned)
+    cleaned = re.sub(r'^\d{4}\s*[-–\u2014]\s*', '', cleaned)
     cleaned = re.sub(r'\s*-\s*EP$', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\s*\[[^\]]*\]\s*$', '', cleaned)
     return cleaned.strip()
@@ -106,11 +113,13 @@ class PlexLibraryService:
         preferences_service: PreferencesService,
         library_db: 'LibraryDB | None' = None,
         mbid_store: 'MBIDStore | None' = None,
+        client_factory: PerUserClientFactory | None = None,
     ):
         self._plex = plex_repo
         self._preferences = preferences_service
         self._library_db = library_db
         self._mbid_store = mbid_store
+        self._client_factory = client_factory
         self._album_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._artist_mbid_cache: dict[str, str | tuple[None, float]] = {}
         self._mbid_to_plex_id: dict[str, str] = {}
@@ -635,11 +644,29 @@ class PlexLibraryService:
 
         return PlexAlbumMatch(found=False)
 
-    async def list_playlists(self, limit: int = 50) -> list[PlexPlaylistSummary]:
-        raw = await self._plex.get_playlists()
+    async def _playlist_resolution(
+        self, user_id: str
+    ) -> MediaClientResolution[PlexRepositoryProtocol]:
+        if self._client_factory is not None:
+            linked = await self._client_factory.resolve_plex_playlist(user_id)
+            if linked is not None:
+                return linked
+        return MediaClientResolution(
+            repository=self._plex,
+            account_mode="shared",
+            account_label="Shared Plex account",
+            cache_scope="shared",
+        )
+
+    async def _list_playlists(
+        self, repo: PlexRepositoryProtocol, limit: int
+    ) -> list[PlexPlaylistSummary]:
+        raw = await repo.get_playlists()
         summaries = []
         for p in raw[:limit]:
-            cover = f"/api/v1/plex/playlist-thumb/{p.ratingKey}"
+            cover = (
+                f"/api/v1/plex/playlist-image/{p.ratingKey}/{p.ratingKey}"
+            )
             summaries.append(PlexPlaylistSummary(
                 id=p.ratingKey,
                 name=p.title,
@@ -651,14 +678,44 @@ class PlexLibraryService:
             ))
         return summaries
 
-    async def get_playlist_detail(self, playlist_id: str) -> PlexPlaylistDetail:
-        raw = await self._plex.get_playlists()
+    async def list_playlists(self, limit: int = 50) -> list[PlexPlaylistSummary]:
+        return await self._list_playlists(self._plex, limit)
+
+    async def list_user_playlists(
+        self,
+        requesting: 'UserRecord',
+        playlist_service: 'PlaylistService',
+        limit: int = 50,
+    ) -> PlexPlaylistCollection:
+        resolution = await self._playlist_resolution(requesting.id)
+        try:
+            playlists = await self._list_playlists(resolution.repository, limit)
+        except PlexAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Plex to check your playlists"
+                ) from exc
+            raise
+        imported_ids = await playlist_service.get_imported_source_ids(
+            "plex:", user_id=requesting.id
+        )
+        for playlist in playlists:
+            playlist.is_imported = playlist.id in imported_ids
+        return PlexPlaylistCollection(
+            account_mode=resolution.account_mode,
+            account_label=resolution.account_label,
+            playlists=playlists,
+        )
+
+    async def _get_playlist_detail(
+        self, repo: PlexRepositoryProtocol, playlist_id: str
+    ) -> PlexPlaylistDetail:
+        raw = await repo.get_playlists()
         playlist = next((p for p in raw if p.ratingKey == playlist_id), None)
         if playlist is None:
-            from core.exceptions import ResourceNotFoundError
-            raise ResourceNotFoundError(f"Plex playlist {playlist_id} not found")
+            raise ResourceNotFoundError("Plex playlist not found")
 
-        items = await self._plex.get_playlist_items(playlist_id)
+        items = await repo.get_playlist_items(playlist_id)
         tracks = [
             PlexPlaylistTrack(
                 id=t.ratingKey,
@@ -671,11 +728,18 @@ class PlexLibraryService:
                 duration_seconds=t.duration // 1000 if t.duration else 0,
                 track_number=t.index,
                 disc_number=t.parentIndex if t.parentIndex else 1,
-                cover_url=f"/api/v1/plex/thumb/{t.parentRatingKey}" if t.parentRatingKey else "",
+                cover_url=(
+                    f"/api/v1/plex/playlist-image/{playlist_id}/{t.parentRatingKey}"
+                    if t.parentRatingKey
+                    else ""
+                ),
             )
             for t in items
         ]
-        cover = f"/api/v1/plex/playlist-thumb/{playlist.ratingKey}"
+        cover = (
+            f"/api/v1/plex/playlist-image/{playlist.ratingKey}/"
+            f"{playlist.ratingKey}"
+        )
         return PlexPlaylistDetail(
             id=playlist.ratingKey,
             name=playlist.title,
@@ -686,6 +750,56 @@ class PlexLibraryService:
             updated_at=str(playlist.updatedAt) if playlist.updatedAt else "",
             tracks=tracks,
         )
+
+    async def get_playlist_detail(self, playlist_id: str) -> PlexPlaylistDetail:
+        return await self._get_playlist_detail(self._plex, playlist_id)
+
+    async def get_user_playlist_detail(
+        self, playlist_id: str, requesting: 'UserRecord'
+    ) -> PlexPlaylistDetail:
+        resolution = await self._playlist_resolution(requesting.id)
+        try:
+            return await self._get_playlist_detail(
+                resolution.repository, playlist_id
+            )
+        except PlexAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Plex to check your playlists"
+                ) from exc
+            raise
+
+    async def get_playlist_image(
+        self,
+        playlist_id: str,
+        item_id: str,
+        requesting: 'UserRecord',
+        size: int,
+    ) -> tuple[bytes, str]:
+        resolution = await self._playlist_resolution(requesting.id)
+        repo = resolution.repository
+        try:
+            playlists = await repo.get_playlists()
+            if not any(item.ratingKey == playlist_id for item in playlists):
+                raise ResourceNotFoundError("Plex playlist image not found")
+            if item_id == playlist_id:
+                return await repo.proxy_playlist_composite(playlist_id, size)
+            tracks = await repo.get_playlist_items(playlist_id)
+            allowed = {track.ratingKey for track in tracks}
+            allowed.update(
+                str(track.parentRatingKey)
+                for track in tracks
+                if track.parentRatingKey
+            )
+            if item_id not in allowed:
+                raise ResourceNotFoundError("Plex playlist image not found")
+            return await repo.proxy_thumb(item_id, size)
+        except PlexAuthError as exc:
+            if resolution.account_mode == "linked":
+                raise MediaAccountRelinkRequiredError(
+                    "Reconnect Plex to check your playlists"
+                ) from exc
+            raise
 
     async def import_playlist(
         self,
@@ -701,7 +815,7 @@ class PlexLibraryService:
                 already_imported=True,
             )
 
-        detail = await self.get_playlist_detail(playlist_id)
+        detail = await self.get_user_playlist_detail(playlist_id, requesting)
         try:
             created = await playlist_service.create_playlist(
                 detail.name, source_ref=source_ref, user_id=requesting.id,
@@ -827,7 +941,6 @@ class PlexLibraryService:
             asyncio.wait_for(self.get_albums(size=12), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_stats(), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_recently_added_albums(limit=20), timeout=_HUB_TIMEOUT),
-            asyncio.wait_for(self.list_playlists(limit=20), timeout=_HUB_TIMEOUT),
             asyncio.wait_for(self.get_genres(), timeout=_HUB_TIMEOUT),
             return_exceptions=True,
         )
@@ -855,20 +968,15 @@ class PlexLibraryService:
         if isinstance(results[3], BaseException):
             logger.warning("Hub: get_recently_added_albums failed: %s", results[3])
 
-        playlists = results[4] if not isinstance(results[4], BaseException) else []
+        genres = results[4] if not isinstance(results[4], BaseException) else []
         if isinstance(results[4], BaseException):
-            logger.warning("Hub: list_playlists failed: %s", results[4])
-
-        genres = results[5] if not isinstance(results[5], BaseException) else []
-        if isinstance(results[5], BaseException):
-            logger.warning("Hub: get_genres failed: %s", results[5])
+            logger.warning("Hub: get_genres failed: %s", results[4])
 
         return PlexHubResponse(
             stats=stats,
             recently_played=recently_played,
             recently_added=recently_added,
             all_albums_preview=all_albums_preview,
-            playlists=playlists,
             genres=genres,
         )
 

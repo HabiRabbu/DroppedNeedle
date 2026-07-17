@@ -7,6 +7,7 @@ from infrastructure.persistence.auth_store import AuthStore
 
 from ._registry import singleton
 from .cache_providers import (
+    get_cache,
     get_discovery_snapshot_store,
     get_persistence_write_lock,
     get_preferences_service,
@@ -37,6 +38,7 @@ def get_plex_user_auth_service() -> "PlexUserAuthService":
         plex_repository = get_plex_repository(),
         preferences_service = get_preferences_service(),
         connections_store = get_user_connections_store(),
+        cache = get_cache(),
     )
 
 
@@ -49,6 +51,7 @@ def get_jellyfin_user_auth_service() -> "JellyfinUserAuthService":
         jellyfin_repository = get_jellyfin_repository(),
         preferences_service = get_preferences_service(),
         connections_store = get_user_connections_store(),
+        cache = get_cache(),
     )
 
 

@@ -54,6 +54,7 @@ def mock_library_service():
         total_tracks=100, total_albums=10, total_artists=5,
     ))
     mock.get_album_match = AsyncMock(return_value=PlexAlbumMatch(found=True, plex_album_id="100"))
+    mock.get_playlist_image = AsyncMock(return_value=(b"playlist-image", "image/jpeg"))
     return mock
 
 
@@ -80,6 +81,7 @@ def library_client(mock_library_service, mock_repo):
     app.include_router(plex_library_router)
     app.dependency_overrides[get_plex_library_service] = lambda: mock_library_service
     app.dependency_overrides[get_plex_repository] = lambda: mock_repo
+    override_user_auth(app)
     return TestClient(app)
 
 
@@ -280,3 +282,18 @@ class TestPlexStreamRoutes:
         )
         resp = stream_client.get("/stream/plex/library/parts/200/file.flac")
         assert resp.status_code == 416
+
+
+class TestPersonalPlaylistImage:
+    def test_image_is_private_and_passes_requesting_user(
+        self, library_client, mock_library_service
+    ):
+        resp = library_client.get("/plex/playlist-image/playlist-1/item-1?size=320")
+
+        assert resp.status_code == 200
+        assert resp.content == b"playlist-image"
+        assert resp.headers["cache-control"] == "private, no-store"
+        call = mock_library_service.get_playlist_image.await_args
+        assert call.args[0:2] == ("playlist-1", "item-1")
+        assert call.args[2].id == "test-user-id"
+        assert call.args[3] == 320

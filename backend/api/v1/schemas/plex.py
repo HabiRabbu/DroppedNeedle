@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from infrastructure.msgspec_fastapi import AppStruct
 
 
@@ -108,13 +110,18 @@ class PlexPlaylistSummary(AppStruct):
     is_imported: bool = False
 
 
+class PlexPlaylistCollection(AppStruct):
+    account_mode: Literal["linked", "shared"]
+    account_label: str
+    playlists: list[PlexPlaylistSummary] = []
+
+
 class PlexHubResponse(AppStruct):
     stats: PlexLibraryStats | None = None
     recently_played: list[PlexAlbumSummary] = []
     recently_added: list[PlexAlbumSummary] = []
     all_albums_preview: list[PlexAlbumSummary] = []
     genres: list[str] = []
-    playlists: list[PlexPlaylistSummary] = []
 
 
 class PlexDiscoveryAlbum(AppStruct):

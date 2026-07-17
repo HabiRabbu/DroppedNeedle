@@ -187,3 +187,8 @@ class JellyfinRepositoryProtocol(Protocol):
         self, playlist_id: str, user_id: str | None = None, limit: int = 1000
     ) -> list[JellyfinItem]:
         ...
+
+    async def proxy_image(
+        self, item_id: str, size: int = 500
+    ) -> tuple[bytes, str]:
+        ...
