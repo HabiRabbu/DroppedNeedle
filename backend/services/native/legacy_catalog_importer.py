@@ -442,6 +442,9 @@ class LegacyCatalogImporter:
         recording_map: dict[str, list[str]],
         path_map: dict[str, tuple[str, str]],
         counts: dict[tuple[str, str | None], MigrationReferenceCount],
+        *,
+        group_first: dict[str, object] | None = None,
+        group_is_compilation: bool | None = None,
     ) -> LegacyCatalogImportBundle | None:
         rows.sort(
             key=lambda row: (
@@ -450,10 +453,14 @@ class LegacyCatalogImporter:
                 str(row.get("id")),
             )
         )
-        first = rows[0]
+        first = group_first or rows[0]
         album_id = _stable_id("album", release_group)
         album_map[release_group] = album_id
-        is_compilation = any(bool(row.get("is_compilation")) for row in rows)
+        is_compilation = (
+            any(bool(row.get("is_compilation")) for row in rows)
+            if group_is_compilation is None
+            else group_is_compilation
+        )
         artists: list[LocalArtist] = []
         artist_identities: list[LocalArtistExternalIdentity] = []
         artist_aliases: list[LocalArtistAlias] = []
@@ -700,6 +707,8 @@ class LegacyCatalogImporter:
         path_map: dict[str, tuple[str, str]],
         bundles_by_album: dict[str, LegacyCatalogImportBundle],
         counts: dict[tuple[str, str | None], MigrationReferenceCount],
+        *,
+        group_first: dict[str, object] | None = None,
     ) -> None:
         grouped: dict[tuple[str, str, str], list[dict[str, object]]] = defaultdict(list)
         for row in snapshot["manual_review_queue"]:
@@ -744,7 +753,8 @@ class LegacyCatalogImporter:
             album_id = _stable_id(
                 "review-album", f"{root_id}:{parent}:{_fold(album_name)}"
             )
-            artist_name = str(rows[0].get("extracted_artist") or "Unknown Artist")
+            first = group_first or rows[0]
+            artist_name = str(first.get("extracted_artist") or "Unknown Artist")
             artist_id, artists, identities, aliases = self._artist(
                 artist_name,
                 None,

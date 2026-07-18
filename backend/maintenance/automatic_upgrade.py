@@ -439,11 +439,14 @@ def _run_working_migration(working: Path) -> dict[str, Any]:
         [sys.executable, "-m", "maintenance.automatic_upgrade", "--migrate-working"],
         env=environment,
         check=False,
-        capture_output=True,
-        text=True,
     )
     if result.returncode != 0:
         failure_evidence = _read_state(working / "cache" / _FAILURE_EVIDENCE_FILE)
+        if failure_evidence is None:
+            failure_evidence = {
+                "reason": "working_process_exited",
+                "returncode": result.returncode,
+            }
         raise _WorkingMigrationError(
             "The copied library database did not pass its upgrade checks.",
             failure_evidence,
@@ -466,32 +469,32 @@ async def _perform_target_migration() -> dict[str, Any]:
         get_preferences_service,
     )
     from core.dependencies.service_providers import (
-        get_audio_tagger,
         get_library_policy_resolver,
     )
-    from services.native.legacy_catalog_importer import LegacyCatalogImporter
+    from services.native.bounded_legacy_catalog_migrator import (
+        BoundedLegacyCatalogMigrator,
+    )
     from services.native.target_startup_validator import TargetStartupValidator
 
     migrate_legacy_config()
     preferences = get_preferences_service()
     preferences.get_typed_library_settings()
     resolver = get_library_policy_resolver()
-    importer = LegacyCatalogImporter(
+    outcome = await BoundedLegacyCatalogMigrator(
         get_native_library_store(),
         resolver,
-        get_audio_tagger(),
-        embedded_art_read_limit=0,
-    )
-    plan, dry_run = await importer.prepare(MIGRATION_ID)
-    if plan.blockers:
+        emit_progress=lambda message: print(message, flush=True),
+    ).migrate(MIGRATION_ID)
+    report = outcome.report
+    if outcome.blocker_count:
         _write_state(
             get_settings().cache_dir / _FAILURE_EVIDENCE_FILE,
             {
                 "reason": "unresolved_references",
-                "blocker_count": len(plan.blockers),
+                "blocker_count": outcome.blocker_count,
                 "unresolved_reference_counts": {
                     count.kind: count.unresolved
-                    for count in dry_run.reference_counts
+                    for count in report.reference_counts
                     if count.user_id is None and count.unresolved
                 },
             },
@@ -499,15 +502,11 @@ async def _perform_target_migration() -> dict[str, Any]:
         raise AutomaticUpgradeError(
             "The existing library contains references that cannot be upgraded safely."
         )
-    applied = await importer.apply(
-        MIGRATION_ID, expected_source_revision=plan.source_revision
-    )
     if (
-        dry_run.embedded_art_reads
-        or applied.embedded_art_reads
-        or applied.network_calls
-        or applied.tag_reads
-        or applied.fingerprints
+        report.embedded_art_reads
+        or report.network_calls
+        or report.tag_reads
+        or report.fingerprints
     ):
         raise AutomaticUpgradeError(
             "The library upgrade attempted work that is not allowed during startup."
@@ -517,14 +516,14 @@ async def _perform_target_migration() -> dict[str, Any]:
         lambda: {root.id for root in resolver.settings.library_roots},
     ).validate()
     return {
-        "source_revision": plan.source_revision,
-        "root_revision": plan.root_revision,
-        "reference_counts": len(dry_run.reference_counts),
+        "source_revision": report.source_revision,
+        "root_revision": report.root_revision,
+        "reference_counts": len(report.reference_counts),
         "invariants": validation["invariants"],
-        "network_calls": applied.network_calls,
-        "tag_reads": applied.tag_reads,
-        "fingerprints": applied.fingerprints,
-        "embedded_art_reads": applied.embedded_art_reads,
+        "network_calls": report.network_calls,
+        "tag_reads": report.tag_reads,
+        "fingerprints": report.fingerprints,
+        "embedded_art_reads": report.embedded_art_reads,
     }
 
 
@@ -949,6 +948,18 @@ def main() -> int:
                 settings.cache_dir / "automatic-upgrade-evidence.json", evidence
             )
         except Exception as error:  # noqa: BLE001 - parent reports a safe summary
+            failure_path = settings.cache_dir / _FAILURE_EVIDENCE_FILE
+            if _read_state(failure_path) is None:
+                try:
+                    _write_state(
+                        failure_path,
+                        {
+                            "reason": "working_migration_error",
+                            "error_type": type(error).__name__,
+                        },
+                    )
+                except OSError:
+                    logger.error("automatic_upgrade.failure_state_write_failed")
             logger.error(
                 "automatic_upgrade.working_copy_failed",
                 extra={"error_type": type(error).__name__},

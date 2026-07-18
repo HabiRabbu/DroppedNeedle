@@ -33,6 +33,7 @@ if "ROOT_APP_DIR" not in os.environ:
 from cryptography.fernet import Fernet
 import httpx
 
+from api.v1.schemas.library_policies import LibraryRootSettings, TypedLibrarySettings
 from infrastructure.persistence.app_password_store import AppPasswordStore
 from infrastructure.persistence.auth_store import AuthStore
 from infrastructure.crypto import init_crypto
@@ -44,6 +45,10 @@ from infrastructure.persistence.maintenance_manifest import (
 )
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from services.compat.app_password_service import AppPasswordService
+from services.native.bounded_legacy_catalog_migrator import (
+    BoundedLegacyCatalogMigrator,
+)
+from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.target_startup_validator import TargetStartupValidator
 from repositories.coverart_disk_cache import get_cache_filename
 
@@ -73,7 +78,7 @@ async def _start_process(
         {
             "ROOT_APP_DIR": str(application_root),
             "DATA_ENC_KEY": encryption_key,
-            "LOG_LEVEL": "WARNING",
+            "LOG_LEVEL": "INFO",
             "PYTHONPATH": (
                 str(_BACKEND_ROOT)
                 if not python_path
@@ -980,24 +985,36 @@ async def run(
         migration_root = scratch / "migration-source"
         migration_restore = restore_complete_manifest(manifest_root, migration_root)
         migration_database = migration_root / "cache" / "library.db"
-        store, importer = fixture._importer(migration_database, music_root)
-        prepare_started = perf_counter()
-        plan, dry_run = await importer.prepare("maintenance-rehearsal", now=100)
-        migration_prepare_seconds = perf_counter() - prepare_started
-        apply_started = perf_counter()
-        applied = await importer.apply(
-            "maintenance-rehearsal",
-            expected_source_revision=plan.source_revision,
-            now=101,
+        store = NativeLibraryStore(migration_database, threading.Lock())
+        resolver = LibraryPolicyResolver(
+            TypedLibrarySettings(
+                library_roots=[
+                    LibraryRootSettings(
+                        id="root-1",
+                        path=str(music_root),
+                        label="Music",
+                        policy="automatic",
+                    )
+                ]
+            )
         )
+        migration_prepare_seconds = 0.0
+        apply_started = perf_counter()
+        applied_outcome = await BoundedLegacyCatalogMigrator(
+            store,
+            resolver,
+            emit_progress=lambda _message: None,
+        ).migrate("maintenance-rehearsal", now=101)
         migration_apply_seconds = perf_counter() - apply_started
         repeat_started = perf_counter()
-        repeated = await importer.apply(
-            "maintenance-rehearsal",
-            expected_source_revision=plan.source_revision,
-            now=102,
-        )
+        repeated_outcome = await BoundedLegacyCatalogMigrator(
+            store,
+            resolver,
+            emit_progress=lambda _message: None,
+        ).migrate("maintenance-rehearsal", now=102)
         migration_repeat_seconds = perf_counter() - repeat_started
+        applied = applied_outcome.report
+        repeated = repeated_outcome.report
         startup_validation_started = perf_counter()
         startup = await TargetStartupValidator(store).validate()
         startup_validation_seconds = perf_counter() - startup_validation_started
@@ -1155,7 +1172,7 @@ async def run(
             "source_restore": {**rollback_restore, "smoke": source_smoke},
             "migration_restore": migration_restore,
             "migration": {
-                "dry_run_state": dry_run.state,
+                "migration_mode": "bounded_streaming",
                 "applied_state": applied.state,
                 "repeat_state": repeated.state,
                 "idempotent": applied == repeated,
@@ -1163,9 +1180,19 @@ async def run(
                 "apply_seconds": migration_apply_seconds,
                 "repeat_apply_seconds": migration_repeat_seconds,
                 "startup_validation_seconds": startup_validation_seconds,
-                "bundle_transactions": len(plan.bundles),
+                "bundle_transactions": (
+                    applied.identified_albums + applied.local_only_albums
+                ),
                 "reference_batch_transactions": ceil(
-                    max(len(plan.reference_provenance), 1) / 500
+                    max(
+                        sum(
+                            count.mapped
+                            for count in applied.reference_counts
+                            if count.user_id is None
+                        ),
+                        1,
+                    )
+                    / 500
                 ),
                 "reference_counts": [
                     {

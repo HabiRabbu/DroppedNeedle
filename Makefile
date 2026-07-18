@@ -468,6 +468,7 @@ backend-test-feedback-fixes: $(BACKEND_VENV_STAMP) ## Feedback Fixes focused bac
 		tests/infrastructure/test_native_library_store.py \
 		tests/infrastructure/test_native_library_store_dependencies.py \
 		tests/infrastructure/test_legacy_catalog_importer.py \
+		tests/infrastructure/test_bounded_legacy_catalog_migrator.py \
 		tests/infrastructure/test_maintenance_manifest.py \
 		tests/infrastructure/test_feedback_fixes_maintenance.py \
 		tests/infrastructure/test_automatic_upgrade.py \

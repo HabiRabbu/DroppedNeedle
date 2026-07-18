@@ -501,10 +501,13 @@ async def production_target_lifespan(app: FastAPI):
     logging.getLogger().setLevel(getattr(logging, settings.log_level, logging.INFO))
     from core.config import migrate_legacy_config
 
+    logger.info("target_startup.configuration_started")
     migrate_legacy_config()
     await init_app_state(app)
+    logger.info("target_startup.configuration_completed")
     await get_target_library_policy_service().recover_pending_transition()
 
+    logger.info("target_startup.catalog_validation_started")
     validator = TargetStartupValidator(
         get_native_library_store(),
         lambda: {
@@ -515,10 +518,12 @@ async def production_target_lifespan(app: FastAPI):
         },
     )
     await validator.validate()
+    logger.info("target_startup.catalog_validation_completed")
 
     from maintenance.automatic_upgrade import await_target_startup_admission
 
     await await_target_startup_admission(settings)
+    logger.info("target_startup.admission_completed")
 
     from core.dependencies.auth_providers import get_auth_service, get_auth_store
 
@@ -530,6 +535,7 @@ async def production_target_lifespan(app: FastAPI):
         preferences=preferences,
         cache_dir=settings.cache_dir,
     )
+    logger.info("target_startup.data_ratchets_completed")
     settings.instance_id = preferences.get_instance_id()
     cache_instance = get_cache()
     await cache_instance.clear()
@@ -578,6 +584,7 @@ async def production_target_lifespan(app: FastAPI):
         preferences=preferences,
         auth_store=auth_store,
     )
+    logger.info("target_startup.operational_runtime_started")
     logger.info("DroppedNeedle target application started")
 
     try:

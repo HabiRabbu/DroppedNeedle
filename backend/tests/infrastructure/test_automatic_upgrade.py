@@ -214,6 +214,49 @@ def test_working_process_failure_reads_aggregate_evidence(
     assert error.value.evidence == evidence
 
 
+def test_killed_working_process_records_sanitized_exit_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    working = tmp_path / "working"
+    (working / "cache").mkdir(parents=True)
+    monkeypatch.setattr(
+        automatic_upgrade.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], -9),
+    )
+
+    with pytest.raises(automatic_upgrade._WorkingMigrationError) as error:
+        automatic_upgrade._run_working_migration(working)
+
+    assert error.value.evidence == {
+        "reason": "working_process_exited",
+        "returncode": -9,
+    }
+
+
+def test_working_process_records_sanitized_exception_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+
+    async def fail() -> dict[str, object]:
+        raise MemoryError("private allocation detail")
+
+    monkeypatch.setattr(sys, "argv", ["automatic_upgrade", "--migrate-working"])
+    monkeypatch.setattr(automatic_upgrade, "get_settings", lambda: settings)
+    monkeypatch.setattr(automatic_upgrade, "_perform_target_migration", fail)
+
+    assert automatic_upgrade.main() == 1
+    evidence = json.loads(
+        (settings.cache_dir / automatic_upgrade._FAILURE_EVIDENCE_FILE).read_text()
+    )
+    assert evidence == {
+        "reason": "working_migration_error",
+        "error_type": "MemoryError",
+    }
+    assert "private allocation detail" not in json.dumps(evidence)
+
+
 def test_failed_fresh_install_removes_partially_created_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
