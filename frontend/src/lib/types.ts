@@ -1830,6 +1830,38 @@ export interface SourcePriority {
 	order: string[];
 }
 
+export interface ProwlarrConnectionSettings {
+	enabled: boolean;
+	url: string;
+	api_key: string;
+	categories: number[];
+}
+
+export interface ProwlarrTestResult {
+	valid: boolean;
+	version?: string | null;
+	message: string;
+	indexers_total: number;
+	indexers_usenet: number;
+	indexers_torrent: number;
+}
+
+export interface QbittorrentConnectionSettings {
+	enabled: boolean;
+	client_type: string;
+	url: string;
+	username: string;
+	password: string;
+	category: string;
+	downloads_mount: string;
+}
+
+export interface QbittorrentTestResult {
+	valid: boolean;
+	version?: string | null;
+	message: string;
+}
+
 export interface DownloadPolicySettings {
 	quality_min: string;
 	quality_max: string;

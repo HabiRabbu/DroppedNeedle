@@ -135,14 +135,14 @@ def test_save_and_read_policy(prefs):
 
 
 def test_source_priority_defaults_soulseek_first(prefs):
-    assert prefs.get_source_priority() == ["soulseek", "usenet"]
+    assert prefs.get_source_priority() == ["soulseek", "usenet", "torrent"]
 
 
 def test_source_priority_save_and_normalise(prefs):
-    prefs.save_source_priority(["usenet"])  # only one given -> the other is appended
-    assert prefs.get_source_priority() == ["usenet", "soulseek"]
-    prefs.save_source_priority(["usenet", "bogus", "soulseek"])  # unknowns dropped
-    assert prefs.get_source_priority() == ["usenet", "soulseek"]
+    prefs.save_source_priority(["usenet"])  # only one given -> the others are appended
+    assert prefs.get_source_priority() == ["usenet", "soulseek", "torrent"]
+    prefs.save_source_priority(["usenet", "bogus", "torrent", "soulseek"])  # unknowns dropped
+    assert prefs.get_source_priority() == ["usenet", "torrent", "soulseek"]
 
 
 def test_sabnzbd_defaults_disabled(prefs):
