@@ -777,9 +777,9 @@ class DownloadOrchestrator:
                             extra={
                                 "task_id": task.id,
                                 "count": len(never_imported),
-                                "files": sorted(
-                                    _basename(f) for f in never_imported
-                                )[:10],
+                                "files": sorted(_basename(f) for f in never_imported)[
+                                    :10
+                                ],
                             },
                         )
                         is_complete = False
@@ -1141,8 +1141,16 @@ class DownloadOrchestrator:
                     download_task_id=task.id, filename=filename
                 )
             except Exception:  # noqa: BLE001 - reconcile is best-effort
+                logger.warning(
+                    "download.reconcile_error task_id=%s file=%s",
+                    task.id,
+                    _basename(filename),
+                    exc_info=True,
+                )
                 row = None
-            if row is not None and Path(row["file_path"]).exists():
+            if row is not None and await asyncio.to_thread(
+                Path(row["file_path"]).exists
+            ):
                 continue
             confirmed_missing.add(filename)
         return confirmed_missing
@@ -1159,6 +1167,11 @@ class DownloadOrchestrator:
             )
             rows = await self._library.get_file_rows_for_album(task.release_group_mbid)
         except Exception:  # noqa: BLE001 - the message is a bonus, never a blocker
+            logger.warning(
+                "download.missing_tracks_message_error task_id=%s",
+                task.id,
+                exc_info=True,
+            )
             return None
         tracks = list(info.tracks or [])
         if not tracks:
