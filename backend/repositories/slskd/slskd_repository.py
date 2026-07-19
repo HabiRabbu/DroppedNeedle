@@ -45,6 +45,14 @@ class SlskdRepository:
     # How many finished transfers diagnose_downloads_mount tries to locate under the
     # mount. Small: it's a settings-page check and a wrong mount makes each a full walk.
     _DIAGNOSIS_SAMPLE = 3
+    # Mount-top dirs that never hold a FINISHED download: slskd's staging dir (a hit
+    # there is a partial file - e.g. a "Completed, TimedOut" leftover) and the
+    # failed-import quarantine. Both grow unboundedly (2,330 dead files on one live
+    # mount, 2026-07-18) and would eat the walk budget.
+    _EXCLUDED_MOUNT_DIRS = frozenset({"incomplete", "failed_imports"})
+    # Whole-mount fallback only (step 6): it must cover the entire mount, runs in a
+    # worker thread, and a busy mount easily exceeds the 10k scoped-walk backstop.
+    _WHOLE_MOUNT_MAX_ENTRIES = 100_000
 
     def __init__(
         self,
@@ -243,7 +251,7 @@ class SlskdRepository:
         # 4. slskd may have sanitised the folder name - scan one level down for it.
         try:
             for child in sorted(mount.iterdir()):
-                if child.is_dir():
+                if child.is_dir() and child.name not in self._EXCLUDED_MOUNT_DIRS:
                     cand = _within_mount(child / basename)
                     if cand is not None and cand.exists():
                         return cand
@@ -280,7 +288,9 @@ class SlskdRepository:
             except OSError:
                 return False
 
-        hit = self._walk_find(mount, mount, _name_size_match)
+        hit = self._walk_find(
+            mount, mount, _name_size_match, max_entries=self._WHOLE_MOUNT_MAX_ENTRIES
+        )
         if hit is not None:
             return hit
         try:
@@ -298,21 +308,30 @@ class SlskdRepository:
         return None
 
     @staticmethod
-    def _walk_find(root: Path, mount: Path, predicate) -> Path | None:
+    def _walk_find(
+        root: Path, mount: Path, predicate, max_entries: int = 10000
+    ) -> Path | None:
         """First file under ``root`` (bounded DFS, exact-name compare so glob
         metacharacters in filenames are harmless) for which ``predicate`` is true,
         confined to ``mount``. The entry cap is a backstop against a pathological
-        tree or a symlink loop."""
-        max_entries = 10000
+        tree or a symlink loop. ``_EXCLUDED_MOUNT_DIRS`` at the mount's top level
+        are neither descended nor counted (see the constant's note)."""
         try:
             stack = [root]
             seen = 0
             while stack:
                 for entry in stack.pop().iterdir():
+                    is_dir = entry.is_dir()
+                    if (
+                        is_dir
+                        and entry.parent == mount
+                        and entry.name in SlskdRepository._EXCLUDED_MOUNT_DIRS
+                    ):
+                        continue
                     seen += 1
                     if seen > max_entries:
                         return None
-                    if entry.is_dir():
+                    if is_dir:
                         stack.append(entry)
                         continue
                     if not entry.is_file() or not predicate(entry):
@@ -588,10 +607,30 @@ class SlskdRepository:
         failed = set(names(result.failed))
         return [f for f in requested if f not in failed] if failed else requested
 
+    @staticmethod
+    def _latest_transfer_per_file(transfers: list[SlskdTransfer]) -> list[SlskdTransfer]:
+        """One record per FILE, judged on the latest attempt: slskd keeps a record
+        per ATTEMPT, so counting per record let a stale ``Succeeded`` shadow a final
+        ``TimedOut`` and pushed ``files_completed`` past ``files_total`` (39/29,
+        2026-07-18 incident - the file was lost but read as delivered). Ordered by
+        ``requestedAt`` when both records carry one, else by record order (slskd
+        appends) - a lone timestamp must not outrank a later untimestamped retry."""
+        latest: dict[str, tuple[str | None, SlskdTransfer]] = {}
+        for transfer in transfers:
+            prev = latest.get(transfer.filename)
+            if prev is not None:
+                prev_ts = prev[0]
+                ts = transfer.requested_at
+                if ts and prev_ts and ts < prev_ts:
+                    continue  # genuinely older attempt (both stamped)
+            latest[transfer.filename] = (transfer.requested_at, transfer)
+        return [transfer for _, transfer in latest.values()]
+
     def _aggregate_status(
         self, handle: TaskHandle, transfers: list[SlskdTransfer]
     ) -> DownloadTaskStatus:
         files_total = len(handle.filenames)
+        transfers = self._latest_transfer_per_file(transfers)
         bytes_total = sum(t.size for t in transfers)
         bytes_downloaded = sum(t.bytes_transferred for t in transfers)
         completed = 0
