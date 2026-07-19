@@ -68,6 +68,19 @@ def _make_sabnzbd_client():
     return SabnzbdDownloadClient(client, "http://sab:8080", "key", Path("/sabnzbd-downloads"))
 
 
+def _make_qbittorrent_client():
+    from repositories.qbittorrent.qbittorrent_client import QbittorrentClient
+    from repositories.qbittorrent.qbittorrent_download_client import (
+        QbittorrentDownloadClient,
+    )
+
+    http = httpx.AsyncClient()
+    client = QbittorrentClient(http, "http://qbt:8080", "admin", "pass")
+    return QbittorrentDownloadClient(
+        client, "http://qbt:8080", "admin", "pass", Path("/qbittorrent-downloads")
+    )
+
+
 def _make_slskd_indexer() -> SlskdIndexer:
     return SlskdIndexer(_make_slskd_repo())
 
@@ -82,8 +95,18 @@ def _make_newznab_indexer():
     return NewznabIndexer([])  # no configured indexers needed for signature conformance
 
 
+def _make_prowlarr_indexer():
+    from repositories.prowlarr.prowlarr_client import ProwlarrClient
+    from repositories.prowlarr.prowlarr_indexer import ProwlarrIndexer
+
+    http = httpx.AsyncClient()
+    client = ProwlarrClient(http, "http://prowlarr:9696", "key")
+    return ProwlarrIndexer(client, categories=[3000])
+
+
 @pytest.mark.parametrize(
-    "factory", [_make_slskd_repo, _make_fake_client, _make_sabnzbd_client]
+    "factory",
+    [_make_slskd_repo, _make_fake_client, _make_sabnzbd_client, _make_qbittorrent_client],
 )
 def test_impl_conforms_to_protocol(factory):
     impl = factory()
@@ -104,7 +127,8 @@ def test_impl_conforms_to_protocol(factory):
 
 
 @pytest.mark.parametrize(
-    "factory", [_make_slskd_indexer, _make_fake_indexer, _make_newznab_indexer]
+    "factory",
+    [_make_slskd_indexer, _make_fake_indexer, _make_newznab_indexer, _make_prowlarr_indexer],
 )
 def test_impl_conforms_to_indexer_protocol(factory):
     impl = factory()

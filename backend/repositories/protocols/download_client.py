@@ -57,6 +57,9 @@ class EnqueueRequest(AppStruct):
     category: str | None = None
     priority: int | None = None
     post_processing: int | None = None
+    # Torrent source (qBittorrent): at least one of magnet_uri/torrent_url is required.
+    magnet_uri: str | None = None
+    torrent_url: str | None = None
 
 
 class TaskHandle(AppStruct):
@@ -72,6 +75,9 @@ class TaskHandle(AppStruct):
     filenames: list[str] = []
     job_name: str = ""
     nzo_id: str = ""
+    # qBittorrent populates job_name BEFORE enqueue (crash-recoverable, mirrors SABnzbd)
+    # and fills torrent_hash after the add is correlated.
+    torrent_hash: str = ""
 
 
 class DownloadTaskStatus(AppStruct):
