@@ -333,6 +333,37 @@ def _copy_database(source: Path, target: Path) -> None:
             source_connection.backup(target_connection)
 
 
+def _insert_identityless_library_file(
+    database: Path,
+    root: Path,
+    file_id: str,
+    *,
+    release_group_mbid: str | None = None,
+) -> None:
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO library_files "
+            "(id, release_group_mbid, recording_mbid, disc_number, track_number, "
+            "track_title, artist_name, album_artist_name, album_title, file_path, "
+            "file_size_bytes, file_mtime, duration_seconds, file_format, source, "
+            "is_compilation, tagged_at, imported_at) "
+            "VALUES (?,?,NULL,1,1,?,?,?,?,?,?,?,?,?,'manual_review',0,21,20)",
+            (
+                file_id,
+                release_group_mbid,
+                "Identityless Track",
+                "Local Artist",
+                "Local Artist",
+                "Identityless Album",
+                str(root / "Identityless Album" / "01.flac"),
+                1_000,
+                20.0,
+                180.0,
+                "flac",
+            ),
+        )
+
+
 class _CoverReader:
     def __init__(self, result: bytes | None = None) -> None:
         self.result = result
@@ -412,6 +443,158 @@ async def test_target_startup_requires_completed_marker_and_revalidates_after_re
         )
     with pytest.raises(TargetStartupInvariantError, match="predates"):
         await TargetStartupValidator(reopened).validate()
+
+
+@pytest.mark.asyncio
+async def test_coherent_copy_import_keeps_identityless_library_file_local(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Music"
+    root.mkdir()
+    database = tmp_path / "library.db"
+    _create_source(database, root)
+    file_id = "99999999-9999-4999-8999-999999999999"
+    _insert_identityless_library_file(database, root, file_id)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO playlist_tracks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "playlist-track-identityless",
+                "playlist-1",
+                2,
+                "Identityless Track",
+                "Local Artist",
+                "Identityless Album",
+                "malformed-release-group",
+                "malformed-artist",
+                file_id,
+                None,
+                "local",
+                '["local"]',
+                "flac",
+                1,
+                1,
+                180,
+                "c",
+                None,
+                file_id,
+            ),
+        )
+    store, importer = _importer(database, root)
+
+    plan, report = await importer.prepare("identityless-plan", now=100)
+
+    assert report.state == "ready"
+    assert report.blockers == []
+    bundle = next(
+        item
+        for item in plan.bundles
+        if any(track.id == file_id for track in item.membership.tracks)
+    )
+    assert bundle.album_identity is None
+    assert bundle.membership.tracks[0].id == file_id
+    assert bundle.reviews[0].reason_code == "legacy_missing_release_group_id"
+
+    applied = await importer.apply(
+        "identityless-plan",
+        expected_source_revision=plan.source_revision,
+        now=101,
+    )
+
+    assert applied.state == "applied"
+    assert (await store.get_local_track(file_id))["id"] == file_id
+    with sqlite3.connect(database) as connection:
+        playlist_reference = connection.execute(
+            "SELECT local_track_id, reference_tombstone_id "
+            "FROM library_playlist_tracks WHERE id = ?",
+            ("playlist-track-identityless",),
+        ).fetchone()
+    assert playlist_reference == (file_id, None)
+
+
+@pytest.mark.asyncio
+async def test_coherent_copy_maps_unambiguous_malformed_album_reference(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Music"
+    root.mkdir()
+    database = tmp_path / "library.db"
+    _create_source(database, root)
+    file_id = "99999999-9999-4999-8999-999999999998"
+    malformed_release_group = "legacy-release-group"
+    _insert_identityless_library_file(
+        database,
+        root,
+        file_id,
+        release_group_mbid=malformed_release_group,
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO user_favorites VALUES ('alice', 'album', ?, 4)",
+            (malformed_release_group,),
+        )
+    store, importer = _importer(database, root)
+
+    plan, report = await importer.prepare("malformed-album-reference", now=100)
+
+    assert report.state == "ready"
+    bundle = next(
+        item
+        for item in plan.bundles
+        if any(track.id == file_id for track in item.membership.tracks)
+    )
+    assert bundle.album_identity is None
+    assert [(alias.alias, alias.kind) for alias in bundle.album_aliases] == [
+        (malformed_release_group, "compat_migration")
+    ]
+
+    await importer.apply(
+        "malformed-album-reference",
+        expected_source_revision=plan.source_revision,
+        now=101,
+    )
+
+    with sqlite3.connect(database) as connection:
+        favorite = connection.execute(
+            "SELECT item_id FROM library_user_favorites "
+            "WHERE user_id = 'alice' AND item_kind = 'album' AND item_id = ?",
+            (bundle.membership.album.id,),
+        ).fetchone()
+    assert favorite == (bundle.membership.album.id,)
+
+
+@pytest.mark.asyncio
+async def test_coherent_copy_uses_filename_and_folder_for_empty_local_tags(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Music"
+    root.mkdir()
+    database = tmp_path / "library.db"
+    _create_source(database, root)
+    file_id = "99999999-9999-4999-8999-999999999997"
+    _insert_identityless_library_file(database, root, file_id)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE library_files SET track_title = '', album_title = NULL, "
+            "file_path = ? WHERE id = ?",
+            (str(root / "Folder Fallback" / "filename-title.flac"), file_id),
+        )
+    _store, importer = _importer(database, root)
+
+    plan, report = await importer.prepare("empty-local-tags", now=100)
+
+    assert report.state == "ready"
+    bundle = next(
+        item
+        for item in plan.bundles
+        if any(track.id == file_id for track in item.membership.tracks)
+    )
+    track = next(track for track in bundle.membership.tracks if track.id == file_id)
+    assert bundle.membership.album.title == "Folder Fallback"
+    assert track.title == "filename-title"
+    assert track.album_title == "Folder Fallback"
+    assert track.tag_album_title == ""
+    assert track.metadata_incomplete is True
 
 
 @pytest.mark.asyncio

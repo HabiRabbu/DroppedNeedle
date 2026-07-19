@@ -10,6 +10,7 @@ from infrastructure.file_utils import atomic_write_json, read_json
 logger = logging.getLogger(__name__)
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+_PREFERENCES_OWNED_CONFIG_KEYS = frozenset({"user_preferences"})
 
 
 class Settings(BaseSettings):
@@ -137,7 +138,8 @@ class Settings(BaseSettings):
             validated_values: dict[str, object] = {}
             for key, value in config_data.items():
                 if key not in model_fields:
-                    logger.warning("Unknown config key '%s', ignoring", key)
+                    if key not in _PREFERENCES_OWNED_CONFIG_KEYS:
+                        logger.warning("Unknown config key '%s', ignoring", key)
                     continue
                 try:
                     field_info = model_fields[key]

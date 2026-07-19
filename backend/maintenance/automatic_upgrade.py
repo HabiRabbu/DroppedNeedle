@@ -476,6 +476,7 @@ async def _perform_target_migration() -> dict[str, Any]:
     )
     from services.native.target_startup_validator import TargetStartupValidator
 
+    print("[upgrade] Preparing migrated settings and library roots.", flush=True)
     migrate_legacy_config()
     preferences = get_preferences_service()
     preferences.get_typed_library_settings()
@@ -487,6 +488,11 @@ async def _perform_target_migration() -> dict[str, Any]:
     ).migrate(MIGRATION_ID)
     report = outcome.report
     if outcome.blocker_count:
+        blocker_reason_counts = {
+            key: value
+            for key, value in outcome.blocker_reason_counts.items()
+            if value
+        }
         _write_state(
             get_settings().cache_dir / _FAILURE_EVIDENCE_FILE,
             {
@@ -497,7 +503,31 @@ async def _perform_target_migration() -> dict[str, Any]:
                     for count in report.reference_counts
                     if count.user_id is None and count.unresolved
                 },
+                "blocker_reason_counts": blocker_reason_counts,
             },
+        )
+        reference_summary = ", ".join(
+            f"{count.kind}={count.unresolved:,}"
+            for count in report.reference_counts
+            if count.user_id is None and count.unresolved
+        )
+        reason_summary = ", ".join(
+            f"{key}={value:,}" for key, value in sorted(blocker_reason_counts.items())
+        )
+        details = "; ".join(
+            part
+            for part in (
+                f"references: {reference_summary}" if reference_summary else "",
+                f"reasons: {reason_summary}" if reason_summary else "",
+            )
+            if part
+        )
+        noun = "record" if outcome.blocker_count == 1 else "records"
+        detail_suffix = f": {details}" if details else ""
+        print(
+            f"[upgrade] Migration checks found {outcome.blocker_count:,} unresolved "
+            f"{noun}{detail_suffix}.",
+            flush=True,
         )
         raise AutomaticUpgradeError(
             "The existing library contains references that cannot be upgraded safely."
@@ -511,10 +541,12 @@ async def _perform_target_migration() -> dict[str, Any]:
         raise AutomaticUpgradeError(
             "The library upgrade attempted work that is not allowed during startup."
         )
+    print("[upgrade] Running independent target startup validation.", flush=True)
     validation = await TargetStartupValidator(
         get_native_library_store(),
         lambda: {root.id for root in resolver.settings.library_roots},
     ).validate()
+    print("[upgrade] Working-copy migration checks passed.", flush=True)
     return {
         "source_revision": report.source_revision,
         "root_revision": report.root_revision,
@@ -654,8 +686,8 @@ def run_automatic_copy_upgrade(
         except OSError:
             logger.error("automatic_upgrade.failure_state_write_failed")
         logger.error(
-            "automatic_upgrade.failed",
-            extra={"error_type": type(error).__name__},
+            "automatic_upgrade.failed error_type=%s",
+            type(error).__name__,
         )
         raise AutomaticUpgradeError(
             "The library upgrade could not be completed. Your previous database and "
@@ -961,8 +993,8 @@ def main() -> int:
                 except OSError:
                     logger.error("automatic_upgrade.failure_state_write_failed")
             logger.error(
-                "automatic_upgrade.working_copy_failed",
-                extra={"error_type": type(error).__name__},
+                "automatic_upgrade.working_copy_failed error_type=%s",
+                type(error).__name__,
             )
             return 1
         return 0

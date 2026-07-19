@@ -347,6 +347,46 @@ def _run_real_upgrade(root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _insert_identityless_legacy_files(
+    database: Path, music: Path, *, count: int
+) -> list[str]:
+    ids = [f"99999999-9999-4999-8999-{index:012d}" for index in range(count)]
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            "INSERT INTO library_files "
+            "(id, release_group_mbid, release_mbid, recording_mbid, disc_number, "
+            "track_number, track_title, artist_name, album_artist_name, album_title, "
+            "file_path, file_size_bytes, file_mtime, duration_seconds, file_format, "
+            "source, is_compilation, tagged_at, imported_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    file_id,
+                    None,
+                    None,
+                    None,
+                    1,
+                    index + 1,
+                    f"Local Track {index + 1}",
+                    "Local Artist",
+                    "Local Artist",
+                    "Identityless Album",
+                    str(music / "Identityless Album" / f"{index + 1:02d}.flac"),
+                    1_000 + index,
+                    20.0 + index,
+                    180.0,
+                    "flac",
+                    "manual_review",
+                    0,
+                    21.0,
+                    20.0,
+                )
+                for index, file_id in enumerate(ids)
+            ],
+        )
+    return ids
+
+
 def test_real_legacy_installation_upgrades_once_with_normal_startup(
     tmp_path: Path,
 ) -> None:
@@ -424,7 +464,9 @@ def test_real_unresolved_reference_reports_only_aggregate_failure_evidence(
         "reason": "unresolved_references",
         "blocker_count": 1,
         "unresolved_reference_counts": {"favorite": 1},
+        "blocker_reason_counts": {"favorite_unresolved": 1},
     }
+    assert "reasons: favorite_unresolved=1" in result.stdout
     serialized_evidence = json.dumps(state["failure_evidence"])
     assert "alice" not in serialized_evidence
     assert "private-missing-reference" not in serialized_evidence
@@ -435,6 +477,49 @@ def test_real_unresolved_reference_reports_only_aggregate_failure_evidence(
             "SELECT COUNT(*) FROM user_favorites WHERE item_id = ?",
             ("private-missing-reference",),
         ).fetchone() == (1,)
+
+
+def test_real_upgrade_preserves_ten_identityless_legacy_library_files(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "app"
+    music = tmp_path / "Music"
+    music.mkdir(parents=True)
+    database = root / "cache" / "library.db"
+    database.parent.mkdir(parents=True)
+    _create_source(database, music)
+    legacy_ids = _insert_identityless_legacy_files(database, music, count=10)
+    config = root / "config" / "config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps({"library_settings": {"library_paths": [str(music)]}}),
+        encoding="utf-8",
+    )
+
+    result = _run_real_upgrade(root)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Migrating local-only catalog tracks: 10/10 (100%)" in result.stdout
+    assert "Working-copy migration checks passed" in result.stdout
+    with sqlite3.connect(database) as connection:
+        migrated = connection.execute(
+            f"SELECT id, local_album_id FROM local_tracks WHERE id IN "
+            f"({','.join('?' for _ in legacy_ids)}) ORDER BY id",
+            legacy_ids,
+        ).fetchall()
+        reviews = connection.execute(
+            "SELECT COUNT(*) FROM library_identification_reviews "
+            "WHERE reason_code = 'legacy_missing_release_group_id'"
+        ).fetchone()[0]
+        album_identities = connection.execute(
+            "SELECT COUNT(*) FROM local_album_external_identities "
+            "WHERE local_album_id = ?",
+            (migrated[0][1],),
+        ).fetchone()[0]
+    assert [row[0] for row in migrated] == sorted(legacy_ids)
+    assert len({row[1] for row in migrated}) == 1
+    assert reviews == 10
+    assert album_identities == 0
 
 
 def test_real_fresh_installation_initializes_without_user_steps(tmp_path: Path) -> None:

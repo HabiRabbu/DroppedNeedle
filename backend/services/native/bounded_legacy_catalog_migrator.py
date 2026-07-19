@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +20,16 @@ from models.library_migration import (
     MigrationTombstone,
 )
 from models.library_work import MigrationProvenance
-from models.local_catalog import LocalArtworkAssociation
+from models.local_catalog import LocalAlbumAlias, LocalArtworkAssociation
 from services.native.legacy_catalog_importer import (
     REFERENCE_KINDS,
     LegacyCatalogImporter,
     _as_float,
+    _as_int,
     _fold,
     _hash,
+    _invalid_release_group_key,
+    _local_only_grouping_values,
     _stable_id,
     _valid_mbid,
 )
@@ -42,6 +45,13 @@ class BoundedMigrationOutcome:
     report: MigrationDryRunReport
     blocker_count: int
     invariants: dict[str, int] | None = None
+    blocker_reason_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _CatalogPreflight:
+    identified_tracks: int
+    local_only_tracks: int
 
 
 class _ProgressReporter:
@@ -53,6 +63,9 @@ class _ProgressReporter:
     def start(self, phase: str, total: int) -> None:
         self._next[phase] = 0
         self.update(phase, 0, total, force=True)
+
+    def message(self, message: str) -> None:
+        self._emit(f"[upgrade] {message}")
 
     def update(
         self, phase: str, completed: int, total: int, *, force: bool = False
@@ -90,6 +103,7 @@ class BoundedLegacyCatalogMigrator:
         )
         self._blockers: list[str] = []
         self._blocker_count = 0
+        self._blocker_reason_counts: Counter[str] = Counter()
         self._counts: dict[tuple[str, str | None], MigrationReferenceCount] = {
             (kind, None): MigrationReferenceCount(kind=kind) for kind in REFERENCE_KINDS
         }
@@ -140,12 +154,38 @@ class BoundedLegacyCatalogMigrator:
         )
         await self._store.prepare_bounded_legacy_migration()
 
+        preflight = await self._preflight_catalog(totals["library_files"])
+        await self._preflight_review_paths(totals["manual_review_queue"])
+        if self._blocker_count:
+            await self._store.finish_bounded_legacy_migration()
+            noun = "record is" if self._blocker_count == 1 else "records are"
+            self._progress.message(
+                "Library path preflight stopped before migration: "
+                f"{self._blocker_count:,} saved {noun} outside the configured "
+                "library roots."
+            )
+            return BoundedMigrationOutcome(
+                report=self._report(
+                    migration_id,
+                    source_revision,
+                    state="blocked",
+                ),
+                blocker_count=self._blocker_count,
+                blocker_reason_counts=dict(self._blocker_reason_counts),
+            )
+
         await self._migrate_roots(migration_id, source_revision, migrated_at)
         await self._migrate_identified_catalog(
             migration_id,
             source_revision,
             migrated_at,
-            total=totals["library_files"],
+            total=preflight.identified_tracks,
+        )
+        await self._migrate_local_only_catalog(
+            migration_id,
+            source_revision,
+            migrated_at,
+            total=preflight.local_only_tracks,
         )
         await self._migrate_review_catalog(
             migration_id,
@@ -159,7 +199,9 @@ class BoundedLegacyCatalogMigrator:
             migrated_at,
             totals=totals,
         )
+        self._progress.message("Finalizing migration staging.")
         await self._store.finish_bounded_legacy_migration()
+        self._progress.message("Checking unresolved references.")
         catalog_counts = await self._store.get_bounded_migrated_catalog_counts()
         self._identified_albums = catalog_counts["identified_albums"]
         self._identified_tracks = catalog_counts["identified_tracks"]
@@ -175,8 +217,10 @@ class BoundedLegacyCatalogMigrator:
                     state="blocked",
                 ),
                 blocker_count=self._blocker_count,
+                blocker_reason_counts=dict(self._blocker_reason_counts),
             )
 
+        self._progress.message("Validating migrated catalog.")
         final_revision = await self._store.get_bounded_legacy_source_revision()
         if final_revision != source_revision:
             raise StaleRevisionError(
@@ -186,6 +230,7 @@ class BoundedLegacyCatalogMigrator:
         if any(invariants.values()):
             raise ValidationError("The imported catalog failed its target invariants.")
 
+        self._progress.message("Verifying migrated reference counts.")
         actual_counts = await self._store.get_migration_provenance_counts(migration_id)
         for kind in {
             "subsonic_id",
@@ -204,6 +249,7 @@ class BoundedLegacyCatalogMigrator:
                 "The imported catalog reference counts do not match the bounded migration."
             )
 
+        self._progress.message("Recording migration completion marker.")
         report = self._report(migration_id, source_revision, state="applied")
         await self._store.finish_migration(
             migration_id,
@@ -216,6 +262,101 @@ class BoundedLegacyCatalogMigrator:
             blocker_count=0,
             invariants=invariants,
         )
+
+    async def _preflight_catalog(self, total: int) -> _CatalogPreflight:
+        phase = "Checking catalog compatibility"
+        self._progress.start(phase, total)
+        after_id = ""
+        processed = 0
+        identified = 0
+        local_only = 0
+        while True:
+            batch = await self._store.get_bounded_legacy_library_file_preflight_batch(
+                after_id=after_id,
+                limit=self._batch_size,
+            )
+            if not batch:
+                break
+            staged: list[
+                tuple[str, str, str, str, str, str, str, int, str]
+            ] = []
+            for row in batch:
+                after_id = str(row.get("id") or "")
+                resolved = self._resolver.resolve(str(row.get("file_path") or ""))
+                if resolved is None:
+                    self._increment("library_file", mapped=False)
+                    self._add_blocker(
+                        f"Library file {row.get('id')} is outside every typed root.",
+                        reason="library_file_outside_roots",
+                    )
+                    continue
+                if _valid_mbid(row.get("release_group_mbid")):
+                    identified += 1
+                    continue
+                group_key, directory, album_key, artist_key = (
+                    _local_only_grouping_values(
+                        resolved.root_id,
+                        resolved.relative_path,
+                        row.get("album_title"),
+                        row.get("album_artist_name"),
+                        row.get("is_compilation"),
+                        row.get("id"),
+                    )
+                )
+                staged.append(
+                    (
+                        str(row.get("id")),
+                        group_key,
+                        resolved.root_id,
+                        resolved.relative_path,
+                        directory,
+                        album_key,
+                        artist_key,
+                        _as_int(row.get("track_number")),
+                        _invalid_release_group_key(
+                            row.get("release_group_mbid")
+                        ),
+                    )
+                )
+                local_only += 1
+            if staged:
+                await self._store.stage_bounded_legacy_local_groups(staged)
+            processed += len(batch)
+            self._progress.update(phase, processed, total)
+        self._progress.update(phase, processed, total, force=True)
+        if local_only:
+            self._progress.message("Finalizing local-only album groups.")
+            await self._store.finalize_bounded_legacy_local_groups()
+        return _CatalogPreflight(
+            identified_tracks=identified,
+            local_only_tracks=local_only,
+        )
+
+    async def _preflight_review_paths(self, total: int) -> None:
+        phase = "Checking saved review paths"
+        self._progress.start(phase, total)
+        after_rowid = MIN_SQLITE_ROWID
+        processed = 0
+        while True:
+            batch = await self._store.get_bounded_legacy_rows(
+                "manual_review_queue",
+                after_rowid=after_rowid,
+                limit=self._batch_size,
+            )
+            if not batch:
+                break
+            after_rowid = int(batch[-1]["__migration_rowid"])
+            for row in batch:
+                if self._resolver.resolve(str(row.get("file_path") or "")) is not None:
+                    continue
+                self._increment("review_row", mapped=False)
+                self._add_blocker(
+                    f"Review row {row.get('id')} is outside every typed root.",
+                    reason="review_row_outside_roots",
+                )
+            processed += len(batch)
+            self._progress.update(phase, processed, total)
+        self._progress.update(phase, processed, total, force=True)
 
     async def _migrate_roots(
         self, migration_id: str, source_revision: str, migrated_at: float
@@ -247,7 +388,7 @@ class BoundedLegacyCatalogMigrator:
         *,
         total: int,
     ) -> None:
-        phase = "Migrating catalog tracks"
+        phase = "Migrating identified catalog tracks"
         self._progress.start(phase, total)
         after_release_group: str | None = None
         after_id = ""
@@ -259,6 +400,7 @@ class BoundedLegacyCatalogMigrator:
                 after_release_group=after_release_group,
                 after_id=after_id,
                 limit=self._batch_size,
+                exclude_staged=True,
             )
             if not batch:
                 break
@@ -304,12 +446,9 @@ class BoundedLegacyCatalogMigrator:
         first_segment: bool,
     ) -> None:
         if not _valid_mbid(release_group):
-            for row in rows:
-                self._increment("library_file", mapped=False)
-                self._add_blocker(
-                    f"Library file {row.get('id')} has an invalid release-group ID."
-                )
-            return
+            raise ValidationError(
+                "The catalog preflight left an invalid identified album group."
+            )
         if group_context is None:
             raise ValidationError(
                 "The legacy album group changed while it was being migrated."
@@ -378,6 +517,124 @@ class BoundedLegacyCatalogMigrator:
             source_revision=source_revision,
         )
 
+    async def _migrate_local_only_catalog(
+        self,
+        migration_id: str,
+        source_revision: str,
+        migrated_at: float,
+        *,
+        total: int,
+    ) -> None:
+        phase = "Migrating local-only catalog tracks"
+        self._progress.start(phase, total)
+        migrated = 0
+        group_after = ""
+        while True:
+            keys = await self._store.get_bounded_legacy_local_group_keys(
+                after_key=group_after,
+                limit=self._batch_size,
+            )
+            if not keys:
+                break
+            for key in keys:
+                context = await self._store.get_bounded_legacy_local_group_context(key)
+                if context is None:
+                    raise ValidationError(
+                        "A local-only legacy album changed during migration."
+                    )
+                after_id = ""
+                first_segment = True
+                while True:
+                    rows = await self._store.get_bounded_legacy_local_group_batch(
+                        key,
+                        after_id=after_id,
+                        limit=self._batch_size,
+                    )
+                    if not rows:
+                        break
+                    after_id = str(rows[-1].get("id") or "")
+                    await self._migrate_local_only_group(
+                        key,
+                        rows,
+                        migration_id,
+                        source_revision,
+                        migrated_at,
+                        group_context=context,
+                        first_segment=first_segment,
+                    )
+                    first_segment = False
+                    migrated += len(rows)
+                    self._progress.update(phase, migrated, total)
+            group_after = keys[-1]
+        self._progress.update(phase, migrated, total, force=True)
+
+    async def _migrate_local_only_group(
+        self,
+        group_key: str,
+        rows: list[dict[str, Any]],
+        migration_id: str,
+        source_revision: str,
+        migrated_at: float,
+        *,
+        group_context: dict[str, Any],
+        first_segment: bool,
+    ) -> None:
+        plan = LegacyCatalogImportPlan(
+            source_revision=source_revision,
+            root_revision=self._resolver.policy_revision,
+        )
+        local_counts = self._empty_counts()
+        bundle = self._builder._local_only_library_bundle(
+            group_key,
+            rows,
+            {"library_album_meta": [], "library_albums": []},
+            source_revision,
+            migrated_at,
+            plan,
+            set(),
+            set(),
+            {},
+            {},
+            defaultdict(list),
+            {},
+            local_counts,
+            group_first=group_context["first"],
+            group_is_compilation=bool(group_context["is_compilation"]),
+        )
+        self._merge_counts(local_counts)
+        self._capture_blockers(plan.blockers)
+        if bundle is None or plan.blockers:
+            return
+        bundle.membership.album.created_at = _as_float(
+            group_context.get("created_at"), migrated_at
+        )
+        bundle.membership.album.root_id = str(group_context["root_id"])
+        if first_segment:
+            bundle.album_aliases.extend(
+                LocalAlbumAlias(
+                    alias=alias,
+                    local_album_id=bundle.membership.album.id,
+                    kind="compat_migration",
+                    created_at=migrated_at,
+                )
+                for alias in group_context["legacy_release_aliases"]
+            )
+        await self._store.apply_legacy_catalog_bundle(
+            bundle,
+            migration_run_id=migration_id,
+            source_revision=source_revision,
+            allow_existing_artists=True,
+            allow_existing_album=True,
+        )
+        if first_segment:
+            self._local_only_albums += 1
+        self._local_only_tracks += len(bundle.membership.tracks)
+        await self._apply_references(
+            self._derived_bundle_provenance(bundle, migrated_at),
+            migration_id=migration_id,
+            source_revision=source_revision,
+        )
+
     async def _migrate_review_catalog(
         self,
         migration_id: str,
@@ -412,7 +669,8 @@ class BoundedLegacyCatalogMigrator:
                     if resolved is None:
                         self._increment("review_row", mapped=False)
                         self._add_blocker(
-                            f"Review row {row.get('id')} is outside every typed root."
+                            f"Review row {row.get('id')} is outside every typed root.",
+                            reason="review_row_outside_roots",
                         )
                         continue
                     parent = Path(resolved.relative_path).parent.as_posix()
@@ -631,7 +889,8 @@ class BoundedLegacyCatalogMigrator:
                         )
                     if target is None:
                         self._add_blocker(
-                            f"{kind} reference {source_key} cannot be resolved."
+                            f"{kind} reference {source_key} cannot be resolved.",
+                            reason=f"{kind}_unresolved",
                         )
                         continue
                     provenance.append(
@@ -710,6 +969,29 @@ class BoundedLegacyCatalogMigrator:
                         "native_album_alias",
                         identity.release_group_mbid,
                         ("local_album", identity.local_album_id),
+                        source,
+                        migrated_at,
+                    ),
+                ]
+            )
+        identity_alias = identity.release_group_mbid if identity is not None else None
+        for alias in bundle.album_aliases:
+            if alias.alias == identity_alias:
+                continue
+            source = {"kind": "album", "id": alias.alias}
+            rows.extend(
+                [
+                    self._provenance(
+                        "subsonic_id",
+                        f"album:{alias.alias}",
+                        ("local_album", alias.local_album_id),
+                        source,
+                        migrated_at,
+                    ),
+                    self._provenance(
+                        "native_album_alias",
+                        alias.alias,
+                        ("local_album", alias.local_album_id),
                         source,
                         migrated_at,
                     ),
@@ -906,10 +1188,11 @@ class BoundedLegacyCatalogMigrator:
 
     def _capture_blockers(self, blockers: list[str]) -> None:
         for blocker in blockers:
-            self._add_blocker(blocker)
+            self._add_blocker(blocker, reason="migration_plan")
 
-    def _add_blocker(self, blocker: str) -> None:
+    def _add_blocker(self, blocker: str, *, reason: str) -> None:
         self._blocker_count += 1
+        self._blocker_reason_counts[reason] += 1
         if len(self._blockers) < MAX_REPORTED_BLOCKERS:
             self._blockers.append(blocker)
 

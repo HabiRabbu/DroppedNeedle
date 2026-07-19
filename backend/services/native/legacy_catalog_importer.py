@@ -41,6 +41,10 @@ from models.local_catalog import (
     LocalTrack,
     LocalTrackExternalIdentity,
 )
+from services.native.local_album_grouper import (
+    grouping_directory,
+    normalize_group_value,
+)
 from services.native.library_policy_resolver import LibraryPolicyResolver
 
 MIGRATION_NAMESPACE = UUIDType("3eb2364c-7086-4cb9-9360-6cf704259a40")
@@ -93,6 +97,88 @@ def _valid_mbid(value: object) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _invalid_release_group_key(value: object) -> str:
+    if not isinstance(value, str) or not value.strip() or _valid_mbid(value):
+        return ""
+    return value.casefold()
+
+
+def _local_only_grouping_values(
+    root_id: str,
+    relative_path: str,
+    album_title: object,
+    album_artist_name: object,
+    is_compilation: object,
+    source_id: object,
+) -> tuple[str, str, str, str]:
+    directory = grouping_directory(relative_path)
+    album_key = normalize_group_value(str(album_title or ""))
+    artist_key = (
+        ""
+        if bool(is_compilation)
+        else normalize_group_value(str(album_artist_name or ""))
+    )
+    group_key = _hash(
+        [
+            root_id,
+            directory,
+            album_key or f"untagged:{source_id}",
+            artist_key if album_key else "",
+        ]
+    )
+    return group_key, directory, album_key, artist_key
+
+
+def _group_local_only_rows(
+    rows: list[tuple[dict[str, object], str, str]],
+) -> dict[str, list[dict[str, object]]]:
+    groups: dict[str, list[dict[str, object]]] = defaultdict(list)
+    tagged_by_directory: dict[tuple[str, str], set[str]] = defaultdict(set)
+    untagged_by_directory: dict[
+        tuple[str, str], list[tuple[str, dict[str, object]]]
+    ] = defaultdict(list)
+
+    for row, root_id, relative_path in rows:
+        group_key, directory, album_key, _artist_key = _local_only_grouping_values(
+            root_id,
+            relative_path,
+            row.get("album_title"),
+            row.get("album_artist_name"),
+            row.get("is_compilation"),
+            row.get("id"),
+        )
+        directory_key = (root_id, directory)
+        if album_key:
+            groups[group_key].append(row)
+            tagged_by_directory[directory_key].add(group_key)
+        else:
+            untagged_by_directory[directory_key].append((group_key, row))
+
+    for directory_key, untagged in untagged_by_directory.items():
+        candidates = tagged_by_directory.get(directory_key, set())
+        target_key = next(iter(candidates)) if len(candidates) == 1 else None
+        target_numbers = (
+            {
+                _as_int(row.get("track_number"))
+                for row in groups[target_key]
+                if _as_int(row.get("track_number")) > 0
+            }
+            if target_key is not None
+            else set()
+        )
+        can_join = target_key is not None and all(
+            _as_int(row.get("track_number")) > 0
+            and _as_int(row.get("track_number")) not in target_numbers
+            for _group_key, row in untagged
+        )
+        if can_join and target_key is not None:
+            groups[target_key].extend(row for _group_key, row in untagged)
+            continue
+        for group_key, row in untagged:
+            groups[group_key].append(row)
+    return groups
 
 
 def _as_int(value: object, default: int = 0) -> int:
@@ -246,13 +332,20 @@ class LegacyCatalogImporter:
             row for row in snapshot["library_files"] if row.get("deleted_at") is None
         ]
         by_release_group: dict[str, list[dict[str, object]]] = defaultdict(list)
+        local_only_rows: list[tuple[dict[str, object], str, str]] = []
         for row in active_files:
-            release_group = row.get("release_group_mbid")
-            if not _valid_mbid(release_group):
+            resolved = self._resolver.resolve(str(row.get("file_path") or ""))
+            if resolved is None:
                 plan.blockers.append(
-                    f"Library file {row.get('id')} has an invalid release-group ID."
+                    f"Library file {row.get('id')} is outside every typed root."
                 )
                 self._increment(counts, "library_file", mapped=False)
+                continue
+            release_group = row.get("release_group_mbid")
+            if not _valid_mbid(release_group):
+                local_only_rows.append(
+                    (row, resolved.root_id, resolved.relative_path)
+                )
                 continue
             by_release_group[str(release_group).casefold()].append(row)
 
@@ -276,6 +369,50 @@ class LegacyCatalogImporter:
             if bundle is not None:
                 plan.bundles.append(bundle)
                 bundles_by_album[bundle.membership.album.id] = bundle
+
+        local_only_groups = _group_local_only_rows(local_only_rows)
+        local_only_bundles: dict[str, LegacyCatalogImportBundle] = {}
+        invalid_release_groups: dict[str, set[str]] = defaultdict(set)
+        for group_key, rows in sorted(local_only_groups.items()):
+            bundle = self._local_only_library_bundle(
+                group_key,
+                rows,
+                snapshot,
+                source_revision,
+                prepared_at,
+                plan,
+                emitted_artists,
+                emitted_artist_aliases,
+                artist_map,
+                track_map,
+                recording_map,
+                path_map,
+                counts,
+            )
+            if bundle is not None:
+                plan.bundles.append(bundle)
+                bundles_by_album[bundle.membership.album.id] = bundle
+                local_only_bundles[group_key] = bundle
+                for row in rows:
+                    invalid_key = _invalid_release_group_key(
+                        row.get("release_group_mbid")
+                    )
+                    if invalid_key:
+                        invalid_release_groups[invalid_key].add(group_key)
+
+        for alias, group_keys in sorted(invalid_release_groups.items()):
+            if len(group_keys) != 1:
+                continue
+            bundle = local_only_bundles[next(iter(group_keys))]
+            bundle.album_aliases.append(
+                LocalAlbumAlias(
+                    alias=alias,
+                    local_album_id=bundle.membership.album.id,
+                    kind="compat_migration",
+                    created_at=prepared_at,
+                )
+            )
+            album_map[alias] = bundle.membership.album.id
 
         self._add_review_rows(
             snapshot,
@@ -487,6 +624,7 @@ class LegacyCatalogImporter:
         tracks: list[LocalTrack] = []
         track_credits: dict[str, list[LocalArtistCredit]] = {}
         track_identities: list[LocalTrackExternalIdentity] = []
+        reviews: list[MigrationReview] = []
         provenance: list[MigrationProvenance] = []
         for row in rows:
             file_id = str(row.get("id"))
@@ -596,8 +734,16 @@ class LegacyCatalogImporter:
             recording = row.get("recording_mbid")
             if recording:
                 if not _valid_mbid(recording):
-                    plan.blockers.append(
-                        f"Library file {file_id} has an invalid recording ID."
+                    reviews.append(
+                        MigrationReview(
+                            id=_stable_id("library-file-review", file_id),
+                            local_track_id=file_id,
+                            state="needs_review",
+                            reason_code="legacy_invalid_recording_id",
+                            input_revision=_hash(row),
+                            created_at=_as_float(row.get("imported_at"), prepared_at),
+                            updated_at=prepared_at,
+                        )
                     )
                 else:
                     recording_key = str(recording).casefold()
@@ -689,8 +835,131 @@ class LegacyCatalogImporter:
             )
             if cover_url
             else None,
+            reviews=reviews,
             provenance=provenance,
         )
+        return bundle
+
+    def _local_only_library_bundle(
+        self,
+        group_key: str,
+        rows: list[dict[str, object]],
+        snapshot: dict[str, list[dict[str, object]]],
+        source_revision: str,
+        prepared_at: float,
+        plan: LegacyCatalogImportPlan,
+        emitted_artists: set[str],
+        emitted_artist_aliases: set[str],
+        artist_map: dict[str, str],
+        track_map: dict[str, str],
+        recording_map: dict[str, list[str]],
+        path_map: dict[str, tuple[str, str]],
+        counts: dict[tuple[str, str | None], MigrationReferenceCount],
+        *,
+        group_first: dict[str, object] | None = None,
+        group_is_compilation: bool | None = None,
+    ) -> LegacyCatalogImportBundle | None:
+        synthetic_group = _stable_id("legacy-local-album", group_key)
+        if group_first is None:
+            tagged_rows = [
+                row
+                for row in rows
+                if normalize_group_value(str(row.get("album_title") or ""))
+            ]
+            if tagged_rows:
+                group_first = min(
+                    tagged_rows,
+                    key=lambda row: (
+                        _as_int(row.get("disc_number"), 1),
+                        _as_int(row.get("track_number")),
+                        str(row.get("id")),
+                    ),
+                )
+        bundle = self._identified_bundle(
+            synthetic_group,
+            rows,
+            snapshot,
+            source_revision,
+            prepared_at,
+            plan,
+            emitted_artists,
+            emitted_artist_aliases,
+            {},
+            artist_map,
+            track_map,
+            recording_map,
+            path_map,
+            counts,
+            group_first=group_first,
+            group_is_compilation=group_is_compilation,
+        )
+        if bundle is None:
+            return None
+
+        bundle.album_identity = None
+        bundle.album_aliases = []
+        bundle.artwork = None
+        bundle.membership.album.grouping_key = f"legacy-local:{group_key}"
+        effective_album_title = str(
+            (group_first or {}).get("album_title") or ""
+        ).strip()
+        if not normalize_group_value(effective_album_title):
+            directory = grouping_directory(
+                bundle.membership.tracks[0].relative_path
+            )
+            effective_album_title = Path(directory).name or "Unknown Album"
+        bundle.membership.album.title = effective_album_title
+        source_by_id = {str(row.get("id")): row for row in rows}
+        replacement_reviews: list[MigrationReview] = []
+        local_track_ids = set(source_by_id)
+        for review in bundle.reviews:
+            if review.local_track_id not in local_track_ids:
+                replacement_reviews.append(review)
+        for track in bundle.membership.tracks:
+            row = source_by_id[track.id]
+            raw_track_title = str(row.get("track_title") or "")
+            raw_album_title = str(row.get("album_title") or "")
+            raw_album_artist = str(row.get("album_artist_name") or "")
+            track.title = raw_track_title.strip() or Path(track.relative_path).stem
+            track.album_title = effective_album_title
+            track.tag_album_title = raw_album_title
+            track.tag_album_artist_name = raw_album_artist
+            track.metadata_incomplete = any(
+                not str(row.get(field) or "").strip()
+                for field in (
+                    "track_title",
+                    "artist_name",
+                    "album_title",
+                    "album_artist_name",
+                )
+            )
+            track.tag_revision = _hash(
+                [
+                    row.get("track_title"),
+                    row.get("artist_name"),
+                    row.get("album_title"),
+                    row.get("album_artist_name"),
+                    row.get("recording_mbid"),
+                    row.get("release_group_mbid"),
+                ]
+            )
+            raw_release_group = row.get("release_group_mbid")
+            replacement_reviews.append(
+                MigrationReview(
+                    id=_stable_id("library-file-review", track.id),
+                    local_track_id=track.id,
+                    state="needs_review",
+                    reason_code=(
+                        "legacy_invalid_release_group_id"
+                        if raw_release_group
+                        else "legacy_missing_release_group_id"
+                    ),
+                    input_revision=_hash(row),
+                    created_at=_as_float(row.get("imported_at"), prepared_at),
+                    updated_at=prepared_at,
+                )
+            )
+        bundle.reviews = replacement_reviews
         return bundle
 
     def _add_review_rows(
@@ -913,8 +1182,19 @@ class LegacyCatalogImporter:
         del source_revision
         playlist_ids = {str(row.get("id")) for row in snapshot["playlists"]}
         history_text_map: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        track_membership: dict[str, tuple[str, str]] = {}
         for bundle in plan.bundles:
             for track in bundle.membership.tracks:
+                credits = bundle.membership.track_credits.get(track.id, [])
+                artist_id = (
+                    credits[0].local_artist_id
+                    if credits
+                    else bundle.membership.album.album_artist_id
+                )
+                track_membership[track.id] = (
+                    track.local_album_id,
+                    artist_id,
+                )
                 history_text_map[
                     (
                         _fold(track.title),
@@ -974,9 +1254,19 @@ class LegacyCatalogImporter:
             target_id = track_map.get(str(file_id)) if file_id else None
             valid_fields = True
             if row.get("album_id") and local_source:
-                valid_fields &= str(row["album_id"]).casefold() in album_map
+                expected_album = album_map.get(str(row["album_id"]).casefold())
+                valid_fields &= expected_album is None or (
+                    target_id is not None
+                    and track_membership.get(target_id, (None, None))[0]
+                    == expected_album
+                )
             if row.get("artist_id") and local_source:
-                valid_fields &= str(row["artist_id"]).casefold() in artist_map
+                expected_artist = artist_map.get(str(row["artist_id"]).casefold())
+                valid_fields &= expected_artist is None or (
+                    target_id is not None
+                    and track_membership.get(target_id, (None, None))[1]
+                    == expected_artist
+                )
             target = ("local_track", target_id) if target_id and valid_fields else None
             if target is None:
                 tombstone_id = _stable_id("playlist-tombstone", str(row.get("id")))

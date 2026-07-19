@@ -3665,16 +3665,112 @@ class NativeLibraryStore(PersistenceBase):
                     "ON library_files(LOWER(COALESCE(release_group_mbid, '')), id) "
                     "WHERE deleted_at IS NULL"
                 )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS library_migration_file_staging ("
+                "source_id TEXT PRIMARY KEY, group_key TEXT NOT NULL, "
+                "root_id TEXT NOT NULL, relative_path TEXT NOT NULL, "
+                "directory_key TEXT NOT NULL, album_key TEXT NOT NULL, "
+                "artist_key TEXT NOT NULL, track_number INTEGER NOT NULL, "
+                "legacy_release_key TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_library_migration_file_staging_group "
+                "ON library_migration_file_staging(group_key, source_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_library_migration_file_staging_directory "
+                "ON library_migration_file_staging("
+                "root_id, directory_key, album_key, group_key, track_number)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_library_migration_file_staging_release "
+                "ON library_migration_file_staging(legacy_release_key, group_key)"
+            )
+            connection.execute("DELETE FROM library_migration_file_staging")
 
         await self._write(operation)
 
     async def finish_bounded_legacy_migration(self) -> None:
         def operation(connection: sqlite3.Connection) -> None:
+            connection.execute("DROP TABLE IF EXISTS library_migration_file_staging")
             connection.execute("DROP TABLE IF EXISTS library_migration_review_staging")
             connection.execute("DROP INDEX IF EXISTS idx_bounded_legacy_library_files")
             connection.execute(
                 "DROP INDEX IF EXISTS idx_bounded_migration_local_track_path"
             )
+
+        await self._write(operation)
+
+    async def get_bounded_legacy_library_file_preflight_batch(
+        self, *, after_id: str, limit: int
+    ) -> list[dict[str, Any]]:
+        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            present = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'library_files'"
+            ).fetchone()
+            if present is None:
+                return []
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM library_files WHERE deleted_at IS NULL AND id > ? "
+                    "ORDER BY id LIMIT ?",
+                    (after_id, limit),
+                ).fetchall()
+            ]
+
+        return await self._read(operation)
+
+    async def stage_bounded_legacy_local_groups(
+        self, rows: list[tuple[str, str, str, str, str, str, str, int, str]]
+    ) -> None:
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.executemany(
+                "INSERT OR REPLACE INTO library_migration_file_staging "
+                "(source_id, group_key, root_id, relative_path, directory_key, "
+                "album_key, artist_key, track_number, legacy_release_key) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+
+        await self._write(operation)
+
+    async def finalize_bounded_legacy_local_groups(self) -> None:
+        def operation(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                "SELECT root_id, directory_key, MIN(group_key) AS group_key "
+                "FROM library_migration_file_staging WHERE album_key != '' "
+                "GROUP BY root_id, directory_key "
+                "HAVING COUNT(DISTINCT group_key) = 1"
+            )
+            while rows := cursor.fetchmany(500):
+                for row in rows:
+                    connection.execute(
+                        "UPDATE library_migration_file_staging AS untagged "
+                        "SET group_key = ? WHERE root_id = ? AND directory_key = ? "
+                        "AND album_key = '' "
+                        "AND NOT EXISTS ("
+                        "SELECT 1 FROM library_migration_file_staging AS missing "
+                        "WHERE missing.root_id = untagged.root_id "
+                        "AND missing.directory_key = untagged.directory_key "
+                        "AND missing.album_key = '' AND missing.track_number <= 0) "
+                        "AND NOT EXISTS ("
+                        "SELECT 1 FROM library_migration_file_staging AS missing "
+                        "JOIN library_migration_file_staging AS tagged "
+                        "ON tagged.root_id = missing.root_id "
+                        "AND tagged.directory_key = missing.directory_key "
+                        "AND tagged.group_key = ? AND tagged.album_key != '' "
+                        "AND tagged.track_number = missing.track_number "
+                        "WHERE missing.root_id = untagged.root_id "
+                        "AND missing.directory_key = untagged.directory_key "
+                        "AND missing.album_key = '')",
+                        (
+                            row["group_key"],
+                            row["root_id"],
+                            row["directory_key"],
+                            row["group_key"],
+                        ),
+                    )
 
         await self._write(operation)
 
@@ -3684,6 +3780,7 @@ class NativeLibraryStore(PersistenceBase):
         after_release_group: str | None,
         after_id: str,
         limit: int,
+        exclude_staged: bool = False,
     ) -> list[dict[str, Any]]:
         def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
             present = connection.execute(
@@ -3696,6 +3793,11 @@ class NativeLibraryStore(PersistenceBase):
                 "__migration_release_group FROM library_files "
                 "WHERE deleted_at IS NULL "
             )
+            if exclude_staged:
+                select += (
+                    "AND NOT EXISTS (SELECT 1 FROM library_migration_file_staging s "
+                    "WHERE s.source_id = library_files.id) "
+                )
             if after_release_group is None:
                 rows = connection.execute(
                     f"{select} ORDER BY __migration_release_group, id LIMIT ?",
@@ -3710,6 +3812,83 @@ class NativeLibraryStore(PersistenceBase):
                     (after_release_group, after_release_group, after_id, limit),
                 ).fetchall()
             return [dict(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def get_bounded_legacy_local_group_keys(
+        self, *, after_key: str, limit: int
+    ) -> list[str]:
+        def operation(connection: sqlite3.Connection) -> list[str]:
+            return [
+                str(row["group_key"])
+                for row in connection.execute(
+                    "SELECT DISTINCT group_key FROM library_migration_file_staging "
+                    "WHERE group_key > ? ORDER BY group_key LIMIT ?",
+                    (after_key, limit),
+                ).fetchall()
+            ]
+
+        return await self._read(operation)
+
+    async def get_bounded_legacy_local_group_context(
+        self, group_key: str
+    ) -> dict[str, Any] | None:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            first = connection.execute(
+                "SELECT f.*, s.root_id, s.relative_path AS migration_relative_path "
+                "FROM library_files f JOIN library_migration_file_staging s "
+                "ON s.source_id = f.id WHERE s.group_key = ? "
+                "ORDER BY CASE WHEN s.album_key != '' "
+                "THEN 0 ELSE 1 END, COALESCE(f.disc_number, 1), "
+                "COALESCE(f.track_number, 0), f.id LIMIT 1",
+                (group_key,),
+            ).fetchone()
+            if first is None:
+                return None
+            aggregate = connection.execute(
+                "SELECT MAX(COALESCE(f.is_compilation, 0)) AS is_compilation, "
+                "MIN(f.imported_at) AS created_at FROM library_files f "
+                "JOIN library_migration_file_staging s ON s.source_id = f.id "
+                "WHERE s.group_key = ?",
+                (group_key,),
+            ).fetchone()
+            aliases = connection.execute(
+                "SELECT DISTINCT staged.legacy_release_key "
+                "FROM library_migration_file_staging AS staged "
+                "WHERE staged.group_key = ? AND staged.legacy_release_key != '' "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM library_migration_file_staging AS other "
+                "WHERE other.legacy_release_key = staged.legacy_release_key "
+                "AND other.group_key != staged.group_key) "
+                "ORDER BY staged.legacy_release_key",
+                (group_key,),
+            ).fetchall()
+            return {
+                "first": dict(first),
+                "root_id": str(first["root_id"]),
+                "relative_path": str(first["migration_relative_path"]),
+                "is_compilation": bool(aggregate["is_compilation"]),
+                "created_at": aggregate["created_at"],
+                "legacy_release_aliases": [
+                    str(row["legacy_release_key"]) for row in aliases
+                ],
+            }
+
+        return await self._read(operation)
+
+    async def get_bounded_legacy_local_group_batch(
+        self, group_key: str, *, after_id: str, limit: int
+    ) -> list[dict[str, Any]]:
+        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT f.* FROM library_files f "
+                    "JOIN library_migration_file_staging s ON s.source_id = f.id "
+                    "WHERE s.group_key = ? AND f.id > ? ORDER BY f.id LIMIT ?",
+                    (group_key, after_id, limit),
+                ).fetchall()
+            ]
 
         return await self._read(operation)
 
@@ -3838,8 +4017,10 @@ class NativeLibraryStore(PersistenceBase):
                 if normalized in {"album", "music_album"}:
                     row = connection.execute(
                         "SELECT local_album_id FROM local_album_external_identities "
-                        "WHERE release_group_mbid = ? LIMIT 1",
-                        (source_id.casefold(),),
+                        "WHERE release_group_mbid = ? UNION ALL "
+                        "SELECT local_album_id FROM local_album_aliases "
+                        "WHERE alias = ? LIMIT 1",
+                        (source_id.casefold(), source_id.casefold()),
                     ).fetchone()
                     return (
                         ("local_album", str(row["local_album_id"]))
@@ -3919,11 +4100,33 @@ class NativeLibraryStore(PersistenceBase):
                         source.get("track_source_id") if local_source else None
                     )
                     target = map_kind("track", file_id) if file_id else None
-                    if target is not None and local_source and source.get("album_id"):
-                        if map_kind("album", source["album_id"]) is None:
-                            target = None
-                    if target is not None and local_source and source.get("artist_id"):
-                        if map_kind("artist", source["artist_id"]) is None:
+                    if target is not None and local_source:
+                        membership = connection.execute(
+                            "SELECT t.local_album_id, "
+                            "COALESCE(ta.local_artist_id, a.album_artist_id) AS artist_id "
+                            "FROM local_tracks t JOIN local_albums a "
+                            "ON a.id = t.local_album_id LEFT JOIN local_track_artists ta "
+                            "ON ta.local_track_id = t.id AND ta.position = 0 "
+                            "WHERE t.id = ?",
+                            (target[1],),
+                        ).fetchone()
+                        expected_album = (
+                            map_kind("album", source["album_id"])
+                            if source.get("album_id")
+                            else None
+                        )
+                        expected_artist = (
+                            map_kind("artist", source["artist_id"])
+                            if source.get("artist_id")
+                            else None
+                        )
+                        if membership is None or (
+                            expected_album is not None
+                            and expected_album[1] != membership["local_album_id"]
+                        ) or (
+                            expected_artist is not None
+                            and expected_artist[1] != membership["artist_id"]
+                        ):
                             target = None
                     resolved.append(target)
                     continue
