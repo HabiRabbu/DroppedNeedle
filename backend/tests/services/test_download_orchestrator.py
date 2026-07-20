@@ -832,10 +832,10 @@ async def test_terminal_outcome_imports_only_succeeded_transfers(tmp_path: Path)
 async def test_stale_library_coverage_cannot_close_completed_over_missing_file(
     tmp_path: Path,
 ):
-    """The incident shape: the client CLAIMS 'completed' but one file's transfer never
-    succeeded, while stale library rows (an old copy the download was meant to
-    replace) satisfy the completeness check. The task must settle 'partial' - which
-    re-enters the auto-retry ladder - never 'completed' with the track silently lost."""
+    """The client CLAIMS 'completed' but one file's transfer never succeeded, while
+    stale library rows (an old copy the download was meant to replace) satisfy the
+    completeness check. The task must settle 'partial' - which re-enters the
+    auto-retry ladder - never 'completed' with the track silently lost."""
     client = _StubClient(
         _status(
             "completed",  # the (buggy/stale) claim

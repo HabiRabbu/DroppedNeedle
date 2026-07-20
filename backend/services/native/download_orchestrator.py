@@ -718,10 +718,9 @@ class DownloadOrchestrator:
                 )
                 # A per-file source imports ONLY files whose latest transfer attempt
                 # succeeded, on every outcome: a terminal-but-failed transfer left no
-                # finished file, so importing it can only log SOURCE_FILE_MISSING
-                # and mis-blame the mount (162 such events in one day, 2026-07-18) -
-                # the completeness veto below re-enters it into failover/retry
-                # instead. Folder sources (Usenet) ignore the filter.
+                # finished file, so importing it can only log SOURCE_FILE_MISSING and
+                # mis-blame the mount - the completeness veto below re-enters it into
+                # failover/retry instead. Folder sources (Usenet) ignore the filter.
                 strategy = self._strategy(task.source)
                 terminal = outcome in (_OUT_COMPLETED, _OUT_TERMINAL)
                 if strategy.per_file_imports or not terminal:
@@ -764,9 +763,9 @@ class DownloadOrchestrator:
                 )
                 # Never close 'completed' over never-imported expected files: stale
                 # library rows (an old copy an upgrade meant to replace) can satisfy
-                # coverage while the download delivered less than it claims (13
-                # tracks silently lost on one album, 2026-07-18). Vetoed attempts
-                # settle 'partial'/'failed', which re-enter the auto-retry ladder.
+                # coverage while the download delivered less than it claims, silently
+                # losing tracks. Vetoed attempts settle 'partial'/'failed', which
+                # re-enter the auto-retry ladder.
                 if is_complete:
                     never_imported = await self._files_never_imported(
                         task, only, result

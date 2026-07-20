@@ -47,10 +47,10 @@ class SlskdRepository:
     _DIAGNOSIS_SAMPLE = 3
     # Mount-top dirs that never hold a FINISHED download: slskd's staging dir (a hit
     # there is a partial file - e.g. a "Completed, TimedOut" leftover) and the
-    # failed-import quarantine. Both grow unboundedly (2,330 dead files on one live
-    # mount, 2026-07-18) and would eat the walk budget. Pruned at the mount root
-    # ONLY, where both are created by configuration - deeper dirs with these names
-    # are peer-chosen album folders that may hold the very file being searched for.
+    # failed-import quarantine. Both grow unboundedly and would eat the walk budget.
+    # Pruned at the mount root ONLY, where both are created by configuration - deeper
+    # dirs with these names are peer-chosen album folders that may hold the very file
+    # being searched for.
     _EXCLUDED_MOUNT_DIRS = frozenset({"incomplete", "failed_imports"})
     # Whole-mount fallback only (step 6): it must cover the entire mount, runs in a
     # worker thread, and a busy mount easily exceeds the 10k scoped-walk backstop.
@@ -614,11 +614,11 @@ class SlskdRepository:
         transfers: list[SlskdTransfer],
     ) -> list[SlskdTransfer]:
         """One record per FILE, judged on the latest attempt: slskd keeps a record
-        per ATTEMPT, so counting per record let a stale ``Succeeded`` shadow a final
-        ``TimedOut`` and pushed ``files_completed`` past ``files_total`` (39/29,
-        2026-07-18 incident - the file was lost but read as delivered). Ordered by
-        ``requestedAt`` when both records carry one, else by record order (slskd
-        appends) - a lone timestamp must not outrank a later untimestamped retry."""
+        per ATTEMPT, so counting per record lets a stale ``Succeeded`` shadow a final
+        ``TimedOut`` and push ``files_completed`` past ``files_total`` - a lost file
+        read as delivered. Ordered by ``requestedAt`` when both records carry one,
+        else by record order (slskd appends) - a lone timestamp must not outrank a
+        later untimestamped retry."""
         latest: dict[str, tuple[str | None, SlskdTransfer]] = {}
         for transfer in transfers:
             prev = latest.get(transfer.filename)

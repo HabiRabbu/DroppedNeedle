@@ -373,7 +373,7 @@ def _repo_with_transfers(transfers) -> SlskdRepository:
 async def test_get_status_dedupes_retry_attempts_per_file():
     """slskd keeps one transfer record per ATTEMPT: a file retried after a timeout has
     two records. Status must count FILES (latest attempt wins), or files_completed
-    outruns files_total (the observed 39/29) and the task lies about completion."""
+    outruns files_total and the task lies about completion."""
     repo = _repo_with_transfers(
         [
             _transfer(
@@ -698,8 +698,8 @@ async def test_get_file_path_prefers_finished_file_over_incomplete_twin(tmp_path
 
 
 def test_walk_find_excluded_dirs_do_not_consume_the_entry_budget(tmp_path):
-    # thousands of dead files under incomplete/ and failed_imports/ (2,330 observed
-    # live) must not eat the walk cap and defeat the legitimate whole-mount fallback
+    # thousands of dead files under incomplete/ and failed_imports/ must not eat the
+    # walk cap and defeat the legitimate whole-mount fallback
     for name in ("incomplete", "failed_imports"):
         d = tmp_path / name
         d.mkdir()
