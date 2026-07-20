@@ -9,20 +9,20 @@
 	import DropImportJobList from '$lib/components/import/DropImportJobList.svelte';
 	import DropImportZone from '$lib/components/import/DropImportZone.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
+	import { getIntegrationStatusQuery } from '$lib/queries/HomeIntegrationStatusQuery.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
-	import { integrationStore } from '$lib/stores/integration';
+
+	const integrationStatus = getIntegrationStatusQuery();
 
 	const isAdmin = $derived(authStore.isAdmin);
 	const canImport = $derived(authStore.isTrusted);
-	const loaded = $derived($integrationStore.loaded);
-	const configured = $derived($integrationStore.download_client);
+	const loaded = $derived(!integrationStatus.isLoading);
+	const configured = $derived(integrationStatus.data?.download_client ?? false);
 
 	let activeTab = $state<'queue' | 'import'>('queue');
 	let showAllImports = $state(false);
 
 	onMount(() => {
-		void integrationStore.ensureLoaded();
-		// deep link from the Home drop card: /downloads?tab=import
 		if (new URLSearchParams(window.location.search).get('tab') === 'import') {
 			activeTab = 'import';
 		}

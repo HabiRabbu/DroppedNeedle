@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import time as _t
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -267,6 +268,7 @@ def _build(
     auto_retry_base_interval_minutes=15.0,
     soulseek_enabled=True,
     album_service=None,
+    wanted_store=None,
 ):
     db_path = tmp_path / "library.db"
     store = DownloadStore(db_path=db_path, write_lock=threading.Lock())
@@ -321,6 +323,7 @@ def _build(
         on_import_callback=on_import,
         soulseek_enabled=soulseek_enabled,
         album_service=album_service,
+        wanted_store=wanted_store,
     )
     return store, orch, file_processor, library
 
@@ -2522,3 +2525,39 @@ async def test_reimport_honors_already_downloaded_despite_tightened_policy(
     result = await orch.reimport_task(task.id)
 
     assert result.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_completed_album_fulfils_wanted_watch_without_request_row(
+    tmp_path: Path,
+) -> None:
+    wanted_store = AsyncMock()
+    _, orchestrator, _, _ = _build(tmp_path, wanted_store=wanted_store)
+    task = SimpleNamespace(
+        id="task-1",
+        download_type="album",
+        release_group_mbid="rg-1",
+    )
+
+    await orchestrator._sync_request_on_terminal(task, "completed")
+
+    wanted_store.mark_fulfilled.assert_awaited_once_with("rg-1", "imported")
+
+
+@pytest.mark.asyncio
+async def test_partial_album_and_completed_track_do_not_fulfil_wanted_watch(
+    tmp_path: Path,
+) -> None:
+    wanted_store = AsyncMock()
+    _, orchestrator, _, _ = _build(tmp_path, wanted_store=wanted_store)
+
+    await orchestrator._sync_request_on_terminal(
+        SimpleNamespace(id="partial", download_type="album", release_group_mbid="rg-1"),
+        "partial",
+    )
+    await orchestrator._sync_request_on_terminal(
+        SimpleNamespace(id="track", download_type="track", release_group_mbid="rg-1"),
+        "completed",
+    )
+
+    wanted_store.mark_fulfilled.assert_not_awaited()

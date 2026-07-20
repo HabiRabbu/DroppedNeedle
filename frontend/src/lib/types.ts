@@ -1626,6 +1626,12 @@ export interface AlbumRemoveResponse {
 	artist_name: string | null;
 }
 
+export interface TargetCatalogRemovalResponse {
+	success: boolean;
+	id: string;
+	removed_track_ids: string[];
+}
+
 export interface AlbumEditionItem {
 	release_mbid: string;
 	track_count: number;
@@ -1757,6 +1763,7 @@ export interface DownloadClientConfig {
 
 export interface DownloadsMountStatus {
 	ok: boolean;
+	move_supported: boolean;
 	reason: string;
 	path: string;
 }
@@ -1773,6 +1780,19 @@ export interface DownloadClientStatus {
 	mount: DownloadsMountStatus;
 	mount_advisory?: string | null;
 	slskd_downloads_dir?: string | null;
+}
+
+export interface HomeIntegrationStatus {
+	listenbrainz: boolean;
+	jellyfin: boolean;
+	download_client: boolean;
+	youtube: boolean;
+	lastfm: boolean;
+	navidrome: boolean;
+	youtube_api: boolean;
+	plex: boolean;
+	library: boolean;
+	localfiles: boolean;
 }
 
 export interface TestConnectionResult {

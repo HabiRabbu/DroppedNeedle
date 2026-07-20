@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -11,9 +12,10 @@ import pytest
 
 from core.task_registry import TaskRegistry
 from infrastructure.sse_publisher import KEEPALIVE, SSEPublisher
-from models.library_work import ScanRun, ScanRunSnapshot
+from models.library_work import ScanRun, ScanRunSnapshot, ScanScope
 from services.compat.target_scan_service import TargetCompatScanService
 from services.native.library_scan_events import LibraryScanEventPublisher
+from services.native.library_inventory_scanner import LibraryInventoryScanner
 from services.native.library_scan_scheduler import LibraryAutomaticScanScheduler
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from api.v1.schemas.library_policies import (
@@ -262,6 +264,56 @@ def test_target_compat_module_has_no_legacy_scanner_dependency() -> None:
     module = __import__("services.compat.target_scan_service", fromlist=["unused"])
     names = set(module.__dict__)
     assert "LibraryScanner" not in names
+
+
+@pytest.mark.asyncio
+async def test_inventory_file_stat_runs_outside_the_event_loop_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    track = root / "track.flac"
+    track.touch()
+    event_loop_thread = threading.get_ident()
+    stat_threads: list[int] = []
+    original_stat = Path.stat
+
+    def record_stat(path: Path, *args, **kwargs):
+        if path.name == "track.flac":
+            stat_threads.append(threading.get_ident())
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", record_stat)
+    store = AsyncMock()
+    store.classify_scan_paths.return_value = {"track.flac": ("new", None)}
+    store.add_scan_inventory_batch.return_value = (2, 1)
+    scanner = LibraryInventoryScanner(
+        store,
+        directory_walker=lambda *_args, **_kwargs: iter(
+            [(str(root), [], ["track.flac"])]
+        ),
+    )
+    run = ScanRun(
+        id="run-1",
+        kind="incremental",
+        trigger="manual",
+        state="discovering",
+        phase="discovering",
+    )
+    scope = ScanScope(root_id="root", policy_revision="policy-1")
+
+    _updated, completed = await scanner._walk_scope(
+        run,
+        scope,
+        root,
+        root,
+        SimpleNamespace(resolve=lambda _path: None),
+        AsyncMock(return_value=True),
+    )
+
+    assert completed is True
+    assert stat_threads
+    assert event_loop_thread not in stat_threads
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 
 from api.v1.routes.library_target import router
 from core.dependencies import (
+    get_download_service,
     get_request_history_store,
     get_library_policy_resolver,
     get_cached_local_artwork_service,
@@ -13,6 +14,7 @@ from core.dependencies import (
     get_target_catalog_writer_service,
     get_target_library_scan_coordinator,
     get_target_native_library_service,
+    get_wanted_watcher_service,
 )
 from middleware import _get_current_admin, _get_current_curator
 from tests.helpers import build_test_client, override_user_auth
@@ -38,7 +40,12 @@ def app() -> FastAPI:
     artwork = AsyncMock()
     artwork.get.return_value = None
     application.dependency_overrides[get_cached_local_artwork_service] = lambda: artwork
-    application.dependency_overrides[get_target_catalog_writer_service] = AsyncMock
+    writer = AsyncMock()
+    download_service = AsyncMock()
+    wanted = AsyncMock()
+    application.dependency_overrides[get_target_catalog_writer_service] = lambda: writer
+    application.dependency_overrides[get_download_service] = lambda: download_service
+    application.dependency_overrides[get_wanted_watcher_service] = lambda: wanted
     application.dependency_overrides[get_target_library_scan_coordinator] = AsyncMock
     application.dependency_overrides[get_library_policy_resolver] = (
         lambda: SimpleNamespace(policy_revision="policy-1")
@@ -101,6 +108,37 @@ def test_target_catalog_mutations_reject_regular_users(app: FastAPI) -> None:
         == 403
     )
     assert client.post("/library/albums/a/rescan").status_code == 403
+
+
+def test_target_album_removal_stops_watch_by_default(app: FastAPI) -> None:
+    override_user_auth(app, role="admin")
+    app.dependency_overrides[_get_current_admin] = lambda: SimpleNamespace(id="admin-1")
+    writer = app.dependency_overrides[get_target_catalog_writer_service]()
+    writer.provider_release_group_id.return_value = "rg-1"
+    writer.remove_album.return_value = ["track-1"]
+    download_service = app.dependency_overrides[get_download_service]()
+    wanted = app.dependency_overrides[get_wanted_watcher_service]()
+
+    response = build_test_client(app).delete("/library/album/local-1?delete_files=true")
+
+    assert response.status_code == 200
+    download_service.purge_album_downloads.assert_awaited_once_with("rg-1")
+    wanted.stop_after_library_removal.assert_awaited_once_with("rg-1")
+
+
+def test_target_album_removal_can_keep_watch(app: FastAPI) -> None:
+    override_user_auth(app, role="admin")
+    app.dependency_overrides[_get_current_admin] = lambda: SimpleNamespace(id="admin-1")
+    writer = app.dependency_overrides[get_target_catalog_writer_service]()
+    writer.provider_release_group_id.return_value = "rg-1"
+    writer.remove_album.return_value = ["track-1"]
+    wanted = app.dependency_overrides[get_wanted_watcher_service]()
+
+    response = build_test_client(app).delete("/library/album/local-1?stop_wanted=false")
+
+    assert response.status_code == 200
+    wanted.stop_after_library_removal.assert_not_awaited()
+    wanted.continue_after_library_removal.assert_awaited_once_with("rg-1")
 
 
 def test_target_artist_browse_forwards_supported_sort(app: FastAPI) -> None:

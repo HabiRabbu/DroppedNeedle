@@ -862,6 +862,7 @@ CREATE INDEX IF NOT EXISTS idx_local_albums_search ON local_albums(title_folded,
 CREATE INDEX IF NOT EXISTS idx_local_albums_ownership ON local_albums(title_folded, album_artist_name_folded, year);
 CREATE INDEX IF NOT EXISTS idx_local_albums_retired ON local_albums(retired_into_album_id);
 CREATE INDEX IF NOT EXISTS idx_local_tracks_album_order ON local_tracks(local_album_id, disc_number, track_number, id);
+CREATE INDEX IF NOT EXISTS idx_local_tracks_album_availability ON local_tracks(local_album_id, availability);
 CREATE INDEX IF NOT EXISTS idx_local_tracks_stat ON local_tracks(stat_revision);
 CREATE INDEX IF NOT EXISTS idx_local_tracks_tag ON local_tracks(tag_revision);
 CREATE INDEX IF NOT EXISTS idx_local_tracks_availability ON local_tracks(availability, missing_since);

@@ -9,14 +9,15 @@ const h = vi.hoisted(() => ({
 	isTrusted: false
 }));
 
-vi.mock('$lib/stores/integration', () => ({
-	integrationStore: {
-		subscribe: (run: (v: { loaded: boolean; download_client: boolean }) => void) => {
-			run({ loaded: h.loaded, download_client: h.configured });
-			return () => {};
+vi.mock('$lib/queries/HomeIntegrationStatusQuery.svelte', () => ({
+	getIntegrationStatusQuery: () => ({
+		get isLoading() {
+			return !h.loaded;
 		},
-		ensureLoaded: vi.fn()
-	}
+		get data() {
+			return h.loaded ? { download_client: h.configured } : undefined;
+		}
+	})
 }));
 
 vi.mock('$lib/stores/authStore.svelte', () => ({

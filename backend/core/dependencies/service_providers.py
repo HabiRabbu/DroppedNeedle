@@ -726,7 +726,9 @@ def get_target_search_service() -> "SearchService":
     )
 
 
-def _build_artist_service(library_repo, library_db=None) -> "ArtistService":
+def _build_artist_service(
+    library_repo, library_db=None, ownership_service=None
+) -> "ArtistService":
     from services.artist_service import ArtistService
 
     mb_repo = get_musicbrainz_repository()
@@ -746,6 +748,7 @@ def _build_artist_service(library_repo, library_db=None) -> "ArtistService":
         audiodb_image_service,
         browse_queue,
         library_db,
+        ownership_service,
     )
 
 
@@ -756,7 +759,10 @@ def get_artist_service() -> "ArtistService":
 
 @singleton
 def get_target_artist_service() -> "ArtistService":
-    return _build_artist_service(get_target_library_repository())
+    return _build_artist_service(
+        get_target_library_repository(),
+        ownership_service=get_target_library_ownership_service(),
+    )
 
 
 @singleton
@@ -1990,6 +1996,7 @@ def _build_download_orchestrator(
         get_newznab_indexer,
         get_sabnzbd_download_client,
         get_slskd_indexer,
+        get_wanted_store,
     )
 
     prefs = get_preferences_service()
@@ -2042,6 +2049,7 @@ def _build_download_orchestrator(
         # Fresh reader (not the snapshot above) so an automatic re-dispatch re-gates a
         # stored candidate against the CURRENT quality range even mid-flight (Phase 2).
         get_download_policy=lambda: get_preferences_service().get_download_policy(),
+        wanted_store=get_wanted_store(),
     )
 
 

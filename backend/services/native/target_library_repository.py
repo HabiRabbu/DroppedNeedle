@@ -126,12 +126,13 @@ class TargetLibraryRepository:
         return await self._store.get_target_album_tracks(album_id)
 
     async def get_library_mbids(self, include_release_ids: bool = True) -> set[str]:
-        ids = await self._store.target_catalog_ids()
-        albums = ids["provider_albums"]
-        return albums | ids["provider_releases"] if include_release_ids else albums
+        _revision, albums = await self._store.target_provider_album_snapshot()
+        if not include_release_ids:
+            return albums
+        return albums | await self._store.target_provider_release_ids()
 
     async def get_artist_mbids(self) -> set[str]:
-        return (await self._store.target_catalog_ids())["provider_artists"]
+        return await self._store.target_provider_artist_ids()
 
     async def get_all_album_mbids(self) -> set[str]:
         return await self.get_library_mbids()
@@ -317,9 +318,11 @@ class TargetLibraryRepository:
             for row in rows
         ]
 
-    async def get_requested_mbids(self) -> set[str]:
+    async def get_requested_mbids(self, ids: list[str] | None = None) -> set[str]:
         if self._request_history is None:
             return set()
+        if ids is not None:
+            return await self._request_history.async_existing_requested_mbids(ids)
         return await self._request_history.async_get_requested_mbids()
 
     async def has_recording(self, track_id: str) -> bool:

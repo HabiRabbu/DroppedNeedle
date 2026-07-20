@@ -91,7 +91,9 @@ def _parse_partial_date(value: str | None) -> date | None:
         return None
 
 
-def _interval_days(first_release_date: str | None, quiet_streak: int, now: float) -> float:
+def _interval_days(
+    first_release_date: str | None, quiet_streak: int, now: float
+) -> float:
     """The age-based cadence table (D3). Unknown release date = old."""
     released = _parse_partial_date(first_release_date)
     if released is None:
@@ -169,15 +171,21 @@ class WantedWatcherService:
                 await asyncio.sleep(self._inter_want_delay)
 
         summary = WantedSweepSummary(
-            enrolled=enrolled, checked=checked, dispatched=dispatched,
-            fulfilled=fulfilled, errors=errors,
+            enrolled=enrolled,
+            checked=checked,
+            dispatched=dispatched,
+            fulfilled=fulfilled,
+            errors=errors,
         )
         if enrolled or checked:
             logger.info(
                 "wanted.sweep_complete",
                 extra={
-                    "enrolled": enrolled, "checked": checked,
-                    "dispatched": dispatched, "fulfilled": fulfilled, "errors": errors,
+                    "enrolled": enrolled,
+                    "checked": checked,
+                    "dispatched": dispatched,
+                    "fulfilled": fulfilled,
+                    "errors": errors,
                 },
             )
         return summary
@@ -188,20 +196,58 @@ class WantedWatcherService:
         """The caller's watches; admins see everyone's (D4/Phase 3)."""
         return await self._store.list_watches(None if user_role == "admin" else user_id)
 
-    async def stop(self, release_group_mbid: str, user_id: str, user_role: str) -> WantedWatch:
+    async def stop(
+        self, release_group_mbid: str, user_id: str, user_role: str
+    ) -> WantedWatch:
         """Per-want Stop (D1): the human opts this album out of watching."""
         await self._owned_watch(release_group_mbid, user_id, user_role)
         if await self._store.stop_watch(release_group_mbid):
-            logger.info("wanted.stopped", extra={"release_group_mbid": release_group_mbid})
+            logger.info(
+                "wanted.stopped", extra={"release_group_mbid": release_group_mbid}
+            )
         return await self._owned_watch(release_group_mbid, user_id, user_role)
 
-    async def resume(self, release_group_mbid: str, user_id: str, user_role: str) -> WantedWatch:
+    async def stop_after_library_removal(self, release_group_mbid: str) -> bool:
+        """Stop an active watch after an administrator removes its album."""
+        changed = await self._store.stop_watch(release_group_mbid)
+        if changed:
+            logger.info(
+                "wanted.stopped_after_library_removal",
+                extra={"release_group_mbid": release_group_mbid},
+            )
+        return changed
+
+    async def continue_after_library_removal(self, release_group_mbid: str) -> bool:
+        """Rearm a fulfilled watch when removal should keep seeking a replacement."""
+        watch = await self._store.get_watch(release_group_mbid)
+        if watch is None or watch.state != "fulfilled":
+            return False
+        now = time.time()
+        changed = await self._store.rearm_watch(
+            release_group_mbid,
+            user_id=watch.user_id,
+            kind=watch.kind,
+            next_check_at=now,
+            now=now,
+        )
+        if changed:
+            logger.info(
+                "wanted.rearmed_after_library_removal",
+                extra={"release_group_mbid": release_group_mbid},
+            )
+        return changed
+
+    async def resume(
+        self, release_group_mbid: str, user_id: str, user_role: str
+    ) -> WantedWatch:
         """Dormant/stopped -> watching, due immediately; on an already-watching
         want this doubles as "check now" (plan §6 Phase 2 - no separate endpoint)."""
         watch = await self._owned_watch(release_group_mbid, user_id, user_role)
         if watch.state in ("dormant", "stopped"):
             await self._store.resume_watch(release_group_mbid)
-            logger.info("wanted.resumed", extra={"release_group_mbid": release_group_mbid})
+            logger.info(
+                "wanted.resumed", extra={"release_group_mbid": release_group_mbid}
+            )
         elif watch.state == "watching":
             await self._store.reschedule(release_group_mbid, time.time())
         else:
@@ -210,13 +256,17 @@ class WantedWatcherService:
             )
         return await self._owned_watch(release_group_mbid, user_id, user_role)
 
-    async def mark_seen(self, release_group_mbid: str, user_id: str, user_role: str) -> WantedWatch:
+    async def mark_seen(
+        self, release_group_mbid: str, user_id: str, user_role: str
+    ) -> WantedWatch:
         """The user visited the candidates - clear the new-candidates badge."""
         await self._owned_watch(release_group_mbid, user_id, user_role)
         await self._store.clear_new_candidates(release_group_mbid)
         return await self._owned_watch(release_group_mbid, user_id, user_role)
 
-    async def list_retrying_for(self, user_id: str, user_role: str) -> list[WantedRetrying]:
+    async def list_retrying_for(
+        self, user_id: str, user_role: str
+    ) -> list[WantedRetrying]:
         """Requests still inside their auto-retry ladder, for the Wanted tab's
         read-only 'still hunting' rows (owner decision 2026-07-06). Reads the
         SAME rows the enrolment classifier does - a failed/incomplete request
@@ -274,8 +324,10 @@ class WantedWatcherService:
             raise PermissionDeniedError("Cannot manage another user's watch")
         return watch
 
-    async def dismiss_review(self, job_id: str, user_id: str, user_role: str) -> WantedWatch:
-        """"None of these - keep watching" (owner decision 2026-07-06): the human
+    async def dismiss_review(
+        self, job_id: str, user_id: str, user_role: str
+    ) -> WantedWatch:
+        """ "None of these - keep watching" (owner decision 2026-07-06): the human
         rejected every parked candidate, which is a human-confirmed availability
         failure. Ends the parked attempt through the normal cancel path, remembers
         every rejected candidate in the seen set (the watcher never badges those
@@ -287,7 +339,9 @@ class WantedWatcherService:
         if user_role != "admin" and parked.user_id != user_id:
             raise PermissionDeniedError("Cannot dismiss another user's review")
         if not parked.release_group_mbid:
-            raise ValidationError("This search isn't tied to an album, so it can't be watched")
+            raise ValidationError(
+                "This search isn't tied to an album, so it can't be watched"
+            )
 
         candidates = await self._download_store.get_search_job_candidates(job_id)
         seen = [(c.source, self._candidate_identity(c)) for c in candidates]
@@ -319,8 +373,11 @@ class WantedWatcherService:
         if existing is not None:
             if existing.state == "fulfilled":
                 await self._store.rearm_watch(
-                    mbid, user_id=task.user_id, kind=kind,
-                    next_check_at=now + self._interval_seconds(
+                    mbid,
+                    user_id=task.user_id,
+                    kind=kind,
+                    next_check_at=now
+                    + self._interval_seconds(
                         existing.first_release_date, quiet_streak=0, now=now
                     ),
                     now=now,
@@ -340,10 +397,13 @@ class WantedWatcherService:
         await self._store.create_watch(
             release_group_mbid=mbid,
             user_id=task.user_id,
-            artist_name=task.artist_name or (record.artist_name if record else "Unknown Artist"),
-            album_title=task.album_title or (record.album_title if record else "Unknown Album"),
+            artist_name=task.artist_name
+            or (record.artist_name if record else "Unknown Artist"),
+            album_title=task.album_title
+            or (record.album_title if record else "Unknown Album"),
             kind=kind,
-            next_check_at=now + self._interval_seconds(first_release_date, quiet_streak=0, now=now),
+            next_check_at=now
+            + self._interval_seconds(first_release_date, quiet_streak=0, now=now),
             artist_mbid=task.artist_mbid or (record.artist_mbid if record else None),
             year=task.year or (record.year if record else None),
             cover_url=record.cover_url if record else None,
@@ -422,7 +482,9 @@ class WantedWatcherService:
             return False  # no requester to act for (D7)
 
         first_release_date = await self._first_release_date(record)
-        next_check = now + self._interval_seconds(first_release_date, quiet_streak=0, now=now)
+        next_check = now + self._interval_seconds(
+            first_release_date, quiet_streak=0, now=now
+        )
         inserted = await self._store.create_watch(
             release_group_mbid=record.musicbrainz_id,
             user_id=record.user_id,
@@ -467,9 +529,13 @@ class WantedWatcherService:
         return message.startswith(_NO_SOURCE_MSG) or message.startswith(_NO_MATCH_MSG)
 
     async def _first_release_date(self, record: "RequestHistoryRecord") -> str | None:
-        return await self._first_release_date_for_mbid(record.musicbrainz_id, record.year)
+        return await self._first_release_date_for_mbid(
+            record.musicbrainz_id, record.year
+        )
 
-    async def _first_release_date_for_mbid(self, mbid: str, year: int | None) -> str | None:
+    async def _first_release_date_for_mbid(
+        self, mbid: str, year: int | None
+    ) -> str | None:
         rg = await self._mb.get_release_group_by_id(
             mbid, priority=RequestPriority.BACKGROUND_SYNC
         )
@@ -479,7 +545,9 @@ class WantedWatcherService:
         # degraded fetch: the row's year gives a coarse age bucket
         return str(year) if year else None
 
-    def _log_enrolled(self, record: "RequestHistoryRecord", kind: str, *, rearmed: bool) -> None:
+    def _log_enrolled(
+        self, record: "RequestHistoryRecord", kind: str, *, rearmed: bool
+    ) -> None:
         logger.info(
             "wanted.enrolled",
             extra={
@@ -499,7 +567,11 @@ class WantedWatcherService:
         if want.kind == "partial" and not settings.watch_partial_albums:
             # partial watching toggled off since enrolment: no search, just wait
             await self._store.reschedule(
-                mbid, now + self._interval_seconds(want.first_release_date, want.quiet_streak, now)
+                mbid,
+                now
+                + self._interval_seconds(
+                    want.first_release_date, want.quiet_streak, now
+                ),
             )
             return "skipped"
 
@@ -524,7 +596,11 @@ class WantedWatcherService:
             # a partial want without a tracklist can't be measured: fail open,
             # never search-spam on missing data (§5.2.3.a)
             await self._store.reschedule(
-                mbid, now + self._interval_seconds(want.first_release_date, want.quiet_streak, now)
+                mbid,
+                now
+                + self._interval_seconds(
+                    want.first_release_date, want.quiet_streak, now
+                ),
             )
             return "skipped"
 
@@ -547,7 +623,11 @@ class WantedWatcherService:
         except ConfigurationError:
             # no download source is enabled - nothing to scout against
             await self._store.reschedule(
-                mbid, now + self._interval_seconds(want.first_release_date, want.quiet_streak, now)
+                mbid,
+                now
+                + self._interval_seconds(
+                    want.first_release_date, want.quiet_streak, now
+                ),
             )
             return "skipped"
 
@@ -555,12 +635,16 @@ class WantedWatcherService:
 
         # (d) auto-tier hit -> silent dispatch through the normal gated pipeline
         if settings.auto_download_on_find and self._has_auto_hit(candidates):
-            if await self._dispatch(want, missing_tracks, download_service) == "satisfied":
+            if (
+                await self._dispatch(want, missing_tracks, download_service)
+                == "satisfied"
+            ):
                 return "satisfied"
             await self._store.record_cycle(
                 mbid,
                 outcome="auto_dispatched",
-                next_check_at=now + _SHORT_RESCHEDULE_DAYS * _DAY * random.uniform(0.8, 1.2),
+                next_check_at=now
+                + _SHORT_RESCHEDULE_DAYS * _DAY * random.uniform(0.8, 1.2),
                 quiet=False,
                 seen=identities,
                 now=now,
@@ -598,7 +682,8 @@ class WantedWatcherService:
         await self._store.record_cycle(
             mbid,
             outcome=outcome,
-            next_check_at=now + self._interval_seconds(want.first_release_date, new_streak, now),
+            next_check_at=now
+            + self._interval_seconds(want.first_release_date, new_streak, now),
             quiet=quiet,
             go_dormant=go_dormant,
             new_candidate_count=new_count,
@@ -616,7 +701,8 @@ class WantedWatcherService:
             await self._store.record_cycle(
                 want.release_group_mbid,
                 outcome="error",
-                next_check_at=now + self._interval_seconds(want.first_release_date, 0, now),
+                next_check_at=now
+                + self._interval_seconds(want.first_release_date, 0, now),
                 quiet=False,
                 go_dormant=(now - want.created_at) > settings.dormant_after_days * _DAY,
                 now=now,
@@ -630,7 +716,10 @@ class WantedWatcherService:
     # -- dispatch (§5.2.d) --
 
     async def _dispatch(
-        self, want: WantedWatch, missing_tracks: list, download_service: "DownloadService"
+        self,
+        want: WantedWatch,
+        missing_tracks: list,
+        download_service: "DownloadService",
     ) -> str:
         if want.kind == "missing":
             return await self._dispatch_album(want, download_service)
@@ -672,7 +761,10 @@ class WantedWatcherService:
         return "dispatched"
 
     async def _dispatch_tracks(
-        self, want: WantedWatch, missing_tracks: list, download_service: "DownloadService"
+        self,
+        want: WantedWatch,
+        missing_tracks: list,
+        download_service: "DownloadService",
     ) -> None:
         """Per-track dispatch for a partial want (D9), capped per cycle with the
         drop logged. Deliberately does NOT touch the album request's task link
@@ -698,8 +790,11 @@ class WantedWatcherService:
             except (ValidationError, ConfigurationError) as exc:
                 logger.warning(
                     "wanted.track_dispatch_failed",
-                    extra={"release_group_mbid": mbid, "recording_mbid": track.recording_id,
-                           "error": str(exc)},
+                    extra={
+                        "release_group_mbid": mbid,
+                        "recording_mbid": track.recording_id,
+                        "error": str(exc),
+                    },
                 )
                 continue
             if result != ALREADY_IN_LIBRARY:
@@ -707,7 +802,11 @@ class WantedWatcherService:
         if dropped:
             logger.info(
                 "wanted.track_dispatch_capped",
-                extra={"release_group_mbid": mbid, "dispatched": dispatched, "dropped": dropped},
+                extra={
+                    "release_group_mbid": mbid,
+                    "dispatched": dispatched,
+                    "dropped": dropped,
+                },
             )
         logger.info(
             "wanted.auto_dispatched",
@@ -742,7 +841,10 @@ class WantedWatcherService:
 
     async def _has_active_work(self, want: WantedWatch) -> bool:
         mbid = want.release_group_mbid
-        if await self._download_store.get_active_task_for_album_any_user(mbid) is not None:
+        if (
+            await self._download_store.get_active_task_for_album_any_user(mbid)
+            is not None
+        ):
             return True
         record = await self._requests.async_get_record(mbid)
         if record is None or not record.download_task_id:

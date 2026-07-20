@@ -18,6 +18,7 @@ import shutil
 from pathlib import Path
 
 from core.exceptions import ConfigurationError
+from infrastructure.filesystem_mounts import check_move_boundary
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,9 @@ class StartupValidator:
             )
 
         if not self._library_paths:
-            warnings.append("No library paths configured; library features will be empty.")
+            warnings.append(
+                "No library paths configured; library features will be empty."
+            )
 
         for lib_path in self._library_paths:
             if not lib_path.exists():
@@ -57,7 +60,6 @@ class StartupValidator:
                 # v1: warning only - first-boot Docker volume perms need boot-to-UI.
                 warnings.append(f"Library path is not writable: {lib_path}")
 
-        # Don't proceed to staging checks with broken library paths.
         if errors:
             self._finish(errors, warnings)
 
@@ -71,27 +73,29 @@ class StartupValidator:
                     )
                     self._finish(errors, warnings)
 
-            try:
-                staging_dev = self._staging_path.stat().st_dev
-                existing_libs = [p for p in self._library_paths if p.exists()]
-                same_fs = any(p.stat().st_dev == staging_dev for p in existing_libs)
-            except OSError as exc:
-                # TOCTOU / broken symlink / network FS hiccup - surface as a clean
-                # ConfigurationError rather than a raw traceback.
-                errors.append(f"Could not stat staging/library paths: {exc}")
-                self._finish(errors, warnings)
-            else:
-                if existing_libs and not same_fs:
+            existing_libs = [p for p in self._library_paths if p.exists()]
+            boundaries = [
+                check_move_boundary(self._staging_path, path) for path in existing_libs
+            ]
+            if boundaries and not any(item.move_supported for item in boundaries):
+                if any(
+                    item.reason in {"different_mount", "different_filesystem"}
+                    for item in boundaries
+                ):
                     errors.append(
-                        f"Staging directory {self._staging_path} is not on the same filesystem "
-                        f"as any library path. Atomic moves will fail."
+                        f"Staging directory {self._staging_path} does not share a rename "
+                        "boundary with any library path. Atomic moves will fail."
+                    )
+                else:
+                    errors.append(
+                        f"Could not determine the rename boundary between staging directory "
+                        f"{self._staging_path} and any library path."
                     )
 
-        # C7: the slskd downloads mount must be set, present, writable, and on the
-        # same filesystem as the library (the import is an os.rename out of it). A
-        # misconfigured mount is an operator-fixable DEPLOYMENT problem, not a reason
-        # to refuse boot: warn (download client DEGRADED) and boot to UI. The per-file
-        # import path surfaces an actionable failure if the mount is still unavailable.
+        # C7: the slskd downloads mount must be set, present, and writable. A separate
+        # rename boundary is usable through the copy fallback but worth reporting. A
+        # misconfigured mount is an operator-fixable deployment problem, not a reason
+        # to refuse boot; the per-file import path remains the final authority.
         warnings.extend(self._check_downloads_mount())
 
         self._finish(errors, warnings)
@@ -107,19 +111,24 @@ class StartupValidator:
         problems: list[str] = []
         if not os.access(path, os.W_OK):
             problems.append(f"slskd downloads path {path} is not writable")
-        try:
-            dev = path.stat().st_dev
-            existing_libs = [p for p in self._library_paths if p.exists()]
-            same_fs = any(p.stat().st_dev == dev for p in existing_libs)
-        except OSError as exc:
-            problems.append(f"could not stat slskd downloads path {path}: {exc}")
-            return problems
-        if existing_libs and not same_fs:
-            problems.append(
-                f"slskd downloads path {path} is not on the same filesystem as the "
-                f"library (st_dev mismatch); imports fall back to a copy instead of an "
-                f"atomic move (slower) but still work"
-            )
+        existing_libs = [p for p in self._library_paths if p.exists()]
+        boundaries = [check_move_boundary(path, lib) for lib in existing_libs]
+        if boundaries and not any(item.move_supported for item in boundaries):
+            if any(
+                item.reason in {"different_mount", "different_filesystem"}
+                for item in boundaries
+            ):
+                problems.append(
+                    f"slskd downloads path {path} has a separate container mount boundary "
+                    "from the library; imports copy and remove the source instead of using "
+                    "a fast atomic move, and temporarily need room for both copies"
+                )
+            else:
+                problems.append(
+                    f"could not determine whether slskd downloads path {path} shares a "
+                    "rename boundary with the library; the importer will try the move and "
+                    "fall back to copying when needed"
+                )
         return problems
 
     @staticmethod

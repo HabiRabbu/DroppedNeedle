@@ -233,6 +233,7 @@ const COVERAGE: Array<[string, string, string]> = [
 	],
 	// per-user section visibility (user-scoped)
 	['section prefs', API.me.sectionPrefs(), '/api/v1/me/section-prefs'],
+	['home integration status', API.homeIntegrationStatus(), '/api/v1/home/integration-status'],
 	[
 		'genre detail',
 		API.homeGenre('Latin'),

@@ -12,7 +12,7 @@ T = TypeVar("T")
 
 
 def _fold_text(value: Any) -> Any:
-    """Casefold and strip diacritics so 'Marias' matches 'Marías'.
+    """Casefold, strip diacritics, and normalize whitespace.
 
     Registered as the SQLite ``fold()`` function and applied to both column and
     pattern in LIKE searches, so library search is accent- and case-insensitive
@@ -24,7 +24,10 @@ def _fold_text(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     decomposed = unicodedata.normalize("NFKD", value)
-    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
+    without_marks = "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    ).casefold()
+    return " ".join(without_marks.split())
 
 
 def _encode_json(value: Any) -> str:

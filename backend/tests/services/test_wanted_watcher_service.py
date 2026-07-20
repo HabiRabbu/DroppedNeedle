@@ -74,8 +74,11 @@ def _cand(
     source: str = "soulseek",
 ) -> ScoredCandidate:
     return ScoredCandidate(
-        source=source, username=username, parent_directory=directory,
-        tier=tier, final_score=0.9,
+        source=source,
+        username=username,
+        parent_directory=directory,
+        tier=tier,
+        final_score=0.9,
     )
 
 
@@ -87,8 +90,12 @@ def _track(rec: str | None, title: str, position: int, length: int = 200_000):
 
 def _row(rec: str, row_id: int = 1) -> dict:
     return {
-        "id": row_id, "recording_mbid": rec, "disc_number": 1, "track_number": row_id,
-        "track_title": f"t{row_id}", "duration_seconds": 200.0,
+        "id": row_id,
+        "recording_mbid": rec,
+        "disc_number": 1,
+        "track_number": row_id,
+        "track_title": f"t{row_id}",
+        "duration_seconds": 200.0,
     }
 
 
@@ -134,8 +141,16 @@ def env(tmp_path) -> _Env:
         inter_want_delay=0.0,
     )
     return _Env(
-        watcher=watcher, store=store, requests=requests, download_store=download_store,
-        ds=ds, library=library, album_service=album_service, mb=mb, sse=sse, prefs=prefs,
+        watcher=watcher,
+        store=store,
+        requests=requests,
+        download_store=download_store,
+        ds=ds,
+        library=library,
+        album_service=album_service,
+        mb=mb,
+        sse=sse,
+        prefs=prefs,
         settings=prefs.get_wanted_settings.return_value,
     )
 
@@ -166,6 +181,33 @@ async def _add_watch(env: _Env, mbid="rg-1", kind="missing", due=True, **overrid
     return await env.store.get_watch(mbid)
 
 
+@pytest.mark.asyncio
+async def test_library_removal_opt_out_rearms_a_fulfilled_watch(env):
+    await _add_watch(env)
+    await env.store.mark_fulfilled("rg-1", "imported")
+
+    changed = await env.watcher.continue_after_library_removal("rg-1")
+
+    watch = await env.store.get_watch("rg-1")
+    assert changed is True
+    assert watch is not None
+    assert watch.state == "watching"
+    assert watch.next_check_at <= time.time()
+
+
+@pytest.mark.asyncio
+async def test_library_removal_opt_out_does_not_revive_a_stopped_watch(env):
+    await _add_watch(env)
+    await env.store.stop_watch("rg-1")
+
+    changed = await env.watcher.continue_after_library_removal("rg-1")
+
+    watch = await env.store.get_watch("rg-1")
+    assert changed is False
+    assert watch is not None
+    assert watch.state == "stopped"
+
+
 # --- enrolment classifier, tied to the orchestrator's constants (§4.5) ---
 
 
@@ -173,9 +215,16 @@ def test_orchestrator_messages_start_with_the_imported_constants(tmp_path):
     """The tie-test: the classifier prefix-matches _NO_SOURCE_MSG/_NO_MATCH_MSG,
     so the strings the orchestrator ACTUALLY writes must start with them."""
     orch = DownloadOrchestrator(
-        client=Mock(), indexer=Mock(), download_store=Mock(), file_processor=Mock(),
-        library_manager=Mock(), scorer=Mock(), track_matcher=Mock(),
-        manifest_codec=Mock(), event_bus=Mock(), staging_path=tmp_path,
+        client=Mock(),
+        indexer=Mock(),
+        download_store=Mock(),
+        file_processor=Mock(),
+        library_manager=Mock(),
+        scorer=Mock(),
+        track_matcher=Mock(),
+        manifest_codec=Mock(),
+        event_bus=Mock(),
+        staging_path=tmp_path,
         naming_template="{artist}/{album}",
     )
     assert orch._no_source_message().startswith(_NO_SOURCE_MSG)
@@ -207,8 +256,9 @@ async def test_availability_failures_enrol_as_missing(env, message):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("message", [_FILES_NOT_FOUND_MSG, _IMPORT_FAILED_MSG,
-                                     "download failed", None])
+@pytest.mark.parametrize(
+    "message", [_FILES_NOT_FOUND_MSG, _IMPORT_FAILED_MSG, "download failed", None]
+)
 async def test_local_faults_do_not_enrol(env, message):
     _serve_history(env, failed=[_record()])
     env.download_store.get_task.return_value = _task(error=message)
@@ -237,7 +287,9 @@ async def test_failed_request_with_no_linked_task_does_not_enrol(env):
 @pytest.mark.asyncio
 async def test_task_awaiting_auto_retry_does_not_enrol(env):
     _serve_history(env, failed=[_record()])
-    env.download_store.get_task.return_value = _task(error=f"{_NO_SOURCE_MSG} on Soulseek")
+    env.download_store.get_task.return_value = _task(
+        error=f"{_NO_SOURCE_MSG} on Soulseek"
+    )
     env.ds.next_retry_at = Mock(return_value=time.time() + 900)
     assert (await env.watcher.run_sweep()).enrolled == 0
 
@@ -281,12 +333,13 @@ async def test_stopped_and_dormant_watches_never_auto_revive(env):
     await env.store.stop_watch("rg-stop")
     await _add_watch(env, "rg-dorm", due=False)
     await env.store.record_cycle(
-        "rg-dorm", outcome="no_results", next_check_at=time.time(), quiet=True,
+        "rg-dorm",
+        outcome="no_results",
+        next_check_at=time.time(),
+        quiet=True,
         go_dormant=True,
     )
-    _serve_history(
-        env, failed=[_record(mbid="rg-stop"), _record(mbid="rg-dorm")]
-    )
+    _serve_history(env, failed=[_record(mbid="rg-stop"), _record(mbid="rg-dorm")])
     env.download_store.get_task.return_value = _task(error=_NO_MATCH_MSG)
     assert (await env.watcher.run_sweep()).enrolled == 0
     assert (await env.store.get_watch("rg-stop")).state == "stopped"
@@ -339,18 +392,28 @@ async def test_request_album_with_wanted_origin_skips_the_blocklist_clear():
     library = AsyncMock()
     library.album_quality_tier.return_value = None
     service = DownloadService(
-        download_client=Mock(), indexer=AsyncMock(), scorer=AsyncMock(),
-        library_manager=library, download_store=store, event_bus=AsyncMock(),
+        download_client=Mock(),
+        indexer=AsyncMock(),
+        scorer=AsyncMock(),
+        library_manager=library,
+        download_store=store,
+        event_bus=AsyncMock(),
         orchestrator=Mock(),
     )
     await service.request_album(
-        user_id="u", release_group_mbid="rg-1", artist_name="A", album_title="B",
+        user_id="u",
+        release_group_mbid="rg-1",
+        artist_name="A",
+        album_title="B",
         origin="wanted",
     )
     store.delete_quarantine_for_album.assert_not_awaited()
 
     await service.request_album(
-        user_id="u", release_group_mbid="rg-1", artist_name="A", album_title="B",
+        user_id="u",
+        release_group_mbid="rg-1",
+        artist_name="A",
+        album_title="B",
         origin="user",
     )
     store.delete_quarantine_for_album.assert_awaited_once_with("rg-1")
@@ -371,7 +434,9 @@ async def test_same_manual_candidates_badge_once_then_seen_only(env):
     assert watch.last_outcome == "new_manual"
     assert watch.new_candidate_count == 2
     badge_events = [
-        c for c in env.sse.publish.await_args_list if c.args[1] == "wanted_new_candidates"
+        c
+        for c in env.sse.publish.await_args_list
+        if c.args[1] == "wanted_new_candidates"
     ]
     assert len(badge_events) == 1
 
@@ -382,7 +447,9 @@ async def test_same_manual_candidates_badge_once_then_seen_only(env):
     assert watch.last_outcome == "seen_only"
     assert watch.new_candidate_count == 2
     badge_events = [
-        c for c in env.sse.publish.await_args_list if c.args[1] == "wanted_new_candidates"
+        c
+        for c in env.sse.publish.await_args_list
+        if c.args[1] == "wanted_new_candidates"
     ]
     assert len(badge_events) == 1
 
@@ -404,7 +471,10 @@ async def test_rejected_tier_results_count_as_no_results(env):
 @pytest.mark.asyncio
 async def test_auto_tier_dispatches_album_and_relinks_the_request(env):
     await _add_watch(env)
-    env.ds.scout_album.return_value = [_cand(tier="auto"), _cand(username="p2", directory="d2")]
+    env.ds.scout_album.return_value = [
+        _cand(tier="auto"),
+        _cand(username="p2", directory="d2"),
+    ]
     summary = await env.watcher.run_sweep()
     assert summary.dispatched == 1
 
@@ -414,7 +484,9 @@ async def test_auto_tier_dispatches_album_and_relinks_the_request(env):
     assert kwargs["release_group_mbid"] == "rg-1"
     # §4.8: the two request writes, or the found download never flips the request
     env.requests.async_update_status.assert_any_await("rg-1", "pending")
-    env.requests.async_update_download_task_id.assert_awaited_once_with("rg-1", "task-new")
+    env.requests.async_update_download_task_id.assert_awaited_once_with(
+        "rg-1", "task-new"
+    )
 
     watch = await env.store.get_watch("rg-1")
     assert watch.last_outcome == "auto_dispatched"
@@ -451,11 +523,15 @@ async def test_already_in_library_dispatch_fulfils_the_watch(env):
 
 
 @pytest.mark.asyncio
-async def test_partial_want_dispatches_missing_tracks_capped_with_logged_drop(env, caplog):
+async def test_partial_want_dispatches_missing_tracks_capped_with_logged_drop(
+    env, caplog
+):
     await _add_watch(env, kind="partial")
     tracks = [_track(f"rec-{i}", f"Track {i}", i) for i in range(1, 9)]  # 8 expected
     env.album_service.get_album_tracks_info.side_effect = None
-    env.album_service.get_album_tracks_info.return_value = SimpleNamespace(tracks=tracks)
+    env.album_service.get_album_tracks_info.return_value = SimpleNamespace(
+        tracks=tracks
+    )
     env.library.get_file_rows_for_album.return_value = [_row("rec-1")]  # 1 of 8 held
     env.ds.scout_album.return_value = [_cand(tier="auto")]
 
@@ -464,7 +540,9 @@ async def test_partial_want_dispatches_missing_tracks_capped_with_logged_drop(en
 
     # 7 uncovered, cap 5 - and the covered track is never re-requested
     assert env.ds.request_track.await_count == 5
-    requested = {c.kwargs["recording_mbid"] for c in env.ds.request_track.await_args_list}
+    requested = {
+        c.kwargs["recording_mbid"] for c in env.ds.request_track.await_args_list
+    }
     assert "rec-1" not in requested
     for call in env.ds.request_track.await_args_list:
         assert call.kwargs["origin"] == "wanted"
@@ -483,17 +561,29 @@ async def test_per_track_dispatch_dedups_on_the_recording():
     library = AsyncMock()
     library.has_track.return_value = False
     service = DownloadService(
-        download_client=Mock(), indexer=AsyncMock(), scorer=AsyncMock(),
-        library_manager=library, download_store=store, event_bus=AsyncMock(),
+        download_client=Mock(),
+        indexer=AsyncMock(),
+        scorer=AsyncMock(),
+        library_manager=library,
+        download_store=store,
+        event_bus=AsyncMock(),
         orchestrator=Mock(),
     )
     first = await service.request_track(
-        user_id="u", recording_mbid="rec-1", artist_name="A", track_title="T",
-        release_group_mbid="rg-1", origin="wanted",
+        user_id="u",
+        recording_mbid="rec-1",
+        artist_name="A",
+        track_title="T",
+        release_group_mbid="rg-1",
+        origin="wanted",
     )
     second = await service.request_track(
-        user_id="u", recording_mbid="rec-1", artist_name="A", track_title="T",
-        release_group_mbid="rg-1", origin="wanted",
+        user_id="u",
+        recording_mbid="rec-1",
+        artist_name="A",
+        track_title="T",
+        release_group_mbid="rg-1",
+        origin="wanted",
     )
     assert first == second == "t-1"
     store.create_task.assert_awaited_once()
@@ -517,8 +607,13 @@ async def test_covered_want_fulfils_without_searching(env):
     await _add_watch(env)
     tracks = [_track("rec-1", "One", 1), _track("rec-2", "Two", 2)]
     env.album_service.get_album_tracks_info.side_effect = None
-    env.album_service.get_album_tracks_info.return_value = SimpleNamespace(tracks=tracks)
-    env.library.get_file_rows_for_album.return_value = [_row("rec-1", 1), _row("rec-2", 2)]
+    env.album_service.get_album_tracks_info.return_value = SimpleNamespace(
+        tracks=tracks
+    )
+    env.library.get_file_rows_for_album.return_value = [
+        _row("rec-1", 1),
+        _row("rec-2", 2),
+    ]
 
     summary = await env.watcher.run_sweep()
 
@@ -619,9 +714,17 @@ async def test_want_goes_dormant_after_the_watch_window(env):
 
 def _parked_task(mbid: str = "rg-1", user_id: str = "user-a"):
     return SimpleNamespace(
-        id="task-parked", user_id=user_id, status="queued", release_group_mbid=mbid,
-        download_type="album", artist_name="Yan Qing", album_title="the arrival",
-        artist_mbid="am-1", year=2026, retry_count=1, error_message=None,
+        id="task-parked",
+        user_id=user_id,
+        status="queued",
+        release_group_mbid=mbid,
+        download_type="album",
+        artist_name="Yan Qing",
+        album_title="the arrival",
+        artist_mbid="am-1",
+        year=2026,
+        retry_count=1,
+        error_message=None,
     )
 
 
@@ -658,7 +761,9 @@ async def test_dismiss_review_rejected_candidates_never_badge_again(env):
     watch = await env.store.get_watch("rg-1")
     assert watch.last_outcome == "seen_only"
     badge_events = [
-        c for c in env.sse.publish.await_args_list if c.args[1] == "wanted_new_candidates"
+        c
+        for c in env.sse.publish.await_args_list
+        if c.args[1] == "wanted_new_candidates"
     ]
     assert badge_events == []
 
@@ -730,7 +835,11 @@ async def test_list_retrying_returns_requests_with_a_pending_retry(env):
 @pytest.mark.asyncio
 async def test_list_retrying_excludes_exhausted_and_taskless_requests(env):
     _serve_history(
-        env, failed=[_record(mbid="rg-exhausted"), _record(mbid="rg-taskless", task_id=None)]
+        env,
+        failed=[
+            _record(mbid="rg-exhausted"),
+            _record(mbid="rg-taskless", task_id=None),
+        ],
     )
     env.download_store.get_task.return_value = _task()
     env.ds.next_retry_at = Mock(return_value=None)  # ladder exhausted

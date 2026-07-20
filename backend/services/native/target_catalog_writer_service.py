@@ -146,6 +146,9 @@ class TargetCatalogWriterService:
             raise ExternalServiceError("Could not remove every file in this album.")
         return changed
 
+    async def provider_release_group_id(self, album_id: str) -> str | None:
+        return await self._store.target_album_provider_identity(album_id)
+
     async def _recycle_album(
         self,
         rows: list[dict],

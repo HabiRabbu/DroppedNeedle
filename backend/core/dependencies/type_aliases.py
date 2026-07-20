@@ -48,6 +48,7 @@ from services.native.explicit_reidentification_worker import (
 )
 from services.native.target_native_library_service import TargetNativeLibraryService
 from services.native.target_catalog_writer_service import TargetCatalogWriterService
+from services.native.wanted_watcher_service import WantedWatcherService
 from services.search_service import SearchService
 from services.search_enrichment_service import SearchEnrichmentService
 from services.artist_service import ArtistService
@@ -120,6 +121,7 @@ from .service_providers import (
     get_target_explicit_reidentification_worker,
     get_target_native_library_service,
     get_target_catalog_writer_service,
+    get_wanted_watcher_service,
     get_cached_local_artwork_service,
     get_search_service,
     get_search_enrichment_service,
@@ -249,6 +251,9 @@ RequestHistoryStoreDep = Annotated[
     RequestHistoryStore, Depends(get_request_history_store)
 ]
 WantedStoreDep = Annotated[WantedStore, Depends(get_wanted_store)]
+WantedWatcherServiceDep = Annotated[
+    WantedWatcherService, Depends(get_wanted_watcher_service)
+]
 RequestsPageServiceDep = Annotated[
     RequestsPageService, Depends(get_requests_page_service)
 ]

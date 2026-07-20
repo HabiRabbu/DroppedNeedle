@@ -258,6 +258,7 @@ from .type_aliases import (  # noqa: F401
     YouTubeServiceDep,
     RequestHistoryStoreDep,
     WantedStoreDep,
+    WantedWatcherServiceDep,
     RequestsPageServiceDep,
     JellyfinPlaybackServiceDep,
     LocalFilesServiceDep,

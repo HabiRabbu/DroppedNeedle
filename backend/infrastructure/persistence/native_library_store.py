@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import logging
@@ -222,9 +223,10 @@ def _fold(value: str | None) -> str | None:
     if value is None:
         return None
     decomposed = unicodedata.normalize("NFKD", value.strip())
-    return "".join(
+    without_marks = "".join(
         character for character in decomposed if not unicodedata.combining(character)
     ).casefold()
+    return " ".join(without_marks.split())
 
 
 def _normalize_exact(value: str | None) -> str:
@@ -361,6 +363,8 @@ class NativeLibraryStore(PersistenceBase):
         invalidator: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._invalidator = invalidator
+        self._provider_album_snapshot: tuple[int, frozenset[str]] | None = None
+        self._provider_album_snapshot_lock = asyncio.Lock()
         super().__init__(db_path, write_lock)
 
     async def _write(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
@@ -526,6 +530,12 @@ class NativeLibraryStore(PersistenceBase):
             connection.execute(
                 "UPDATE local_tracks SET genre_folded = fold(genre) "
                 "WHERE genre IS NOT NULL AND genre != '' AND genre_folded IS NULL"
+            )
+            connection.execute(
+                "UPDATE local_albums SET title_folded = fold(title), "
+                "album_artist_name_folded = fold(album_artist_name) "
+                "WHERE title_folded IS NOT fold(title) "
+                "OR album_artist_name_folded IS NOT fold(album_artist_name)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_local_tracks_genre_artwork "
@@ -1993,75 +2003,171 @@ class NativeLibraryStore(PersistenceBase):
 
         return await self._read(operation)
 
-    async def target_catalog_ids(self) -> dict[str, set[str]]:
-        def operation(connection: sqlite3.Connection) -> dict[str, set[str]]:
-            return {
-                "albums": {
-                    str(row["id"])
-                    for row in connection.execute(
-                        "SELECT DISTINCT a.id FROM local_albums a JOIN local_tracks t "
-                        "ON t.local_album_id = a.id WHERE t.availability = 'indexed' "
-                        "AND a.retired_into_album_id IS NULL"
-                    ).fetchall()
-                },
-                "provider_albums": {
-                    str(row["release_group_mbid"])
-                    for row in connection.execute(
-                        "SELECT DISTINCT ae.release_group_mbid "
-                        "FROM local_album_external_identities ae JOIN local_tracks t "
-                        "ON t.local_album_id = ae.local_album_id "
-                        "WHERE t.availability = 'indexed'"
-                    ).fetchall()
-                },
-                "provider_releases": {
-                    str(row["release_mbid"])
-                    for row in connection.execute(
-                        "SELECT DISTINCT ae.release_mbid "
-                        "FROM local_album_external_identities ae JOIN local_tracks t "
-                        "ON t.local_album_id = ae.local_album_id "
-                        "WHERE t.availability = 'indexed' AND ae.release_mbid IS NOT NULL"
-                    ).fetchall()
-                },
-                "provider_artists": {
-                    str(row["provider_artist_id"])
-                    for row in connection.execute(
-                        "SELECT DISTINCT identity.provider_artist_id "
-                        "FROM local_artist_external_identities identity "
-                        "WHERE EXISTS ("
-                        "SELECT 1 FROM local_album_artists aa JOIN local_tracks t "
-                        "ON t.local_album_id = aa.local_album_id "
-                        "WHERE aa.local_artist_id = identity.local_artist_id "
-                        "AND t.availability = 'indexed'"
-                        ") OR EXISTS ("
-                        "SELECT 1 FROM local_track_artists ta JOIN local_tracks t "
-                        "ON t.id = ta.local_track_id "
-                        "WHERE ta.local_artist_id = identity.local_artist_id "
-                        "AND t.availability = 'indexed'"
-                        ")"
-                    ).fetchall()
-                },
-                "tracks": {
-                    str(row["id"])
-                    for row in connection.execute(
-                        "SELECT id FROM local_tracks WHERE availability = 'indexed'"
-                    ).fetchall()
-                },
-            }
+    async def target_provider_album_snapshot(self) -> tuple[int, set[str]]:
+        """Return one coalesced provider-album snapshot per catalog revision."""
+        revision = await self.get_catalog_revision()
+        cached = self._provider_album_snapshot
+        if cached is not None and cached[0] == revision:
+            return revision, set(cached[1])
+
+        async with self._provider_album_snapshot_lock:
+            revision = await self.get_catalog_revision()
+            cached = self._provider_album_snapshot
+            if cached is not None and cached[0] == revision:
+                return revision, set(cached[1])
+
+            def operation(connection: sqlite3.Connection) -> tuple[int, set[str]]:
+                connection.execute("BEGIN")
+                current = int(
+                    connection.execute(
+                        "SELECT value FROM library_catalog_revision WHERE singleton = 1"
+                    ).fetchone()[0]
+                )
+                rows = connection.execute(
+                    "SELECT identity.release_group_mbid "
+                    "FROM local_album_external_identities identity "
+                    "JOIN local_albums album ON album.id = identity.local_album_id "
+                    "WHERE identity.provider = 'musicbrainz' "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks track "
+                    "WHERE track.local_album_id = identity.local_album_id "
+                    "AND track.availability = 'indexed') "
+                    "ORDER BY identity.release_group_mbid"
+                ).fetchall()
+                return current, {str(row["release_group_mbid"]) for row in rows}
+
+            revision, values = await self._read(operation)
+            self._provider_album_snapshot = (revision, frozenset(values))
+            return revision, set(values)
+
+    async def target_provider_release_ids(self) -> set[str]:
+        def operation(connection: sqlite3.Connection) -> set[str]:
+            rows = connection.execute(
+                "SELECT identity.release_mbid "
+                "FROM local_album_external_identities identity "
+                "JOIN local_albums album ON album.id = identity.local_album_id "
+                "WHERE identity.provider = 'musicbrainz' "
+                "AND identity.release_mbid IS NOT NULL "
+                "AND album.retired_into_album_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks track "
+                "WHERE track.local_album_id = identity.local_album_id "
+                "AND track.availability = 'indexed') "
+                "ORDER BY identity.release_mbid"
+            ).fetchall()
+            return {str(row["release_mbid"]) for row in rows}
 
         return await self._read(operation)
 
-    async def target_album_ownership_rows(self) -> list[dict[str, Any]]:
-        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    async def target_provider_artist_ids(self) -> set[str]:
+        def operation(connection: sqlite3.Connection) -> set[str]:
             rows = connection.execute(
-                "SELECT a.id AS local_album_id, a.title, a.album_artist_name, a.year, "
-                "ae.release_group_mbid FROM local_albums a "
-                "JOIN local_tracks t ON t.local_album_id = a.id "
-                "LEFT JOIN local_album_external_identities ae "
-                "ON ae.local_album_id = a.id AND ae.provider = 'musicbrainz' "
-                "WHERE a.retired_into_album_id IS NULL AND t.availability = 'indexed' "
-                "GROUP BY a.id ORDER BY a.id"
+                "SELECT identity.provider_artist_id "
+                "FROM local_artist_external_identities identity "
+                "WHERE EXISTS (SELECT 1 FROM local_album_artists credit "
+                "JOIN local_tracks track ON track.local_album_id = credit.local_album_id "
+                "WHERE credit.local_artist_id = identity.local_artist_id "
+                "AND track.availability = 'indexed') "
+                "OR EXISTS (SELECT 1 FROM local_track_artists credit "
+                "JOIN local_tracks track ON track.id = credit.local_track_id "
+                "WHERE credit.local_artist_id = identity.local_artist_id "
+                "AND track.availability = 'indexed') "
+                "ORDER BY identity.provider_artist_id"
             ).fetchall()
-            return [dict(row) for row in rows]
+            return {str(row["provider_artist_id"]) for row in rows}
+
+        return await self._read(operation)
+
+    async def target_has_provider_artist(self, provider_artist_id: str) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM local_artist_external_identities identity "
+                    "WHERE LOWER(identity.provider_artist_id) = LOWER(?) AND ("
+                    "EXISTS (SELECT 1 FROM local_album_artists credit "
+                    "JOIN local_tracks track ON track.local_album_id = credit.local_album_id "
+                    "WHERE credit.local_artist_id = identity.local_artist_id "
+                    "AND track.availability = 'indexed') OR "
+                    "EXISTS (SELECT 1 FROM local_track_artists credit "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "WHERE credit.local_artist_id = identity.local_artist_id "
+                    "AND track.availability = 'indexed')) LIMIT 1",
+                    (provider_artist_id,),
+                ).fetchone()
+                is not None
+            )
+
+        return await self._read(operation)
+
+    async def target_album_provider_identity(self, album_id: str) -> str | None:
+        def operation(connection: sqlite3.Connection) -> str | None:
+            row = connection.execute(
+                "SELECT identity.release_group_mbid "
+                "FROM local_album_external_identities identity "
+                "LEFT JOIN local_album_aliases alias "
+                "ON alias.local_album_id = identity.local_album_id "
+                "WHERE identity.provider = 'musicbrainz' "
+                "AND (identity.local_album_id = ? OR alias.alias = LOWER(?) "
+                "OR LOWER(identity.release_group_mbid) = LOWER(?)) "
+                "ORDER BY identity.local_album_id LIMIT 1",
+                (album_id, album_id, album_id),
+            ).fetchone()
+            return str(row["release_group_mbid"]) if row is not None else None
+
+        return await self._read(operation)
+
+    async def target_album_ownership_rows(
+        self,
+        *,
+        provider_ids: set[str] | None = None,
+        folded_keys: set[tuple[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return only ownership rows that can match the supplied candidates."""
+        normalized_ids = sorted(
+            {value.casefold() for value in provider_ids or set() if value}
+        )
+        normalized_keys = sorted(
+            {
+                (title, artist)
+                for title, artist in folded_keys or set()
+                if title and artist
+            }
+        )
+        if not normalized_ids and not normalized_keys:
+            return []
+
+        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            selected: dict[str, dict[str, Any]] = {}
+            base = (
+                "SELECT album.id AS local_album_id, album.title, "
+                "album.album_artist_name, album.year, identity.release_group_mbid "
+                "FROM local_albums album LEFT JOIN local_album_external_identities identity "
+                "ON identity.local_album_id = album.id AND identity.provider = 'musicbrainz' "
+                "WHERE album.retired_into_album_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks track "
+                "WHERE track.local_album_id = album.id "
+                "AND track.availability = 'indexed') AND "
+            )
+            for offset in range(0, len(normalized_ids), 500):
+                batch = normalized_ids[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    base + f"LOWER(identity.release_group_mbid) IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                selected.update((str(row["local_album_id"]), dict(row)) for row in rows)
+            for offset in range(0, len(normalized_keys), 400):
+                batch = normalized_keys[offset : offset + 400]
+                placeholders = ",".join("(?, ?)" for _ in batch)
+                parameters = [value for pair in batch for value in pair]
+                rows = connection.execute(
+                    base
+                    + "(album.title_folded, album.album_artist_name_folded) IN ("
+                    + placeholders
+                    + ") AND identity.release_group_mbid IS NULL",
+                    parameters,
+                ).fetchall()
+                selected.update((str(row["local_album_id"]), dict(row)) for row in rows)
+            return [selected[key] for key in sorted(selected)]
 
         return await self._read(operation)
 
@@ -4126,12 +4232,16 @@ class NativeLibraryStore(PersistenceBase):
                             if source.get("artist_id")
                             else None
                         )
-                        if membership is None or (
-                            expected_album is not None
-                            and expected_album[1] != membership["local_album_id"]
-                        ) or (
-                            expected_artist is not None
-                            and expected_artist[1] != membership["artist_id"]
+                        if (
+                            membership is None
+                            or (
+                                expected_album is not None
+                                and expected_album[1] != membership["local_album_id"]
+                            )
+                            or (
+                                expected_artist is not None
+                                and expected_artist[1] != membership["artist_id"]
+                            )
                         ):
                             target = None
                     resolved.append(target)
@@ -8023,6 +8133,7 @@ class NativeLibraryStore(PersistenceBase):
                     "excluded": 0,
                     "restored": 0,
                     "identification_enqueued": 0,
+                    "reviews_resolved": 0,
                     "done": True,
                 }
             path_clause = "1 = 1"
@@ -8042,8 +8153,11 @@ class NativeLibraryStore(PersistenceBase):
                 "excluded": 0,
                 "restored": 0,
                 "identification_enqueued": 0,
+                "reviews_resolved": 0,
             }
             queued_albums: set[str] = set()
+            missing_track_ids: set[str] = set()
+            missing_album_ids: set[str] = set()
             for track in candidates:
                 inventory = connection.execute(
                     "SELECT effective_policy, policy_revision FROM library_scan_inventory "
@@ -8051,13 +8165,16 @@ class NativeLibraryStore(PersistenceBase):
                     "AND root_id = ? AND relative_path = ?",
                     (run_id, root_id, track["relative_path"]),
                 ).fetchone()
-                if inventory is None and track["availability"] != "missing":
-                    connection.execute(
-                        "UPDATE local_tracks SET availability = 'missing', missing_since = ?, "
-                        "row_revision = row_revision + 1 WHERE id = ?",
-                        (now, track["id"]),
-                    )
-                    counts["missing"] += 1
+                if inventory is None:
+                    missing_track_ids.add(str(track["id"]))
+                    missing_album_ids.add(str(track["local_album_id"]))
+                    if track["availability"] != "missing":
+                        connection.execute(
+                            "UPDATE local_tracks SET availability = 'missing', missing_since = ?, "
+                            "row_revision = row_revision + 1 WHERE id = ?",
+                            (now, track["id"]),
+                        )
+                        counts["missing"] += 1
                 elif (
                     inventory is not None
                     and inventory["effective_policy"] == "excluded"
@@ -8156,6 +8273,29 @@ class NativeLibraryStore(PersistenceBase):
                                 )
                                 counts["identification_enqueued"] += 1
                             queued_albums.add(album_id)
+            for offset in range(0, len(missing_track_ids), 500):
+                track_ids = sorted(missing_track_ids)[offset : offset + 500]
+                placeholders = ",".join("?" for _ in track_ids)
+                counts["reviews_resolved"] += connection.execute(
+                    "UPDATE library_identification_reviews SET state = 'resolved', "
+                    "reason_code = 'SUBJECT_MISSING', updated_at = ?, decided_at = ?, "
+                    "row_revision = row_revision + 1 WHERE state = 'needs_review' "
+                    f"AND local_track_id IN ({placeholders})",
+                    (now, now, *track_ids),
+                ).rowcount
+            for offset in range(0, len(missing_album_ids), 500):
+                album_ids = sorted(missing_album_ids)[offset : offset + 500]
+                placeholders = ",".join("?" for _ in album_ids)
+                counts["reviews_resolved"] += connection.execute(
+                    "UPDATE library_identification_reviews SET state = 'resolved', "
+                    "reason_code = 'SUBJECT_MISSING', updated_at = ?, decided_at = ?, "
+                    "row_revision = row_revision + 1 WHERE state = 'needs_review' "
+                    f"AND local_album_id IN ({placeholders}) "
+                    "AND NOT EXISTS (SELECT 1 FROM local_tracks track "
+                    "WHERE track.local_album_id = library_identification_reviews.local_album_id "
+                    "AND track.availability = 'indexed')",
+                    (now, now, *album_ids),
+                ).rowcount
             if any(counts.values()):
                 self._bump_catalog(connection)
             done = len(candidates) < limit

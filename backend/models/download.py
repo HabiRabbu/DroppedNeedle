@@ -43,11 +43,15 @@ class ScoredCandidate(AppStruct):
 class DownloadsMountStatus(AppStruct):
     """Result of the slskd-downloads bind-mount health check (C7).
 
+    ``ok`` means the path is usable; ``move_supported`` reports whether it shares a
+    rename boundary with a configured library root.
+
     ``reason`` is one of: ``ok``, ``not_set``, ``missing``, ``not_writable``,
-    ``different_filesystem``, or a ``stat_error: ...`` string.
+    ``different_mount``, ``different_filesystem``, or ``stat_error``.
     """
 
     ok: bool
+    move_supported: bool
     reason: str
     path: str
 

@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 import asyncio
+from types import SimpleNamespace
 
 from api.v1.schemas.search import SearchResult, SuggestResponse
 from services.search_service import SearchService
@@ -34,7 +35,13 @@ def _make_preferences(
 ) -> MagicMock:
     prefs = MagicMock()
     prefs.secondary_types = secondary_types or []
-    prefs.primary_types = primary_types or ["album", "single", "ep", "broadcast", "other"]
+    prefs.primary_types = primary_types or [
+        "album",
+        "single",
+        "ep",
+        "broadcast",
+        "other",
+    ]
     return prefs
 
 
@@ -48,7 +55,9 @@ def _make_service(
     if mb_error:
         mb_repo.search_grouped = AsyncMock(side_effect=mb_error)
     else:
-        mb_repo.search_grouped = AsyncMock(return_value=grouped or {"artists": [], "albums": []})
+        mb_repo.search_grouped = AsyncMock(
+            return_value=grouped or {"artists": [], "albums": []}
+        )
 
     library_repo = MagicMock()
     if library_error:
@@ -71,7 +80,9 @@ def _make_service(
 @pytest.mark.asyncio
 async def test_suggest_returns_suggest_response():
     artists = [_make_search_result("artist", "Muse", score=90)]
-    albums = [_make_search_result("album", "Origin of Symmetry", score=85, artist="Muse")]
+    albums = [
+        _make_search_result("album", "Origin of Symmetry", score=85, artist="Muse")
+    ]
     svc = _make_service(grouped={"artists": artists, "albums": albums})
 
     result = await svc.suggest(query="muse", limit=5)
@@ -80,6 +91,24 @@ async def test_suggest_returns_suggest_response():
     assert len(result.results) == 2
     assert result.results[0].title == "Muse"
     assert result.results[1].title == "Origin of Symmetry"
+
+
+@pytest.mark.asyncio
+async def test_target_suggest_projects_only_returned_albums() -> None:
+    album = _make_search_result(
+        "album", "Origin of Symmetry", artist="Muse", musicbrainz_id="rg-1"
+    )
+    service = _make_service(grouped={"artists": [], "albums": [album]})
+    ownership = AsyncMock()
+    ownership.project_albums.return_value = [SimpleNamespace(owned=True)]
+    service._ownership = ownership
+
+    result = await service.suggest(query="muse", limit=5)
+
+    assert result.results[0].in_library is True
+    service._library_repo.get_library_mbids.assert_not_awaited()
+    candidates = ownership.project_albums.await_args.args[0]
+    assert [candidate.release_group_mbid for candidate in candidates] == ["rg-1"]
 
 
 @pytest.mark.asyncio
@@ -140,8 +169,7 @@ async def test_suggest_alphabetical_tiebreak_within_same_type():
 @pytest.mark.asyncio
 async def test_suggest_truncates_to_limit():
     artists = [
-        _make_search_result("artist", f"Artist {i}", score=100 - i)
-        for i in range(3)
+        _make_search_result("artist", f"Artist {i}", score=100 - i) for i in range(3)
     ]
     albums = [
         _make_search_result("album", f"Album {i}", score=99 - i, artist="X")
@@ -158,8 +186,9 @@ async def test_suggest_truncates_to_limit():
 async def test_suggest_library_failure_returns_default_flags():
     artists = [_make_search_result("artist", "Muse", score=90)]
     albums = [
-        _make_search_result("album", "Absolution", score=85, artist="Muse",
-                            musicbrainz_id="album-1"),
+        _make_search_result(
+            "album", "Absolution", score=85, artist="Muse", musicbrainz_id="album-1"
+        ),
     ]
     svc = _make_service(
         grouped={"artists": artists, "albums": albums},
@@ -201,8 +230,9 @@ async def test_suggest_query_normalization():
 @pytest.mark.asyncio
 async def test_suggest_in_library_flag():
     albums = [
-        _make_search_result("album", "Absolution", score=85, artist="Muse",
-                            musicbrainz_id="album-lib-1"),
+        _make_search_result(
+            "album", "Absolution", score=85, artist="Muse", musicbrainz_id="album-lib-1"
+        ),
     ]
     svc = _make_service(
         grouped={"artists": [], "albums": albums},

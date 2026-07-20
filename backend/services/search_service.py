@@ -58,9 +58,10 @@ class SearchService:
         self._ownership = ownership_service
 
     async def _apply_album_ownership(
-        self, albums: list[SearchResult], library_mbids: set[str]
+        self, albums: list[SearchResult], library_mbids: set[str] | None = None
     ) -> None:
         if self._ownership is None:
+            library_mbids = library_mbids or set()
             for item in albums:
                 item.in_library = (item.musicbrainz_id or "").lower() in library_mbids
                 item.requested = False
@@ -241,16 +242,21 @@ class SearchService:
             limits["albums"] = limit_albums
 
         try:
-            grouped, library_mbids_raw = await self._safe_gather(
+            tasks = [
                 self._mb_repo.search_grouped(
                     query,
                     limits=limits,
                     buckets=buckets,
                     included_secondary_types=included_secondary_types,
                     included_primary_types=included_primary_types,
-                ),
-                self._library_repo.get_library_mbids(include_release_ids=True),
-            )
+                )
+            ]
+            if self._ownership is None:
+                tasks.append(
+                    self._library_repo.get_library_mbids(include_release_ids=True)
+                )
+            grouped, *library_results = await self._safe_gather(*tasks)
+            library_mbids_raw = library_results[0] if library_results else None
         except Exception as e:  # noqa: BLE001
             logger.error(f"Search gather failed unexpectedly: {e}")
             grouped, library_mbids_raw = None, None
@@ -327,9 +333,11 @@ class SearchService:
             return [], None
 
         if bucket == "albums":
-            [library_mbids_raw] = await self._safe_gather(
-                self._library_repo.get_library_mbids(include_release_ids=True),
-            )
+            library_mbids_raw = None
+            if self._ownership is None:
+                [library_mbids_raw] = await self._safe_gather(
+                    self._library_repo.get_library_mbids(include_release_ids=True),
+                )
             library_mbids = library_mbids_raw or set()
 
             await self._apply_album_ownership(results, library_mbids)
@@ -369,9 +377,11 @@ class SearchService:
 
         grouped = grouped or {"artists": [], "albums": []}
 
-        [library_mbids_raw] = await self._safe_gather(
-            self._library_repo.get_library_mbids(include_release_ids=True),
-        )
+        library_mbids_raw = None
+        if self._ownership is None:
+            [library_mbids_raw] = await self._safe_gather(
+                self._library_repo.get_library_mbids(include_release_ids=True),
+            )
         library_mbids = library_mbids_raw or set()
 
         await self._apply_album_ownership(grouped.get("albums", []), library_mbids)

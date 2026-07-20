@@ -21,6 +21,7 @@ from unidecode import unidecode
 
 from infrastructure.msgspec_fastapi import AppStruct
 from infrastructure.queue.priority_queue import RequestPriority
+from models.musicbrainz import recording_release_group_rank
 
 if TYPE_CHECKING:
     from repositories.musicbrainz_album import RecordingReleaseGroup
@@ -65,7 +66,10 @@ class MatchResult(AppStruct):
 
     @property
     def matched(self) -> bool:
-        return self.confidence >= TEXT_MATCH_THRESHOLD and self.release_group_mbid is not None
+        return (
+            self.confidence >= TEXT_MATCH_THRESHOLD
+            and self.release_group_mbid is not None
+        )
 
 
 class MusicBrainzMatcher:
@@ -110,7 +114,9 @@ class MusicBrainzMatcher:
             return 0.0
         return token_set_ratio(na, nb) / 100.0
 
-    def _artist_floor_ok(self, target_artist: str, candidate_artist: str | None) -> bool:
+    def _artist_floor_ok(
+        self, target_artist: str, candidate_artist: str | None
+    ) -> bool:
         """True unless the candidate's artist clearly mismatches the target's."""
         if not candidate_artist:
             return True
@@ -161,7 +167,9 @@ class MusicBrainzMatcher:
         confidence = round(best_score[0], 4)
         return MatchResult(
             confidence=confidence,
-            release_group_mbid=best_mbid if confidence >= TEXT_MATCH_THRESHOLD else None,
+            release_group_mbid=best_mbid
+            if confidence >= TEXT_MATCH_THRESHOLD
+            else None,
         )
 
     @classmethod
@@ -174,20 +182,32 @@ class MusicBrainzMatcher:
         return Levenshtein.normalized_similarity(na, nb)
 
     @staticmethod
-    def _rg_rank(rg: "RecordingReleaseGroup") -> int:
-        """Prefer a studio Album over EP/Single, penalising secondary types."""
-        primary = {"Album": 3, "EP": 2, "Single": 1}.get(rg.primary_type or "", 0)
-        return primary - 1 if rg.secondary_types else primary
+    def _rg_rank(
+        rg: "RecordingReleaseGroup",
+    ) -> tuple[int, int, int, int, str, str]:
+        return recording_release_group_rank(
+            release_status=rg.release_status,
+            secondary_types=rg.secondary_types,
+            primary_type=rg.primary_type,
+            release_date=rg.release_date,
+            release_group_mbid=rg.release_group_mbid,
+        )
 
     def _select_release_group(
         self, album: str, groups: list["RecordingReleaseGroup"]
     ) -> "RecordingReleaseGroup":
         """Pick which of a recording's release groups the file belongs to."""
         if album.strip():
-            best = max(groups, key=lambda rg: self.title_similarity(album, rg.release_group_title))
-            if self.title_similarity(album, best.release_group_title) >= _RG_TITLE_DISAMBIGUATION:
+            best = max(
+                groups,
+                key=lambda rg: self.title_similarity(album, rg.release_group_title),
+            )
+            if (
+                self.title_similarity(album, best.release_group_title)
+                >= _RG_TITLE_DISAMBIGUATION
+            ):
                 return best
-        return max(groups, key=self._rg_rank)
+        return min(groups, key=self._rg_rank)
 
     async def _recording_match(self, target: TargetAlbum) -> MatchResult:
         if not target.track_title:
@@ -231,6 +251,8 @@ class MusicBrainzMatcher:
             return await self._mb_repo.resolve_recording_to_release_group(recording_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Recording->release-group resolution failed for %s: %s", recording_id, exc
+                "Recording->release-group resolution failed for %s: %s",
+                recording_id,
+                exc,
             )
             return None

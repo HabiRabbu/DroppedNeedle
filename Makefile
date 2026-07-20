@@ -101,6 +101,7 @@ NPM    ?= pnpm
 	feedback-fixes-maintenance-rehearsal \
 	feedback-fixes-cli-rehearsal \
 	feedback-fixes-automatic-upgrade-rehearsal \
+	issue-224-performance \
 	backend-test-discover-all \
 	test-discover-all \
 	test-audiodb-all test-mus14-all test-sync-all \
@@ -563,6 +564,9 @@ feedback-fixes-benchmark: $(BACKEND_VENV_STAMP) ## Run the non-default Feedback 
 		--sizes 1000 25000 115000 \
 		--target-sizes 10000 115000 \
 		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-latest.json"
+
+issue-224-performance: $(BACKEND_VENV_STAMP) ## Run the reported-scale issue #224 ownership benchmark
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.issue_224_performance
 
 feedback-fixes-root-mapping: $(BACKEND_VENV_STAMP) ## Rehearse typed-root migration and path mapping in scratch
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_root_mapping \

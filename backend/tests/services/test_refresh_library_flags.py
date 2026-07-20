@@ -1,5 +1,6 @@
 """Lidarr monitored translation removed (follow state lives in FollowStore);
 _refresh_library_flags only reconciles in_library and per-release flags."""
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -114,3 +115,45 @@ class TestRefreshLibraryFlagsLibraryTransition:
         assert artist.albums[1].requested is True
         assert artist.albums[2].in_library is False
         assert artist.albums[2].requested is False
+
+    @pytest.mark.asyncio
+    async def test_target_refresh_uses_candidate_bounded_ownership(
+        self, mock_library_repo
+    ):
+        from models.artist import ReleaseItem
+
+        ownership = AsyncMock()
+        ownership.project_albums.return_value = [
+            MagicMock(owned=True),
+            MagicMock(owned=False),
+        ]
+        ownership.provider_artist_owned.return_value = True
+        mock_library_repo.get_requested_mbids.return_value = {"album-2"}
+        service = ArtistService(
+            mb_repo=AsyncMock(),
+            library_repo=mock_library_repo,
+            wikidata_repo=AsyncMock(),
+            preferences_service=MagicMock(),
+            memory_cache=AsyncMock(),
+            disk_cache=AsyncMock(),
+            ownership_service=ownership,
+        )
+        artist = ArtistInfo(
+            name="Test",
+            musicbrainz_id="artist-1",
+            albums=[
+                ReleaseItem(id="album-1", title="A"),
+                ReleaseItem(id="album-2", title="B"),
+            ],
+        )
+
+        await service._refresh_library_flags(artist)
+
+        mock_library_repo.get_library_mbids.assert_not_awaited()
+        mock_library_repo.get_artist_mbids.assert_not_awaited()
+        mock_library_repo.get_requested_mbids.assert_awaited_once_with(
+            ["album-1", "album-2"]
+        )
+        ownership.provider_artist_owned.assert_awaited_once_with("artist-1")
+        assert [release.in_library for release in artist.albums] == [True, False]
+        assert [release.requested for release in artist.albums] == [False, True]

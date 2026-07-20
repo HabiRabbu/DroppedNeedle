@@ -1,6 +1,7 @@
 import asyncio
+import logging
 
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
 
 from api.v1.schemas.library_target import (
@@ -30,12 +31,16 @@ from core.dependencies.type_aliases import (
     TargetLibraryScanCoordinatorDep,
     TargetNativeLibraryServiceDep,
     CachedLocalArtworkServiceDep,
+    WantedWatcherServiceDep,
 )
+from core.dependencies import get_download_service
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep, CurrentCuratorDep, CurrentUserDep
 from models.audio import AudioTag
 from models.library_work import ScanRequest
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     route_class=MsgSpecRoute,
@@ -285,11 +290,28 @@ async def remove_target_album(
     album_id: str,
     admin: CurrentAdminDep,
     writer: TargetCatalogWriterServiceDep,
+    wanted: WantedWatcherServiceDep,
     delete_files: bool = False,
+    stop_wanted: bool = True,
+    download_service=Depends(get_download_service),
 ) -> TargetCatalogRemovalResponse:
+    release_group_mbid = await writer.provider_release_group_id(album_id)
     removed = await writer.remove_album(
         album_id, actor_user_id=admin.id, delete_files=delete_files
     )
+    cleanup_id = release_group_mbid or album_id
+    try:
+        await download_service.purge_album_downloads(cleanup_id)
+    except Exception:  # noqa: BLE001 - removal already succeeded
+        logger.warning("Target album removal download cleanup failed")
+    if release_group_mbid:
+        try:
+            if stop_wanted:
+                await wanted.stop_after_library_removal(release_group_mbid)
+            else:
+                await wanted.continue_after_library_removal(release_group_mbid)
+        except Exception:  # noqa: BLE001 - removal already succeeded
+            logger.warning("Target album removal wanted-state cleanup failed")
     return TargetCatalogRemovalResponse(
         success=True, id=album_id, removed_track_ids=removed
     )

@@ -5,11 +5,13 @@ import { libraryStore } from '$lib/stores/library';
 import { ArtistQueryKeyFactory } from '../artist/ArtistQueryKeyFactory';
 import { DiscoverQueryKeyFactory } from '../discover/DiscoverQueryKeyFactory';
 import { HomeQueryKeyFactory } from '../HomeQueryKeyFactory';
+import { WantedQueryKeyFactory } from '../wanted/WantedQueryKeyFactory';
 import { invalidateQueriesWithPersister, setQueryDataWithPersister } from '../QueryClient';
 import { LOCAL_KEYS } from '../local/LocalQueries.svelte';
 import { LibraryQueryKeyFactory } from './LibraryQueryKeyFactory';
 import type {
 	AlbumRemoveResponse,
+	TargetCatalogRemovalResponse,
 	LibraryActionResponse,
 	LibraryAlbumStatus,
 	StatusMessageResponse,
@@ -20,10 +22,14 @@ import type {
 
 export function removeLibraryAlbum() {
 	return createMutation(() => ({
-		mutationFn: (mbid: string) =>
-			api.global.delete<AlbumRemoveResponse>(`${API.library.removeAlbum(mbid)}?delete_files=true`),
-		onSuccess: async (result, requestedMbid) => {
-			const removedMbids = [requestedMbid, result.album_mbid, ...result.removed_mbids].filter(
+		mutationFn: ({ mbid, stopWanted }: { mbid: string; stopWanted: boolean }) =>
+			api.global.delete<AlbumRemoveResponse | TargetCatalogRemovalResponse>(
+				`${API.library.removeAlbum(mbid)}?delete_files=true&stop_wanted=${stopWanted}`
+			),
+		onSuccess: async (result, { mbid: requestedMbid }) => {
+			const responseMbids =
+				'album_mbid' in result ? [result.album_mbid, ...result.removed_mbids] : [result.id];
+			const removedMbids = [requestedMbid, ...responseMbids].filter(
 				(mbid, index, all) => all.indexOf(mbid) === index
 			);
 			for (const mbid of removedMbids) {
@@ -53,6 +59,7 @@ export function removeLibraryAlbum() {
 				invalidateQueriesWithPersister({ queryKey: ArtistQueryKeyFactory.prefix }),
 				invalidateQueriesWithPersister({ queryKey: HomeQueryKeyFactory.prefix }),
 				invalidateQueriesWithPersister({ queryKey: DiscoverQueryKeyFactory.prefix }),
+				invalidateQueriesWithPersister({ queryKey: WantedQueryKeyFactory.prefix }),
 				invalidateQueriesWithPersister({ queryKey: LOCAL_KEYS.root })
 			]);
 			for (const refresh of refreshes) {

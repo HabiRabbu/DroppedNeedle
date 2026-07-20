@@ -1354,6 +1354,12 @@ async def test_target_ownership_projection_is_conservative_and_provider_independ
             AlbumOwnershipCandidate(None, "Local Only", "Local Only Artist", 1900),
             AlbumOwnershipCandidate(None, "Unknown album", "Unknown artist", None),
             AlbumOwnershipCandidate(None, "Local", "Local Only Artist", None),
+            AlbumOwnershipCandidate(
+                "different-provider-id", "Identified", "Identified Artist", None
+            ),
+            AlbumOwnershipCandidate(
+                "unmatched-provider-id", "Local Only", "Local Only Artist", None
+            ),
         ]
     )
 
@@ -1363,6 +1369,8 @@ async def test_target_ownership_projection_is_conservative_and_provider_independ
         (False, None),
         (False, None),
         (False, None),
+        (False, None),
+        (True, LOCAL_ALBUM_ID),
     ]
     assert await ownership.provider_album_id(IDENTIFIED_ALBUM_ID) == RELEASE_GROUP_MBID
     assert await ownership.provider_track_id(IDENTIFIED_TRACK_ID) == RECORDING_MBID
@@ -1370,6 +1378,62 @@ async def test_target_ownership_projection_is_conservative_and_provider_independ
         await ownership.provider_album_id(LOCAL_ALBUM_ID)
     with pytest.raises(ProviderIdentityRequiredError):
         await ownership.provider_track_id(LOCAL_TRACK_ID)
+
+
+@pytest.mark.asyncio
+async def test_provider_album_snapshot_coalesces_and_rebuilds_by_catalog_revision(
+    target_services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, *_ = target_services
+    original_read = store._read
+    snapshot_builds = 0
+
+    async def counted_read(operation):
+        nonlocal snapshot_builds
+        if "target_provider_album_snapshot" in operation.__qualname__:
+            snapshot_builds += 1
+        return await original_read(operation)
+
+    monkeypatch.setattr(store, "_read", counted_read)
+
+    results = await asyncio.gather(
+        *(store.target_provider_album_snapshot() for _ in range(12))
+    )
+
+    assert snapshot_builds == 1
+    assert all(RELEASE_GROUP_MBID in values for _revision, values in results)
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE library_catalog_revision SET value = value + 1 WHERE singleton = 1"
+        )
+    await store.target_provider_album_snapshot()
+    assert snapshot_builds == 2
+
+
+@pytest.mark.asyncio
+async def test_local_ownership_backfill_normalizes_internal_whitespace(
+    target_services,
+) -> None:
+    store, *_ = target_services
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE local_albums SET title = 'Local   Only', "
+            "title_folded = 'local   only', "
+            "album_artist_name = 'Local\tOnly Artist', "
+            "album_artist_name_folded = 'local\tonly artist' WHERE id = ?",
+            (LOCAL_ALBUM_ID,),
+        )
+
+    reopened = NativeLibraryStore(store.db_path, store._write_lock)
+    projection = await LibraryOwnershipService(reopened).project_album(
+        release_group_mbid=None,
+        title="Local Only",
+        album_artist="Local Only Artist",
+    )
+
+    assert projection.owned is True
+    assert projection.local_album_id == LOCAL_ALBUM_ID
 
 
 @pytest.mark.asyncio

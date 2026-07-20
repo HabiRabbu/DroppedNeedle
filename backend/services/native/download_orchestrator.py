@@ -196,6 +196,7 @@ class DownloadOrchestrator:
         # against the live quality range before an automatic re-dispatch (failover /
         # track-repull). None = not wired (tests) -> re-gate skipped.
         get_download_policy=None,  # Callable[[], DownloadPolicySettings] | None
+        wanted_store=None,  # WantedStore | None
     ) -> None:
         self._client = client
         self._naming_template = naming_template
@@ -237,6 +238,7 @@ class DownloadOrchestrator:
         self._request_history = request_history
         self._on_import = on_import_callback
         self._get_download_policy = get_download_policy
+        self._wanted_store = wanted_store
         self._usenet_scorer = usenet_scorer  # for the Usenet re-gate tier (Phase 2)
         self._active_tasks: dict[str, asyncio.Task] = {}
 
@@ -1210,8 +1212,6 @@ class DownloadOrchestrator:
         task that actually dispatched it, so a stray per-track download of an album
         can't flip that album's request. Monitor/orphan downloads (no request row)
         are a safe no-op."""
-        if self._request_history is None:
-            return
         mapping = {
             DownloadStatus.COMPLETED: "imported",
             DownloadStatus.PARTIAL: "incomplete",
@@ -1220,6 +1220,22 @@ class DownloadOrchestrator:
         }
         new_status = mapping.get(status)
         if new_status is None:
+            return
+        if (
+            new_status == "imported"
+            and task.download_type == "album"
+            and task.release_group_mbid
+            and self._wanted_store is not None
+        ):
+            try:
+                await self._wanted_store.mark_fulfilled(
+                    task.release_group_mbid, "imported"
+                )
+            except Exception:  # noqa: BLE001 - watch settlement is best-effort
+                logger.warning(
+                    "Could not fulfil wanted watch for %s", task.release_group_mbid
+                )
+        if self._request_history is None:
             return
         try:
             record = await self._request_history.async_get_record(

@@ -27,6 +27,7 @@ from core.dependencies import (
     get_library_manager,
     get_library_scanner,
     get_preferences_service,
+    get_wanted_watcher_service,
 )
 from core.exceptions import ExternalServiceError
 from infrastructure.msgspec_fastapi import MsgSpecRoute, MsgSpecBody
@@ -43,9 +44,7 @@ router = APIRouter(route_class=MsgSpecRoute, prefix="/library", tags=["library"]
 
 
 @router.get("/", response_model=LibraryResponse)
-async def get_library(
-    library_service: LibraryService = Depends(get_library_service)
-):
+async def get_library(library_service: LibraryService = Depends(get_library_service)):
     library = await library_service.get_library()
     return LibraryResponse(library=library)
 
@@ -116,8 +115,7 @@ async def get_library_tracks(
 
 @router.get("/recently-added", response_model=RecentlyAddedResponse)
 async def get_recently_added(
-    limit: int = 20,
-    library_service: LibraryService = Depends(get_library_service)
+    limit: int = 20, library_service: LibraryService = Depends(get_library_service)
 ):
     albums = await library_service.get_recently_added(limit=limit)
     return RecentlyAddedResponse(albums=albums, artists=[])
@@ -125,14 +123,19 @@ async def get_recently_added(
 
 @router.post("/sync", response_model=SyncLibraryResponse)
 async def sync_library(
-    force_full: bool = Query(default=False, description="Clear resume checkpoint and start a full sync from scratch"),
-    library_service: LibraryService = Depends(get_library_service)
+    force_full: bool = Query(
+        default=False,
+        description="Clear resume checkpoint and start a full sync from scratch",
+    ),
+    library_service: LibraryService = Depends(get_library_service),
 ):
     try:
         return await library_service.sync_library(is_manual=True, force_full=force_full)
     except ExternalServiceError as e:
         if "cooldown" in str(e).lower():
-            raise HTTPException(status_code=429, detail="Sync is on cooldown, please wait")
+            raise HTTPException(
+                status_code=429, detail="Sync is on cooldown, please wait"
+            )
         raise
 
 
@@ -146,7 +149,7 @@ async def get_library_stats(
 
 @router.get("/mbids", response_model=LibraryMbidsResponse)
 async def get_library_mbids(
-    library_service: LibraryService = Depends(get_library_service)
+    library_service: LibraryService = Depends(get_library_service),
 ):
     mbids, requested = await asyncio.gather(
         library_service.get_library_mbids(),
@@ -157,7 +160,7 @@ async def get_library_mbids(
 
 @router.get("/grouped", response_model=LibraryGroupedResponse)
 async def get_library_grouped(
-    library_service: LibraryService = Depends(get_library_service)
+    library_service: LibraryService = Depends(get_library_service),
 ):
     grouped = await library_service.get_library_grouped()
     return LibraryGroupedResponse(library=grouped)
@@ -168,11 +171,15 @@ async def remove_album(
     _admin: CurrentAdminDep,
     album_mbid: str,
     delete_files: bool = False,
+    stop_wanted: bool = True,
     library_service: LibraryService = Depends(get_library_service),
     download_service=Depends(get_download_service),
+    wanted=Depends(get_wanted_watcher_service),
 ):
     try:
-        result = await library_service.remove_album(album_mbid, delete_files=delete_files)
+        result = await library_service.remove_album(
+            album_mbid, delete_files=delete_files
+        )
     except ExternalServiceError as e:
         logger.error(f"Couldn't remove album {album_mbid}: {e}")
         raise HTTPException(status_code=500, detail="Couldn't remove this album")
@@ -183,7 +190,16 @@ async def remove_album(
     try:
         await download_service.purge_album_downloads(result.album_mbid)
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"Album {album_mbid} removed but download-state cleanup failed: {e}")
+        logger.warning(
+            f"Album {album_mbid} removed but download-state cleanup failed: {e}"
+        )
+    try:
+        if stop_wanted:
+            await wanted.stop_after_library_removal(result.album_mbid)
+        else:
+            await wanted.continue_after_library_removal(result.album_mbid)
+    except Exception:  # noqa: BLE001 - removal already succeeded
+        logger.warning("Album removal wanted-state cleanup failed")
     return result
 
 
@@ -277,7 +293,9 @@ def _log_rescan_exception(task: asyncio.Task) -> None:
         logger.error("Album rescan task failed: %s", task.exception())
 
 
-@router.post("/albums/{mbid}/rescan", status_code=202, response_model=StatusMessageResponse)
+@router.post(
+    "/albums/{mbid}/rescan", status_code=202, response_model=StatusMessageResponse
+)
 async def rescan_native_album(
     mbid: str,
     current_user: CurrentAdminDep,
@@ -291,7 +309,9 @@ async def rescan_native_album(
     except RuntimeError:
         # rescan already running; idempotent no-op
         task.cancel()
-        return StatusMessageResponse(status="accepted", message="Album rescan already running")
+        return StatusMessageResponse(
+            status="accepted", message="Album rescan already running"
+        )
     task.add_done_callback(_log_rescan_exception)
     return StatusMessageResponse(status="accepted", message="Album rescan started")
 

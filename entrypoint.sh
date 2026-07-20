@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
-umask 027
+
+REQUESTED_UMASK=${UMASK:-027}
+case "$REQUESTED_UMASK" in
+    [0-7][0-7][0-7]|0[0-7][0-7][0-7]) ;;
+    *) echo "[init] FATAL: UMASK='$REQUESTED_UMASK' must be three or four octal digits."; exit 1;;
+esac
+umask "$REQUESTED_UMASK"
 
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}
