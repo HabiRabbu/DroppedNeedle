@@ -15,8 +15,8 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +34,19 @@ _MARKER = "legacy_catalog_import_complete"
 _SOURCE_REVISION_PATH = Path("/app/.droppedneedle-source-revision")
 _ADMISSION_TOKEN_ENV = "DROPPEDNEEDLE_TARGET_ADMISSION_TOKEN"
 _FAILURE_EVIDENCE_FILE = "automatic-upgrade-failure-evidence.json"
+_ADMISSION_HEARTBEAT_INTERVAL_SECONDS = 5.0
+_ADMISSION_PROGRESS_LOG_INTERVAL_SECONDS = 60.0
+_TARGET_STARTUP_HARD_TIMEOUT_SECONDS = 86_400.0
+_TARGET_STARTUP_STAGES = frozenset(
+    {
+        "configuration",
+        "policy_recovery",
+        "catalog_validation",
+        "admission",
+        "data_ratchets",
+        "operational_runtime",
+    }
+)
 
 
 class AutomaticUpgradeError(RuntimeError):
@@ -545,6 +558,7 @@ async def _perform_target_migration() -> dict[str, Any]:
     validation = await TargetStartupValidator(
         get_native_library_store(),
         lambda: {root.id for root in resolver.settings.library_roots},
+        emit_progress=lambda message: print(f"[upgrade] {message}", flush=True),
     ).validate("cutover")
     print("[upgrade] Working-copy migration checks passed.", flush=True)
     return {
@@ -598,7 +612,8 @@ def run_automatic_copy_upgrade(
 
     print(
         "[upgrade] Preparing the library for this DroppedNeedle version. "
-        "Large libraries may take a few minutes.",
+        "Very large libraries may take several hours. Keep the container running; "
+        "progress will be logged.",
         flush=True,
     )
     backup: UpgradeBackup | None = None
@@ -739,8 +754,64 @@ def _admission_paths(settings: Settings, token: str) -> tuple[Path, Path]:
     return root / f"{token}.validated.json", root / f"{token}.admitted.json"
 
 
+def _admission_progress_path(settings: Settings, token: str) -> Path:
+    validated_path, _admitted_path = _admission_paths(settings, token)
+    return validated_path.with_name(f"{token}.progress.json")
+
+
 def target_startup_admission_pending() -> bool:
     return bool(os.getenv(_ADMISSION_TOKEN_ENV, "").strip())
+
+
+@asynccontextmanager
+async def target_startup_progress(
+    settings: Settings, stage: str
+) -> AsyncIterator[None]:
+    token = os.getenv(_ADMISSION_TOKEN_ENV, "").strip()
+    if not token:
+        yield
+        return
+    if stage not in _TARGET_STARTUP_STAGES:
+        raise ValueError(f"Unsupported target startup progress stage: {stage}")
+    path = _admission_progress_path(settings, token)
+    started = time.monotonic()
+    sequence = 0
+
+    async def write_progress() -> None:
+        nonlocal sequence
+        sequence += 1
+        await asyncio.to_thread(
+            _write_state,
+            path,
+            {
+                "format_version": 1,
+                "upgrade_id": UPGRADE_ID,
+                "token": token,
+                "stage": stage,
+                "sequence": sequence,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            },
+        )
+
+    await write_progress()
+
+    stopped = asyncio.Event()
+
+    async def heartbeat() -> None:
+        while not stopped.is_set():
+            try:
+                await asyncio.wait_for(
+                    stopped.wait(), timeout=_ADMISSION_HEARTBEAT_INTERVAL_SECONDS
+                )
+            except TimeoutError:
+                await write_progress()
+
+    task = asyncio.create_task(heartbeat())
+    try:
+        yield
+    finally:
+        stopped.set()
+        await task
 
 
 async def await_target_startup_admission(settings: Settings) -> None:
@@ -808,8 +879,35 @@ def _target_validation_complete(path: Path, token: str) -> bool:
     return state is not None and state.get("token") == token
 
 
+def _target_progress(path: Path, token: str) -> dict[str, Any] | None:
+    state = _read_state(path)
+    if state is None or state.get("token") != token:
+        return None
+    stage = state.get("stage")
+    sequence = state.get("sequence")
+    elapsed_seconds = state.get("elapsed_seconds")
+    if (
+        stage not in _TARGET_STARTUP_STAGES
+        or not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or sequence < 1
+        or not isinstance(elapsed_seconds, (int, float))
+        or isinstance(elapsed_seconds, bool)
+        or elapsed_seconds < 0
+    ):
+        return None
+    return {
+        "stage": str(stage),
+        "sequence": sequence,
+        "elapsed_seconds": float(elapsed_seconds),
+    }
+
+
 def _restore_after_target_startup_failure(
-    settings: Settings, *, error_type: str
+    settings: Settings,
+    *,
+    error_type: str,
+    failure_evidence: dict[str, Any] | None = None,
 ) -> None:
     state_path = settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json"
     state = _read_state(state_path)
@@ -818,20 +916,73 @@ def _restore_after_target_startup_failure(
     backup = _load_upgrade_backup(settings, state.get("backup_directory"))
     restore_upgrade_backup(settings, backup)
     _remove_working_copy(backup)
-    _write_state(
-        state_path,
-        {
-            "format_version": 1,
-            "upgrade_id": UPGRADE_ID,
-            "stage": "failed",
-            "image_version": _image_version(),
-            "backup_directory": str(backup.directory),
-            "error_type": error_type,
-            "restored_signature": _current_signature(
-                settings.library_db_path, settings.config_file_path
-            ),
-        },
-    )
+    failure = {
+        "format_version": 1,
+        "upgrade_id": UPGRADE_ID,
+        "stage": "failed",
+        "image_version": _image_version(),
+        "backup_directory": str(backup.directory),
+        "error_type": error_type,
+        "restored_signature": _current_signature(
+            settings.library_db_path, settings.config_file_path
+        ),
+    }
+    if failure_evidence:
+        failure["failure_evidence"] = failure_evidence
+    _write_state(state_path, failure)
+
+
+def _record_post_admission_startup_failure(
+    settings: Settings,
+    *,
+    error_type: str,
+    last_stage: str,
+    startup_started: float,
+    returncode: int | None,
+) -> None:
+    state_path = settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json"
+    state = _read_state(state_path)
+    if state is None or state.get("stage") != "completed":
+        return
+    evidence: dict[str, Any] = {
+        "error_type": error_type,
+        "last_stage": last_stage,
+        "elapsed_seconds": round(time.monotonic() - startup_started, 3),
+    }
+    if returncode is not None:
+        evidence["returncode"] = returncode
+    try:
+        _write_state(state_path, {**state, "target_startup_failure": evidence})
+    except OSError:
+        logger.error("automatic_upgrade.target_start_failure_state_write_failed")
+
+
+def _clear_post_admission_startup_failure(settings: Settings) -> None:
+    state_path = settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json"
+    state = _read_state(state_path)
+    if (
+        state is None
+        or state.get("stage") != "completed"
+        or "target_startup_failure" not in state
+    ):
+        return
+    updated = dict(state)
+    updated.pop("target_startup_failure")
+    try:
+        _write_state(state_path, updated)
+    except OSError:
+        logger.error("automatic_upgrade.target_start_failure_state_clear_failed")
+
+
+def _terminate_target_process(process: Any) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def run_target_supervisor(
@@ -848,11 +999,14 @@ def run_target_supervisor(
     token = uuid.uuid4().hex if admission_pending else ""
     validated_path: Path | None = None
     admitted_path: Path | None = None
+    progress_path: Path | None = None
     environment = os.environ.copy()
     if admission_pending:
         validated_path, admitted_path = _admission_paths(settings, token)
+        progress_path = _admission_progress_path(settings, token)
         validated_path.unlink(missing_ok=True)
         admitted_path.unlink(missing_ok=True)
+        progress_path.unlink(missing_ok=True)
         environment[_ADMISSION_TOKEN_ENV] = token
     try:
         process = subprocess.Popen(command or _target_command(port), env=environment)
@@ -884,15 +1038,52 @@ def run_target_supervisor(
     promotion_committed = not admission_pending
     target_released = not admission_pending
     admission_error = "TargetStartupError"
-    deadline = time.monotonic() + admission_timeout_seconds
+    startup_started = time.monotonic()
+    hard_deadline = startup_started + _TARGET_STARTUP_HARD_TIMEOUT_SECONDS
+    last_progress_key: tuple[str, int] | None = None
+    last_stage = "process_start"
+    last_progress_log = startup_started
+
+    def observe_progress(idle_deadline: float) -> float:
+        nonlocal last_progress_key, last_progress_log, last_stage
+        if progress_path is None:
+            return idle_deadline
+        progress = _target_progress(progress_path, token)
+        if progress is None:
+            return idle_deadline
+        key = (str(progress["stage"]), int(progress["sequence"]))
+        now = time.monotonic()
+        if key != last_progress_key:
+            idle_deadline = now + admission_timeout_seconds
+            last_progress_key = key
+        stage = str(progress["stage"])
+        if stage != last_stage:
+            last_stage = stage
+            last_progress_log = now
+            print(
+                f"[upgrade] DroppedNeedle startup: {stage.replace('_', ' ')}.",
+                flush=True,
+            )
+        elif now - last_progress_log >= _ADMISSION_PROGRESS_LOG_INTERVAL_SECONDS:
+            last_progress_log = now
+            print(
+                "[upgrade] DroppedNeedle startup is still working: "
+                f"{stage.replace('_', ' ')} "
+                f"({time.monotonic() - startup_started:,.0f}s elapsed).",
+                flush=True,
+            )
+        return idle_deadline
+
     try:
         if admission_pending:
             assert validated_path is not None
             assert admitted_path is not None
-            while time.monotonic() < deadline:
+            idle_deadline = time.monotonic() + admission_timeout_seconds
+            while True:
                 if process.poll() is not None:
                     admission_error = "TargetProcessExited"
                     break
+                idle_deadline = observe_progress(idle_deadline)
                 if _target_validation_complete(validated_path, token):
                     try:
                         _complete_target_admission(settings)
@@ -907,44 +1098,126 @@ def run_target_supervisor(
                         )
                     except (OSError, AutomaticUpgradeError):
                         admission_error = "TargetAdmissionWriteError"
+                        admission_state = _read_state(
+                            settings.cache_dir
+                            / f"automatic-upgrade-{UPGRADE_ID}.json"
+                        )
+                        promotion_committed = (
+                            admission_state is not None
+                            and admission_state.get("stage") == "completed"
+                        )
                         break
                     target_released = True
                     break
+                now = time.monotonic()
+                if now >= hard_deadline:
+                    admission_error = "TargetStartupHardTimeout"
+                    break
+                if now >= idle_deadline:
+                    admission_error = "TargetStartupTimeout"
+                    break
                 time.sleep(0.05)
-            else:
-                admission_error = "TargetStartupTimeout"
 
         if promotion_committed and not target_released:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=10)
+            _terminate_target_process(process)
+            _record_post_admission_startup_failure(
+                settings,
+                error_type=admission_error,
+                last_stage=last_stage,
+                startup_started=startup_started,
+                returncode=process.returncode,
+            )
             print(
-                "[upgrade] ERROR: The upgraded library is safe, but DroppedNeedle "
-                "could not continue startup. Restart with a corrected image.",
+                "[upgrade] ERROR: The library upgrade was installed, but DroppedNeedle "
+                "could not continue startup. Restart DroppedNeedle. If the problem "
+                "repeats, install a newer image.",
                 flush=True,
             )
             return 1
 
         if promotion_committed:
-            while process.poll() is None and time.monotonic() < deadline:
+            readiness_idle_deadline = time.monotonic() + admission_timeout_seconds
+            target_became_ready = False
+            while process.poll() is None:
+                readiness_idle_deadline = observe_progress(readiness_idle_deadline)
                 if _target_ready(port):
+                    target_became_ready = True
+                    _clear_post_admission_startup_failure(settings)
+                    if progress_path is not None:
+                        progress_path.unlink(missing_ok=True)
                     print(
                         "[upgrade] Library upgrade complete. DroppedNeedle is ready.",
                         flush=True,
                     )
                     break
+                now = time.monotonic()
+                hard_timeout = now >= hard_deadline
+                idle_timeout = (
+                    progress_path is not None and now >= readiness_idle_deadline
+                )
+                if hard_timeout or idle_timeout:
+                    error_type = (
+                        "TargetStartupHardTimeout"
+                        if hard_timeout
+                        else "TargetReadinessTimeout"
+                    )
+                    _terminate_target_process(process)
+                    _record_post_admission_startup_failure(
+                        settings,
+                        error_type=error_type,
+                        last_stage=last_stage,
+                        startup_started=startup_started,
+                        returncode=process.returncode,
+                    )
+                    if hard_timeout:
+                        print(
+                            "[upgrade] ERROR: The library upgrade was installed, but "
+                            "DroppedNeedle startup exceeded the safety time limit during "
+                            f"{last_stage.replace('_', ' ')}. Restart DroppedNeedle. If "
+                            "the problem repeats, install a newer image.",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "[upgrade] ERROR: The library upgrade was installed, but "
+                            "DroppedNeedle stopped making startup progress during "
+                            f"{last_stage.replace('_', ' ')}. Restart DroppedNeedle. If "
+                            "the problem repeats, install a newer image.",
+                            flush=True,
+                        )
+                    return 1
                 time.sleep(0.25)
-            return process.wait()
+            exit_code = process.wait()
+            if target_became_ready or forwarded_signal is not None:
+                return exit_code
+            _record_post_admission_startup_failure(
+                settings,
+                error_type="TargetProcessExitedBeforeReadiness",
+                last_stage=last_stage,
+                startup_started=startup_started,
+                returncode=exit_code,
+            )
+            print(
+                "[upgrade] ERROR: DroppedNeedle exited before it was ready "
+                f"during {last_stage.replace('_', ' ')} (exit code {exit_code}).",
+                flush=True,
+            )
+            return exit_code or 1
 
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        _terminate_target_process(process)
         try:
-            _restore_after_target_startup_failure(settings, error_type=admission_error)
+            elapsed_seconds = round(time.monotonic() - startup_started, 3)
+            failure_evidence: dict[str, Any] = {
+                "last_stage": last_stage,
+                "elapsed_seconds": elapsed_seconds,
+            }
+            if process.returncode is not None:
+                failure_evidence["returncode"] = process.returncode
+            _restore_after_target_startup_failure(
+                settings,
+                error_type=admission_error,
+                failure_evidence=failure_evidence,
+            )
         except (OSError, sqlite3.Error, AutomaticUpgradeError):
             logger.critical("automatic_upgrade.target_start_restore_failed")
             print(
@@ -955,8 +1228,10 @@ def run_target_supervisor(
             return 1
         if forwarded_signal is None:
             print(
-                "[upgrade] ERROR: Target startup failed. DroppedNeedle restored the "
-                "previous database and settings.",
+                "[upgrade] ERROR: DroppedNeedle startup failed during "
+                f"{last_stage.replace('_', ' ')} ({admission_error}) after "
+                f"{time.monotonic() - startup_started:,.0f}s. The previous database "
+                "and settings were restored.",
                 flush=True,
             )
         return process.returncode or 1
@@ -965,6 +1240,8 @@ def run_target_supervisor(
             validated_path.unlink(missing_ok=True)
         if admitted_path is not None:
             admitted_path.unlink(missing_ok=True)
+        if progress_path is not None:
+            progress_path.unlink(missing_ok=True)
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 

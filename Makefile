@@ -96,6 +96,8 @@ NPM    ?= pnpm
 	feedback-fixes-benchmark \
 	feedback-fixes-root-mapping \
 	feedback-fixes-migration-rehearsal \
+	feedback-fixes-million-validation-rehearsal \
+	feedback-fixes-million-maintenance-rehearsal \
 	feedback-fixes-maintenance-rehearsal \
 	feedback-fixes-cli-rehearsal \
 	feedback-fixes-automatic-upgrade-rehearsal \
@@ -569,6 +571,19 @@ feedback-fixes-root-mapping: $(BACKEND_VENV_STAMP) ## Rehearse typed-root migrat
 feedback-fixes-migration-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse target import against a generated coherent copy
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_migration_rehearsal \
 		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-migration-latest.json"
+
+feedback-fixes-million-validation-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse cutover and startup validation with one million tracks and reviews
+	mkdir -p "$(ROOT_DIR)/.dev-notes/tmp"
+	cd "$(BACKEND_DIR)" && TMPDIR="$(ROOT_DIR)/.dev-notes/tmp" .venv/bin/python -m tests.benchmarks.feedback_fixes_million_validation_rehearsal \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-million-validation-latest.json"
+
+feedback-fixes-million-maintenance-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse the full closed-source migration with one million files
+	mkdir -p "$(ROOT_DIR)/.dev-notes/tmp"
+	cd "$(BACKEND_DIR)" && TMPDIR="$(ROOT_DIR)/.dev-notes/tmp" .venv/bin/python -m tests.benchmarks.feedback_fixes_maintenance_rehearsal \
+		--source-commit "$$(git -C "$(ROOT_DIR)" rev-parse HEAD)" \
+		--file-count 1000000 \
+		--managed-asset-bytes 134217728 \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-million-maintenance-latest.json"
 
 feedback-fixes-maintenance-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse closed-source manifest, target startup, and full rollback in scratch
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_maintenance_rehearsal \

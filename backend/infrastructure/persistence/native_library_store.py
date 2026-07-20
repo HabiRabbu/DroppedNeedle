@@ -12497,10 +12497,9 @@ class NativeLibraryStore(PersistenceBase):
     async def validate_catalog_integrity(self) -> dict[str, int]:
         return await self._read(self._catalog_integrity_counts)
 
-    async def validate_migrated_catalog(self) -> dict[str, int]:
-        def operation(connection: sqlite3.Connection) -> dict[str, int]:
-            invariants = self._catalog_integrity_counts(connection)
-            unresolved_references = int(
+    async def validate_migration_references(self) -> int:
+        def operation(connection: sqlite3.Connection) -> int:
+            return int(
                 connection.execute(
                     "SELECT COUNT(*) FROM library_migration_provenance p WHERE NOT ("
                     "CASE p.target_kind "
@@ -12551,7 +12550,10 @@ class NativeLibraryStore(PersistenceBase):
                     "WHEN 'compat_play_queue' THEN p.source_key = p.target_id "
                     "WHEN 'compat_play_queue_item' THEN EXISTS ("
                     "SELECT 1 FROM library_compat_play_queue_items i "
-                    "WHERE i.user_id || ':' || i.item_index = p.source_key "
+                    "WHERE i.user_id = SUBSTR(p.source_key, 1, INSTR(p.source_key, ':') - 1) "
+                    "AND i.item_index = CAST(SUBSTR("
+                    "p.source_key, INSTR(p.source_key, ':') + 1) AS INTEGER) "
+                    "AND p.source_key = i.user_id || ':' || i.item_index "
                     "AND i.local_track_id = p.target_id) "
                     "WHEN 'jellyfin_id_map' THEN EXISTS ("
                     "SELECT 1 FROM library_compat_id_map m WHERE m.jf_id = p.source_key "
@@ -12580,9 +12582,13 @@ class NativeLibraryStore(PersistenceBase):
                     "WHEN 'subsonic_id' THEN 1 ELSE 0 END)"
                 ).fetchone()[0]
             )
-            return {**invariants, "unresolved_references": unresolved_references}
 
         return await self._read(operation)
+
+    async def validate_migrated_catalog(self) -> dict[str, int]:
+        invariants = await self.validate_catalog_integrity()
+        unresolved_references = await self.validate_migration_references()
+        return {**invariants, "unresolved_references": unresolved_references}
 
     async def get_target_startup_state(self) -> dict[str, Any]:
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:

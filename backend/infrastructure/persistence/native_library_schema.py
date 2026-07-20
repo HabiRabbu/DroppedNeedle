@@ -884,6 +884,7 @@ CREATE INDEX IF NOT EXISTS idx_library_reviews_created_cursor ON library_identif
 CREATE INDEX IF NOT EXISTS idx_library_reviews_state_cursor ON library_identification_reviews(state, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_library_reviews_reason_cursor ON library_identification_reviews(reason_code, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_library_reviews_album ON library_identification_reviews(local_album_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_library_reviews_track_reason ON library_identification_reviews(local_track_id, reason_code);
 CREATE INDEX IF NOT EXISTS idx_operation_jobs_claim ON library_operation_jobs(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_operation_jobs_lease ON library_operation_jobs(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_operation_work_claim ON library_operation_work(job_id, state, ordinal);

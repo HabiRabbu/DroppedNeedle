@@ -397,7 +397,7 @@ def test_target_lifecycle_events_sweep_uses_target_catalog_authority() -> None:
 
 @pytest.mark.parametrize(
     ("admission_token", "expected_phase"),
-    [(None, "steady_state"), ("a" * 32, "cutover")],
+    [(None, "steady_state"), ("a" * 32, "admission")],
 )
 def test_production_target_lifespan_selects_validation_phase_and_runs_runtime(
     monkeypatch: pytest.MonkeyPatch,
@@ -499,7 +499,7 @@ def test_production_target_lifespan_selects_validation_phase_and_runs_runtime(
     assert lifecycle_order == ["validate", "admit", "migrate", "operational"]
 
 
-def test_production_target_lifespan_rejects_malformed_admission_after_cutover_validation(
+def test_production_target_lifespan_rejects_malformed_admission_before_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import core.config as config_module
@@ -538,7 +538,7 @@ def test_production_target_lifespan_rejects_malformed_admission_after_cutover_va
         with build_test_client(app):
             pass
 
-    validate.assert_awaited_once_with("cutover")
+    validate.assert_not_awaited()
 
 
 def test_target_provider_call_graph_has_no_direct_legacy_catalog_edge() -> None:

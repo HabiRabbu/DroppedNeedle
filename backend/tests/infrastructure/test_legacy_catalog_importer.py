@@ -432,9 +432,11 @@ async def test_target_startup_requires_completed_marker_and_revalidates_after_re
         now=101,
     )
     first_cutover = await TargetStartupValidator(store).validate("cutover")
+    first_admission = await TargetStartupValidator(store).validate("admission")
     first_steady = await TargetStartupValidator(store).validate("steady_state")
     reopened = NativeLibraryStore(target, threading.Lock())
     second_cutover = await TargetStartupValidator(reopened).validate("cutover")
+    second_admission = await TargetStartupValidator(reopened).validate("admission")
     second_steady = await TargetStartupValidator(reopened).validate("steady_state")
 
     assert (
@@ -449,19 +451,28 @@ async def test_target_startup_requires_completed_marker_and_revalidates_after_re
         }
     )
     assert (
-        first_steady["invariants"]
-        == second_steady["invariants"]
+        first_admission["invariants"]
+        == second_admission["invariants"]
         == {
             "foreign_key_violations": 0,
             "orphan_tracks": 0,
             "duplicate_paths": 0,
             "unresolved_provenance": 0,
+            "unresolved_references": 0,
         }
     )
+    assert first_steady["invariants"] == second_steady["invariants"] == {
+        "foreign_key_violations": 0,
+        "orphan_tracks": 0,
+        "duplicate_paths": 0,
+        "unresolved_provenance": 0,
+    }
 
     await reopened.remove_target_favorite("alice", "track", TRACK_1)
 
     assert (await reopened.validate_migrated_catalog())["unresolved_references"] == 1
+    with pytest.raises(TargetStartupInvariantError, match="integrity validation"):
+        await TargetStartupValidator(reopened).validate("admission")
     caplog.clear()
     caplog.set_level(logging.ERROR, logger="services.native.target_startup_validator")
     with pytest.raises(TargetStartupInvariantError) as error:
@@ -494,6 +505,8 @@ async def test_steady_startup_accepts_post_admission_root_changes(
 
     with pytest.raises(TargetStartupInvariantError, match="configured library roots"):
         await validator.validate("cutover")
+    with pytest.raises(TargetStartupInvariantError, match="configured library roots"):
+        await validator.validate("admission")
 
 
 def _allow_duplicate_local_track_paths(database: Path) -> None:

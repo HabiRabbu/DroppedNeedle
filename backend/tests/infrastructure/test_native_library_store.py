@@ -1468,6 +1468,18 @@ async def test_migration_provenance_repeats_and_refuses_changed_sources(
             "SELECT * FROM local_tracks WHERE genre_folded = ? AND availability = ?",
             "idx_local_tracks_genre_artwork",
         ),
+        (
+            "SELECT 1 FROM library_identification_reviews "
+            "WHERE local_track_id = ? AND reason_code LIKE 'legacy_%'",
+            "idx_library_reviews_track_reason",
+        ),
+        (
+            "SELECT 1 FROM library_compat_play_queue_items "
+            "WHERE user_id = SUBSTR(?, 1, INSTR(?, ':') - 1) "
+            "AND item_index = CAST(SUBSTR(?, INSTR(?, ':') + 1) AS INTEGER) "
+            "AND ? = user_id || ':' || item_index AND local_track_id = ?",
+            "sqlite_autoindex_library_compat_play_queue_items_1",
+        ),
     ],
 )
 async def test_named_query_shapes_use_expected_indexes(
