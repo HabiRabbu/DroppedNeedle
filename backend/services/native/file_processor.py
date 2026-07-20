@@ -65,8 +65,8 @@ SOURCE_FILE_MISSING = "downloaded file not found on the downloads mount"
 
 # Manifest credits that claim Various Artists: re-resolved (like an empty credit)
 # against the release group's own MB credit before tagging/pathing, so VA is
-# reserved for release groups actually credited to VA (2026-07-19 incident: empty
-# credits filed 197 single-artist albums under /Various Artists/).
+# reserved for release groups actually credited to VA. Treating an empty credit as
+# VA would misfile single-artist albums under /Various Artists/.
 _VA_CREDIT_NAMES = frozenset({"various artists", "various", "va"})
 
 

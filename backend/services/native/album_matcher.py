@@ -53,8 +53,8 @@ _TRACK_SAMPLE = 4
 
 _VA_MBID = "89ad4ac3-39f7-470e-963a-56509c546377"
 # Credit names that mean Various Artists. Deliberately no "": an empty credit is
-# an unknown identity, not a VA claim - treating it as VA filed 197 single-artist
-# albums under /Various Artists/ (2026-07-19 incident).
+# an unknown identity, not a VA claim - treating it as VA misfiles single-artist
+# albums under /Various Artists/.
 _VA_NAMES = {"various artists", "various", "va"}
 
 _NON_ALNUM = re.compile(r"[\W_]+", re.UNICODE)
