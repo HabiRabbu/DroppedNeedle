@@ -62,5 +62,12 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements-dev.txt
 
+      # The maintenance tests (tests/infrastructure/test_feedback_fixes_maintenance.py,
+      # test_maintenance_manifest.py) assume a deploy-style checkout: an untracked
+      # docker-compose.yml at the repo root, which also leaves the worktree dirty.
+      - name: Provide untracked docker-compose.yml for maintenance tests
+        working-directory: .
+        run: cp docker-compose.example.yml docker-compose.yml
+
       - name: Run tests
         run: python -m pytest

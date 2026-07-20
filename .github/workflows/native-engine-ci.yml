@@ -48,6 +48,12 @@ jobs:
           pip install ruff==0.6.9
           ruff check backend
 
+      # The maintenance tests (tests/infrastructure/test_feedback_fixes_maintenance.py,
+      # test_maintenance_manifest.py) assume a deploy-style checkout: an untracked
+      # docker-compose.yml at the repo root, which also leaves the worktree dirty.
+      - name: Provide untracked docker-compose.yml for maintenance tests
+        run: cp docker-compose.example.yml docker-compose.yml
+
       - name: Backend unit + integration tests
         working-directory: ./backend
         run: python -m pytest
