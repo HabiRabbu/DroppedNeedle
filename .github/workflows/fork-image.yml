@@ -34,9 +34,9 @@ jobs:
           cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r backend/requirements-dev.txt
       - run: ruff check backend
-      # The maintenance tests assume a deploy-style checkout: an untracked
-      # docker-compose.yml at the repo root, which also leaves the worktree dirty.
-      - run: cp docker-compose.example.yml docker-compose.yml
+      # The maintenance tests assume a deploy-style checkout: a repo-root
+      # docker-compose.yml (gitignored) plus a dirty worktree (the marker file).
+      - run: cp docker-compose.example.yml docker-compose.yml && touch .ci-dirty-worktree-marker
       - run: python -m pytest backend/tests
 
   frontend:
