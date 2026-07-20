@@ -195,6 +195,10 @@ class AlbumService:
 
         disk_data = await self._disk_cache.get_album(release_group_id)
         if disk_data:
+            # Legacy library payloads omit the release behind their tracklist.
+            if disk_data.get("in_library") and "selected_release_mbid" not in disk_data:
+                await self._disk_cache.delete_album(release_group_id)
+                return None
             album_info = msgspec.convert(disk_data, AlbumInfo, strict=False)
             advanced_settings = self._preferences_service.get_advanced_settings()
             ttl = (
@@ -442,6 +446,7 @@ class AlbumService:
                     label=cached_album_info.label,
                     barcode=cached_album_info.barcode,
                     country=cached_album_info.country,
+                    selected_release_mbid=cached_album_info.selected_release_mbid,
                 )
 
             release_group = await self._fetch_release_group(
@@ -456,17 +461,15 @@ class AlbumService:
             total_length = 0
             release_data = None
 
-            candidate_ids = [r.get("id") for r in ranked_releases[:3] if r.get("id")]
-            # Prefer the edition the library's files belong to, so an owned album shows
-            # what's on disc rather than a larger ranked release. Keyed on the canonical
-            # RG id - a release-MBID alias (#78) stores files under the real one.
             canonical_rg_id = release_group.get("id") or release_group_id
-            owned_release_id = await self._owned_release_id(canonical_rg_id)
-            if owned_release_id:
-                candidate_ids = [
-                    owned_release_id,
-                    *(cid for cid in candidate_ids if cid != owned_release_id),
-                ]
+            selected_release_id, _owned, _pinned = await self._effective_release_id(
+                canonical_rg_id, release_group
+            )
+            ranked_ids = [r.get("id") for r in ranked_releases[:3] if r.get("id")]
+            candidate_ids = list(
+                dict.fromkeys(rid for rid in (selected_release_id, *ranked_ids) if rid)
+            )
+            resolved_release_id = None
             if candidate_ids:
                 release_results = await asyncio.gather(
                     *(
@@ -482,7 +485,7 @@ class AlbumService:
                     logger.warning(
                         f"Album {release_group_id[:8]}: {len(failures)}/{len(candidate_ids)} release fetches failed"
                     )
-                for result in release_results:
+                for candidate_id, result in zip(candidate_ids, release_results):
                     if isinstance(result, Exception) or not result:
                         continue
                     found_tracks, found_length = extract_tracks(result)
@@ -490,6 +493,7 @@ class AlbumService:
                         tracks = found_tracks
                         total_length = found_length
                         release_data = result
+                        resolved_release_id = candidate_id
                         break
 
             if not release_data:
@@ -504,6 +508,7 @@ class AlbumService:
                 label=label,
                 barcode=release_data.get("barcode"),
                 country=release_data.get("country"),
+                selected_release_mbid=resolved_release_id,
             )
 
         except ValueError:
@@ -557,7 +562,7 @@ class AlbumService:
         release_group_id: str,
         priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> dict:
-        includes = ["artists", "releases", "tags"]
+        includes = ["artists", "releases", "media", "tags"]
         rg_result = await self._mb_repo.get_release_group_by_id(
             release_group_id,
             includes=includes,
@@ -609,58 +614,124 @@ class AlbumService:
             )
         )
 
-    async def _owned_release_id(self, release_group_id: str) -> str | None:
-        """The release edition the album page follows: the admin/trusted PIN when one
-        is set (Feature E, D16), else the edition the library's files belong to (an
-        owned album shows what's on disc rather than the top-ranked release).
-        ``None`` when neither exists: fall back to ranking. A pinned release that has
-        vanished from MusicBrainz fails open downstream - the pinned id simply fails
-        its fetch and the ranked candidates take over."""
-        pinned = await self._pinned_release_id(release_group_id)
-        if pinned:
-            return pinned
-        try:
-            return await self._library_db.get_album_release_mbid(release_group_id)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Owned-release lookup failed for %s: %s", release_group_id[:8], e
+    async def _library_edition_evidence(
+        self, release_group_id: str
+    ) -> tuple[str | None, int | None]:
+        """Return stored edition and file count only when one local album is active.
+
+        A provider group can map to preserved duplicates. Never combine active albums;
+        empty historical albums contribute no rows.
+        """
+        rows = await self._library_db.get_library_files_for_album(release_group_id)
+
+        if not rows:
+            return None, None
+
+        local_album_ids = {
+            str(
+                row.get("local_album_id")
+                or row.get("release_group_mbid")
+                or release_group_id
             )
-            return None
+            for row in rows
+        }
+        if len(local_album_ids) != 1:
+            return None, None
+
+        release_counts: dict[str, int] = {}
+        for row in rows:
+            value = row.get("provider_release_mbid") or row.get("release_mbid")
+            if value:
+                release_mbid = str(value)
+                release_counts[release_mbid] = release_counts.get(release_mbid, 0) + 1
+        owned = (
+            min(release_counts, key=lambda value: (-release_counts[value], value))
+            if release_counts
+            else None
+        )
+        return owned, len(rows)
+
+    @staticmethod
+    def _closest_release_id(ranked_releases: list[dict], file_count: int) -> str | None:
+        """Choose the closest known MusicBrainz media count, preserving rank on ties.
+
+        Live-verified against MusicBrainz on 2026-07-20 with Avalon release group
+        4b6276da-e7c7-36df-8771-34b92f774d3b: each release has a ``media`` array whose
+        entries expose the hyphenated integer ``track-count`` field (11, 20, and 11).
+        """
+        counted: list[tuple[int, int, str]] = []
+        for rank, release in enumerate(ranked_releases):
+            release_id = release.get("id")
+            if not release_id:
+                continue
+            try:
+                track_count = sum(
+                    int(medium.get("track-count") or 0)
+                    for medium in (release.get("media") or [])
+                )
+            except (TypeError, ValueError):
+                continue
+            if track_count > 0:
+                counted.append((abs(track_count - file_count), rank, str(release_id)))
+        return min(counted)[2] if counted else None
+
+    async def _effective_release_id(
+        self, release_group_id: str, release_group: dict
+    ) -> tuple[str | None, str | None, str | None]:
+        """Resolve selected, owned, and pinned release IDs.
+
+        Precedence is a valid manual pin, explicit stored album identity, the closest
+        media count for one active local album, then the existing release ranking.
+        Inferred choices never become owned identification evidence.
+        """
+        releases = release_group.get("releases") or release_group.get(
+            "release-list", []
+        )
+        release_ids = {str(release["id"]) for release in releases if release.get("id")}
+        ranked_releases = get_ranked_releases(release_group)
+        ranked_ids = [
+            str(release["id"]) for release in ranked_releases if release.get("id")
+        ]
+
+        pinned = await self._pinned_release_id(release_group_id)
+        owned, file_count = await self._library_edition_evidence(release_group_id)
+
+        if pinned in release_ids:
+            return pinned, owned, pinned
+        if owned in release_ids:
+            return owned, owned, pinned
+        if file_count is not None:
+            inferred = self._closest_release_id(ranked_releases, file_count)
+            if inferred:
+                return inferred, owned, pinned
+        return (ranked_ids[0] if ranked_ids else None), owned, pinned
 
     async def _pinned_release_id(self, release_group_id: str) -> str | None:
         if self._release_pins is None:
             return None
-        try:
-            return await self._release_pins.get(release_group_id)
-        except Exception as e:  # noqa: BLE001 - a pin lookup failure must never break the page
-            logger.warning(
-                "Edition-pin lookup failed for %s: %s", release_group_id[:8], e
-            )
-            return None
+        return await self._release_pins.get(release_group_id)
 
     async def resolve_edition(self, release_group_id: str) -> str | None:
-        """The edition acquisition should target: pin first, else owned (public
-        wrapper for the download layer's 'acquire this edition')."""
-        release_group_id = await self._provider_album_id(release_group_id)
-        return await self._owned_release_id(release_group_id)
-
-    async def list_editions(self, release_group_id: str) -> dict:
-        """All of a release group's editions for the picker (Feature E §1), flagged
-        with which one is owned (mode-over-files) and which is pinned."""
         release_group_id = await self._provider_album_id(release_group_id)
         release_group_id = validate_mbid(release_group_id, "album")
-        # a dedicated fetch: the shared _fetch_release_group omits the "media"
-        # include, and the picker needs per-release track counts
-        release_group = await self._mb_repo.get_release_group_by_id(
-            release_group_id, includes=["releases", "media"]
+        release_group = await self._fetch_release_group(release_group_id)
+        canonical_id = str(release_group.get("id") or release_group_id)
+        selected, _owned, _pinned = await self._effective_release_id(
+            canonical_id, release_group
         )
-        if not release_group:
-            raise ResourceNotFoundError(f"Release group {release_group_id} not found")
+        return selected
+
+    async def list_editions(self, release_group_id: str) -> dict:
+        release_group_id = await self._provider_album_id(release_group_id)
+        release_group_id = validate_mbid(release_group_id, "album")
+        release_group = await self._fetch_release_group(release_group_id)
+        canonical_id = str(release_group.get("id") or release_group_id)
         releases = release_group.get("releases") or release_group.get(
             "release-list", []
         )
-        owned = await self._library_db.get_album_release_mbid(release_group_id)
-        pinned = await self._pinned_release_id(release_group_id)
+        selected, owned, pinned = await self._effective_release_id(
+            canonical_id, release_group
+        )
         items = []
         for rel in releases:
             rel_id = rel.get("id")
@@ -687,6 +758,7 @@ class AlbumService:
             "items": items,
             "pinned_release_mbid": pinned,
             "owned_release_mbid": owned,
+            "selected_release_mbid": selected,
         }
 
     async def _bust_album_caches(self, release_group_id: str) -> None:
@@ -776,19 +848,18 @@ class AlbumService:
             release_group, canonical_rg_id, artist_name, artist_id, in_library
         )
 
-        # An owned album shows the edition its files belong to (what's on disc); only fall
-        # back to the top-ranked release, which is often a larger deluxe/multi-disc variant.
-        owned_release_id = (
-            await self._owned_release_id(canonical_rg_id) if has_files else None
+        selected_release_id, _owned, _pinned = await self._effective_release_id(
+            canonical_rg_id, release_group
         )
         primary_id = primary_release.get("id") if primary_release else None
         for release_id in dict.fromkeys(
-            rid for rid in (owned_release_id, primary_id) if rid
+            rid for rid in (selected_release_id, primary_id) if rid
         ):
             await self._enrich_with_release_details(
                 basic_info, release_id, priority=priority
             )
             if basic_info.tracks:
+                basic_info.selected_release_mbid = release_id
                 break
 
         return basic_info

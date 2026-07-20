@@ -42,6 +42,7 @@ from models.local_catalog import (
     LocalArtistCredit,
     LocalTrack,
 )
+from services.album_service import AlbumService
 from services.compat.favorites_service import FavoritesService
 from services.compat.id_map_service import CompatIdMapService
 from services.compat.target_library_view_service import TargetLibraryViewService
@@ -63,6 +64,7 @@ from infrastructure.audio.tagger import AudioTagger
 from repositories.coverart_disk_cache import get_cache_filename
 from models.audio import AudioTag
 from services.native.target_reference_adapters import (
+    TargetAlbumReleasePinStore,
     TargetCompatIdMapStore,
     TargetFavoritesStore,
     TargetPlayHistoryStore,
@@ -313,6 +315,93 @@ async def test_target_repository_resolves_active_provider_and_local_album_ids(
         == LOCAL_ALBUM_ID
     )
     assert await repository.resolve_library_album_identifier("missing") is None
+
+
+@pytest.mark.asyncio
+async def test_album_service_selects_by_active_target_album_file_count(
+    target_services,
+) -> None:
+    store, _view, _favorites, _history, root = target_services
+    release_group_mbid = "70000000-0000-4000-8000-000000000001"
+    release_11 = "71000000-0000-4000-8000-000000000001"
+    release_20 = "72000000-0000-4000-8000-000000000001"
+    active_album_id = "10000000-0000-4000-8000-000000000091"
+    historical_album_id = "10000000-0000-4000-8000-000000000092"
+    active = _membership(
+        album_id=active_album_id,
+        track_id="20000000-0000-4000-8000-000000000091",
+        artist_id="30000000-0000-4000-8000-000000000091",
+        root=root,
+        title="Avalon Active",
+    )
+    active.tracks[0].track_number = 1
+    template = active.tracks[0]
+    for position in range(2, 21):
+        track_id = f"29000000-0000-4000-8000-{position:012d}"
+        path = root / f"{track_id}.flac"
+        path.write_bytes(b"fLaC" + b"\0" * 64)
+        track = msgspec.structs.replace(
+            template,
+            id=track_id,
+            file_path=str(path),
+            relative_path=path.name,
+            path_hash=f"hash:{track_id}",
+            stat_revision=f"stat:{track_id}",
+            title=f"Avalon Track {position}",
+            track_number=position,
+        )
+        active.tracks.append(track)
+        active.track_credits[track_id] = list(active.track_credits[template.id])
+    historical = _membership(
+        album_id=historical_album_id,
+        track_id="20000000-0000-4000-8000-000000000092",
+        artist_id="30000000-0000-4000-8000-000000000092",
+        root=root,
+        title="Avalon History",
+    )
+    historical.tracks = []
+    historical.track_credits = {}
+    await store.create_catalog_membership(active)
+    await store.create_catalog_membership(historical)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.executemany(
+            "INSERT INTO local_album_external_identities "
+            "(local_album_id, provider, release_group_mbid, decision_source, selected_at) "
+            "VALUES (?, 'musicbrainz', ?, 'manual', 3)",
+            [
+                (active_album_id, release_group_mbid),
+                (historical_album_id, release_group_mbid),
+            ],
+        )
+
+    service = object.__new__(AlbumService)
+    service._library_db = TargetLibraryRepository(store)
+    service._release_pins = TargetAlbumReleasePinStore(store)
+    payload = {
+        "id": release_group_mbid,
+        "releases": [
+            {
+                "id": release_11,
+                "status": "Official",
+                "country": "XW",
+                "media": [{"track-count": 11}],
+            },
+            {
+                "id": release_20,
+                "status": "Official",
+                "country": "US",
+                "media": [{"track-count": 20}],
+            },
+        ],
+    }
+
+    selected, owned, pinned = await service._effective_release_id(
+        release_group_mbid, payload
+    )
+
+    assert selected == release_20
+    assert owned is None
+    assert pinned is None
 
 
 @pytest.mark.asyncio

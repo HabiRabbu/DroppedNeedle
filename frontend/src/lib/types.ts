@@ -34,6 +34,7 @@ export type Album = {
 	track_count?: number | null;
 	listen_count?: number | null;
 	score?: number;
+	selected_release_mbid?: string | null;
 };
 
 export type SuggestResult = {
@@ -188,6 +189,7 @@ export type AlbumTracksInfo = {
 	label?: string | null;
 	barcode?: string | null;
 	country?: string | null;
+	selected_release_mbid?: string | null;
 };
 
 export type JellyfinConnectionSettings = {
@@ -1641,6 +1643,7 @@ export interface AlbumEditionsResponse {
 	items: AlbumEditionItem[];
 	pinned_release_mbid: string | null;
 	owned_release_mbid: string | null;
+	selected_release_mbid: string | null;
 }
 
 export interface EditionAcquireResponse {

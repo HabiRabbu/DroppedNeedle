@@ -6,11 +6,12 @@ and the 'acquire this edition' fill/upgrade fan-out with edition scoping.
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.exceptions import ResourceNotFoundError, ValidationError
+from core.exceptions import ConflictError, ResourceNotFoundError, ValidationError
 from infrastructure.persistence.album_release_pin_store import AlbumReleasePinStore
 from infrastructure.persistence.library_db import LibraryDB
 from models.album import Track
@@ -58,7 +59,9 @@ def _make_album_service(tmp_path: Path):
     mb_repo = MagicMock()
     mb_repo.get_release_group_by_id = AsyncMock(return_value=_rg_payload())
     memory_cache = AsyncMock()
+    memory_cache.get.return_value = None
     disk_cache = AsyncMock()
+    disk_cache.get_album.return_value = None
     service = AlbumService(
         MagicMock(), mb_repo, library_db, memory_cache, disk_cache,
         MagicMock(), None, None, release_pin_store=pins,
@@ -97,19 +100,216 @@ async def test_editions_enumerator_flags_owned_and_pinned(tmp_path: Path):
     assert by_id[REL_DELUXE]["disambiguation"] == "deluxe"
     assert data["pinned_release_mbid"] == REL_DELUXE
     assert data["owned_release_mbid"] == REL_STD
+    assert data["selected_release_mbid"] == REL_DELUXE
 
 
 @pytest.mark.asyncio
 async def test_pin_overrides_owned_and_clearing_reverts(tmp_path: Path):
     service, library_db, pins, *_ = _make_album_service(tmp_path)
     await _seed_owned_file(library_db)
-    assert await service._owned_release_id(RG) == REL_STD  # mode-over-files
+    assert (await service._effective_release_id(RG, _rg_payload()))[0] == REL_STD
 
     await pins.set(RG, REL_DELUXE)
-    assert await service._owned_release_id(RG) == REL_DELUXE  # pin wins
+    assert (await service._effective_release_id(RG, _rg_payload()))[0] == REL_DELUXE
 
     await pins.clear(RG)
-    assert await service._owned_release_id(RG) == REL_STD  # reverts to auto
+    assert (await service._effective_release_id(RG, _rg_payload()))[0] == REL_STD
+
+
+REL_AUTO_11 = "44444444-4444-4444-8444-444444444444"
+REL_AUTO_20 = "55555555-5555-4555-8555-555555555555"
+REL_AUTO_OTHER_11 = "66666666-6666-4666-8666-666666666666"
+
+
+def _avalon_payload() -> dict:
+    return {
+        "id": RG,
+        "title": "Avalon",
+        "first-release-date": "2008-08-04",
+        "artist-credit": [],
+        "releases": [
+            {
+                "id": REL_AUTO_11,
+                "status": "Official",
+                "country": "XW",
+                "date": "2008-08-04",
+                "media": [{"track-count": 11}],
+            },
+            {
+                "id": REL_AUTO_20,
+                "status": "Official",
+                "country": "US",
+                "date": "2008-08-05",
+                "media": [{"track-count": 20}],
+            },
+            {
+                "id": REL_AUTO_OTHER_11,
+                "status": "Official",
+                "country": "US",
+                "date": "2008-08-05",
+                "media": [{"track-count": 11}],
+            },
+        ],
+    }
+
+
+def _release_payload(release_id: str, track_count: int) -> dict:
+    return {
+        "id": release_id,
+        "media": [
+            {
+                "position": 1,
+                "tracks": [
+                    {
+                        "position": position,
+                        "recording": {
+                            "id": f"recording-{position}",
+                            "title": f"Track {position}",
+                        },
+                    }
+                    for position in range(1, track_count + 1)
+                ],
+            }
+        ],
+    }
+
+
+async def _seed_unidentified_files(library_db: LibraryDB, count: int) -> None:
+    for position in range(1, count + 1):
+        await library_db.upsert_library_file(
+            {
+                "release_group_mbid": RG,
+                "release_mbid": None,
+                "track_number": position,
+                "disc_number": 1,
+                "track_title": f"Track {position}",
+                "album_title": "Avalon",
+                "file_path": f"/m/avalon/{position:02d}.flac",
+                "file_size_bytes": 1,
+                "file_mtime": 0.0,
+                "file_format": "flac",
+                "source": "scan",
+                "confidence": 1.0,
+                "is_compilation": 0,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_twenty_unidentified_files_select_twenty_track_edition_everywhere(
+    tmp_path: Path,
+):
+    service, library_db, _pins, *_ = _make_album_service(tmp_path)
+    await _seed_unidentified_files(library_db, 20)
+    service._mb_repo.get_release_group_by_id.return_value = _avalon_payload()
+
+    async def release_by_id(release_id: str, **_kwargs) -> dict:
+        count = 20 if release_id == REL_AUTO_20 else 11
+        return _release_payload(release_id, count)
+
+    service._mb_repo.get_release_by_id = AsyncMock(side_effect=release_by_id)
+    service._apply_audiodb_album_images = AsyncMock(
+        side_effect=lambda info, *_args, **_kwargs: info
+    )
+    service._save_album_to_cache = AsyncMock()
+
+    full = await service.get_album_info(RG)
+    tracks = await service.get_album_tracks_info(RG)
+    editions = await service.list_editions(RG)
+    acquisition_target = await service.resolve_edition(RG)
+
+    assert full.selected_release_mbid == REL_AUTO_20
+    assert full.total_tracks == 20
+    assert tracks.selected_release_mbid == REL_AUTO_20
+    assert tracks.total_tracks == 20
+    assert editions["selected_release_mbid"] == REL_AUTO_20
+    assert editions["owned_release_mbid"] is None
+    assert acquisition_target == REL_AUTO_20
+
+
+@pytest.mark.asyncio
+async def test_effective_selection_precedence_and_pin_clear(tmp_path: Path):
+    service, library_db, pins, *_ = _make_album_service(tmp_path)
+    await _seed_unidentified_files(library_db, 20)
+    payload = _avalon_payload()
+
+    await pins.set(RG, REL_AUTO_OTHER_11)
+    assert (await service._effective_release_id(RG, payload))[0] == REL_AUTO_OTHER_11
+
+    await pins.clear(RG)
+    assert (await service._effective_release_id(RG, payload))[0] == REL_AUTO_20
+
+    rows = await library_db.get_library_files_for_album(RG)
+    for row in rows:
+        row["release_mbid"] = REL_AUTO_11
+    library_db.get_library_files_for_album = AsyncMock(return_value=rows)
+    selected, owned, _pinned = await service._effective_release_id(RG, payload)
+    assert selected == REL_AUTO_11
+    assert owned == REL_AUTO_11
+
+
+@pytest.mark.asyncio
+async def test_effective_selection_falls_back_for_ambiguous_or_missing_evidence(
+    tmp_path: Path,
+):
+    service, _library_db, pins, *_ = _make_album_service(tmp_path)
+    service._library_db.get_library_files_for_album = AsyncMock(
+        return_value=[
+            *({"release_group_mbid": "local-a"} for _ in range(10)),
+            *({"release_group_mbid": "local-b"} for _ in range(10)),
+        ]
+    )
+    await pins.set(RG, "77777777-7777-4777-8777-777777777777")
+
+    selected, owned, pinned = await service._effective_release_id(RG, _avalon_payload())
+
+    assert selected == REL_AUTO_11
+    assert owned is None
+    assert pinned == "77777777-7777-4777-8777-777777777777"
+
+
+@pytest.mark.asyncio
+async def test_effective_selection_propagates_pin_and_library_lookup_failures(
+    tmp_path: Path,
+):
+    service, _library_db, _pins, *_ = _make_album_service(tmp_path)
+    service._release_pins = SimpleNamespace(
+        get=AsyncMock(side_effect=ConflictError("multiple active albums"))
+    )
+
+    with pytest.raises(ConflictError, match="multiple active albums"):
+        await service._effective_release_id(RG, _avalon_payload())
+
+    service._release_pins = None
+    service._library_db.get_library_files_for_album = AsyncMock(
+        side_effect=RuntimeError("library read failed")
+    )
+    with pytest.raises(RuntimeError, match="library read failed"):
+        await service._effective_release_id(RG, _avalon_payload())
+
+
+def test_closest_release_preserves_ranking_on_ties_and_ignores_unknown_counts():
+    ranked = [
+        {"id": "ranked-first", "media": [{"track-count": 11}]},
+        {"id": "ranked-second", "media": [{"track-count": 21}]},
+    ]
+    assert AlbumService._closest_release_id(ranked, 16) == "ranked-first"
+    assert AlbumService._closest_release_id(
+        [{"id": "missing"}, {"id": "invalid", "media": [{"track-count": "?"}]}],
+        16,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_partial_collection_and_no_library_use_expected_fallbacks(tmp_path: Path):
+    service, _library_db, _pins, *_ = _make_album_service(tmp_path)
+    service._library_db.get_library_files_for_album = AsyncMock(
+        return_value=[{"release_group_mbid": "local-a"} for _ in range(18)]
+    )
+    assert (await service._effective_release_id(RG, _avalon_payload()))[0] == REL_AUTO_20
+
+    service._library_db.get_library_files_for_album.return_value = []
+    assert (await service._effective_release_id(RG, _avalon_payload()))[0] == REL_AUTO_11
 
 
 @pytest.mark.asyncio

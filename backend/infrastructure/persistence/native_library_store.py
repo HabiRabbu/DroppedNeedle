@@ -922,16 +922,22 @@ class NativeLibraryStore(PersistenceBase):
         if direct is not None:
             return str(direct["id"])
         matches = connection.execute(
-            "SELECT identity.local_album_id AS id "
+            "SELECT identity.local_album_id AS id, EXISTS("
+            "SELECT 1 FROM local_tracks track "
+            "WHERE track.local_album_id = identity.local_album_id "
+            "AND track.availability = 'indexed') AS has_indexed_tracks "
             "FROM local_album_external_identities identity "
             "JOIN local_albums album ON album.id = identity.local_album_id "
             "WHERE identity.provider = 'musicbrainz' "
             "AND LOWER(identity.release_group_mbid) = LOWER(?) "
             "AND album.retired_into_album_id IS NULL "
-            "ORDER BY identity.local_album_id LIMIT 2",
+            "ORDER BY identity.local_album_id",
             (album_identifier,),
         ).fetchall()
-        if len(matches) > 1:
+        active_matches = [row for row in matches if row["has_indexed_tracks"]]
+        if len(active_matches) == 1:
+            return str(active_matches[0]["id"])
+        if len(active_matches) > 1 or len(matches) > 1:
             raise ConflictError(
                 "This MusicBrainz release group matches multiple local albums; "
                 "select a local edition before changing its release pin."

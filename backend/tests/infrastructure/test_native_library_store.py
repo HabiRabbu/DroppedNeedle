@@ -472,6 +472,29 @@ async def test_target_release_pins_reject_ambiguous_provider_album_identity(
     assert await store.get_target_album_release_pin("album-pin-a") == "release-a"
 
 
+@pytest.mark.asyncio
+async def test_target_release_pins_ignore_empty_historical_provider_match(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await store.create_catalog_membership(_membership("active"))
+    await store.create_catalog_membership(_membership("history", with_track=False))
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            "INSERT INTO local_album_external_identities "
+            "(local_album_id, provider, release_group_mbid, decision_source, selected_at) "
+            "VALUES (?, 'musicbrainz', 'shared-rg', 'manual', 2)",
+            [("album-active",), ("album-history",)],
+        )
+
+    await store.set_target_album_release_pin(
+        "shared-rg", "release-active", "admin", "target-time"
+    )
+
+    assert await store.get_target_album_release_pin("shared-rg") == "release-active"
+    assert await store.clear_target_album_release_pin("shared-rg") is True
+    assert await store.get_target_album_release_pin("shared-rg") is None
+
+
 def test_foreign_keys_checks_and_uniqueness_are_enforced(
     store: NativeLibraryStore, db_path: Path
 ) -> None:
