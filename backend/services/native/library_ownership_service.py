@@ -23,8 +23,11 @@ class AlbumOwnershipProjection(msgspec.Struct, frozen=True):
 
 
 def _fold(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value).casefold().strip()
-    return " ".join(normalized.split())
+    normalized = unicodedata.normalize("NFKD", value.strip())
+    without_marks = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    ).casefold()
+    return " ".join(without_marks.split())
 
 
 class LibraryOwnershipService:
@@ -44,7 +47,14 @@ class LibraryOwnershipService:
         }
 
     async def provider_album_ids(self) -> set[str]:
-        rows = await self._store.target_album_ownership_rows()
+        _revision, values = await self._store.target_provider_album_snapshot()
+        return {value.casefold() for value in values}
+
+    async def existing_provider_album_ids(self, identifiers: list[str]) -> set[str]:
+        normalized = {
+            value.strip().casefold() for value in identifiers if value.strip()
+        }
+        rows = await self._store.target_album_ownership_rows(provider_ids=normalized)
         return {
             str(row["release_group_mbid"]).casefold()
             for row in rows
@@ -52,18 +62,12 @@ class LibraryOwnershipService:
         }
 
     async def provider_album_id(self, identifier: str) -> str:
-        rows = await self._store.target_album_ownership_rows()
-        folded = identifier.casefold()
-        for row in rows:
-            provider_id = row.get("release_group_mbid")
-            if provider_id and str(provider_id).casefold() == folded:
-                return str(provider_id)
         resolved = await self._store.resolve_target_id("album", identifier)
         if resolved is None:
             return identifier
-        row = next((item for item in rows if item["local_album_id"] == resolved), None)
-        if row is not None and row.get("release_group_mbid"):
-            return str(row["release_group_mbid"])
+        provider_id = await self._store.target_album_provider_identity(resolved)
+        if provider_id is not None:
+            return provider_id
         raise ProviderIdentityRequiredError(
             "This album only has local metadata, so it cannot be sent to MusicBrainz "
             "or a download provider."
@@ -100,10 +104,26 @@ class LibraryOwnershipService:
             "or another metadata provider."
         )
 
+    async def provider_artist_owned(self, identifier: str) -> bool:
+        return await self._store.target_has_provider_artist(identifier)
+
     async def project_albums(
         self, candidates: list[AlbumOwnershipCandidate]
     ) -> list[AlbumOwnershipProjection]:
-        rows = await self._store.target_album_ownership_rows()
+        provider_ids = {
+            candidate.release_group_mbid
+            for candidate in candidates
+            if candidate.release_group_mbid
+        }
+        folded_keys = {
+            (_fold(candidate.title), _fold(candidate.album_artist))
+            for candidate in candidates
+            if candidate.title and candidate.album_artist
+        }
+        rows = await self._store.target_album_ownership_rows(
+            provider_ids=provider_ids,
+            folded_keys=folded_keys,
+        )
         by_provider = {
             str(row["release_group_mbid"]).casefold(): str(row["local_album_id"])
             for row in rows
@@ -111,6 +131,8 @@ class LibraryOwnershipService:
         }
         by_key: dict[tuple[str, str], list[dict]] = {}
         for row in rows:
+            if row.get("release_group_mbid"):
+                continue
             title = _fold(str(row.get("title") or ""))
             artist = _fold(str(row.get("album_artist_name") or ""))
             if not title or not artist:

@@ -12,13 +12,16 @@ from core.exceptions import AuthenticationError, RegistrationError
 from infrastructure.persistence.auth_store import AuthStore, TokenRecord, UserRecord
 
 if TYPE_CHECKING:
-    from infrastructure.persistence.discovery_snapshot_store import DiscoverySnapshotStore
+    from infrastructure.persistence.discovery_snapshot_store import (
+        DiscoverySnapshotStore,
+    )
 
 logger = logging.getLogger(__name__)
 
 _PW_KEY = "password_hash"
 _PASSWORD_MAX_BYTES = 72
 PASSWORD_RECOVERY_CODE_TTL_MINUTES = 15
+TOKEN_ACTIVITY_WRITE_INTERVAL_SECONDS = 300
 _RECOVERY_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _RECOVERY_CODE_LENGTH = 20
 
@@ -31,6 +34,7 @@ class AuthService:
     ) -> None:
         self._store = auth_store
         self._discovery_snapshot_store = discovery_snapshot_store
+        self._token_touches_in_flight: set[str] = set()
 
     async def is_setup_required(self) -> bool:
         return not await self._store.has_any_users()
@@ -59,26 +63,26 @@ class AuthService:
 
         try:
             user = await self._store.create_user(
-                id = user_id,
-                display_name = display_name.strip(),
-                role = "admin",
-                email = email,
-                username = username,
-                username_display = username_display,
+                id=user_id,
+                display_name=display_name.strip(),
+                role="admin",
+                email=email,
+                username=username,
+                username_display=username_display,
             )
 
             await self._store.create_auth_provider(
-                id = provider_id,
-                user_id = user_id,
-                provider = "local",
-                provider_uid = username,
-                provider_data = _make_local_data(password),
+                id=provider_id,
+                user_id=user_id,
+                provider="local",
+                provider_uid=username,
+                provider_data=_make_local_data(password),
             )
         except sqlite3.IntegrityError:
             # Unique-index race on username/email between the pre-check and insert.
             raise RegistrationError("Could not create account")
 
-        raw_token = await self._issue_session(user_id, user_agent = user_agent)
+        raw_token = await self._issue_session(user_id, user_agent=user_agent)
         await self._store.update_last_login(user_id)
 
         logger.info(f"First admin account created: {display_name} ({user_id[:8]})")
@@ -110,20 +114,20 @@ class AuthService:
 
         try:
             user = await self._store.create_user(
-                id = user_id,
-                display_name = display_name.strip(),
-                role = role,
-                email = email,
-                username = username,
-                username_display = username_display,
+                id=user_id,
+                display_name=display_name.strip(),
+                role=role,
+                email=email,
+                username=username,
+                username_display=username_display,
             )
 
             await self._store.create_auth_provider(
-                id = provider_id,
-                user_id = user_id,
-                provider = "local",
-                provider_uid = username,
-                provider_data = _make_local_data(password),
+                id=provider_id,
+                user_id=user_id,
+                provider="local",
+                provider_uid=username,
+                provider_data=_make_local_data(password),
             )
         except sqlite3.IntegrityError:
             # Unique-index race on username/email between the pre-check and insert.
@@ -143,7 +147,9 @@ class AuthService:
         username = username.strip().lower()
 
         user = await self._store.get_user_by_username(username)
-        provider = await self._store.get_auth_provider("local", username) if user else None
+        provider = (
+            await self._store.get_auth_provider("local", username) if user else None
+        )
         if user is None or provider is None:
             # Don't reveal whether the username exists (or has a local password).
             _dummy_verify()
@@ -152,7 +158,7 @@ class AuthService:
         if not _verify_password(password, provider.provider_data or ""):
             raise AuthenticationError("Invalid username or password")
 
-        raw_token = await self._issue_session(user.id, user_agent = user_agent)
+        raw_token = await self._issue_session(user.id, user_agent=user_agent)
         await self._store.update_last_login(user.id)
 
         logger.info(f"Local login: {user.display_name} ({user.id[:8]})")
@@ -163,12 +169,12 @@ class AuthService:
         name = (display_name or "").strip()
         if not name:
             raise RegistrationError("Display name cannot be empty")
-        await self._store.update_user_profile(user_id, display_name = name)
+        await self._store.update_user_profile(user_id, display_name=name)
         return await self._require_user(user_id)
 
     async def update_avatar(self, user_id: str, avatar_url: str) -> UserRecord:
         """Persist a user's per-user avatar URL (D9) and return the fresh record."""
-        await self._store.update_user_profile(user_id, avatar_url = avatar_url)
+        await self._store.update_user_profile(user_id, avatar_url=avatar_url)
         return await self._require_user(user_id)
 
     async def update_username(self, user_id: str, new_username: str) -> UserRecord:
@@ -184,7 +190,7 @@ class AuthService:
                 user_id,
                 username,
                 username_display,
-                local_provider_id = local.id if local else None,
+                local_provider_id=local.id if local else None,
             )
         except sqlite3.IntegrityError:
             raise RegistrationError("Username already taken")
@@ -221,7 +227,9 @@ class AuthService:
             provider_data=_make_local_data(new_password),
         )
         if not changed:
-            raise AuthenticationError("Your password changed while this request was running. Try again.")
+            raise AuthenticationError(
+                "Your password changed while this request was running. Try again."
+            )
         return await self._require_user(user_id)
 
     async def set_local_password(self, user_id: str, new_password: str) -> UserRecord:
@@ -232,7 +240,9 @@ class AuthService:
         that already have a local provider - those use change_password instead.
         """
         if await self._local_provider(user_id) is not None:
-            raise RegistrationError("A local password already exists; use change password instead")
+            raise RegistrationError(
+                "A local password already exists; use change password instead"
+            )
         user = await self._require_user(user_id)
         if not user.username:
             raise RegistrationError("Choose a username first")
@@ -240,11 +250,11 @@ class AuthService:
         await _check_hibp(new_password)
         try:
             await self._store.create_auth_provider(
-                id = _new_id(),
-                user_id = user_id,
-                provider = "local",
-                provider_uid = user.username,
-                provider_data = _make_local_data(new_password),
+                id=_new_id(),
+                user_id=user_id,
+                provider="local",
+                provider_uid=user.username,
+                provider_data=_make_local_data(new_password),
             )
         except sqlite3.IntegrityError:
             raise RegistrationError("Could not set a local password")
@@ -263,8 +273,7 @@ class AuthService:
             for _ in range(_RECOVERY_CODE_LENGTH)
         )
         display_code = "-".join(
-            canonical[index : index + 4]
-            for index in range(0, len(canonical), 4)
+            canonical[index : index + 4] for index in range(0, len(canonical), 4)
         )
         expires_at = (
             datetime.now(timezone.utc)
@@ -318,45 +327,85 @@ class AuthService:
             raise AuthenticationError("User not found")
         return user
 
-    async def verify_token(self, raw_token: str) -> tuple[UserRecord, TokenRecord] | None:
-        token = await self._store.verify_token(raw_token)
-        if token is None:
+    async def verify_token(
+        self, raw_token: str
+    ) -> tuple[UserRecord, TokenRecord] | None:
+        result = await self._store.verify_token_with_user(raw_token)
+        if result is None:
             return None
 
-        user = await self._store.get_user_by_id(token.user_id)
-        if user is None:
-            return None
+        user, token = result
 
-        try:
-            await self._store.touch_token(token.id)
-        except Exception:  # noqa: BLE001
-            pass
+        self._schedule_token_touch(token)
 
         return user, token
+
+    def _schedule_token_touch(self, token: TokenRecord) -> None:
+        try:
+            last_seen = datetime.fromisoformat(token.last_seen_at)
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - last_seen).total_seconds()
+            if age < TOKEN_ACTIVITY_WRITE_INTERVAL_SECONDS:
+                return
+        except (TypeError, ValueError):
+            pass
+        if token.id in self._token_touches_in_flight:
+            return
+        self._token_touches_in_flight.add(token.id)
+        task = asyncio.create_task(self._store.touch_token(token.id))
+        task.add_done_callback(
+            lambda completed, token_id=token.id: self._finish_token_touch(
+                token_id, completed
+            )
+        )
+
+    def _finish_token_touch(self, token_id: str, task: asyncio.Task[None]) -> None:
+        self._token_touches_in_flight.discard(token_id)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:  # noqa: BLE001 - activity tracking is best-effort
+            logger.exception("Token activity update failed")
 
     async def logout(self, raw_token: str) -> None:
         token = await self._store.verify_token(raw_token)
         if token is not None:
             await self._store.revoke_token(token.id)
 
-    async def logout_all(self, user_id: str, *, except_raw_token: str | None = None, except_token_id: str | None = None) -> None:
+    async def logout_all(
+        self,
+        user_id: str,
+        *,
+        except_raw_token: str | None = None,
+        except_token_id: str | None = None,
+    ) -> None:
         if except_token_id is None and except_raw_token:
             current = await self._store.verify_token(except_raw_token)
             if current:
                 except_token_id = current.id
 
-        await self._store.revoke_all_tokens_for_user(user_id, except_token_id = except_token_id)
+        await self._store.revoke_all_tokens_for_user(
+            user_id, except_token_id=except_token_id
+        )
 
     async def list_users(self, limit: int = 100, offset: int = 0) -> list[UserRecord]:
-        return await self._store.list_users(limit = limit, offset = offset)
+        return await self._store.list_users(limit=limit, offset=offset)
 
     async def count_users(self) -> int:
         return await self._store.count_users()
 
-    async def set_role(self, user_id: str, role: str, *, requesting_user_id: str | None = None) -> None:
+    async def set_role(
+        self, user_id: str, role: str, *, requesting_user_id: str | None = None
+    ) -> None:
         if role not in ("admin", "trusted", "user"):
             raise AuthenticationError(f"Invalid role: {role}")
-        if requesting_user_id is not None and requesting_user_id == user_id and role != "admin":
+        if (
+            requesting_user_id is not None
+            and requesting_user_id == user_id
+            and role != "admin"
+        ):
             raise AuthenticationError("Cannot remove your own admin privileges")
         target = await self._store.get_user_by_id(user_id)
         if target is not None and target.role == "admin" and role != "admin":
@@ -379,7 +428,9 @@ class AuthService:
             await self._discovery_snapshot_store.delete_user(user_id)
         await self._store.delete_user(user_id)
 
-    async def get_provider_names_for_users(self, user_ids: list[str]) -> dict[str, list[str]]:
+    async def get_provider_names_for_users(
+        self, user_ids: list[str]
+    ) -> dict[str, list[str]]:
         return await self._store.list_provider_names_for_users(user_ids)
 
     async def revoke_user_sessions(self, user_id: str) -> None:
@@ -392,7 +443,9 @@ class AuthService:
         tokens = await self._store.list_tokens_for_user(requesting_user_id)
         owned = any(token.id == token_id for token in tokens)
         if not owned:
-            raise AuthenticationError("Cannot revoke a session that does not belong to you")
+            raise AuthenticationError(
+                "Cannot revoke a session that does not belong to you"
+            )
         await self._store.revoke_token(token_id)
 
     async def cleanup_expired_tokens(self) -> int:
@@ -401,16 +454,20 @@ class AuthService:
             self._store.cleanup_expired_password_recovery_codes(),
         )
         if recovery_count:
-            logger.info("Cleaned up %d expired password recovery code(s)", recovery_count)
+            logger.info(
+                "Cleaned up %d expired password recovery code(s)", recovery_count
+            )
         return token_count
 
-    async def _issue_session(self, user_id: str, *, user_agent: str | None = None) -> str:
+    async def _issue_session(
+        self, user_id: str, *, user_agent: str | None = None
+    ) -> str:
         raw_token, token_hash = self._store.issue_token()
         await self._store.store_token(
-            id = _new_id(),
-            user_id = user_id,
-            token_hash = token_hash,
-            user_agent = user_agent,
+            id=_new_id(),
+            user_id=user_id,
+            token_hash=token_hash,
+            user_agent=user_agent,
         )
         return raw_token
 
@@ -520,7 +577,9 @@ async def _check_hibp(password: str) -> None:
                 )
             return
         else:
-            logger.warning("HIBP local path configured but file not found. Skipping breach check")
+            logger.warning(
+                "HIBP local path configured but file not found. Skipping breach check"
+            )
             return  # user opted out of API calls; fail open
 
     # --- api.pwnedpasswords.com range API (k-anonymity, free, no key required) ---
@@ -547,7 +606,9 @@ async def _check_hibp(password: str) -> None:
     except RegistrationError:
         raise
     except Exception:  # noqa: BLE001
-        logger.warning("pwnedpasswords.com range check failed (network error). Proceeding without breach check")
+        logger.warning(
+            "pwnedpasswords.com range check failed (network error). Proceeding without breach check"
+        )
 
 
 def _search_hibp_file(sha1: str, path: str) -> bool:

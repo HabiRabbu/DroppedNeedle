@@ -16,6 +16,12 @@ def _make_service() -> tuple[AlbumService, MagicMock, MagicMock]:
     disk_cache = MagicMock()
     preferences_service = MagicMock()
     audiodb_image_service = MagicMock()
+    memory_cache.get = AsyncMock(return_value=None)
+    memory_cache.set = AsyncMock()
+    memory_cache.delete = AsyncMock()
+    disk_cache.get_album = AsyncMock(return_value=None)
+    disk_cache.delete_album = AsyncMock()
+    library_db.get_library_files_for_album = AsyncMock(return_value=[])
 
     service = AlbumService(
         library_repo=library_repo,
@@ -27,6 +33,32 @@ def _make_service() -> tuple[AlbumService, MagicMock, MagicMock]:
         audiodb_image_service=audiodb_image_service,
     )
     return service, library_repo, library_db
+
+
+@pytest.mark.asyncio
+async def test_legacy_library_album_cache_is_rejected_and_new_selection_is_retained():
+    service, _library_repo, _library_db = _make_service()
+    legacy = {
+        "title": "Album",
+        "musicbrainz_id": _MBID,
+        "artist_name": "Artist",
+        "artist_id": "artist-1",
+        "in_library": True,
+        "tracks": [],
+        "total_tracks": 0,
+    }
+    service._disk_cache.get_album.return_value = legacy
+
+    assert await service._get_cached_album_info(_MBID, f"album:{_MBID}") is None
+    service._disk_cache.delete_album.assert_awaited_once_with(_MBID)
+
+    service._disk_cache.get_album.return_value = {
+        **legacy,
+        "selected_release_mbid": "release-20",
+    }
+    rebuilt = await service._get_cached_album_info(_MBID, f"album:{_MBID}")
+    assert rebuilt is not None
+    assert rebuilt.selected_release_mbid == "release-20"
 
 
 def _mb_release_group() -> dict:
@@ -110,7 +142,10 @@ def _rg_with_ranked_release() -> dict:
         "primary-type": "Album",
         "disambiguation": "",
         "artist-credit": [],
-        "releases": [{"id": "deluxe-rel", "status": "Official", "country": "XW"}],
+        "releases": [
+            {"id": "deluxe-rel", "status": "Official", "country": "XW"},
+            {"id": "owned-rel", "status": "Official", "country": "GB"},
+        ],
     }
 
 
@@ -154,7 +189,12 @@ async def test_get_album_info_uses_owned_release_edition_not_the_larger_ranked_r
     )
     service._save_album_to_cache = AsyncMock()
     library_db.has_album_files = AsyncMock(return_value=True)
-    library_db.get_album_release_mbid = AsyncMock(return_value="owned-rel")
+    library_db.get_library_files_for_album = AsyncMock(
+        return_value=[
+            {"release_group_mbid": _MBID, "release_mbid": "owned-rel"}
+            for _ in range(12)
+        ]
+    )
     service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe(
         "owned-rel", owned_n=12, deluxe_n=28
     )
@@ -162,7 +202,8 @@ async def test_get_album_info_uses_owned_release_edition_not_the_larger_ranked_r
     result = await service.get_album_info(_MBID)
 
     assert result.total_tracks == 12
-    library_db.get_album_release_mbid.assert_awaited_once()
+    assert result.selected_release_mbid == "owned-rel"
+    library_db.get_library_files_for_album.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -185,6 +226,7 @@ async def test_get_album_info_falls_back_to_ranked_release_when_not_owned():
     result = await service.get_album_info(_MBID)
 
     assert result.total_tracks == 28
+    assert result.selected_release_mbid == "deluxe-rel"
     library_db.get_album_release_mbid.assert_not_awaited()
 
 
@@ -193,7 +235,12 @@ async def test_get_album_tracks_info_prefers_owned_release_edition():
     service, _library_repo, library_db = _make_service()
     service._get_cached_album_info = AsyncMock(return_value=None)
     service._fetch_release_group = AsyncMock(return_value=_rg_with_ranked_release())
-    library_db.get_album_release_mbid = AsyncMock(return_value="owned-rel")
+    library_db.get_library_files_for_album = AsyncMock(
+        return_value=[
+            {"release_group_mbid": _MBID, "release_mbid": "owned-rel"}
+            for _ in range(12)
+        ]
+    )
     service._mb_repo.get_release_by_id = _release_by_owned_or_deluxe(
         "owned-rel", owned_n=12, deluxe_n=28
     )
@@ -202,6 +249,7 @@ async def test_get_album_tracks_info_prefers_owned_release_edition():
 
     assert result.total_tracks == 12
     assert len(result.tracks) == 12
+    assert result.selected_release_mbid == "owned-rel"
 
 
 # -- P5: annotate_album_coverage (shared matcher on the album page) --

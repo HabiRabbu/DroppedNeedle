@@ -9,13 +9,24 @@ from fastapi import FastAPI, HTTPException
 
 from api.v1.routes.library import router
 from api.v1.schemas.library import AlbumRemoveResponse
-from core.dependencies import get_album_service, get_library_manager, get_library_scanner
+from core.dependencies import (
+    get_album_service,
+    get_library_service,
+    get_library_manager,
+    get_library_scanner,
+    get_request_history_store,
+)
 from core.exceptions import ResourceNotFoundError
 from infrastructure.persistence.library_db import LibraryDB
 from middleware import _get_current_admin, _get_current_curator
 from models.audio import AudioInfo, AudioTag
 from services.native.library_manager import LibraryManager, LibraryTrack
-from tests.helpers import build_test_client, mock_user, override_admin_auth, override_user_auth
+from tests.helpers import (
+    build_test_client,
+    mock_user,
+    override_admin_auth,
+    override_user_auth,
+)
 
 
 @pytest.fixture
@@ -53,16 +64,29 @@ def client(app):
 
 async def _seed_album(manager: LibraryManager):
     tag = AudioTag(
-        title="Airbag", artist="Radiohead", album="OK Computer",
-        album_artist="Radiohead", track_number=1, year=1997,
+        title="Airbag",
+        artist="Radiohead",
+        album="OK Computer",
+        album_artist="Radiohead",
+        track_number=1,
+        year=1997,
         musicbrainz_release_group_id="rg-ok",
     )
     info = AudioInfo(
-        duration_seconds=260.0, bitrate=900, sample_rate=44100, channels=2,
-        file_format="flac", file_size_bytes=1000, bit_depth=16,
+        duration_seconds=260.0,
+        bitrate=900,
+        sample_rate=44100,
+        channels=2,
+        file_format="flac",
+        file_size_bytes=1000,
+        bit_depth=16,
     )
     await manager.upsert_file(
-        Path("/music/a.flac"), tag, info, release_group_mbid="rg-ok", recording_mbid="rec-1"
+        Path("/music/a.flac"),
+        tag,
+        info,
+        release_group_mbid="rg-ok",
+        recording_mbid="rec-1",
     )
 
 
@@ -87,16 +111,28 @@ async def test_albums_lists_seeded_album(app, manager):
 async def test_albums_paginates(app, manager):
     await _seed_album(manager)
     tag = AudioTag(
-        title="Teardrop", artist="Massive Attack", album="Mezzanine",
-        album_artist="Massive Attack", track_number=1, year=1998,
+        title="Teardrop",
+        artist="Massive Attack",
+        album="Mezzanine",
+        album_artist="Massive Attack",
+        track_number=1,
+        year=1998,
         musicbrainz_release_group_id="rg-mezz",
     )
     info = AudioInfo(
-        duration_seconds=300.0, bitrate=256, sample_rate=44100, channels=2,
-        file_format="m4a", file_size_bytes=2000,
+        duration_seconds=300.0,
+        bitrate=256,
+        sample_rate=44100,
+        channels=2,
+        file_format="m4a",
+        file_size_bytes=2000,
     )
     await manager.upsert_file(
-        Path("/music/b.m4a"), tag, info, release_group_mbid="rg-mezz", recording_mbid="rec-2"
+        Path("/music/b.m4a"),
+        tag,
+        info,
+        release_group_mbid="rg-mezz",
+        recording_mbid="rec-2",
     )
     override_user_auth(app, role="admin")
     client = build_test_client(app)
@@ -173,25 +209,65 @@ def test_albums_requires_auth(app):
     assert client.get("/library/albums").status_code == 401
 
 
+def test_membership_is_authenticated_and_candidate_scoped(app):
+    client = build_test_client(app)
+    assert client.post("/library/membership", json={"album_ids": []}).status_code == 401
+
+    service = AsyncMock()
+    service.get_membership.return_value = {"owned-rg"}
+    history = AsyncMock()
+    history.async_existing_requested_mbids.return_value = {"requested-rg"}
+    app.dependency_overrides[get_library_service] = lambda: service
+    app.dependency_overrides[get_request_history_store] = lambda: history
+    override_user_auth(app, role="user")
+
+    response = build_test_client(app).post(
+        "/library/membership",
+        json={"album_ids": ["OWNED-RG", "requested-rg", "owned-rg"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "owned_ids": ["owned-rg"],
+        "requested_ids": ["requested-rg"],
+    }
+    service.get_membership.assert_awaited_once_with(["owned-rg", "requested-rg"])
+    history.async_existing_requested_mbids.assert_awaited_once_with(
+        ["owned-rg", "requested-rg"]
+    )
+
+
 async def _seed_mezzanine(manager: LibraryManager):
     tag = AudioTag(
-        title="Teardrop", artist="Massive Attack", album="Mezzanine",
-        album_artist="Massive Attack", track_number=1, year=1998,
+        title="Teardrop",
+        artist="Massive Attack",
+        album="Mezzanine",
+        album_artist="Massive Attack",
+        track_number=1,
+        year=1998,
         musicbrainz_release_group_id="rg-mezz",
     )
     info = AudioInfo(
-        duration_seconds=300.0, bitrate=256, sample_rate=44100, channels=2,
-        file_format="m4a", file_size_bytes=2000,
+        duration_seconds=300.0,
+        bitrate=256,
+        sample_rate=44100,
+        channels=2,
+        file_format="m4a",
+        file_size_bytes=2000,
     )
     await manager.upsert_file(
-        Path("/music/b.m4a"), tag, info, release_group_mbid="rg-mezz", recording_mbid="rec-2"
+        Path("/music/b.m4a"),
+        tag,
+        info,
+        release_group_mbid="rg-mezz",
+        recording_mbid="rec-2",
     )
 
 
 @pytest.mark.asyncio
 async def test_albums_filter_by_search_query(app, manager):
-    await _seed_album(manager)      # OK Computer / Radiohead (rg-ok)
-    await _seed_mezzanine(manager)  # Mezzanine / Massive Attack (rg-mezz)
+    await _seed_album(manager)
+    await _seed_mezzanine(manager)
     override_user_auth(app, role="admin")
     client = build_test_client(app)
     body = client.get("/library/albums?q=mezz").json()
@@ -201,8 +277,8 @@ async def test_albums_filter_by_search_query(app, manager):
 
 @pytest.mark.asyncio
 async def test_albums_filter_by_format(app, manager):
-    await _seed_album(manager)      # flac (rg-ok)
-    await _seed_mezzanine(manager)  # m4a (rg-mezz)
+    await _seed_album(manager)
+    await _seed_mezzanine(manager)
     override_user_auth(app, role="admin")
     client = build_test_client(app)
     body = client.get("/library/albums?format=flac").json()
@@ -262,7 +338,10 @@ def test_get_track_tags_returns_tags(app):
     scanner = AsyncMock()
     scanner.read_track_tags = AsyncMock(
         return_value=AudioTag(
-            title="T", artist="A", album="Al", track_number=1,
+            title="T",
+            artist="A",
+            album="Al",
+            track_number=1,
             musicbrainz_release_group_id="rg-ok",
         )
     )
@@ -286,7 +365,11 @@ def test_get_track_tags_forbidden_for_non_admin(app):
 
 
 def _override_remove_album(app, *, removal=None, retries_side_effect=None):
-    from core.dependencies import get_download_service, get_library_service
+    from core.dependencies import (
+        get_download_service,
+        get_library_service,
+        get_wanted_watcher_service,
+    )
 
     library_service = AsyncMock()
     library_service.remove_album.return_value = removal or AlbumRemoveResponse(
@@ -297,9 +380,11 @@ def _override_remove_album(app, *, removal=None, retries_side_effect=None):
         download_service.purge_album_downloads.side_effect = retries_side_effect
     app.dependency_overrides[get_library_service] = lambda: library_service
     app.dependency_overrides[get_download_service] = lambda: download_service
+    wanted = AsyncMock()
+    app.dependency_overrides[get_wanted_watcher_service] = lambda: wanted
     override_user_auth(app, role="admin")
     override_admin_auth(app)
-    return build_test_client(app), download_service
+    return build_test_client(app), download_service, wanted
 
 
 def test_remove_album_stops_pending_retries_for_canonical_album(app):
@@ -308,23 +393,34 @@ def test_remove_album_stops_pending_retries_for_canonical_album(app):
         album_mbid="rg-canonical",
         removed_mbids=["release-alias", "rg-canonical"],
     )
-    client, download_service = _override_remove_album(app, removal=removal)
+    client, download_service, wanted = _override_remove_album(app, removal=removal)
     resp = client.delete("/library/album/release-alias?delete_files=true")
     assert resp.status_code == 200
     assert resp.json()["success"] is True
     download_service.purge_album_downloads.assert_awaited_once_with("rg-canonical")
+    wanted.stop_after_library_removal.assert_awaited_once_with("rg-canonical")
 
 
 def test_remove_album_succeeds_even_if_stopping_retries_fails(app):
     # Stopping retries is best-effort: a failure there must not fail the removal the
     # user already confirmed.
-    client, download_service = _override_remove_album(
+    client, download_service, _wanted = _override_remove_album(
         app, retries_side_effect=RuntimeError("boom")
     )
     resp = client.delete("/library/album/rg-ok")
     assert resp.status_code == 200
     assert resp.json()["success"] is True
     download_service.purge_album_downloads.assert_awaited_once_with("rg-ok")
+
+
+def test_remove_album_can_keep_wanted_watch(app):
+    client, _download_service, wanted = _override_remove_album(app)
+
+    resp = client.delete("/library/album/rg-ok?stop_wanted=false")
+
+    assert resp.status_code == 200
+    wanted.stop_after_library_removal.assert_not_awaited()
+    wanted.continue_after_library_removal.assert_awaited_once_with("rg-ok")
 
 
 # -- P5: coverage fields on the wire + the orphan-remove endpoint --
@@ -394,7 +490,9 @@ def test_remove_track_curator_ok():
     from api.v1.schemas.common import StatusMessageResponse
 
     service = AsyncMock()
-    service.remove_file.return_value = StatusMessageResponse(status="ok", message="File removed")
+    service.remove_file.return_value = StatusMessageResponse(
+        status="ok", message="File removed"
+    )
     client = build_test_client(_remove_app(service))
     resp = client.delete("/library/tracks/file-1")
     assert resp.status_code == 200

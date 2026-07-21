@@ -34,7 +34,13 @@ export type Album = {
 	track_count?: number | null;
 	listen_count?: number | null;
 	score?: number;
+	selected_release_mbid?: string | null;
 };
+
+export interface LibraryMembershipResponse {
+	owned_ids: string[];
+	requested_ids: string[];
+}
 
 export type SuggestResult = {
 	type: 'artist' | 'album';
@@ -188,6 +194,7 @@ export type AlbumTracksInfo = {
 	label?: string | null;
 	barcode?: string | null;
 	country?: string | null;
+	selected_release_mbid?: string | null;
 };
 
 export type JellyfinConnectionSettings = {
@@ -1624,6 +1631,12 @@ export interface AlbumRemoveResponse {
 	artist_name: string | null;
 }
 
+export interface TargetCatalogRemovalResponse {
+	success: boolean;
+	id: string;
+	removed_track_ids: string[];
+}
+
 export interface AlbumEditionItem {
 	release_mbid: string;
 	track_count: number;
@@ -1641,6 +1654,7 @@ export interface AlbumEditionsResponse {
 	items: AlbumEditionItem[];
 	pinned_release_mbid: string | null;
 	owned_release_mbid: string | null;
+	selected_release_mbid: string | null;
 }
 
 export interface EditionAcquireResponse {
@@ -1754,6 +1768,7 @@ export interface DownloadClientConfig {
 
 export interface DownloadsMountStatus {
 	ok: boolean;
+	move_supported: boolean;
 	reason: string;
 	path: string;
 }
@@ -1770,6 +1785,19 @@ export interface DownloadClientStatus {
 	mount: DownloadsMountStatus;
 	mount_advisory?: string | null;
 	slskd_downloads_dir?: string | null;
+}
+
+export interface HomeIntegrationStatus {
+	listenbrainz: boolean;
+	jellyfin: boolean;
+	download_client: boolean;
+	youtube: boolean;
+	lastfm: boolean;
+	navidrome: boolean;
+	youtube_api: boolean;
+	plex: boolean;
+	library: boolean;
+	localfiles: boolean;
 }
 
 export interface TestConnectionResult {

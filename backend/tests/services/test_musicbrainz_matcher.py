@@ -22,6 +22,8 @@ def _rg(
     primary: str = "Album",
     secondary: tuple[str, ...] = (),
     release: str = "rel-1",
+    status: str | None = None,
+    date: str | None = None,
 ) -> RecordingReleaseGroup:
     return RecordingReleaseGroup(
         release_group_mbid=mbid,
@@ -29,6 +31,8 @@ def _rg(
         release_mbid=release,
         primary_type=primary,
         secondary_types=tuple(secondary),
+        release_status=status,
+        release_date=date,
     )
 
 
@@ -40,7 +44,11 @@ def _rec(
     score: int = 100,
 ) -> RecordingMatch:
     return RecordingMatch(
-        recording_mbid=mbid, title=title, artist=artist, score=score, release_groups=groups
+        recording_mbid=mbid,
+        title=title,
+        artist=artist,
+        score=score,
+        release_groups=groups,
     )
 
 
@@ -52,7 +60,9 @@ def _repo2(albums: list[SearchResult], recordings: list[RecordingMatch]) -> Asyn
 
 
 def _result(title: str, mbid: str = "rg-1", artist: str = "Radiohead") -> SearchResult:
-    return SearchResult(type="album", title=title, musicbrainz_id=mbid, artist=artist, year=1997)
+    return SearchResult(
+        type="album", title=title, musicbrainz_id=mbid, artist=artist, year=1997
+    )
 
 
 @pytest.mark.asyncio
@@ -66,7 +76,9 @@ async def test_text_match_auto_accepts_good_match():
 
 @pytest.mark.asyncio
 async def test_text_match_strips_edition_before_matching():
-    matcher = MusicBrainzMatcher(_repo([_result("OK Computer (Deluxe Edition)", "rg-deluxe")]))
+    matcher = MusicBrainzMatcher(
+        _repo([_result("OK Computer (Deluxe Edition)", "rg-deluxe")])
+    )
     res = await matcher.text_match(TargetAlbum(artist="Radiohead", album="OK Computer"))
     assert res.confidence >= 0.85
     assert res.release_group_mbid == "rg-deluxe"
@@ -75,7 +87,9 @@ async def test_text_match_strips_edition_before_matching():
 @pytest.mark.asyncio
 async def test_text_match_folds_diacritics():
     # Tag "Bjork / Homogenic" (ASCII) matches the accented MB result via unidecode.
-    matcher = MusicBrainzMatcher(_repo([_result("Homogénic", "rg-bjork", artist="Björk")]))
+    matcher = MusicBrainzMatcher(
+        _repo([_result("Homogénic", "rg-bjork", artist="Björk")])
+    )
     res = await matcher.text_match(TargetAlbum(artist="Bjork", album="Homogenic"))
     assert res.confidence >= 0.85
     assert res.release_group_mbid == "rg-bjork"
@@ -83,7 +97,9 @@ async def test_text_match_folds_diacritics():
 
 @pytest.mark.asyncio
 async def test_text_match_cjk_not_transliterated():
-    matcher = MusicBrainzMatcher(_repo([_result("神秘嘉宾 (Deluxe)", "rg-cjk", artist="林宥嘉")]))
+    matcher = MusicBrainzMatcher(
+        _repo([_result("神秘嘉宾 (Deluxe)", "rg-cjk", artist="林宥嘉")])
+    )
     res = await matcher.text_match(TargetAlbum(artist="林宥嘉", album="神秘嘉宾"))
     assert res.confidence >= 0.85
     assert res.release_group_mbid == "rg-cjk"
@@ -118,7 +134,9 @@ async def test_text_match_below_threshold_returns_no_mbid():
 @pytest.mark.asyncio
 async def test_wrong_artist_same_title_is_rejected():
     # Same album title by a completely different artist must not auto-accept.
-    matcher = MusicBrainzMatcher(_repo([_result("Greatest Hits", "rg-wrong", artist="Queen")]))
+    matcher = MusicBrainzMatcher(
+        _repo([_result("Greatest Hits", "rg-wrong", artist="Queen")])
+    )
     res = await matcher.text_match(TargetAlbum(artist="ABBA", album="Greatest Hits"))
     assert res.release_group_mbid is None
     assert res.matched is False
@@ -128,7 +146,9 @@ async def test_wrong_artist_same_title_is_rejected():
 async def test_artist_named_like_edition_word_not_rejected():
     # The band "Live" must survive the artist gate - the raw ratio (no edition
     # stripping) is why; stripping "live" would zero the artist out.
-    matcher = MusicBrainzMatcher(_repo([_result("Throwing Copper", "rg-live", artist="Live")]))
+    matcher = MusicBrainzMatcher(
+        _repo([_result("Throwing Copper", "rg-live", artist="Live")])
+    )
     res = await matcher.text_match(TargetAlbum(artist="Live", album="Throwing Copper"))
     assert res.release_group_mbid == "rg-live"
 
@@ -160,7 +180,9 @@ async def test_text_match_remaster_edition_and_case():
         _repo([_result("Black and Blue", "rg-bb", artist="The Rolling Stones")])
     )
     res = await matcher.text_match(
-        TargetAlbum(artist="The Rolling Stones", album="Black And Blue (Remastered 2009)")
+        TargetAlbum(
+            artist="The Rolling Stones", album="Black And Blue (Remastered 2009)"
+        )
     )
     assert res.release_group_mbid == "rg-bb"
 
@@ -176,7 +198,10 @@ async def test_text_match_symbol_only_title_does_not_false_match():
 
 
 def test_title_similarity_is_case_insensitive():
-    assert MusicBrainzMatcher.title_similarity("Music To Scream To", "Music to Scream To") >= 0.99
+    assert (
+        MusicBrainzMatcher.title_similarity("Music To Scream To", "Music to Scream To")
+        >= 0.99
+    )
 
 
 def test_title_similarity_empty_after_normalise_is_zero():
@@ -223,7 +248,9 @@ async def test_resolve_recording_empty_id_short_circuits():
 @pytest.mark.asyncio
 async def test_resolve_recording_fails_open_on_repo_error():
     repo = AsyncMock()
-    repo.resolve_recording_to_release_group = AsyncMock(side_effect=RuntimeError("MB down"))
+    repo.resolve_recording_to_release_group = AsyncMock(
+        side_effect=RuntimeError("MB down")
+    )
     matcher = MusicBrainzMatcher(repo)
     assert await matcher.resolve_recording_to_release_group("rec-1") is None
 
@@ -241,7 +268,9 @@ async def test_resolve_recording_only_uses_repo_for_mb_access():
 async def test_album_search_includes_all_secondary_types():
     repo = _repo([_result("Music to Scream To", "rg-poppy", artist="Poppy")])
     matcher = MusicBrainzMatcher(repo)
-    res = await matcher.text_match(TargetAlbum(artist="Poppy", album="Music to Scream To"))
+    res = await matcher.text_match(
+        TargetAlbum(artist="Poppy", album="Music to Scream To")
+    )
     assert res.release_group_mbid == "rg-poppy"
     assert res.matched is True
     assert repo.search_albums.await_args.kwargs.get("include_all_types") is True
@@ -249,10 +278,16 @@ async def test_album_search_includes_all_secondary_types():
 
 @pytest.mark.asyncio
 async def test_exact_edition_wins_tie_over_generic_title():
-    matcher = MusicBrainzMatcher(_repo([
-        _result("Heathens", "rg-generic", artist="Twenty One Pilots"),
-        _result("Heathens (DISTO Remix)", "rg-disto", artist="Twenty One Pilots"),
-    ]))
+    matcher = MusicBrainzMatcher(
+        _repo(
+            [
+                _result("Heathens", "rg-generic", artist="Twenty One Pilots"),
+                _result(
+                    "Heathens (DISTO Remix)", "rg-disto", artist="Twenty One Pilots"
+                ),
+            ]
+        )
+    )
     res = await matcher.text_match(
         TargetAlbum(artist="Twenty One Pilots", album="Heathens (DISTO Remix)")
     )
@@ -269,8 +304,14 @@ async def test_recording_fallback_recovers_title_variant_album():
             "rec-hw",
             "Emahoy",
             [
-                _rg("Éthiopiques 21: Piano Solo", "rg-piano", secondary=("Compilation",)),
-                _rg("The Rough Guide to Ethiopian Jazz", "rg-rough", secondary=("Compilation",)),
+                _rg(
+                    "Éthiopiques 21: Piano Solo", "rg-piano", secondary=("Compilation",)
+                ),
+                _rg(
+                    "The Rough Guide to Ethiopian Jazz",
+                    "rg-rough",
+                    secondary=("Compilation",),
+                ),
             ],
         )
     ]
@@ -297,13 +338,20 @@ async def test_recording_fallback_symbol_only_album_prefers_studio_release():
             "XXXTENTACION",
             [
                 _rg("?", "rg-q", primary="Album", secondary=()),
-                _rg("Mega Hits 2018", "rg-mega", primary="Album", secondary=("Compilation",)),
+                _rg(
+                    "Mega Hits 2018",
+                    "rg-mega",
+                    primary="Album",
+                    secondary=("Compilation",),
+                ),
             ],
         )
     ]
     matcher = MusicBrainzMatcher(_repo2([], recordings))
     res = await matcher.text_match(
-        TargetAlbum(artist="XXXTENTACION", album="?", track_title="SAD!", track_number=1)
+        TargetAlbum(
+            artist="XXXTENTACION", album="?", track_title="SAD!", track_number=1
+        )
     )
     assert res.matched is True
     assert res.release_group_mbid == "rg-q"
@@ -323,7 +371,9 @@ async def test_recording_fallback_respects_artist_floor():
 
 @pytest.mark.asyncio
 async def test_recording_fallback_requires_recording_title_to_match():
-    recordings = [_rec("A Totally Different Song", "rec-d", "Artist", [_rg("Album", "rg-a")])]
+    recordings = [
+        _rec("A Totally Different Song", "rec-d", "Artist", [_rg("Album", "rg-a")])
+    ]
     matcher = MusicBrainzMatcher(_repo2([], recordings))
     res = await matcher.text_match(
         TargetAlbum(artist="Artist", album="Some Album", track_title="My Track")
@@ -347,7 +397,9 @@ async def test_album_match_short_circuits_recording_search():
 
 @pytest.mark.asyncio
 async def test_recording_fallback_skipped_without_track_title():
-    repo = _repo2([_result("Wrong Album", "rg-w")], [_rec("X", "r", "A", [_rg("Y", "rg-y")])])
+    repo = _repo2(
+        [_result("Wrong Album", "rg-w")], [_rec("X", "r", "A", [_rg("Y", "rg-y")])]
+    )
     matcher = MusicBrainzMatcher(repo)
     res = await matcher.text_match(TargetAlbum(artist="Radiohead", album="OK Computer"))
     assert res.matched is False
@@ -361,9 +413,35 @@ def test_select_release_group_prefers_title_then_rank():
     )
     assert by_title.release_group_mbid == "a"
     by_rank = matcher._select_release_group(
-        "", [_rg("Comp", "c", secondary=("Compilation",)), _rg("Studio", "d")]
+        "",
+        [
+            _rg("Live", "c", secondary=("Live",), status="Bootleg"),
+            _rg("Comp", "d", secondary=("Compilation",), status="Official"),
+        ],
     )
     assert by_rank.release_group_mbid == "d"
+
+
+def test_release_group_rank_prefers_official_non_live_and_is_stable() -> None:
+    matcher = MusicBrainzMatcher(AsyncMock())
+    official_live = _rg("Official Live", "live", secondary=("Live",), status="Official")
+    official_studio = _rg("Studio", "studio", status="Official")
+    sparse_b = _rg("Sparse B", "b")
+    sparse_a = _rg("Sparse A", "a")
+
+    assert (
+        matcher._select_release_group("", [official_live, official_studio])
+        is official_studio
+    )
+    assert matcher._select_release_group("", [sparse_b, sparse_a]) is sparse_a
+
+
+def test_explicit_release_group_title_preserves_live_intent() -> None:
+    matcher = MusicBrainzMatcher(AsyncMock())
+    live = _rg("Festival 2019", "live", secondary=("Live",), status="Bootleg")
+    studio = _rg("Greatest Hits", "studio", status="Official")
+
+    assert matcher._select_release_group("Festival 2019", [studio, live]) is live
 
 
 @pytest.mark.asyncio
@@ -374,7 +452,10 @@ async def test_album_text_match_issues_background_priority():
     await MusicBrainzMatcher(repo).text_match(
         TargetAlbum(artist="Radiohead", album="OK Computer")
     )
-    assert repo.search_albums.await_args.kwargs["priority"] == RequestPriority.BACKGROUND_SYNC
+    assert (
+        repo.search_albums.await_args.kwargs["priority"]
+        == RequestPriority.BACKGROUND_SYNC
+    )
 
 
 @pytest.mark.asyncio

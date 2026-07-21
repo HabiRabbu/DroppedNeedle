@@ -28,7 +28,7 @@ vi.mock('$lib/queries/downloads/DownloadClientQueries.svelte', () => ({
 			// Non-"Connected" status header so the only /Connected/ match is the test result line below.
 			configured: true,
 			client: { status: 'error', version: null, message: 'Not reachable' },
-			mount: { ok: true, reason: 'ok', path: '/data/downloads/slskd' }
+			mount: { ok: true, move_supported: true, reason: 'ok', path: '/data/downloads/slskd' }
 		}
 	}),
 	saveDownloadClientConfig: () => ({

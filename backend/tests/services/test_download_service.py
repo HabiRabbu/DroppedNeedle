@@ -863,16 +863,36 @@ def test_mount_different_filesystem(tmp_path, monkeypatch):
     library = tmp_path / "lib"
     library.mkdir()
 
-    class _FakeStat:
-        def __init__(self, dev):
-            self.st_dev = dev
-
-    def fake_stat(self, *args, **kwargs):
-        return _FakeStat(1 if self == downloads else 2)
-
-    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(
+        "services.native.download_service.check_move_boundary",
+        lambda _source, _destination: SimpleNamespace(
+            move_supported=False, reason="different_filesystem"
+        ),
+    )
     status = check_downloads_mount(downloads, [library])
-    assert status.ok is False
+    assert status.ok is True
+    assert status.move_supported is False
+    assert status.reason == "different_filesystem"
+
+
+def test_mount_reason_prefers_a_known_boundary_over_a_stat_error(tmp_path, monkeypatch):
+    downloads = tmp_path / "dl"
+    downloads.mkdir()
+    libraries = [tmp_path / "first", tmp_path / "second"]
+    for library in libraries:
+        library.mkdir()
+    reasons = iter(("stat_error", "different_filesystem"))
+    monkeypatch.setattr(
+        "services.native.download_service.check_move_boundary",
+        lambda _source, _destination: SimpleNamespace(
+            move_supported=False, reason=next(reasons)
+        ),
+    )
+
+    status = check_downloads_mount(downloads, libraries)
+
+    assert status.ok is True
+    assert status.move_supported is False
     assert status.reason == "different_filesystem"
 
 

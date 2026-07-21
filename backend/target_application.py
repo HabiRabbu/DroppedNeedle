@@ -153,6 +153,7 @@ from core.dependencies import (
     init_app_state,
     get_target_album_identification_service,
     get_target_identification_queue,
+    get_background_workload_gate,
     get_library_policy_resolver,
 )
 from core.config import get_settings
@@ -504,92 +505,106 @@ async def production_target_lifespan(app: FastAPI):
     settings = get_settings()
     logging.getLogger().setLevel(getattr(logging, settings.log_level, logging.INFO))
     from core.config import migrate_legacy_config
-
-    logger.info("target_startup.configuration_started")
-    migrate_legacy_config()
-    await init_app_state(app)
-    logger.info("target_startup.configuration_completed")
-    await get_target_library_policy_service().recover_pending_transition()
-
-    logger.info("target_startup.catalog_validation_started")
-    validator = TargetStartupValidator(
-        get_native_library_store(),
-        lambda: {
-            root.id
-            for root in get_preferences_service()
-            .get_typed_library_settings()
-            .library_roots
-        },
+    from maintenance.automatic_upgrade import (
+        await_target_startup_admission,
+        target_startup_admission_pending,
+        target_startup_progress,
     )
-    await validator.validate()
-    logger.info("target_startup.catalog_validation_completed")
 
-    from maintenance.automatic_upgrade import await_target_startup_admission
+    async with target_startup_progress(settings, "configuration"):
+        logger.info("target_startup.configuration_started")
+        migrate_legacy_config()
+        await init_app_state(app)
+        logger.info("target_startup.configuration_completed")
+    async with target_startup_progress(settings, "policy_recovery"):
+        await get_target_library_policy_service().recover_pending_transition()
 
-    await await_target_startup_admission(settings)
-    logger.info("target_startup.admission_completed")
+    async with target_startup_progress(settings, "catalog_validation"):
+        logger.info("target_startup.catalog_validation_started")
+        validator = TargetStartupValidator(
+            get_native_library_store(),
+            lambda: {
+                root.id
+                for root in get_preferences_service()
+                .get_typed_library_settings()
+                .library_roots
+            },
+        )
+        validation_phase = (
+            "admission" if target_startup_admission_pending() else "steady_state"
+        )
+        await validator.validate(validation_phase)
+        logger.info("target_startup.catalog_validation_completed")
+
+    async with target_startup_progress(settings, "admission"):
+        await await_target_startup_admission(settings)
+        logger.info("target_startup.admission_completed")
 
     from core.dependencies.auth_providers import get_auth_service, get_auth_store
 
-    await get_auth_service().cleanup_expired_tokens()
-    auth_store = get_auth_store()
-    preferences = get_preferences_service()
-    await run_target_one_time_migrations(
-        auth_store=auth_store,
-        preferences=preferences,
-        cache_dir=settings.cache_dir,
-    )
-    logger.info("target_startup.data_ratchets_completed")
-    settings.instance_id = preferences.get_instance_id()
-    cache_instance = get_cache()
-    await cache_instance.clear()
-    advanced = preferences.get_advanced_settings()
-    start_cache_cleanup_task(
-        cache_instance, interval=advanced.memory_cache_cleanup_interval
-    )
-    start_memory_maintenance_task(cache_instance)
-    start_disk_cache_cleanup_task(
-        get_disk_cache(),
-        interval=advanced.disk_cache_cleanup_interval,
-        cover_disk_cache=get_target_consumer_composition().covers.disk_cache,
-    )
+    async with target_startup_progress(settings, "data_ratchets"):
+        await get_auth_service().cleanup_expired_tokens()
+        auth_store = get_auth_store()
+        preferences = get_preferences_service()
+        await run_target_one_time_migrations(
+            auth_store=auth_store,
+            preferences=preferences,
+            cache_dir=settings.cache_dir,
+        )
+        logger.info("target_startup.data_ratchets_completed")
+    async with target_startup_progress(settings, "operational_runtime"):
+        settings.instance_id = preferences.get_instance_id()
+        cache_instance = get_cache()
+        await cache_instance.clear()
+        advanced = preferences.get_advanced_settings()
+        start_cache_cleanup_task(
+            cache_instance, interval=advanced.memory_cache_cleanup_interval
+        )
+        start_memory_maintenance_task(cache_instance)
+        start_disk_cache_cleanup_task(
+            get_disk_cache(),
+            interval=advanced.disk_cache_cleanup_interval,
+            cover_disk_cache=get_target_consumer_composition().covers.disk_cache,
+        )
 
-    def root_paths() -> dict[str, Path]:
-        return {
-            root.id: Path(root.path)
-            for root in get_preferences_service()
-            .get_typed_library_settings()
-            .library_roots
-        }
+        def root_paths() -> dict[str, Path]:
+            return {
+                root.id: Path(root.path)
+                for root in get_preferences_service()
+                .get_typed_library_settings()
+                .library_roots
+            }
 
-    timezone_name = _server_timezone_name()
+        timezone_name = _server_timezone_name()
 
-    def schedule_settings() -> dict[str, str]:
-        schedule = get_preferences_service().get_library_scan_schedule()
-        return {
-            "frequency": schedule.scan_frequency,
-            "daily_time": schedule.daily_scan_time,
-            "timezone_name": timezone_name,
-        }
+        def schedule_settings() -> dict[str, str]:
+            schedule = get_preferences_service().get_library_scan_schedule()
+            return {
+                "frequency": schedule.scan_frequency,
+                "daily_time": schedule.daily_scan_time,
+                "timezone_name": timezone_name,
+            }
 
-    start_target_scan_supervisor(
-        get_target_library_scan_coordinator,
-        root_paths,
-        scheduler_getter=get_target_library_scan_scheduler,
-        resolver_getter=get_library_policy_resolver,
-        schedule_settings_getter=schedule_settings,
-    )
-    start_target_identification_worker(
-        get_target_identification_queue, get_target_album_identification_service
-    )
-    start_target_operation_worker(get_target_library_operation_supervisor)
-    await start_target_operational_runtime(
-        settings=settings,
-        preferences=preferences,
-        auth_store=auth_store,
-    )
-    logger.info("target_startup.operational_runtime_started")
-    logger.info("DroppedNeedle target application started")
+        start_target_scan_supervisor(
+            get_target_library_scan_coordinator,
+            root_paths,
+            scheduler_getter=get_target_library_scan_scheduler,
+            resolver_getter=get_library_policy_resolver,
+            schedule_settings_getter=schedule_settings,
+        )
+        start_target_identification_worker(
+            get_target_identification_queue,
+            get_target_album_identification_service,
+            get_background_workload_gate(),
+        )
+        start_target_operation_worker(get_target_library_operation_supervisor)
+        await start_target_operational_runtime(
+            settings=settings,
+            preferences=preferences,
+            auth_store=auth_store,
+        )
+        logger.info("target_startup.operational_runtime_started")
+        logger.info("DroppedNeedle target application started")
 
     try:
         yield

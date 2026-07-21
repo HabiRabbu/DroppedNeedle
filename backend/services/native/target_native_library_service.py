@@ -271,7 +271,7 @@ class TargetNativeLibraryService:
         )
 
     async def provider_ids(self) -> TargetNativeProviderIdsResponse:
-        values = (await self._store.target_catalog_ids())["provider_albums"]
+        _revision, values = await self._store.target_provider_album_snapshot()
         return TargetNativeProviderIdsResponse(
             musicbrainz_release_group_ids=sorted(values)
         )

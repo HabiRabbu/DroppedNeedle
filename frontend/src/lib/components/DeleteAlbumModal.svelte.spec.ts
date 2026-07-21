@@ -1,4 +1,4 @@
-import { page } from '@vitest/browser/context';
+import { page, userEvent } from '@vitest/browser/context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 
@@ -47,8 +47,19 @@ describe('DeleteAlbumModal', () => {
 
 		await page.getByRole('button', { name: 'Remove' }).click();
 
-		expect(mutateAsync).toHaveBeenCalledWith('rg-1');
+		expect(mutateAsync).toHaveBeenCalledWith({ mbid: 'rg-1', stopWanted: true });
 		await vi.waitFor(() => expect(ondeleted).toHaveBeenCalledOnce());
+	});
+
+	it('lets the administrator keep the Wanted watch', async () => {
+		renderModal();
+		const checkbox = page.getByRole('checkbox', { name: /Stop the Wanted watcher/i });
+		await expect.element(checkbox).toBeChecked();
+
+		await checkbox.click();
+		await page.getByRole('button', { name: 'Remove' }).click();
+
+		expect(mutateAsync).toHaveBeenCalledWith({ mbid: 'rg-1', stopWanted: false });
 	});
 
 	it('keeps the confirmation open when removal fails', async () => {
@@ -60,5 +71,14 @@ describe('DeleteAlbumModal', () => {
 		await expect.element(page.getByText("Couldn't remove this album")).toBeVisible();
 		await expect.element(page.getByRole('heading', { name: 'Remove Album' })).toBeVisible();
 		expect(ondeleted).not.toHaveBeenCalled();
+	});
+
+	it('closes with the keyboard without removing the album', async () => {
+		const { onclose } = renderModal();
+
+		await userEvent.keyboard('{Escape}');
+
+		await vi.waitFor(() => expect(onclose).toHaveBeenCalledOnce());
+		expect(mutateAsync).not.toHaveBeenCalled();
 	});
 });

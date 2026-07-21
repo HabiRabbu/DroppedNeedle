@@ -126,12 +126,27 @@ class TargetLibraryRepository:
         return await self._store.get_target_album_tracks(album_id)
 
     async def get_library_mbids(self, include_release_ids: bool = True) -> set[str]:
-        ids = await self._store.target_catalog_ids()
-        albums = ids["provider_albums"]
-        return albums | ids["provider_releases"] if include_release_ids else albums
+        _revision, albums = await self._store.target_provider_album_snapshot()
+        if not include_release_ids:
+            return albums
+        return albums | await self._store.target_provider_release_ids()
 
     async def get_artist_mbids(self) -> set[str]:
-        return (await self._store.target_catalog_ids())["provider_artists"]
+        return await self._store.target_provider_artist_ids()
+
+    async def existing_album_mbids(self, identifiers: list[str]) -> set[str]:
+        normalized = {
+            value.strip().casefold() for value in identifiers if value.strip()
+        }
+        rows = await self._store.target_album_ownership_rows(provider_ids=normalized)
+        return {
+            str(row["release_group_mbid"]).casefold()
+            for row in rows
+            if row.get("release_group_mbid")
+        }
+
+    async def existing_artist_mbids(self, identifiers: list[str]) -> set[str]:
+        return await self._store.target_existing_provider_artist_ids(identifiers)
 
     async def get_all_album_mbids(self) -> set[str]:
         return await self.get_library_mbids()
@@ -252,6 +267,27 @@ class TargetLibraryRepository:
         )
         return [self._to_library_album(row) for row in rows]
 
+    async def get_home_albums(self, limit: int = 15) -> list[LibraryAlbum]:
+        rows, _ = await self._store.list_target_albums(
+            limit=min(max(limit, 1), 500), offset=0, sort="recent"
+        )
+        return [self._to_library_album(row) for row in rows]
+
+    async def get_home_artists(self, limit: int = 15) -> list[dict[str, Any]]:
+        rows, _ = await self._store.list_target_artists(
+            limit=min(max(limit, 1), 500), offset=0, sort_order="asc"
+        )
+        return [
+            {
+                "mbid": row.get("provider_artist_mbid"),
+                "local_id": row["artist_mbid"],
+                "name": row["artist_name"],
+                "album_count": int(row.get("album_count") or 0),
+                "date_added": row.get("date_added"),
+            }
+            for row in rows
+        ]
+
     async def get_albums_page(
         self,
         page: int = 1,
@@ -317,9 +353,11 @@ class TargetLibraryRepository:
             for row in rows
         ]
 
-    async def get_requested_mbids(self) -> set[str]:
+    async def get_requested_mbids(self, ids: list[str] | None = None) -> set[str]:
         if self._request_history is None:
             return set()
+        if ids is not None:
+            return await self._request_history.async_existing_requested_mbids(ids)
         return await self._request_history.async_get_requested_mbids()
 
     async def has_recording(self, track_id: str) -> bool:

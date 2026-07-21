@@ -46,24 +46,21 @@ services:
     environment:
       - PUID=1000            # Run `id` on your host to find your user/group ID
       - PGID=1000
+      - UMASK=027            # Secure default; use 002 for trusted group-writable media
       - PORT=8688
       - TZ=Etc/UTC           # Your timezone, e.g. Europe/London, America/New_York
-      - SLSKD_DOWNLOADS_PATH=/slskd-downloads
+      - SLSKD_DOWNLOADS_PATH=/data/slskd/complete
     ports:
       - "8688:8688"
     volumes:
       - ./config:/app/config  # Persistent app configuration
       - ./cache:/app/cache    # Cover art and metadata cache
       - ./plugins:/app/plugins  # Installed plugins (omit and they vanish on recreate)
-      - ./imports:/app/imports  # Drop-importer staging (optional; same filesystem as /music = atomic imports)
-      - /path/to/music:/music:rw          # Your music library (read-write: the engine imports into it)
-      # REQUIRED for imports: bind-mount slskd's COMPLETED-downloads dir read-write, on
-      # the SAME filesystem as /music above. Use the EXACT path from slskd's
-      # directories.downloads (Options -> Directories; often a .../complete folder), NOT a
-      # parent like your media root - mount a parent and downloads finish in slskd but show
-      # as "failed" here. The engine MOVES finished files into the library (atomic
-      # os.rename), so both must share one filesystem. See slskd Setup below.
-      - /path/to/slskd/complete:/slskd-downloads:rw   # == slskd's directories.downloads
+      - /path/to/media/imports:/app/imports  # Optional persistent drop-import staging
+      # One common-parent mount enables fast moves between /data/slskd/complete and
+      # /data/music. Configure /data/music as the library root. Do not add nested binds
+      # beneath /data: each bind is a separate rename boundary even when it is on one disk.
+      - /path/to/media:/data:rw
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
@@ -126,7 +123,7 @@ Open [http://localhost:8688](http://localhost:8688). On first launch you'll be p
 
 DroppedNeedle replaces Lidarr with a built-in library and download engine. It scans your music, identifies each file, tags it with mutagen, and organises it. Requests for whole albums or individual tracks are searched against your own slskd, scored, verified, and moved into the library. There is no Lidarr, no coexistence, and no toggle.
 
-> **The slskd downloads mount is required for imports.** DroppedNeedle must bind-mount slskd's downloads directory **read-write**, on the **same filesystem** as your library, or finished downloads will succeed in slskd but never import (the import is an atomic `os.rename` move). See [slskd Setup](#slskd-setup).
+> **The slskd downloads path is required for imports.** DroppedNeedle must be able to see it read-write. A common container mount with the library enables a fast atomic move; separate mounts use a safe copy-and-remove fallback and briefly need space for both copies. See [slskd Setup](#slskd-setup).
 
 ### Legality boundary
 
@@ -251,7 +248,7 @@ This walks you from a running container to a library that imports downloads. The
 
 ### 1. Configure library paths
 
-As admin, go to **Settings > Library** and add your library path(s), using the in-container path (for example `/music`). DroppedNeedle validates the path at startup and on save; a non-writable or missing path is reported there rather than crashing the app.
+As admin, go to **Settings > Library** and add your library path(s), using the in-container path (for example `/data/music`). DroppedNeedle validates the path at startup and on save; a non-writable or missing path is reported there rather than crashing the app.
 
 ### 2. Configure the download client
 
@@ -261,7 +258,7 @@ Go to **Settings > Download Client** (admin):
 2. Enter your slskd API key.
 3. Click **Test**, then **Save**.
 
-The page shows the downloads-mount health (set, exists, writable, same filesystem). If it warns, fix the bind-mount before requesting downloads. See [slskd Setup](#slskd-setup).
+The page shows whether the downloads path is writable and shares a rename boundary with the library. An unavailable or read-only path must be fixed before requesting downloads. A separate-mount warning means imports will work through the slower copy-and-remove fallback. See [slskd Setup](#slskd-setup).
 
 ### 3. Run a library scan
 
@@ -294,23 +291,22 @@ DroppedNeedle does not download from Soulseek itself. It talks to your own runni
 
 This is the single most common misconfiguration, so read it carefully.
 
-When slskd finishes a download it writes the file into its own downloads directory (`slskd.yml` -> `directories.downloads`), preserving the remote folder structure. DroppedNeedle imports a finished download by moving that file out of slskd's downloads directory into your library with an atomic `os.rename`: no copy, no leftover, no doubled storage.
+When slskd finishes a download it writes the file into its own downloads directory (`slskd.yml` -> `directories.downloads`), preserving the remote folder structure. DroppedNeedle first tries to move the file into the library atomically. If the container paths cross a mount boundary, it copies the file and removes the source only after the copy succeeds.
 
-For that move to work, DroppedNeedle must be able to see slskd's downloads directory, and it must be on the same filesystem as your music library:
+For reliable imports, DroppedNeedle must be able to see slskd's downloads directory:
 
-- Bind-mount slskd's downloads directory into the DroppedNeedle container read-write. Use the **exact** path from slskd's `directories.downloads` (often a `.../complete` folder) - **not a parent** of it. Mounting a parent (e.g. your whole media share) makes DroppedNeedle search the entire tree and give up: downloads finish in slskd but show as **failed** here. The settings page warns when it detects this.
-- Put it on the same filesystem as the library mount (a cross-filesystem rename fails with `EXDEV`).
-- Point DroppedNeedle at the in-container path with `SLSKD_DOWNLOADS_PATH`.
+- Expose slskd's completed-downloads directory read-write. A common-parent bind such as `/data` is recommended because the library and downloads remain on one container mount boundary.
+- Point `SLSKD_DOWNLOADS_PATH` at the **exact completed-downloads directory** inside that mount, often `/data/slskd/complete`. Pointing it at the parent makes DroppedNeedle search the wrong tree.
+- Do not add separate nested binds for `/data/music` or `/data/slskd/complete`. Each bind creates another container mount boundary even when both host paths are on one disk.
 
-DroppedNeedle validates this at startup (set, exists, writable, same filesystem as the library) and marks the download client **DEGRADED** with a clear reason if it fails. It still boots to the UI so you can fix it, rather than refusing to start.
+DroppedNeedle validates that the path is set, present, and writable. It reports whether fast moves are available and explains the safe copy fallback when the paths use different mount IDs. It still boots to the UI so you can correct a broken path.
 
 ```yaml
 # In the droppedneedle service of your compose file:
 environment:
-  - SLSKD_DOWNLOADS_PATH=/slskd-downloads
+  - SLSKD_DOWNLOADS_PATH=/data/slskd/complete
 volumes:
-  - /path/to/your/music:/music:rw                  # library
-  - /path/to/slskd/downloads:/slskd-downloads:rw   # MUST be the same filesystem as /music
+  - /path/to/media:/data:rw  # library at /data/music; slskd completes at /data/slskd/complete
 ```
 
 ### API key
@@ -348,7 +344,7 @@ DroppedNeedle's second download source is Usenet through SABnzbd with Newznab-co
 
 - [SABnzbd](https://sabnzbd.org/) with an API key.
 - One or more Newznab-compatible indexers (NZBGeek, NZBPlanet, NZB.su, Slug, and others) with API keys.
-- SABnzbd's completed downloads directory and your music library must be on the same filesystem. The import uses an atomic rename, same as the slskd path.
+- Expose SABnzbd's completed downloads directory read-write. Keep it under the same common-parent container mount as the library for fast moves; a separate mount uses the safe copy-and-remove fallback.
 
 ### Configuration
 
@@ -360,8 +356,8 @@ slskd and Usenet can be enabled side by side - the source priority control decid
 
 ## Troubleshooting
 
-- **Downloads complete in slskd but nothing imports.** The slskd-downloads bind-mount is missing or misconfigured. Confirm it is mounted read-write, on the same filesystem as the library, and that `SLSKD_DOWNLOADS_PATH` points at it. The Download Client settings page shows the mount status and the exact reason.
-- **Download client shows DEGRADED.** The startup validator could not confirm the downloads mount (unset, missing, not writable, or not the same filesystem). Fix the mount and restart.
+- **Downloads complete in slskd but nothing imports.** Confirm the completed-downloads path is visible read-write and that `SLSKD_DOWNLOADS_PATH` points at the exact directory. The Download Client settings page shows the path status and reason.
+- **Download client shows a separate-mount warning.** Imports remain safe but use copy-and-remove instead of a fast move, temporarily requiring room for both copies. Use one common-parent `/data` bind and remove nested binds to enable fast moves.
 - **slskd connection fails or returns 401.** The URL or API key is wrong, or the key is not configured in `slskd.yml`. Re-check both under **Settings > Download Client** and use **Test**.
 - **Searches return nothing or you get disconnected.** Confirm slskd has shared folders and a healthy Soulseek connection. Leechers are banned.
 - **Scan finds nothing or files go to manual review.** Confirm the library path is correct and readable. Files with no tags and no fingerprint match need manual identification.
@@ -572,9 +568,10 @@ DroppedNeedle stores its config in `config/config.json` inside the mapped config
 |-|-|-|
 | `PUID` | `1000` | User ID for file ownership inside the container |
 | `PGID` | `1000` | Group ID for file ownership inside the container |
+| `UMASK` | `027` | Octal file-creation mask. `027` allows owner writes and group reads; `002` allows trusted group members to write. Invalid values stop startup. |
 | `PORT` | `8688` | Port the application listens on |
 | `TZ` | `Etc/UTC` | Container timezone |
-| `SLSKD_DOWNLOADS_PATH` | `/data/downloads/slskd` | In-container path where slskd's downloads dir is bind-mounted (read-write, same filesystem as the library). The import moves finished files from here into the library. |
+| `SLSKD_DOWNLOADS_PATH` | `/data/downloads/slskd` | Exact in-container path to slskd's completed downloads. The Compose example overrides this with `/data/slskd/complete`; keep either path inside the library's common-parent mount for fast moves. |
 
 Run `id` on your host to find your PUID and PGID values.
 
@@ -583,6 +580,13 @@ Run `id` on your host to find your PUID and PGID values.
 > cache paths. The container works without `chown` when those paths are already writable,
 > which covers FUSE/shfs, NFS, CIFS, and non-root containers that reject ownership
 > changes. A read-only config or cache mount is refused before an upgrade changes data.
+
+`UMASK` controls permissions on newly created files; it does not rewrite existing
+permissions. Keep the default `027` for a private deployment. Use `002` when DroppedNeedle
+and another trusted service share a group and both must modify the same media. Avoid `000`:
+it makes new files writable by every local account allowed by the underlying filesystem.
+A move or metadata-preserving copy can retain a source file's existing mode, so `UMASK`
+is not a way to override permissions supplied by a download client.
 
 ### In-App Settings
 
@@ -683,11 +687,11 @@ A note on reliability: YouTube playback depends on the embedded player, which ca
 | `/app/config` | Application config (`config.json`) |
 | `/app/cache` | Cover art cache, metadata cache, SQLite databases |
 | `/app/plugins` | Installed plugins. Mount it, or plugins you install disappear when the container is recreated |
-| `/app/imports` | Staging for the drop importer (optional). On the **same filesystem** as `/music`, imports are atomic renames rather than byte copies |
-| `/music` | Music library root (read-write: the native engine imports into it) |
-| `/slskd-downloads` | slskd's downloads directory, bind-mounted read-write on the **same filesystem** as `/music` (required for the move-import) |
+| `/app/imports` | Persistent staging for the drop importer (optional) |
+| `/data/music` | Recommended music library root inside the common media mount |
+| `/data/slskd/complete` | Recommended slskd completed-downloads path inside the common media mount |
 
-Map `/app/config`, `/app/cache`, and `/app/plugins` to persistent host directories so they survive container restarts. The `/music` and slskd-downloads mounts must share one filesystem - see [slskd Setup](#slskd-setup). `/app/imports` is optional, but leave it unmounted and large uploads land on the container's writable layer, while anything waiting for a manual match is lost when the container is recreated.
+Map `/app/config`, `/app/cache`, and `/app/plugins` to persistent host directories so they survive container restarts. For fast imports, expose the library and completed downloads through one common-parent mount such as `/data`; separate or nested binds use the safe copy-and-remove fallback and temporarily require room for both copies. Linux paths are case-sensitive, so host-path casing must match exactly. See [slskd Setup](#slskd-setup). `/app/imports` is optional, but leave it unmounted and large uploads land on the container's writable layer, while anything waiting for a manual match is lost when the container is recreated.
 
 ---
 

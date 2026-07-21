@@ -13,9 +13,10 @@ services:
     environment:
       - PUID=1000            # your host user/group; run `id` to find them (Unraid: usually 99/100)
       - PGID=1000            # ignored if you start the container with Docker --user
+      - UMASK=027            # owner rw, group r, others none; use 002 for group-writable media
       - PORT=8688            # must match the container port under "ports"
       - TZ=Etc/UTC           # e.g. America/New_York, Europe/London
-      - SLSKD_DOWNLOADS_PATH=/slskd-downloads  # container path of the slskd mount below
+      - SLSKD_DOWNLOADS_PATH=/data/slskd/complete  # path inside the common media mount below
       # - TRUSTED_PROXY_IPS=172.17.0.1  # your reverse proxy's IP; defaults to * (fine for single-host)
     ports:
       - "8688:8688"          # host:container
@@ -23,18 +24,15 @@ services:
       - ./config:/app/config       # config + database
       - ./cache:/app/cache         # cover art and metadata cache
       - ./plugins:/app/plugins     # installed plugins; omit and they vanish on recreate
-      # OPTIONAL: drop-importer staging. Put it on the same filesystem as /music and an
-      # import is an atomic rename instead of a byte copy. Omit and uploads land on the
-      # container's writable layer, and anything awaiting a manual match is lost on recreate.
-      - ./imports:/app/imports
-      - /path/to/music:/music:rw   # your library; imports land here
-      # slskd's COMPLETED-downloads folder (its Options > Directories > "downloads", often a
-      # .../complete dir) - the exact folder, NOT a parent, or imports show as "failed". Keep
-      # it on the same filesystem as /music so imports are an atomic rename.
-      - /path/to/slskd/complete:/slskd-downloads:rw
-      # OPTIONAL (Usenet): SABnzbd's complete_dir. Must match the Downloads mount in
-      # Settings > Download Client > SABnzbd, and sit on the same filesystem as /music. Omit if unused.
-      - /path/to/sabnzbd/complete:/sabnzbd-downloads:rw
+      # One common-parent mount keeps the library and completed downloads on one container
+      # mount boundary, enabling fast atomic moves. Configure the library root as /data/music.
+      # Avoid nested binds beneath /data: they create new mount boundaries even on one disk.
+      - /path/to/media:/data:rw
+      # OPTIONAL drop-import staging. Put its host path beneath /path/to/media and map it to
+      # /app/imports if you need uploads awaiting a manual match to survive recreation.
+      - /path/to/media/imports:/app/imports
+      # OPTIONAL (Usenet): point the SABnzbd Downloads mount setting at
+      # /data/sabnzbd/complete so it also uses this common media mount.
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
@@ -55,7 +53,7 @@ services:
 #      - ./slskd/config:/app   # slskd.yml lives here
 #      # slskd needs at least one shared folder (slskd.yml: shares.directories) or Soulseek
 #      # bans it. Its downloads dir here is /downloads, so point the service's slskd mount
-#      # above at the SAME host path (/path/to/slskd/downloads:/slskd-downloads).
-#      - /path/to/slskd/downloads:/downloads:rw
+#      # above at the corresponding host path beneath the common media parent.
+#      - /path/to/media/slskd/complete:/downloads:rw
 #    environment:
 #      - SLSKD_REMOTE_CONFIGURATION=true

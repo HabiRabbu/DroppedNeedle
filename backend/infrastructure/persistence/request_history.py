@@ -480,6 +480,31 @@ class RequestHistoryStore:
 
         return await self._read(operation)
 
+    async def async_existing_requested_mbids(self, ids: list[str]) -> set[str]:
+        """Return active request state only for the supplied release-group IDs."""
+        normalized = list(
+            dict.fromkeys(value.strip().casefold() for value in ids if value.strip())
+        )
+        if not normalized:
+            return set()
+        status_placeholders = ",".join("?" for _ in self._USER_ACTIVE_STATUSES)
+
+        def operation(conn: sqlite3.Connection) -> set[str]:
+            found: set[str] = set()
+            for offset in range(0, len(normalized), 500):
+                batch = normalized[offset : offset + 500]
+                id_placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    "SELECT musicbrainz_id_lower FROM request_history "
+                    f"WHERE musicbrainz_id_lower IN ({id_placeholders}) "
+                    f"AND status IN ({status_placeholders})",
+                    (*batch, *self._USER_ACTIVE_STATUSES),
+                ).fetchall()
+                found.update(str(row["musicbrainz_id_lower"]) for row in rows)
+            return found
+
+        return await self._read(operation)
+
     async def async_get_active_requests(self) -> list[RequestHistoryRecord]:
         def operation(conn: sqlite3.Connection) -> list[RequestHistoryRecord]:
             rows = conn.execute(

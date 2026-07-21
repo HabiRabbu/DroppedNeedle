@@ -10,7 +10,43 @@ from infrastructure.file_utils import atomic_write_json, read_json
 logger = logging.getLogger(__name__)
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
-_PREFERENCES_OWNED_CONFIG_KEYS = frozenset({"user_preferences"})
+_PREFERENCES_OWNED_CONFIG_KEYS = frozenset(
+    {
+        "_internal",
+        "_legacy_lidarr",
+        "advanced_settings",
+        "connect_apps",
+        "download_client",
+        "download_clients",
+        "download_policy",
+        "events",
+        "free_music",
+        "get_it",
+        "indexers",
+        "jellyfin_settings",
+        "lastfm_settings",
+        "library_scan_schedule",
+        "library_settings",
+        "library_sync_settings",
+        "lidarr_import",
+        "listenbrainz_settings",
+        "local_files_settings",
+        "musicbrainz_settings",
+        "navidrome_settings",
+        "oidc_settings",
+        "plex_settings",
+        "plugins",
+        "primary_music_source",
+        "scrobble_settings",
+        "security_settings",
+        "source_priority",
+        "spotify_settings",
+        "user_preferences",
+        "wanted",
+        "wrapped_settings",
+        "youtube_settings",
+    }
+)
 
 
 class Settings(BaseSettings):

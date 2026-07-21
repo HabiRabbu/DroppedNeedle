@@ -75,7 +75,8 @@
 	const MOUNT_REASONS: Record<string, string> = {
 		not_set: 'No slskd downloads folder is mounted into DroppedNeedle.',
 		missing: "The mounted downloads folder doesn't exist.",
-		not_writable: 'The downloads mount is read-only - imports MOVE files, so it must be writable.'
+		not_writable:
+			'The downloads mount is read-only - imports must remove source files after they are placed.'
 	};
 
 	function currentConfig(): DownloadClientConfig | null {
@@ -254,27 +255,42 @@
 						</button>
 					</div>
 				</div>
-			{:else if mount?.ok}
+			{:else if mount?.ok && mount.move_supported}
 				<div class="flex items-center gap-2 text-sm text-success">
 					<CircleCheck class="size-4" aria-hidden="true" />
-					Reachable on the same disk as your library
+					Fast move available
 					{#if mount.path}<code class="text-base-content/60">{mount.path}</code>{/if}
 				</div>
-			{:else if mount?.reason === 'different_filesystem'}
+			{:else if mount?.reason === 'different_mount' || mount?.reason === 'different_filesystem'}
 				<div class="alert alert-info items-start text-sm">
 					<Info class="size-5 shrink-0" aria-hidden="true" />
 					<div class="space-y-1">
 						<p>
-							Your downloads and library are on different filesystems. Imports still work -
-							DroppedNeedle copies each file into the library instead of moving it instantly, so
-							it's a bit slower and briefly needs room for both copies.
+							Your downloads and library use separate container mount boundaries. DroppedNeedle will
+							copy each file into the library and remove the source after the copy succeeds. This is
+							slower and temporarily needs room for both copies.
 						</p>
 						<p class="text-base-content/70">
-							For instant moves, keep slskd's downloads and your music library on the same
-							filesystem.
+							For fast moves, expose both folders through one common-parent container mount.
 							{#if mount.path}<code class="text-base-content/60">{mount.path}</code>{/if}
 						</p>
 					</div>
+				</div>
+			{:else if mount?.reason === 'stat_error'}
+				<div class="alert alert-info items-start text-sm">
+					<Info class="size-5 shrink-0" aria-hidden="true" />
+					<p>
+						The downloads path is writable, but DroppedNeedle couldn't determine whether a fast move
+						is available. Imports will try the move first and copy when needed.
+					</p>
+				</div>
+			{:else if mount?.ok}
+				<div class="alert alert-info items-start text-sm">
+					<Info class="size-5 shrink-0" aria-hidden="true" />
+					<p>
+						The downloads path is ready. Configure a library root before DroppedNeedle can check
+						whether fast moves are available.
+					</p>
 				</div>
 			{:else if mount}
 				<div class="alert alert-warning items-start text-sm">
@@ -288,10 +304,9 @@
 						<details class="text-xs">
 							<summary class="cursor-pointer font-semibold">How to set this up</summary>
 							<p class="mt-1 text-base-content/70">
-								Mount slskd's download directory into DroppedNeedle <strong>read-write</strong>, on
-								the
-								<strong>same disk</strong> as your music library (imports move files with an atomic
-								rename). See the slskd setup guide (<code>docs/SLSKD_SETUP.md</code>).
+								Expose slskd's completed-downloads directory to DroppedNeedle
+								<strong>read-write</strong>. For fast moves, keep it and the library inside one
+								common-parent container mount. See the slskd setup section in the README.
 							</p>
 						</details>
 					</div>

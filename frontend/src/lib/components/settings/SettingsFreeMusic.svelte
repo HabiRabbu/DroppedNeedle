@@ -2,6 +2,8 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { ExternalLink, Landmark } from 'lucide-svelte';
 	import { API } from '$lib/constants';
+	import { HomeQueryKeyFactory } from '$lib/queries/HomeQueryKeyFactory';
+	import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 	import type { FreeMusicSettings } from '$lib/types';
 	import { createSettingsForm } from '$lib/utils/settingsForm.svelte';
 
@@ -10,7 +12,11 @@
 	const form = createSettingsForm<FreeMusicSettings>({
 		loadEndpoint: API.settingsFreeMusic(),
 		saveEndpoint: API.settingsFreeMusic(),
-		refreshIntegration: true
+		refreshIntegration: true,
+		afterSave: () =>
+			invalidateQueriesWithPersister({ queryKey: HomeQueryKeyFactory.prefix }).catch(
+				() => undefined
+			)
 	});
 
 	onMount(() => form.load());

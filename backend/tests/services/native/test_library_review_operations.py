@@ -310,6 +310,52 @@ async def _seed_album(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_resolves_review_when_its_album_disappears(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    await store.request_scan_run(
+        ScanRequest(
+            kind="incremental",
+            trigger="manual",
+            policy_revision="policy-1",
+            scopes=[
+                ScanScope(
+                    root_id="root",
+                    relative_path=".",
+                    effective_policy="automatic",
+                    policy_revision="policy-1",
+                )
+            ],
+        ),
+        run_id="missing-review-scan",
+        requested_at=2,
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE library_scan_run_scopes SET discovery_state = 'completed' "
+            "WHERE run_id = 'missing-review-scan'"
+        )
+
+    result = await store.reconcile_scan_scope_batch(
+        "missing-review-scan", "root", ".", now=3, limit=100
+    )
+
+    assert result["missing"] == 1
+    assert result["reviews_resolved"] == 1
+    with sqlite3.connect(db_path) as connection:
+        track = connection.execute(
+            "SELECT availability FROM local_tracks WHERE id = 'track-1-1'"
+        ).fetchone()
+        review = connection.execute(
+            "SELECT state, reason_code FROM library_identification_reviews "
+            "WHERE id = 'review-1'"
+        ).fetchone()
+    assert track == ("missing",)
+    assert review == ("resolved", "SUBJECT_MISSING")
+
+
+@pytest.mark.asyncio
 async def test_review_cursor_filters_and_detail_are_bounded(
     store: NativeLibraryStore,
 ) -> None:

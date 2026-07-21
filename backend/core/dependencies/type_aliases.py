@@ -34,6 +34,7 @@ from services.native.library_policy_service import LibraryPolicyService
 from services.native.target_library_policy_service import TargetLibraryPolicyService
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.library_scan_coordinator import LibraryScanCoordinator
+from services.native.library_ownership_service import LibraryOwnershipService
 from services.native.identification_queue_service import IdentificationQueueService
 from services.native.album_coverage_service import AlbumCoverageService
 from services.native.album_identification_service import AlbumIdentificationService
@@ -48,6 +49,7 @@ from services.native.explicit_reidentification_worker import (
 )
 from services.native.target_native_library_service import TargetNativeLibraryService
 from services.native.target_catalog_writer_service import TargetCatalogWriterService
+from services.native.wanted_watcher_service import WantedWatcherService
 from services.search_service import SearchService
 from services.search_enrichment_service import SearchEnrichmentService
 from services.artist_service import ArtistService
@@ -108,6 +110,7 @@ from .service_providers import (
     get_target_library_policy_service,
     get_library_policy_resolver,
     get_target_library_scan_coordinator,
+    get_target_library_ownership_service,
     get_target_identification_queue,
     get_target_album_coverage_service,
     get_target_album_identification_service,
@@ -120,6 +123,7 @@ from .service_providers import (
     get_target_explicit_reidentification_worker,
     get_target_native_library_service,
     get_target_catalog_writer_service,
+    get_wanted_watcher_service,
     get_cached_local_artwork_service,
     get_search_service,
     get_search_enrichment_service,
@@ -170,6 +174,9 @@ LibraryPolicyResolverDep = Annotated[
 ]
 TargetLibraryScanCoordinatorDep = Annotated[
     LibraryScanCoordinator, Depends(get_target_library_scan_coordinator)
+]
+TargetLibraryOwnershipServiceDep = Annotated[
+    LibraryOwnershipService, Depends(get_target_library_ownership_service)
 ]
 TargetIdentificationQueueDep = Annotated[
     IdentificationQueueService, Depends(get_target_identification_queue)
@@ -249,6 +256,9 @@ RequestHistoryStoreDep = Annotated[
     RequestHistoryStore, Depends(get_request_history_store)
 ]
 WantedStoreDep = Annotated[WantedStore, Depends(get_wanted_store)]
+WantedWatcherServiceDep = Annotated[
+    WantedWatcherService, Depends(get_wanted_watcher_service)
+]
 RequestsPageServiceDep = Annotated[
     RequestsPageService, Depends(get_requests_page_service)
 ]

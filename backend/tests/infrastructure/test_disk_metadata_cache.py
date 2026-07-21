@@ -22,6 +22,7 @@ async def test_set_album_serializes_msgspec_struct_as_mapping(tmp_path):
         artist_name="beabadoobee",
         artist_id="88d17133-abbc-42db-9526-4e2c1db60336",
         in_library=True,
+        selected_release_mbid="2a835d2e-907e-4b9c-8b36-e8ad4c2e8257",
     )
 
     await cache.set_album(mbid, album_info, is_monitored=True)
@@ -32,10 +33,12 @@ async def test_set_album_serializes_msgspec_struct_as_mapping(tmp_path):
 
     assert isinstance(payload, dict)
     assert payload["musicbrainz_id"] == mbid
+    assert payload["selected_release_mbid"] == "2a835d2e-907e-4b9c-8b36-e8ad4c2e8257"
 
     cached = await cache.get_album(mbid)
     assert isinstance(cached, dict)
     assert cached["title"] == "The Moon Song"
+    assert cached["selected_release_mbid"] == "2a835d2e-907e-4b9c-8b36-e8ad4c2e8257"
 
 
 @pytest.mark.asyncio

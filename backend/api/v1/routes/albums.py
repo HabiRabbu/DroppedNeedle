@@ -224,6 +224,7 @@ async def list_album_editions(
         items=[AlbumEditionItem(**item) for item in data["items"]],
         pinned_release_mbid=data["pinned_release_mbid"],
         owned_release_mbid=data["owned_release_mbid"],
+        selected_release_mbid=data["selected_release_mbid"],
     )
 
 
@@ -252,7 +253,7 @@ async def clear_album_edition(
     current_user: CurrentCuratorDep,
     album_service: AlbumService = Depends(get_album_service),
 ):
-    """Clear the pin (back to auto: owned edition, else ranked)."""
+    """Clear the pin and return to automatic edition selection."""
     try:
         await album_service.clear_edition_pin(album_id)
     except ValueError:
@@ -269,7 +270,7 @@ async def acquire_album_edition(
     current_user: CurrentCuratorDep,
     download_service=Depends(get_download_service),
 ):
-    """Fill the pinned/owned edition's missing tracks + upgrade its below-cutoff
+    """Fill the selected edition's missing tracks + upgrade its below-cutoff
     owned tracks (admin/trusted, D13). Never retags existing files (D15)."""
     result = await download_service.acquire_edition(current_user.id, album_id)
     return EditionAcquireResponse(**result)

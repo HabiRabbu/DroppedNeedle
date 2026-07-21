@@ -9,6 +9,7 @@ from repositories.musicbrainz_album import (
     MusicBrainzAlbumMixin,
     RecordingMatch,
     _RecordingSearchPayload,
+    _pick_best_release_group,
 )
 
 
@@ -28,12 +29,18 @@ _PAYLOAD = _RecordingSearchPayload(
             "id": "rec-sad",
             "title": "SAD!",
             "score": 100,
-            "artist-credit": [{"name": "XXXTENTACION", "artist": {"name": "XXXTENTACION"}}],
+            "artist-credit": [
+                {"name": "XXXTENTACION", "artist": {"name": "XXXTENTACION"}}
+            ],
             "releases": [
                 {
                     "id": "rel-q",
                     "title": "?",
-                    "release-group": {"id": "rg-q", "title": "?", "primary-type": "Album"},
+                    "release-group": {
+                        "id": "rg-q",
+                        "title": "?",
+                        "primary-type": "Album",
+                    },
                 }
             ],
         },
@@ -41,7 +48,9 @@ _PAYLOAD = _RecordingSearchPayload(
             "id": "rec-sad-2",
             "title": "SAD!",
             "score": 100,
-            "artist-credit": [{"name": "XXXTENTACION", "artist": {"name": "XXXTENTACION"}}],
+            "artist-credit": [
+                {"name": "XXXTENTACION", "artist": {"name": "XXXTENTACION"}}
+            ],
             "releases": [
                 {
                     "id": "rel-mega",
@@ -97,18 +106,20 @@ async def test_search_recordings_parses_and_dedupes_release_groups():
 @pytest.mark.asyncio
 async def test_search_recordings_blank_inputs_short_circuit():
     repo = _Repo()
-    with patch(
-        "repositories.musicbrainz_album.mb_api_get", AsyncMock()
-    ) as mock_get:
+    with patch("repositories.musicbrainz_album.mb_api_get", AsyncMock()) as mock_get:
         assert await repo.search_recordings("", "SAD!") == []
-        assert await repo.search_recordings("Artist", '   ') == []
+        assert await repo.search_recordings("Artist", "   ") == []
     mock_get.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_search_recordings_uses_cache_when_present():
     repo = _Repo()
-    cached = [RecordingMatch(recording_mbid="r", title="t", artist="a", score=1, release_groups=[])]
+    cached = [
+        RecordingMatch(
+            recording_mbid="r", title="t", artist="a", score=1, release_groups=[]
+        )
+    ]
     repo._cache.get = AsyncMock(return_value=cached)
     with patch("repositories.musicbrainz_album.mb_api_get", AsyncMock()) as mock_get:
         assert await repo.search_recordings("Artist", "Title") is cached
@@ -117,9 +128,65 @@ async def test_search_recordings_uses_cache_when_present():
 
 def test_include_all_types_bypasses_secondary_type_filter():
     repo = _Repo()
-    comp = {"id": "rg-comp", "title": "Sittin' by the Road", "primary-type": "Album",
-            "secondary-types": ["Compilation"]}
+    comp = {
+        "id": "rg-comp",
+        "title": "Sittin' by the Road",
+        "primary-type": "Album",
+        "secondary-types": ["Compilation"],
+    }
     assert repo._map_release_group_to_result(comp) is None
     mapped = repo._map_release_group_to_result(comp, include_all_types=True)
     assert mapped is not None
     assert mapped.musicbrainz_id == "rg-comp"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_recording_fallback_prefers_official_compilation_over_bootleg_live(
+    reverse: bool,
+) -> None:
+    releases = [
+        {
+            "id": "release-live",
+            "status": "Bootleg",
+            "date": "2019",
+            "release-group": {
+                "id": "rg-live",
+                "title": "Festival 2019",
+                "primary-type": "Album",
+                "secondary-types": ["Live"],
+            },
+        },
+        {
+            "id": "release-compilation",
+            "status": "Official",
+            "date": "2009-10-30",
+            "release-group": {
+                "id": "rg-compilation",
+                "title": "Greatest Hits",
+                "primary-type": "Album",
+                "secondary-types": ["Compilation"],
+            },
+        },
+    ]
+    if reverse:
+        releases.reverse()
+
+    assert _pick_best_release_group(releases) == (
+        "rg-compilation",
+        "Greatest Hits",
+    )
+
+
+def test_recording_fallback_keeps_bootleg_live_when_it_is_the_only_choice() -> None:
+    release = {
+        "id": "release-live",
+        "status": "Bootleg",
+        "release-group": {
+            "id": "rg-live",
+            "title": "Festival 2019",
+            "primary-type": "Album",
+            "secondary-types": ["Live"],
+        },
+    }
+
+    assert _pick_best_release_group([release]) == ("rg-live", "Festival 2019")

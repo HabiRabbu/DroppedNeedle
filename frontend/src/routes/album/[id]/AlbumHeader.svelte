@@ -157,8 +157,30 @@
 		() => authStore.isTrusted && downloadClientConfigured && !loadingTracks
 	);
 	const editions = $derived(editionsQuery.data?.items ?? []);
+	const pinnedEdition = $derived(editions.find((edition) => edition.is_pinned) ?? null);
 	const currentEdition = $derived(
-		editions.find((e) => e.is_pinned) ?? editions.find((e) => e.is_owned) ?? null
+		pinnedEdition ??
+			editions.find(
+				(edition) =>
+					edition.release_mbid ===
+					(tracksInfo?.selected_release_mbid ?? editionsQuery.data?.selected_release_mbid)
+			) ??
+			null
+	);
+	const hasEffectivePin = $derived(pinnedEdition !== null);
+	const editionActionLabel = $derived(
+		!libraryInLibrary
+			? 'Acquire this edition'
+			: libraryComplete
+				? 'Upgrade this edition'
+				: 'Complete this edition'
+	);
+	const editionActionTitle = $derived(
+		!libraryInLibrary
+			? "Request this edition's tracks"
+			: libraryComplete
+				? "Upgrade this edition's below-cutoff tracks"
+				: "Request this edition's missing tracks and upgrade its below-cutoff ones"
 	);
 	const pinMutation = setEditionPin();
 	const clearPinMutation = clearEditionPin();
@@ -320,10 +342,16 @@
 				<div class="flex flex-wrap items-center gap-2">
 					<div class="dropdown">
 						<button type="button" class="btn btn-ghost btn-xs gap-1" tabindex="0">
-							{#if editionsQuery.data?.pinned_release_mbid}
+							{#if hasEffectivePin}
 								<Pin class="h-3 w-3 text-primary" />
 							{/if}
-							Edition: {currentEdition ? editionLabel(currentEdition) : 'automatic'}
+							Edition: {hasEffectivePin
+								? currentEdition
+									? editionLabel(currentEdition)
+									: 'Automatic'
+								: currentEdition
+									? `Automatic · ${editionLabel(currentEdition)}`
+									: 'Automatic'}
 							<ChevronDown class="h-3 w-3" />
 						</button>
 						<ul
@@ -332,10 +360,10 @@
 							<li>
 								<button
 									type="button"
-									class:font-semibold={!editionsQuery.data?.pinned_release_mbid}
+									class:font-semibold={!hasEffectivePin}
 									onclick={() => void handlePickEdition(null)}
 								>
-									Automatic (follow the owned edition)
+									Automatic (best match for this library)
 								</button>
 							</li>
 							{#each editions as edition (edition.release_mbid)}
@@ -351,6 +379,9 @@
 											{#if edition.is_owned}
 												<span class="badge badge-success badge-xs">owned</span>
 											{/if}
+											{#if !hasEffectivePin && edition.release_mbid === editionsQuery.data?.selected_release_mbid}
+												<span class="badge badge-info badge-xs">automatic</span>
+											{/if}
 											{#if edition.is_pinned}
 												<span class="badge badge-primary badge-xs">pinned</span>
 											{/if}
@@ -361,23 +392,33 @@
 						</ul>
 					</div>
 					{#if currentEdition}
-						<button
-							class="btn btn-ghost btn-xs gap-1 {acquireQueued ? 'text-success' : 'text-primary'}"
-							onclick={handleAcquireEdition}
-							disabled={acquireMutation.isPending || acquireQueued}
-							title="Request this edition's missing tracks and upgrade its below-cutoff ones"
-						>
-							{#if acquireMutation.isPending}
-								<span class="loading loading-spinner loading-xs"></span>
-								Acquiring...
-							{:else if acquireQueued}
+						{#if libraryComplete && !libraryBelowCutoff}
+							<span
+								class="inline-flex h-6 items-center gap-1 px-2 text-xs font-medium text-success"
+								title="This edition is complete and meets your quality cutoff"
+							>
 								<Check class="h-3.5 w-3.5" />
-								Acquisition queued
-							{:else}
-								<Plus class="h-3.5 w-3.5" />
-								Acquire this edition
-							{/if}
-						</button>
+								Edition complete
+							</span>
+						{:else}
+							<button
+								class="btn btn-ghost btn-xs gap-1 {acquireQueued ? 'text-success' : 'text-primary'}"
+								onclick={handleAcquireEdition}
+								disabled={acquireMutation.isPending || acquireQueued}
+								title={editionActionTitle}
+							>
+								{#if acquireMutation.isPending}
+									<span class="loading loading-spinner loading-xs"></span>
+									Acquiring...
+								{:else if acquireQueued}
+									<Check class="h-3.5 w-3.5" />
+									Acquisition queued
+								{:else}
+									<Plus class="h-3.5 w-3.5" />
+									{editionActionLabel}
+								{/if}
+							</button>
+						{/if}
 					{/if}
 				</div>
 			{/if}

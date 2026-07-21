@@ -101,20 +101,33 @@ class TestLoadFromFileTypeValidation:
             settings.load_from_file()
         assert any("Unknown config key" in r.message for r in caplog.records)
 
-    def test_preferences_owned_key_does_not_warn(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "_internal",
+            "connect_apps",
+            "download_client",
+            "lastfm_settings",
+            "library_scan_schedule",
+            "library_settings",
+            "user_preferences",
+            "youtube_settings",
+        ],
+    )
+    def test_preferences_owned_keys_do_not_warn(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        key: str,
     ) -> None:
         config_path = tmp_path / "config.json"
-        _write_config(
-            config_path,
-            {"user_preferences": {"primary_types": ["album"]}},
-        )
+        _write_config(config_path, {key: {}})
 
         settings = _make_settings(config_file_path=config_path)
         with caplog.at_level(logging.WARNING):
             settings.load_from_file()
 
-        assert not any("user_preferences" in record.message for record in caplog.records)
+        assert not any(key in record.message for record in caplog.records)
 
     def test_invalid_url_in_file_raises(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.json"

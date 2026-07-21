@@ -60,6 +60,13 @@ logger = logging.getLogger(__name__)
 
 
 @singleton
+def get_background_workload_gate() -> "BackgroundWorkloadGate":
+    from services.native.background_workload_gate import BackgroundWorkloadGate
+
+    return BackgroundWorkloadGate()
+
+
+@singleton
 def get_cached_local_artwork_service() -> "CachedLocalArtworkService":
     from core.config import get_settings
     from services.home.cached_local_artwork_service import CachedLocalArtworkService
@@ -253,6 +260,7 @@ def get_target_library_scan_coordinator() -> "LibraryScanCoordinator":
         LibraryReconciler(store),
         get_library_policy_resolver,
         LibraryScanEventPublisher(store, get_sse_publisher()),
+        workload_gate=get_background_workload_gate(),
     )
 
 
@@ -726,7 +734,9 @@ def get_target_search_service() -> "SearchService":
     )
 
 
-def _build_artist_service(library_repo, library_db=None) -> "ArtistService":
+def _build_artist_service(
+    library_repo, library_db=None, ownership_service=None
+) -> "ArtistService":
     from services.artist_service import ArtistService
 
     mb_repo = get_musicbrainz_repository()
@@ -746,6 +756,7 @@ def _build_artist_service(library_repo, library_db=None) -> "ArtistService":
         audiodb_image_service,
         browse_queue,
         library_db,
+        ownership_service,
     )
 
 
@@ -756,7 +767,10 @@ def get_artist_service() -> "ArtistService":
 
 @singleton
 def get_target_artist_service() -> "ArtistService":
-    return _build_artist_service(get_target_library_repository())
+    return _build_artist_service(
+        get_target_library_repository(),
+        ownership_service=get_target_library_ownership_service(),
+    )
 
 
 @singleton
@@ -1314,6 +1328,7 @@ def _build_home_service(
         play_history_store=play_history_store,
         ownership_service=ownership_service,
         genre_artwork_service=genre_artwork_service,
+        workload_gate=get_background_workload_gate(),
     )
 
 
@@ -1687,6 +1702,7 @@ def _build_discover_service(
         ownership_service=ownership_service,
         genre_artwork_service=genre_artwork_service,
         discovery_snapshot_store=get_discovery_snapshot_store(),
+        workload_gate=get_background_workload_gate(),
     )
 
 
@@ -2006,6 +2022,7 @@ def _build_download_orchestrator(
         get_sabnzbd_download_client,
         get_slskd_indexer,
         get_usenet_search_indexer,
+        get_wanted_store,
     )
 
     prefs = get_preferences_service()
@@ -2064,6 +2081,7 @@ def _build_download_orchestrator(
         # Fresh reader (not the snapshot above) so an automatic re-dispatch re-gates a
         # stored candidate against the CURRENT quality range even mid-flight (Phase 2).
         get_download_policy=lambda: get_preferences_service().get_download_policy(),
+        wanted_store=get_wanted_store(),
     )
 
 

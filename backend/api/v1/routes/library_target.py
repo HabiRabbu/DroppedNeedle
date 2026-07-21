@@ -1,6 +1,7 @@
 import asyncio
+import logging
 
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
 
 from api.v1.schemas.library_target import (
@@ -16,26 +17,33 @@ from api.v1.schemas.library_target import (
 )
 from api.v1.schemas.library import (
     LibraryMbidsResponse,
+    LibraryMembershipRequest,
+    LibraryMembershipResponse,
     TrackResolveRequest,
     TrackResolveResponse,
     TrackTagUpdateRequest,
 )
 from api.v1.schemas.library_scan_target import LegacyScanShimResponse
-from core.exceptions import ResourceNotFoundError
+from core.exceptions import ResourceNotFoundError, ValidationError
 from core.dependencies.type_aliases import (
     LibraryPolicyResolverDep,
     PreferencesServiceDep,
     RequestHistoryStoreDep,
     TargetCatalogWriterServiceDep,
     TargetLibraryScanCoordinatorDep,
+    TargetLibraryOwnershipServiceDep,
     TargetNativeLibraryServiceDep,
     CachedLocalArtworkServiceDep,
+    WantedWatcherServiceDep,
 )
+from core.dependencies import get_download_service
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep, CurrentCuratorDep, CurrentUserDep
 from models.audio import AudioTag
 from models.library_work import ScanRequest
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     route_class=MsgSpecRoute,
@@ -167,6 +175,27 @@ async def get_target_provider_ids(
     )
 
 
+@router.post("/membership", response_model=LibraryMembershipResponse)
+async def get_target_membership(
+    _user: CurrentUserDep,
+    ownership: TargetLibraryOwnershipServiceDep,
+    request_history: RequestHistoryStoreDep,
+    body: LibraryMembershipRequest = MsgSpecBody(LibraryMembershipRequest),
+) -> LibraryMembershipResponse:
+    album_ids = list(
+        dict.fromkeys(value.strip().casefold() for value in body.album_ids if value.strip())
+    )
+    if len(album_ids) > 500:
+        raise ValidationError("Library membership accepts at most 500 album IDs.")
+    owned, requested = await asyncio.gather(
+        ownership.existing_provider_album_ids(album_ids),
+        request_history.async_existing_requested_mbids(album_ids),
+    )
+    return LibraryMembershipResponse(
+        owned_ids=sorted(owned), requested_ids=sorted(requested)
+    )
+
+
 @router.get("/recently-added", response_model=TargetNativeAlbumsResponse)
 async def get_target_recently_added(
     _user: CurrentUserDep,
@@ -285,11 +314,28 @@ async def remove_target_album(
     album_id: str,
     admin: CurrentAdminDep,
     writer: TargetCatalogWriterServiceDep,
+    wanted: WantedWatcherServiceDep,
     delete_files: bool = False,
+    stop_wanted: bool = True,
+    download_service=Depends(get_download_service),
 ) -> TargetCatalogRemovalResponse:
+    release_group_mbid = await writer.provider_release_group_id(album_id)
     removed = await writer.remove_album(
         album_id, actor_user_id=admin.id, delete_files=delete_files
     )
+    cleanup_id = release_group_mbid or album_id
+    try:
+        await download_service.purge_album_downloads(cleanup_id)
+    except Exception:  # noqa: BLE001 - removal already succeeded
+        logger.warning("Target album removal download cleanup failed")
+    if release_group_mbid:
+        try:
+            if stop_wanted:
+                await wanted.stop_after_library_removal(release_group_mbid)
+            else:
+                await wanted.continue_after_library_removal(release_group_mbid)
+        except Exception:  # noqa: BLE001 - removal already succeeded
+            logger.warning("Target album removal wanted-state cleanup failed")
     return TargetCatalogRemovalResponse(
         success=True, id=album_id, removed_track_ids=removed
     )

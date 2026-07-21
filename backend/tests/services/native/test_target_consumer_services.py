@@ -42,6 +42,7 @@ from models.local_catalog import (
     LocalArtistCredit,
     LocalTrack,
 )
+from services.album_service import AlbumService
 from services.compat.favorites_service import FavoritesService
 from services.compat.id_map_service import CompatIdMapService
 from services.compat.target_library_view_service import TargetLibraryViewService
@@ -63,6 +64,7 @@ from infrastructure.audio.tagger import AudioTagger
 from repositories.coverart_disk_cache import get_cache_filename
 from models.audio import AudioTag
 from services.native.target_reference_adapters import (
+    TargetAlbumReleasePinStore,
     TargetCompatIdMapStore,
     TargetFavoritesStore,
     TargetPlayHistoryStore,
@@ -313,6 +315,93 @@ async def test_target_repository_resolves_active_provider_and_local_album_ids(
         == LOCAL_ALBUM_ID
     )
     assert await repository.resolve_library_album_identifier("missing") is None
+
+
+@pytest.mark.asyncio
+async def test_album_service_selects_by_active_target_album_file_count(
+    target_services,
+) -> None:
+    store, _view, _favorites, _history, root = target_services
+    release_group_mbid = "70000000-0000-4000-8000-000000000001"
+    release_11 = "71000000-0000-4000-8000-000000000001"
+    release_20 = "72000000-0000-4000-8000-000000000001"
+    active_album_id = "10000000-0000-4000-8000-000000000091"
+    historical_album_id = "10000000-0000-4000-8000-000000000092"
+    active = _membership(
+        album_id=active_album_id,
+        track_id="20000000-0000-4000-8000-000000000091",
+        artist_id="30000000-0000-4000-8000-000000000091",
+        root=root,
+        title="Avalon Active",
+    )
+    active.tracks[0].track_number = 1
+    template = active.tracks[0]
+    for position in range(2, 21):
+        track_id = f"29000000-0000-4000-8000-{position:012d}"
+        path = root / f"{track_id}.flac"
+        path.write_bytes(b"fLaC" + b"\0" * 64)
+        track = msgspec.structs.replace(
+            template,
+            id=track_id,
+            file_path=str(path),
+            relative_path=path.name,
+            path_hash=f"hash:{track_id}",
+            stat_revision=f"stat:{track_id}",
+            title=f"Avalon Track {position}",
+            track_number=position,
+        )
+        active.tracks.append(track)
+        active.track_credits[track_id] = list(active.track_credits[template.id])
+    historical = _membership(
+        album_id=historical_album_id,
+        track_id="20000000-0000-4000-8000-000000000092",
+        artist_id="30000000-0000-4000-8000-000000000092",
+        root=root,
+        title="Avalon History",
+    )
+    historical.tracks = []
+    historical.track_credits = {}
+    await store.create_catalog_membership(active)
+    await store.create_catalog_membership(historical)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.executemany(
+            "INSERT INTO local_album_external_identities "
+            "(local_album_id, provider, release_group_mbid, decision_source, selected_at) "
+            "VALUES (?, 'musicbrainz', ?, 'manual', 3)",
+            [
+                (active_album_id, release_group_mbid),
+                (historical_album_id, release_group_mbid),
+            ],
+        )
+
+    service = object.__new__(AlbumService)
+    service._library_db = TargetLibraryRepository(store)
+    service._release_pins = TargetAlbumReleasePinStore(store)
+    payload = {
+        "id": release_group_mbid,
+        "releases": [
+            {
+                "id": release_11,
+                "status": "Official",
+                "country": "XW",
+                "media": [{"track-count": 11}],
+            },
+            {
+                "id": release_20,
+                "status": "Official",
+                "country": "US",
+                "media": [{"track-count": 20}],
+            },
+        ],
+    }
+
+    selected, owned, pinned = await service._effective_release_id(
+        release_group_mbid, payload
+    )
+
+    assert selected == release_20
+    assert owned is None
+    assert pinned is None
 
 
 @pytest.mark.asyncio
@@ -1195,6 +1284,11 @@ async def test_target_tag_and_removal_writers_audit_without_deleting_stable_rows
     membership.tracks[0].file_format = info.file_format
     membership.tracks[0].duration_seconds = info.duration_seconds
     await store.create_catalog_membership(membership)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE local_tracks SET stat_revision_kind = 'legacy_float' WHERE id = ?",
+            (track_id,),
+        )
     preferences = SimpleNamespace(
         get_typed_library_settings=lambda: SimpleNamespace(
             library_roots=[SimpleNamespace(path=str(root))]
@@ -1225,6 +1319,11 @@ async def test_target_tag_and_removal_writers_audit_without_deleting_stable_rows
     assert updated.musicbrainz_recording_id is None
     assert AudioTagger().read_tags(path)[0].title == "Edited locally"
     assert await store.get_catalog_revision() > before_revision
+    with sqlite3.connect(store.db_path) as connection:
+        stat_revision_kind = connection.execute(
+            "SELECT stat_revision_kind FROM local_tracks WHERE id = ?", (track_id,)
+        ).fetchone()[0]
+    assert stat_revision_kind == "exact"
 
     removed = await writer.remove_track(
         track_id, actor_user_id="user-1", delete_file=True
@@ -1265,6 +1364,12 @@ async def test_target_ownership_projection_is_conservative_and_provider_independ
             AlbumOwnershipCandidate(None, "Local Only", "Local Only Artist", 1900),
             AlbumOwnershipCandidate(None, "Unknown album", "Unknown artist", None),
             AlbumOwnershipCandidate(None, "Local", "Local Only Artist", None),
+            AlbumOwnershipCandidate(
+                "different-provider-id", "Identified", "Identified Artist", None
+            ),
+            AlbumOwnershipCandidate(
+                "unmatched-provider-id", "Local Only", "Local Only Artist", None
+            ),
         ]
     )
 
@@ -1274,6 +1379,8 @@ async def test_target_ownership_projection_is_conservative_and_provider_independ
         (False, None),
         (False, None),
         (False, None),
+        (False, None),
+        (True, LOCAL_ALBUM_ID),
     ]
     assert await ownership.provider_album_id(IDENTIFIED_ALBUM_ID) == RELEASE_GROUP_MBID
     assert await ownership.provider_track_id(IDENTIFIED_TRACK_ID) == RECORDING_MBID
@@ -1281,6 +1388,62 @@ async def test_target_ownership_projection_is_conservative_and_provider_independ
         await ownership.provider_album_id(LOCAL_ALBUM_ID)
     with pytest.raises(ProviderIdentityRequiredError):
         await ownership.provider_track_id(LOCAL_TRACK_ID)
+
+
+@pytest.mark.asyncio
+async def test_provider_album_snapshot_coalesces_and_rebuilds_by_catalog_revision(
+    target_services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, *_ = target_services
+    original_read = store._read
+    snapshot_builds = 0
+
+    async def counted_read(operation):
+        nonlocal snapshot_builds
+        if "target_provider_album_snapshot" in operation.__qualname__:
+            snapshot_builds += 1
+        return await original_read(operation)
+
+    monkeypatch.setattr(store, "_read", counted_read)
+
+    results = await asyncio.gather(
+        *(store.target_provider_album_snapshot() for _ in range(12))
+    )
+
+    assert snapshot_builds == 1
+    assert all(RELEASE_GROUP_MBID in values for _revision, values in results)
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE library_catalog_revision SET value = value + 1 WHERE singleton = 1"
+        )
+    await store.target_provider_album_snapshot()
+    assert snapshot_builds == 2
+
+
+@pytest.mark.asyncio
+async def test_local_ownership_backfill_normalizes_internal_whitespace(
+    target_services,
+) -> None:
+    store, *_ = target_services
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE local_albums SET title = 'Local   Only', "
+            "title_folded = 'local   only', "
+            "album_artist_name = 'Local\tOnly Artist', "
+            "album_artist_name_folded = 'local\tonly artist' WHERE id = ?",
+            (LOCAL_ALBUM_ID,),
+        )
+
+    reopened = NativeLibraryStore(store.db_path, store._write_lock)
+    projection = await LibraryOwnershipService(reopened).project_album(
+        release_group_mbid=None,
+        title="Local Only",
+        album_artist="Local Only Artist",
+    )
+
+    assert projection.owned is True
+    assert projection.local_album_id == LOCAL_ALBUM_ID
 
 
 @pytest.mark.asyncio

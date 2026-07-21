@@ -26,6 +26,7 @@ class LibraryReconciler:
             "excluded": 0,
             "restored": 0,
             "identification_enqueued": 0,
+            "reviews_resolved": 0,
         }
         for scope in scopes:
             while True:

@@ -96,9 +96,13 @@ NPM    ?= pnpm
 	feedback-fixes-benchmark \
 	feedback-fixes-root-mapping \
 	feedback-fixes-migration-rehearsal \
+	feedback-fixes-million-validation-rehearsal \
+	feedback-fixes-million-maintenance-rehearsal \
 	feedback-fixes-maintenance-rehearsal \
 	feedback-fixes-cli-rehearsal \
 	feedback-fixes-automatic-upgrade-rehearsal \
+	post-upgrade-million-rehearsal \
+	issue-224-performance \
 	backend-test-discover-all \
 	test-discover-all \
 	test-audiodb-all test-mus14-all test-sync-all \
@@ -562,6 +566,9 @@ feedback-fixes-benchmark: $(BACKEND_VENV_STAMP) ## Run the non-default Feedback 
 		--target-sizes 10000 115000 \
 		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-latest.json"
 
+issue-224-performance: $(BACKEND_VENV_STAMP) ## Run the reported-scale issue #224 ownership benchmark
+	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.issue_224_performance
+
 feedback-fixes-root-mapping: $(BACKEND_VENV_STAMP) ## Rehearse typed-root migration and path mapping in scratch
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_root_mapping \
 		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-root-mapping.json"
@@ -569,6 +576,19 @@ feedback-fixes-root-mapping: $(BACKEND_VENV_STAMP) ## Rehearse typed-root migrat
 feedback-fixes-migration-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse target import against a generated coherent copy
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_migration_rehearsal \
 		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-migration-latest.json"
+
+feedback-fixes-million-validation-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse cutover and startup validation with one million tracks and reviews
+	mkdir -p "$(ROOT_DIR)/.dev-notes/tmp"
+	cd "$(BACKEND_DIR)" && TMPDIR="$(ROOT_DIR)/.dev-notes/tmp" .venv/bin/python -m tests.benchmarks.feedback_fixes_million_validation_rehearsal \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-million-validation-latest.json"
+
+feedback-fixes-million-maintenance-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse the full closed-source migration with one million files
+	mkdir -p "$(ROOT_DIR)/.dev-notes/tmp"
+	cd "$(BACKEND_DIR)" && TMPDIR="$(ROOT_DIR)/.dev-notes/tmp" .venv/bin/python -m tests.benchmarks.feedback_fixes_maintenance_rehearsal \
+		--source-commit "$$(git -C "$(ROOT_DIR)" rev-parse HEAD)" \
+		--file-count 1000000 \
+		--managed-asset-bytes 134217728 \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-million-maintenance-latest.json"
 
 feedback-fixes-maintenance-rehearsal: $(BACKEND_VENV_STAMP) ## Rehearse closed-source manifest, target startup, and full rollback in scratch
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_maintenance_rehearsal \
@@ -584,6 +604,14 @@ feedback-fixes-cli-rehearsal: $(BACKEND_VENV_STAMP) ## Run the exact staged main
 feedback-fixes-automatic-upgrade-rehearsal: $(BACKEND_VENV_STAMP) ## Prove a normal image update, restart, and fresh install need no maintenance command
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_automatic_upgrade_rehearsal \
 		--output "$(ROOT_DIR)/.dev-notes/benchmarks/feedback-fixes-automatic-upgrade-latest.json"
+
+post-upgrade-million-rehearsal: feedback-fixes-million-maintenance-rehearsal $(BACKEND_VENV_STAMP) ## Rehearse migration plus million-file mixed and flat post-upgrade scans
+	mkdir -p "$(ROOT_DIR)/.dev-notes/tmp"
+	cd "$(BACKEND_DIR)" && TMPDIR="$(ROOT_DIR)/.dev-notes/tmp" .venv/bin/python -m tests.benchmarks.feedback_fixes_benchmark \
+		--sizes 1000000 \
+		--target-sizes 115000 1000000 \
+		--flat-grouping-size 1000000 \
+		--output "$(ROOT_DIR)/.dev-notes/benchmarks/post-upgrade-million-latest.json"
 
 backend-test-plex: $(BACKEND_VENV_STAMP) ## Run all Plex integration backend tests
 	$(PYTEST) tests/repositories/test_plex_repository.py tests/services/test_plex_playback_service.py tests/services/test_plex_library_service.py tests/routes/test_plex_routes.py tests/routes/test_plex_settings.py tests/routes/test_plex_auth.py tests/services/test_plex_integration_status.py tests/services/test_plex_settings_lifecycle.py -v

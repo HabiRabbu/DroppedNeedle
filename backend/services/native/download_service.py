@@ -19,6 +19,7 @@ from core.exceptions import (
 )
 from core.task_registry import TaskRegistry
 from infrastructure.persistence.download_store import DownloadStore
+from infrastructure.filesystem_mounts import check_move_boundary
 from infrastructure.queue.priority_queue import RequestPriority
 from infrastructure.sse_publisher import SSEPublisher
 from models.download import (
@@ -58,30 +59,50 @@ _LOSSLESS = {"flac", "alac", "wav", "ape", "wv"}
 def check_downloads_mount(
     downloads_path: Path | str | None, library_paths: list[Path]
 ) -> DownloadsMountStatus:
-    """Verify slskd's downloads dir is set -> exists -> writable -> on the same
-    filesystem as a library path (so the import ``os.rename`` won't fail with EXDEV).
-    Returns a structured per-condition reason; never raises."""
+    """Check path usability and whether imports can use a fast atomic move.
+
+    Separate mount boundaries remain usable through the importer's copy-and-remove
+    fallback. Returns a structured reason and never raises.
+    """
     if not downloads_path:
-        return DownloadsMountStatus(ok=False, reason="not_set", path="")
+        return DownloadsMountStatus(
+            ok=False, move_supported=False, reason="not_set", path=""
+        )
     path = Path(downloads_path)
     path_str = str(path)
     if not path.exists():
-        return DownloadsMountStatus(ok=False, reason="missing", path=path_str)
+        return DownloadsMountStatus(
+            ok=False, move_supported=False, reason="missing", path=path_str
+        )
     if not os.access(path, os.W_OK):
-        return DownloadsMountStatus(ok=False, reason="not_writable", path=path_str)
-    try:
-        dev = path.stat().st_dev
-        existing = [lib for lib in library_paths if lib.exists()]
-        same_fs = any(lib.stat().st_dev == dev for lib in existing)
-    except OSError as exc:
         return DownloadsMountStatus(
-            ok=False, reason=f"stat_error: {exc}", path=path_str
+            ok=False, move_supported=False, reason="not_writable", path=path_str
         )
-    if existing and not same_fs:
+    existing = [lib for lib in library_paths if lib.exists()]
+    if existing:
+        boundaries = [check_move_boundary(path, lib) for lib in existing]
+        if any(boundary.move_supported for boundary in boundaries):
+            return DownloadsMountStatus(
+                ok=True, move_supported=True, reason="ok", path=path_str
+            )
+        reason = next(
+            (
+                candidate
+                for candidate in (
+                    "different_mount",
+                    "different_filesystem",
+                    "stat_error",
+                )
+                if any(boundary.reason == candidate for boundary in boundaries)
+            ),
+            boundaries[0].reason,
+        )
         return DownloadsMountStatus(
-            ok=False, reason="different_filesystem", path=path_str
+            ok=True, move_supported=False, reason=reason, path=path_str
         )
-    return DownloadsMountStatus(ok=True, reason="ok", path=path_str)
+    return DownloadsMountStatus(
+        ok=True, move_supported=False, reason="ok", path=path_str
+    )
 
 
 class DownloadService:
@@ -852,7 +873,7 @@ class DownloadService:
 
     async def acquire_edition(self, user_id: str, release_group_mbid: str) -> dict:
         """'Acquire this edition' (Feature E, D13; the route guards admin/trusted):
-        for the pinned (else owned) edition's tracklist, request the MISSING tracks
+        for the effective edition's tracklist, request the MISSING tracks
         (origin='user', release as soft target D14) and upgrade the owned tracks that
         sit below the cutoff (origin='upgrade', per-recording floor). Scoped strictly
         to the edition's tracklist - a low-tier bonus track outside it never triggers
@@ -862,7 +883,7 @@ class DownloadService:
             raise ValidationError("Edition acquisition is unavailable")
         release_id = await self._album_service.resolve_edition(release_group_mbid)
         if not release_id:
-            raise ValidationError("No edition is pinned or owned for this album")
+            raise ValidationError("No MusicBrainz edition is available for this album")
         try:
             release = await self._mb.get_release_by_id(
                 release_id, includes=["recordings"]

@@ -5,6 +5,8 @@ import sqlite3
 import subprocess
 import sys
 import asyncio
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError
@@ -776,6 +778,24 @@ def test_target_exit_before_validation_restores_promoted_inputs(
     assert state["stage"] == "failed"
 
 
+def test_target_clean_exit_before_readiness_is_still_a_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(automatic_upgrade, "_target_ready", lambda _port: False)
+
+    result = run_target_supervisor(
+        settings,
+        command=[sys.executable, "-c", "raise SystemExit(0)"],
+        admission_timeout_seconds=1,
+    )
+
+    assert result == 1
+    assert "exited before it was ready" in capsys.readouterr().out
+
+
 def test_target_validation_commits_before_releasing_operational_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -849,6 +869,509 @@ async def test_target_lifespan_waits_for_durable_parent_admission(
     await asyncio.wait_for(task, timeout=1)
     assert not validated.exists()
     assert not admitted.exists()
+
+
+@pytest.mark.asyncio
+async def test_target_startup_progress_heartbeat_advances_while_stage_is_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    token = "b" * 32
+    monkeypatch.setenv(automatic_upgrade._ADMISSION_TOKEN_ENV, token)
+    monkeypatch.setattr(
+        automatic_upgrade, "_ADMISSION_HEARTBEAT_INTERVAL_SECONDS", 0.01
+    )
+    progress_path = automatic_upgrade._admission_progress_path(settings, token)
+
+    async with automatic_upgrade.target_startup_progress(
+        settings, "catalog_validation"
+    ):
+        await asyncio.sleep(0.035)
+        progress = automatic_upgrade._target_progress(progress_path, token)
+
+    assert progress is not None
+    assert progress["stage"] == "catalog_validation"
+    assert progress["sequence"] >= 3
+    assert progress["elapsed_seconds"] > 0
+
+    async with automatic_upgrade.target_startup_progress(settings, "admission"):
+        next_progress = automatic_upgrade._target_progress(progress_path, token)
+    assert next_progress is not None
+    assert next_progress["stage"] == "admission"
+    assert next_progress["sequence"] == 1
+
+
+def test_target_startup_heartbeat_extends_idle_deadline_until_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _write_unmigrated_database(settings.library_db_path)
+
+    def migrate(working: Path) -> dict[str, object]:
+        _mark_migrated(working / "cache" / "library.db")
+        return {"passed": True}
+
+    run_automatic_copy_upgrade(settings, runner=migrate, require_target_admission=True)
+
+    class FakeProcess:
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.thread: threading.Thread | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert self.thread is not None
+            self.thread.join(timeout)
+            return self.returncode or 0
+
+        def send_signal(self, _signum: int) -> None:
+            self.returncode = 1
+
+        def terminate(self) -> None:
+            self.returncode = 1
+
+        def kill(self) -> None:
+            self.returncode = 1
+
+    process = FakeProcess()
+
+    def start(_command: list[str], *, env: dict[str, str]) -> FakeProcess:
+        token = env[automatic_upgrade._ADMISSION_TOKEN_ENV]
+        validated, admitted = automatic_upgrade._admission_paths(settings, token)
+        progress = automatic_upgrade._admission_progress_path(settings, token)
+
+        def child() -> None:
+            for sequence in range(1, 7):
+                automatic_upgrade._write_state(
+                    progress,
+                    {
+                        "token": token,
+                        "stage": "catalog_validation",
+                        "sequence": sequence,
+                        "elapsed_seconds": sequence * 0.02,
+                    },
+                )
+                time.sleep(0.02)
+            automatic_upgrade._write_state(validated, {"token": token})
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and not admitted.exists():
+                time.sleep(0.005)
+            process.returncode = 0
+
+        process.thread = threading.Thread(target=child, daemon=True)
+        process.thread.start()
+        return process
+
+    monkeypatch.setattr(automatic_upgrade.subprocess, "Popen", start)
+    monkeypatch.setattr(automatic_upgrade, "_target_ready", lambda _port: True)
+
+    assert (
+        run_target_supervisor(
+            settings,
+            command=["target"],
+            admission_timeout_seconds=0.04,
+        )
+        == 0
+    )
+    state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["stage"] == "completed"
+
+
+def test_target_startup_without_heartbeat_times_out_with_sanitized_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _write_unmigrated_database(settings.library_db_path)
+
+    def migrate(working: Path) -> dict[str, object]:
+        _mark_migrated(working / "cache" / "library.db")
+        return {"passed": True}
+
+    run_automatic_copy_upgrade(settings, runner=migrate, require_target_admission=True)
+
+    class StalledProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode or 0
+
+        def send_signal(self, _signum: int) -> None:
+            self.returncode = 1
+
+        def terminate(self) -> None:
+            self.returncode = 1
+
+        def kill(self) -> None:
+            self.returncode = 1
+
+    monkeypatch.setattr(
+        automatic_upgrade.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: StalledProcess(),
+    )
+
+    assert (
+        run_target_supervisor(
+            settings,
+            command=["target"],
+            admission_timeout_seconds=0.02,
+        )
+        == 1
+    )
+    state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["error_type"] == "TargetStartupTimeout"
+    assert state["failure_evidence"]["last_stage"] == "process_start"
+    assert state["failure_evidence"]["elapsed_seconds"] >= 0.02
+    assert state["failure_evidence"]["returncode"] == 1
+    assert _source_value(settings.library_db_path) == "original"
+
+
+def test_target_startup_hard_timeout_stops_advancing_heartbeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _write_unmigrated_database(settings.library_db_path)
+
+    def migrate(working: Path) -> dict[str, object]:
+        _mark_migrated(working / "cache" / "library.db")
+        return {"passed": True}
+
+    run_automatic_copy_upgrade(settings, runner=migrate, require_target_admission=True)
+
+    class StalledProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode or 0
+
+        def send_signal(self, _signum: int) -> None:
+            self.returncode = 1
+
+        def terminate(self) -> None:
+            self.returncode = 1
+
+        def kill(self) -> None:
+            self.returncode = 1
+
+    sequence = 0
+
+    def progress(_path: Path, _token: str) -> dict[str, object]:
+        nonlocal sequence
+        sequence += 1
+        return {
+            "stage": "catalog_validation",
+            "sequence": sequence,
+            "elapsed_seconds": sequence * 0.01,
+        }
+
+    monkeypatch.setattr(
+        automatic_upgrade.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: StalledProcess(),
+    )
+    monkeypatch.setattr(automatic_upgrade, "_target_progress", progress)
+    monkeypatch.setattr(
+        automatic_upgrade, "_TARGET_STARTUP_HARD_TIMEOUT_SECONDS", 0.03
+    )
+
+    assert (
+        run_target_supervisor(
+            settings,
+            command=["target"],
+            admission_timeout_seconds=1,
+        )
+        == 1
+    )
+    state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["error_type"] == "TargetStartupHardTimeout"
+    assert state["failure_evidence"]["last_stage"] == "catalog_validation"
+    assert _source_value(settings.library_db_path) == "original"
+
+
+def test_post_admission_readiness_timeout_records_failure_without_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _write_unmigrated_database(settings.library_db_path)
+
+    def migrate(working: Path) -> dict[str, object]:
+        database = working / "cache" / "library.db"
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE source_value SET value = 'migrated'")
+        _mark_migrated(database)
+        return {"passed": True}
+
+    run_automatic_copy_upgrade(settings, runner=migrate, require_target_admission=True)
+
+    class StalledProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode or 0
+
+        def send_signal(self, _signum: int) -> None:
+            self.returncode = 1
+
+        def terminate(self) -> None:
+            self.returncode = 1
+
+        def kill(self) -> None:
+            self.returncode = 1
+
+    def start(_command: list[str], *, env: dict[str, str]) -> StalledProcess:
+        token = env[automatic_upgrade._ADMISSION_TOKEN_ENV]
+        validated, _admitted = automatic_upgrade._admission_paths(settings, token)
+        automatic_upgrade._write_state(validated, {"token": token})
+        return StalledProcess()
+
+    monkeypatch.setattr(automatic_upgrade.subprocess, "Popen", start)
+    monkeypatch.setattr(automatic_upgrade, "_target_ready", lambda _port: False)
+
+    assert (
+        run_target_supervisor(
+            settings,
+            command=["target"],
+            admission_timeout_seconds=0.02,
+        )
+        == 1
+    )
+    state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["stage"] == "completed"
+    failure = state["target_startup_failure"]
+    assert failure["error_type"] == "TargetReadinessTimeout"
+    assert failure["last_stage"] == "process_start"
+    assert failure["elapsed_seconds"] >= 0.02
+    assert failure["returncode"] == 1
+    assert _source_value(settings.library_db_path) == "migrated"
+
+    monkeypatch.setattr(
+        automatic_upgrade.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: StalledProcess(),
+    )
+    monkeypatch.setattr(automatic_upgrade, "_target_ready", lambda _port: True)
+    assert run_target_supervisor(settings, command=["target"]) == 0
+    recovered_state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "target_startup_failure" not in recovered_state
+
+
+def test_post_admission_clean_exit_records_failure_without_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _write_unmigrated_database(settings.library_db_path)
+
+    def migrate(working: Path) -> dict[str, object]:
+        database = working / "cache" / "library.db"
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE source_value SET value = 'migrated'")
+        _mark_migrated(database)
+        return {"passed": True}
+
+    run_automatic_copy_upgrade(settings, runner=migrate, require_target_admission=True)
+
+    class ExitingProcess:
+        returncode = 0
+
+        def __init__(self, admitted: Path) -> None:
+            self.admitted = admitted
+
+        def poll(self) -> int | None:
+            return 0 if self.admitted.exists() else None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def send_signal(self, _signum: int) -> None:
+            return
+
+        def terminate(self) -> None:
+            return
+
+        def kill(self) -> None:
+            return
+
+    def start(_command: list[str], *, env: dict[str, str]) -> ExitingProcess:
+        token = env[automatic_upgrade._ADMISSION_TOKEN_ENV]
+        validated, admitted = automatic_upgrade._admission_paths(settings, token)
+        automatic_upgrade._write_state(validated, {"token": token})
+        return ExitingProcess(admitted)
+
+    monkeypatch.setattr(automatic_upgrade.subprocess, "Popen", start)
+    monkeypatch.setattr(automatic_upgrade, "_target_ready", lambda _port: False)
+
+    assert run_target_supervisor(settings, command=["target"]) == 1
+    state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["stage"] == "completed"
+    assert state["target_startup_failure"]["error_type"] == (
+        "TargetProcessExitedBeforeReadiness"
+    )
+    assert state["target_startup_failure"]["returncode"] == 0
+    assert _source_value(settings.library_db_path) == "migrated"
+
+
+def test_admission_write_failure_kills_unresponsive_target_and_records_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _write_unmigrated_database(settings.library_db_path)
+
+    def migrate(working: Path) -> dict[str, object]:
+        _mark_migrated(working / "cache" / "library.db")
+        return {"passed": True}
+
+    run_automatic_copy_upgrade(settings, runner=migrate, require_target_admission=True)
+
+    class UnresponsiveProcess:
+        returncode: int | None = None
+        killed = False
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if not self.killed:
+                raise subprocess.TimeoutExpired("target", timeout)
+            return self.returncode or 0
+
+        def send_signal(self, _signum: int) -> None:
+            return
+
+        def terminate(self) -> None:
+            return
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = 9
+
+    process = UnresponsiveProcess()
+    original_write_state = automatic_upgrade._write_state
+
+    def start(_command: list[str], *, env: dict[str, str]) -> UnresponsiveProcess:
+        token = env[automatic_upgrade._ADMISSION_TOKEN_ENV]
+        validated, _admitted = automatic_upgrade._admission_paths(settings, token)
+        original_write_state(validated, {"token": token})
+        return process
+
+    def fail_admitted_write(path: Path, payload: dict[str, object]) -> None:
+        if path.name.endswith(".admitted.json"):
+            raise OSError("simulated admission write failure")
+        original_write_state(path, payload)
+
+    monkeypatch.setattr(automatic_upgrade.subprocess, "Popen", start)
+    monkeypatch.setattr(automatic_upgrade, "_write_state", fail_admitted_write)
+
+    assert run_target_supervisor(settings, command=["target"]) == 1
+    assert process.killed is True
+    state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["stage"] == "completed"
+    assert state["target_startup_failure"]["error_type"] == (
+        "TargetAdmissionWriteError"
+    )
+    assert state["target_startup_failure"]["returncode"] == 9
+
+
+def test_admission_commit_error_rechecks_durable_state_before_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    _write_unmigrated_database(settings.library_db_path)
+
+    def migrate(working: Path) -> dict[str, object]:
+        database = working / "cache" / "library.db"
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE source_value SET value = 'migrated'")
+        _mark_migrated(database)
+        return {"passed": True}
+
+    run_automatic_copy_upgrade(settings, runner=migrate, require_target_admission=True)
+
+    class StalledProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode or 0
+
+        def send_signal(self, _signum: int) -> None:
+            self.returncode = 1
+
+        def terminate(self) -> None:
+            self.returncode = 1
+
+        def kill(self) -> None:
+            self.returncode = 1
+
+    def start(_command: list[str], *, env: dict[str, str]) -> StalledProcess:
+        token = env[automatic_upgrade._ADMISSION_TOKEN_ENV]
+        validated, _admitted = automatic_upgrade._admission_paths(settings, token)
+        automatic_upgrade._write_state(validated, {"token": token})
+        return StalledProcess()
+
+    original_complete = automatic_upgrade._complete_target_admission
+
+    def complete_then_fail(current_settings: Settings) -> None:
+        original_complete(current_settings)
+        raise OSError("simulated post-rename fsync failure")
+
+    monkeypatch.setattr(automatic_upgrade.subprocess, "Popen", start)
+    monkeypatch.setattr(
+        automatic_upgrade, "_complete_target_admission", complete_then_fail
+    )
+
+    assert run_target_supervisor(settings, command=["target"]) == 1
+    state = json.loads(
+        (settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["stage"] == "completed"
+    assert state["target_startup_failure"]["error_type"] == (
+        "TargetAdmissionWriteError"
+    )
+    assert _source_value(settings.library_db_path) == "migrated"
 
 
 def test_baked_source_revision_overrides_static_compose_tag(

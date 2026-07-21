@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 
 from api.v1.routes import albums
+from api.v1.schemas.album import AlbumTracksInfo
 from core.dependencies import get_album_service, get_download_service
 from middleware import _get_current_curator, _get_current_user
+from models.album import AlbumInfo, Track
 from tests.helpers import build_test_client, mock_user
 
 RG = "11111111-1111-4111-8111-111111111111"
@@ -39,6 +41,7 @@ def _editions_payload() -> dict:
         ],
         "pinned_release_mbid": None,
         "owned_release_mbid": REL,
+        "selected_release_mbid": REL,
     }
 
 
@@ -53,6 +56,27 @@ def test_editions_list_is_viewable_by_any_user():
     assert body["items"][0]["release_mbid"] == REL
     assert body["items"][0]["is_owned"] is True
     assert body["owned_release_mbid"] == REL
+    assert body["selected_release_mbid"] == REL
+
+
+def test_album_and_track_routes_serialize_selected_release():
+    album_service = AsyncMock()
+    album_service.get_album_info.return_value = AlbumInfo(
+        title="OK Computer",
+        musicbrainz_id=RG,
+        artist_name="Radiohead",
+        artist_id="artist-1",
+        selected_release_mbid=REL,
+    )
+    album_service.get_album_tracks_info.return_value = AlbumTracksInfo(
+        tracks=[Track(position=1, title="Airbag")],
+        total_tracks=1,
+        selected_release_mbid=REL,
+    )
+    client = build_test_client(_app(album_service))
+
+    assert client.get(f"/albums/{RG}").json()["selected_release_mbid"] == REL
+    assert client.get(f"/albums/{RG}/tracks").json()["selected_release_mbid"] == REL
 
 
 def test_pin_and_acquire_require_curator_role():

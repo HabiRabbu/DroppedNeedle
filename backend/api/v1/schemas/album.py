@@ -26,6 +26,7 @@ class AlbumTracksInfo(AppStruct):
     label: str | None = None
     barcode: str | None = None
     country: str | None = None
+    selected_release_mbid: str | None = None
 
 
 class AlbumEditionItem(AppStruct):
@@ -48,6 +49,7 @@ class AlbumEditionsResponse(AppStruct):
     items: list[AlbumEditionItem] = []
     pinned_release_mbid: str | None = None
     owned_release_mbid: str | None = None
+    selected_release_mbid: str | None = None
 
 
 class EditionPinBody(AppStruct):

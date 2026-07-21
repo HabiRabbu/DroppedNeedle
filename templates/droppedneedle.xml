@@ -28,5 +28,5 @@
     <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for file permissions inside the container. Run 'id' on your Unraid terminal to find your value." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
     <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for file permissions inside the container. Run 'id' on your Unraid terminal to find your value." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
     <Config Name="Timezone" Target="TZ" Default="Europe/London" Mode="" Description="Your timezone. Examples: America/New_York, Europe/Berlin, Asia/Tokyo." Type="Variable" Display="always" Required="false" Mask="false">Europe/London</Config>
-    <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="Umask for file creation permissions inside the container." Type="Variable" Display="advanced" Required="false" Mask="false">002</Config>
+    <Config Name="UMASK" Target="UMASK" Default="027" Mode="" Description="Octal file-creation mask. 027 keeps files private to the owner and readable by the group; use 002 only when trusted group members need write access." Type="Variable" Display="advanced" Required="false" Mask="false">027</Config>
 </Container>

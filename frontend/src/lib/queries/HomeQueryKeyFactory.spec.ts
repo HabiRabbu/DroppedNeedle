@@ -19,4 +19,15 @@ describe('HomeQueryKeyFactory (AMU-5)', () => {
 	it('normalizes a missing userId to null', () => {
 		expect(HomeQueryKeyFactory.home(undefined)).toEqual(['home', null]);
 	});
+
+	it('scopes integration status by user', () => {
+		expect(HomeQueryKeyFactory.integrationStatus('user-a')).toEqual([
+			'home',
+			'user-a',
+			'integration-status'
+		]);
+		expect(HomeQueryKeyFactory.integrationStatus('user-a')).not.toEqual(
+			HomeQueryKeyFactory.integrationStatus('user-b')
+		);
+	});
 });

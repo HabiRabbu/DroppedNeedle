@@ -45,21 +45,28 @@ describe('album removal mutation', () => {
 		};
 		mockDelete.mockResolvedValueOnce(result);
 		const mutation = removeLibraryAlbum() as unknown as {
-			mutationFn: (mbid: string) => Promise<typeof result>;
-			onSuccess: (data: typeof result, mbid: string) => Promise<void>;
+			mutationFn: (input: { mbid: string; stopWanted: boolean }) => Promise<typeof result>;
+			onSuccess: (
+				data: typeof result,
+				input: { mbid: string; stopWanted: boolean }
+			) => Promise<void>;
 		};
 
-		const data = await mutation.mutationFn('release-1');
-		await mutation.onSuccess(data, 'release-1');
+		const input = { mbid: 'release-1', stopWanted: true };
+		const data = await mutation.mutationFn(input);
+		await mutation.onSuccess(data, input);
 
-		expect(mockDelete).toHaveBeenCalledWith('/api/v1/library/album/release-1?delete_files=true');
+		expect(mockDelete).toHaveBeenCalledWith(
+			'/api/v1/library/album/release-1?delete_files=true&stop_wanted=true'
+		);
 		expect(mockRemoveMbid).toHaveBeenCalledWith('release-1');
 		expect(mockRemoveMbid).toHaveBeenCalledWith('rg-1');
 		expect(setQueryDataWithPersister).toHaveBeenCalledWith(
 			['library', 'album', 'release-1'],
 			expect.any(Function)
 		);
-		expect(invalidateQueriesWithPersister).toHaveBeenCalledTimes(5);
+		expect(invalidateQueriesWithPersister).toHaveBeenCalledTimes(6);
+		expect(invalidateQueriesWithPersister).toHaveBeenCalledWith({ queryKey: ['wanted'] });
 	});
 
 	it('does not report cache housekeeping failures as removal failures', async () => {
@@ -75,14 +82,18 @@ describe('album removal mutation', () => {
 		vi.mocked(invalidateQueriesWithPersister).mockRejectedValueOnce(new Error('refresh failed'));
 		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 		const mutation = removeLibraryAlbum() as unknown as {
-			mutationFn: (mbid: string) => Promise<typeof result>;
-			onSuccess: (data: typeof result, mbid: string) => Promise<void>;
+			mutationFn: (input: { mbid: string; stopWanted: boolean }) => Promise<typeof result>;
+			onSuccess: (
+				data: typeof result,
+				input: { mbid: string; stopWanted: boolean }
+			) => Promise<void>;
 		};
 
-		const data = await mutation.mutationFn('rg-1');
+		const input = { mbid: 'rg-1', stopWanted: false };
+		const data = await mutation.mutationFn(input);
 
-		await expect(mutation.onSuccess(data, 'rg-1')).resolves.toBeUndefined();
-		expect(invalidateQueriesWithPersister).toHaveBeenCalledTimes(5);
+		await expect(mutation.onSuccess(data, input)).resolves.toBeUndefined();
+		expect(invalidateQueriesWithPersister).toHaveBeenCalledTimes(6);
 		expect(consoleError).toHaveBeenCalledTimes(2);
 		consoleError.mockRestore();
 	});
