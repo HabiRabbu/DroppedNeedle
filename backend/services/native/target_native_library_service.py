@@ -27,7 +27,7 @@ class TargetNativeLibraryService:
         self._store = store
 
     async def canonical_id(self, kind: str, identifier: str) -> str | None:
-        return await self._store.resolve_target_id(kind, identifier)
+        return await self._store.resolve_canonical_target_id(kind, identifier)
 
     async def albums(
         self,
@@ -66,8 +66,11 @@ class TargetNativeLibraryService:
         return [self._artist(row) for row in rows], total
 
     async def artist(self, artist_id: str) -> TargetNativeArtist | None:
+        canonical = await self.canonical_id("artist", artist_id)
+        if canonical is None:
+            return None
         rows, _ = await self._store.list_target_artists(
-            limit=1, offset=0, artist_ids=[artist_id]
+            limit=1, offset=0, artist_ids=[canonical]
         )
         return self._artist(rows[0]) if rows else None
 
@@ -108,6 +111,12 @@ class TargetNativeLibraryService:
         )
         return self._album(rows[0]) if rows else None
 
+    async def album_copies(self, album_id: str) -> list[TargetNativeAlbum]:
+        rows, _ = await self._store.list_target_albums(
+            limit=1_000, offset=0, sort="name", album_ids=[album_id]
+        )
+        return [self._album(row) for row in rows]
+
     async def album_detail(self, album_id: str) -> TargetNativeAlbumDetail | None:
         album = await self.album(album_id)
         if album is None:
@@ -117,6 +126,7 @@ class TargetNativeLibraryService:
             return None
         identity = context["identity"]
         review = context["review"]
+        contribution = await self._store.get_active_album_contribution(album.id)
         if (
             identity is not None
             and review is not None
@@ -135,12 +145,19 @@ class TargetNativeLibraryService:
             **{
                 field: getattr(album, field)
                 for field in TargetNativeAlbum.__struct_fields__
+                if field not in {"contribution_id", "contribution_state"}
             },
             row_revision=int(context["album"]["row_revision"]),
             input_revision=":".join(album_input_revisions(context["tracks"])),
             identification_status=status,
             review_id=str(review["id"]) if review is not None else None,
             review_revision=int(review["row_revision"]) if review is not None else None,
+            contribution_id=(
+                str(contribution["id"]) if contribution is not None else None
+            ),
+            contribution_state=(
+                str(contribution["state"]) if contribution is not None else None
+            ),
         )
 
     async def track(self, track_id: str) -> TargetNativeTrack | None:
@@ -278,13 +295,23 @@ class TargetNativeLibraryService:
 
     @staticmethod
     def _album(row: dict[str, Any]) -> TargetNativeAlbum:
+        release_group_mbid = row.get("provider_release_group_mbid")
+        release_mbid = row.get("provider_release_mbid")
+        if release_mbid:
+            identity_state = "release_linked"
+        elif release_group_mbid:
+            identity_state = "release_group_linked"
+        else:
+            identity_state = "local_only"
         return TargetNativeAlbum(
             id=str(row["release_group_mbid"]),
             title=str(row["album_title"]),
             artist_name=str(row.get("album_artist_name") or ""),
             artist_id=str(row.get("album_artist_mbid") or ""),
-            musicbrainz_release_group_id=row.get("provider_release_group_mbid"),
+            musicbrainz_release_group_id=release_group_mbid,
+            musicbrainz_release_id=release_mbid,
             musicbrainz_artist_id=row.get("provider_artist_mbid"),
+            album_identity_state=identity_state,
             track_count=int(row.get("track_count") or 0),
             total_duration_seconds=float(row.get("total_duration_seconds") or 0),
             total_size_bytes=int(row.get("total_size_bytes") or 0),
@@ -299,14 +326,20 @@ class TargetNativeLibraryService:
             date_added=row.get("last_imported_at"),
             sort_name=row.get("album_sort_name"),
             original_release_date=row.get("original_release_date"),
+            contribution_id=row.get("contribution_id"),
+            contribution_state=row.get("contribution_state"),
         )
 
     @staticmethod
     def _artist(row: dict[str, Any]) -> TargetNativeArtist:
+        provider_artist_id = row.get("provider_artist_mbid")
         return TargetNativeArtist(
             id=str(row["artist_mbid"]),
             name=str(row["artist_name"]),
-            musicbrainz_artist_id=row.get("provider_artist_mbid"),
+            musicbrainz_artist_id=provider_artist_id,
+            artist_identity_state=(
+                "musicbrainz_linked" if provider_artist_id else "local_only"
+            ),
             album_count=int(row.get("album_count") or 0),
             track_count=int(row.get("track_count") or 0),
             date_added=row.get("date_added"),

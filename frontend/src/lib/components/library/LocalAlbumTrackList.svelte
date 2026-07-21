@@ -28,7 +28,7 @@
 			<div class="min-w-0 flex-1">
 				<p class="truncate font-medium">{track.title}</p>
 				<a
-					href={`/artist/${track.musicbrainz_artist_id ?? track.artist_id}`}
+					href={`/artist/${track.artist_id}`}
 					class="truncate text-xs text-base-content/55 hover:underline"
 					>{track.artist_name || 'Unknown artist'}</a
 				>

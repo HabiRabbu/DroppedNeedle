@@ -31,6 +31,7 @@ from .cache_providers import (  # noqa: F401
 
 from .repo_providers import (  # noqa: F401
     get_library_repository,
+    get_discogs_repository,
     get_musicbrainz_repository,
     get_musicbrainz_identification_repository,
     get_wikidata_repository,
@@ -105,6 +106,8 @@ from .service_providers import (  # noqa: F401
     get_target_explicit_reidentification_worker,
     get_target_library_operation_supervisor,
     get_target_native_library_service,
+    get_library_contribution_service,
+    get_library_contribution_verification_worker,
     get_target_library_repository,
     get_target_genre_index,
     get_target_album_release_pin_store,
@@ -228,6 +231,7 @@ from .type_aliases import (  # noqa: F401
     TargetAlbumCoverageServiceDep,
     TargetReidentificationServiceDep,
     TargetNativeLibraryServiceDep,
+    LibraryContributionServiceDep,
     TargetCatalogWriterServiceDep,
     LibraryReviewServiceDep,
     LibraryOperationServiceDep,

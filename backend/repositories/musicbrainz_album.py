@@ -1,8 +1,11 @@
+import hashlib
 import logging
 from typing import Any
 
+import httpx
 import msgspec
 
+from core.exceptions import ExternalServiceError
 from models.album import AlbumInfo
 from models.search import SearchResult
 from services.preferences_service import PreferencesService
@@ -19,8 +22,12 @@ from infrastructure.cache.cache_keys import (
     MB_RECORDING_PREFIX,
     MB_RECORDING_SEARCH_PREFIX,
     MB_RECORDING_TO_RG_PREFIX,
+    MB_URL_RESOLUTION_PREFIX,
+    MB_RELEASE_VERIFY_PREFIX,
+    MB_DUPLICATE_SEARCH_PREFIX,
 )
 from infrastructure.queue.priority_queue import RequestPriority
+from infrastructure.resilience.retry import CircuitOpenError
 from models.musicbrainz import recording_release_group_rank
 from repositories.musicbrainz_base import (
     mb_api_get,
@@ -34,6 +41,17 @@ from repositories.musicbrainz_base import (
 )
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.integration_result import IntegrationResult
+from models.library_contribution import (
+    MusicBrainzDuplicateFacts,
+    MusicBrainzUrlResolution,
+    MusicBrainzVerifiedRelease,
+    MusicBrainzVerifiedTrack,
+)
+from repositories.musicbrainz_contribution_models import (
+    MbContributionRelease,
+    MbContributionReleaseSearch,
+    MbContributionUrl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +132,79 @@ def _pick_best_release_group(releases: list[dict]) -> tuple[str, str] | None:
         return None
     rg_id, (title, _rank) = min(candidates.items(), key=lambda item: item[1][1])
     return (rg_id, title)
+
+
+def _verified_release(
+    release: MbContributionRelease,
+) -> MusicBrainzVerifiedRelease | None:
+    if not release.id or not release.release_group.id or not release.title:
+        return None
+    artist_name = "".join(
+        (credit.name or credit.artist.name) + credit.joinphrase
+        for credit in release.artist_credit
+    ).strip()
+    unique_artist_ids = {
+        credit.artist.id for credit in release.artist_credit if credit.artist.id
+    }
+    first_label = release.label_info[0] if release.label_info else None
+    return MusicBrainzVerifiedRelease(
+        release_mbid=release.id,
+        release_group_mbid=release.release_group.id,
+        title=release.title,
+        artist_name=artist_name,
+        artist_mbid=(
+            next(iter(unique_artist_ids)) if len(unique_artist_ids) == 1 else None
+        ),
+        date=release.date or None,
+        country=release.country or None,
+        status=release.status or None,
+        packaging=release.packaging or None,
+        barcode=release.barcode or None,
+        label=(
+            first_label.label.name
+            if first_label is not None and first_label.label is not None
+            else None
+        ),
+        catalogue_number=(
+            first_label.catalog_number if first_label is not None else None
+        )
+        or None,
+        tracks=[
+            MusicBrainzVerifiedTrack(
+                title=track.title or track.recording.title,
+                position=track.position,
+                disc_number=medium.position,
+                duration_seconds=(
+                    track.length / 1000 if track.length is not None else None
+                ),
+                recording_mbid=track.recording.id or None,
+            )
+            for medium in release.media
+            for track in medium.tracks
+            if track.title or track.recording.title
+        ],
+    )
+
+
+def _url_cache_key(resource_url: str, includes: tuple[str, ...]) -> str:
+    digest = hashlib.sha256(resource_url.encode()).hexdigest()
+    return f"{MB_URL_RESOLUTION_PREFIX}{digest}:{'+'.join(sorted(includes))}"
+
+
+def _duplicate_search_key(facts: MusicBrainzDuplicateFacts, limit: int) -> str:
+    material = "|".join(
+        (
+            facts.title,
+            facts.artist_name,
+            facts.barcode or "",
+            facts.country or "",
+            facts.date or "",
+            str(limit),
+        )
+    )
+    return (
+        f"{MB_DUPLICATE_SEARCH_PREFIX}{hashlib.sha256(material.encode()).hexdigest()}"
+    )
 
 
 class MusicBrainzAlbumMixin:
@@ -354,6 +445,158 @@ class MusicBrainzAlbumMixin:
                 release_id, includes, cache_key, priority
             ),
         )
+
+    async def resolve_url(
+        self,
+        resource_url: str,
+        *,
+        includes: tuple[str, ...],
+        priority: RequestPriority,
+        bypass_cache: bool = False,
+    ) -> MusicBrainzUrlResolution:
+        cache_key = _url_cache_key(resource_url, includes)
+        if not bypass_cache:
+            cached = await self._cache.get(cache_key)
+            if isinstance(cached, MusicBrainzUrlResolution):
+                return cached
+
+        async def load() -> MusicBrainzUrlResolution:
+            try:
+                result = await mb_api_get(
+                    "/url",
+                    params={
+                        "resource": resource_url,
+                        "inc": "+".join(sorted(includes)),
+                    },
+                    priority=priority,
+                    decode_type=MbContributionUrl,
+                )
+            except (httpx.HTTPError, CircuitOpenError) as error:
+                raise ExternalServiceError(
+                    "MusicBrainz URL resolution is temporarily unavailable."
+                ) from error
+            resolution = MusicBrainzUrlResolution(
+                resource_url=resource_url,
+                release_mbids=list(
+                    dict.fromkeys(
+                        relation.release.id
+                        for relation in result.relations
+                        if relation.release is not None and relation.release.id
+                    )
+                ),
+                release_group_mbids=list(
+                    dict.fromkeys(
+                        relation.release_group.id
+                        for relation in result.relations
+                        if relation.release_group is not None
+                        and relation.release_group.id
+                    )
+                ),
+                artist_mbids=list(
+                    dict.fromkeys(
+                        relation.artist.id
+                        for relation in result.relations
+                        if relation.artist is not None and relation.artist.id
+                    )
+                ),
+                label_mbids=list(
+                    dict.fromkeys(
+                        relation.label.id
+                        for relation in result.relations
+                        if relation.label is not None and relation.label.id
+                    )
+                ),
+            )
+            await self._cache.set(cache_key, resolution, ttl_seconds=3600)
+            return resolution
+
+        dedupe_key = f"{cache_key}:fresh" if bypass_cache else cache_key
+        return await mb_deduplicator.dedupe(dedupe_key, load)
+
+    async def get_release_for_verification(
+        self,
+        release_mbid: str,
+        *,
+        priority: RequestPriority,
+        bypass_cache: bool = False,
+    ) -> MusicBrainzVerifiedRelease | None:
+        cache_key = f"{MB_RELEASE_VERIFY_PREFIX}{release_mbid}"
+        if not bypass_cache:
+            cached = await self._cache.get(cache_key)
+            if isinstance(cached, MusicBrainzVerifiedRelease):
+                return cached
+
+        async def load() -> MusicBrainzVerifiedRelease | None:
+            try:
+                result = await mb_api_get(
+                    f"/release/{release_mbid}",
+                    params={
+                        "inc": "artist-credits+labels+recordings+release-groups+url-rels"
+                    },
+                    priority=priority,
+                    decode_type=MbContributionRelease,
+                )
+            except (httpx.HTTPError, CircuitOpenError) as error:
+                raise ExternalServiceError(
+                    "MusicBrainz release verification is temporarily unavailable."
+                ) from error
+            normalized = _verified_release(result)
+            if normalized is not None:
+                await self._cache.set(cache_key, normalized, ttl_seconds=3600)
+            return normalized
+
+        dedupe_key = f"{cache_key}:fresh" if bypass_cache else cache_key
+        return await mb_deduplicator.dedupe(dedupe_key, load)
+
+    async def search_duplicate_releases(
+        self,
+        facts: MusicBrainzDuplicateFacts,
+        *,
+        priority: RequestPriority,
+        limit: int,
+    ) -> list[MusicBrainzVerifiedRelease]:
+        bounded_limit = max(1, min(limit, 10))
+        cache_key = _duplicate_search_key(facts, bounded_limit)
+        cached = await self._cache.get(cache_key)
+        if isinstance(cached, list) and all(
+            isinstance(item, MusicBrainzVerifiedRelease) for item in cached
+        ):
+            return cached
+
+        def quoted(value: str) -> str:
+            return value.replace("\\", "\\\\").replace('"', '\\"')
+
+        clauses = [
+            f'release:"{quoted(facts.title)}"',
+            f'artist:"{quoted(facts.artist_name)}"',
+        ]
+        if facts.barcode:
+            clauses.append(f'barcode:"{quoted(facts.barcode)}"')
+        query = " AND ".join(clauses[:2])
+        if len(clauses) == 3:
+            query = f"({query}) OR {clauses[2]}"
+
+        async def load() -> list[MusicBrainzVerifiedRelease]:
+            try:
+                result = await mb_api_get(
+                    "/release",
+                    params={"query": query, "limit": bounded_limit},
+                    priority=priority,
+                    decode_type=MbContributionReleaseSearch,
+                )
+            except (httpx.HTTPError, CircuitOpenError) as error:
+                raise ExternalServiceError(
+                    "MusicBrainz release search is temporarily unavailable."
+                ) from error
+            releases = [
+                normalized
+                for release in result.releases
+                if (normalized := _verified_release(release)) is not None
+            ]
+            await self._cache.set(cache_key, releases, ttl_seconds=900)
+            return releases
+
+        return await mb_deduplicator.dedupe(cache_key, load)
 
     async def _fetch_release_by_id(
         self,

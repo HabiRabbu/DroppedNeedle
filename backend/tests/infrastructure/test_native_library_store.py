@@ -69,6 +69,12 @@ def test_candidate_identity_lookups_use_normalized_indexes(db_path: Path) -> Non
             "WHERE lower(release_group_mbid) IN (?)",
             ("album-1",),
         ).fetchall()
+        release_plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT release_mbid "
+            "FROM local_album_external_identities "
+            "WHERE lower(release_mbid) = lower(?)",
+            ("release-1",),
+        ).fetchall()
         artist_plan = connection.execute(
             "EXPLAIN QUERY PLAN SELECT provider_artist_id "
             "FROM local_artist_external_identities "
@@ -77,7 +83,12 @@ def test_candidate_identity_lookups_use_normalized_indexes(db_path: Path) -> Non
         ).fetchall()
 
     assert any("idx_local_album_identity_rg_lower" in row[3] for row in album_plan)
-    assert any("idx_local_artist_identity_provider_lower" in row[3] for row in artist_plan)
+    assert any(
+        "idx_local_album_identity_release_lower" in row[3] for row in release_plan
+    )
+    assert any(
+        "idx_local_artist_identity_provider_lower" in row[3] for row in artist_plan
+    )
 
 
 @pytest.fixture
@@ -1219,9 +1230,12 @@ async def test_discovery_generation_ignores_and_boundedly_cleans_old_rows(
 
     await store.prepare_scan_discovery_resume("scan-generation")
 
-    assert await store.get_scan_inventory_batch(
-        "scan-generation", processing_state="pending", limit=10
-    ) == []
+    assert (
+        await store.get_scan_inventory_batch(
+            "scan-generation", processing_state="pending", limit=10
+        )
+        == []
+    )
     assert await store.cleanup_stale_scan_inventory("scan-generation", limit=1) == 1
     assert _scalar(db_path, "SELECT COUNT(*) FROM library_scan_inventory") == 1
     assert await store.cleanup_stale_scan_inventory("scan-generation", limit=1) == 1
@@ -1235,7 +1249,9 @@ async def test_schema_backfills_inventory_scope_for_persisted_subdirectory_scan(
     lock = threading.Lock()
     store = NativeLibraryStore(db_path, lock)
     await store.create_scan_run(
-        ScanRun(id="scan-subdirectory", kind="incremental", trigger="manual", queued_at=1)
+        ScanRun(
+            id="scan-subdirectory", kind="incremental", trigger="manual", queued_at=1
+        )
     )
     with sqlite3.connect(db_path) as connection:
         connection.execute(

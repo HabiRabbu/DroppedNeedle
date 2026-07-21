@@ -201,7 +201,32 @@ export const API = {
 		},
 		album: (mbid: string) => `/api/v1/library/albums/${mbid}/status`,
 		albumDetail: (albumId: string) => `/api/v1/library/albums/${albumId}`,
+		albumCopies: (albumId: string) => `/api/v1/library/albums/${albumId}/copies`,
 		albumTracks: (albumId: string) => `/api/v1/library/albums/${albumId}/tracks`,
+		createContribution: (albumId: string) => `/api/v1/library/albums/${albumId}/contributions`,
+		contribution: (contributionId: string) => `/api/v1/library/contributions/${contributionId}`,
+		contributionDraft: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/draft`,
+		rebuildContribution: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/rebuild`,
+		cancelContribution: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/cancel`,
+		searchDiscogsReleases: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/discogs/search`,
+		selectDiscogsRelease: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/discogs/select`,
+		removeDiscogsRelease: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/discogs/remove`,
+		checkContributionDuplicates: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/musicbrainz/duplicates`,
+		attachContributionRelease: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/musicbrainz/attach`,
+		createContributionSeed: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/musicbrainz/seed`,
+		recordContributionResult: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/musicbrainz/result`,
+		retryContributionVerification: (contributionId: string) =>
+			`/api/v1/library/contributions/${contributionId}/musicbrainz/verify`,
 		cachedAlbumArtwork: (albumId: string, coverVersion: number) =>
 			`/api/v1/library/albums/${encodeURIComponent(albumId)}/artwork/cached?v=${coverVersion}`,
 		artistDetail: (artistId: string) => `/api/v1/library/artists/${artistId}`,

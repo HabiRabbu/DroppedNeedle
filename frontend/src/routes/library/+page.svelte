@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import LibraryDashboard from '$lib/components/library/LibraryDashboard.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
@@ -8,6 +9,9 @@
 	const BANNER_KEY = 'droppedneedle_connect_apps_banner_dismissed';
 
 	let bannerDismissed = $state(true); // assume dismissed until we read storage (no SSR flash)
+	const musicBrainzCallbackFailed = $derived(
+		page.url.searchParams.get('musicbrainz') === 'callback-error'
+	);
 
 	$effect(() => {
 		if (typeof localStorage !== 'undefined') {
@@ -61,6 +65,14 @@
 		{/snippet}
 	</PageHeader>
 	<div class="space-y-10 px-4 pb-12 sm:space-y-12 sm:px-6 lg:px-8">
+		{#if musicBrainzCallbackFailed}
+			<div class="alert alert-warning" role="alert">
+				<p>
+					MusicBrainz couldn't return you to the contribution. Reopen it and paste the submitted
+					release URL to verify it.
+				</p>
+			</div>
+		{/if}
 		{#if !bannerDismissed}
 			<div
 				class="flex items-center gap-3 rounded-box border border-accent/25 bg-base-200 p-4"

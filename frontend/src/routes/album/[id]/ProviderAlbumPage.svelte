@@ -15,6 +15,8 @@
 	import AlbumDiscovery from './AlbumDiscovery.svelte';
 	import WhereToBuy from './WhereToBuy.svelte';
 	import { albumHref } from '$lib/utils/entityRoutes';
+	import LibraryAlbumCard from '$lib/components/library/LibraryAlbumCard.svelte';
+	import { getLibraryAlbumCopiesQuery } from '$lib/queries/library/LibraryQueries.svelte';
 
 	interface Props {
 		data: { albumId: string };
@@ -23,6 +25,8 @@
 	let { data }: Props = $props();
 
 	const state = createAlbumPageState(() => data.albumId);
+	const localCopiesQuery = getLibraryAlbumCopiesQuery(() => data.albumId);
+	const localCopies = $derived(localCopiesQuery.data?.items ?? []);
 
 	$effect(() => {
 		const canonicalId = state.album?.musicbrainz_id;
@@ -90,6 +94,24 @@
 				onrefresh={state.refreshAll}
 				onartistclick={state.goToArtist}
 			/>
+
+			{#if localCopies.length > 1}
+				<section
+					class="rounded-box border border-base-content/10 bg-base-200/35 p-4 sm:p-5"
+					aria-labelledby="owned-copies-title"
+				>
+					<h2 id="owned-copies-title" class="text-lg font-bold">Copies in your library</h2>
+					<p class="mt-1 max-w-2xl text-sm text-base-content/55">
+						This MusicBrainz release matches more than one local album. Choose the copy you want to
+						open.
+					</p>
+					<div class="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+						{#each localCopies as localCopy (localCopy.id)}
+							<LibraryAlbumCard album={localCopy} />
+						{/each}
+					</div>
+				</section>
+			{/if}
 
 			<WhereToBuy releaseGroupMbid={album.musicbrainz_id} enabled={!state.loadingTracks} />
 

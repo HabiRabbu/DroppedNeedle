@@ -975,6 +975,120 @@ CREATE TABLE IF NOT EXISTS library_reference_tombstones (
     UNIQUE(source_kind, source_key)
 );
 
+CREATE TABLE IF NOT EXISTS local_entity_source_links (
+    id TEXT PRIMARY KEY,
+    local_artist_id TEXT REFERENCES local_artists(id) ON DELETE CASCADE,
+    local_album_id TEXT REFERENCES local_albums(id) ON DELETE CASCADE,
+    local_track_id TEXT REFERENCES local_tracks(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL CHECK(length(provider) > 0),
+    external_entity_type TEXT NOT NULL CHECK(length(external_entity_type) > 0),
+    external_id TEXT NOT NULL CHECK(length(external_id) > 0),
+    canonical_url TEXT NOT NULL CHECK(length(canonical_url) > 0),
+    decision_source TEXT NOT NULL CHECK(length(decision_source) > 0),
+    selected_by_user_id TEXT REFERENCES auth_users(id) ON DELETE SET NULL,
+    verified_at REAL NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(row_revision BETWEEN 1 AND 9223372036854775807),
+    CHECK(
+        (local_artist_id IS NOT NULL) +
+        (local_album_id IS NOT NULL) +
+        (local_track_id IS NOT NULL) = 1
+    )
+);
+
+CREATE TABLE IF NOT EXISTS library_contribution_drafts (
+    id TEXT PRIMARY KEY,
+    local_album_id TEXT NOT NULL REFERENCES local_albums(id) ON DELETE RESTRICT,
+    created_by_user_id TEXT REFERENCES auth_users(id) ON DELETE SET NULL,
+    updated_by_user_id TEXT REFERENCES auth_users(id) ON DELETE SET NULL,
+    state TEXT NOT NULL CHECK(state IN (
+        'draft', 'ready', 'seeded', 'verifying', 'linked',
+        'needs_review', 'stale', 'cancelled'
+    )),
+    album_row_revision INTEGER NOT NULL,
+    input_revision TEXT NOT NULL,
+    local_snapshot_json TEXT NOT NULL,
+    resolved_draft_json TEXT NOT NULL,
+    source_selection_json TEXT NOT NULL,
+    provider_snapshot_expires_at REAL,
+    duplicate_result_json TEXT,
+    duplicate_checked_at REAL,
+    duplicate_input_revision TEXT,
+    result_release_mbid TEXT,
+    result_source TEXT CHECK(result_source IN ('callback', 'manual') OR result_source IS NULL),
+    result_received_at REAL,
+    seed_snapshot_json TEXT,
+    seed_hash TEXT,
+    seeded_at REAL,
+    terminal_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(row_revision BETWEEN 1 AND 9223372036854775807)
+);
+
+CREATE TABLE IF NOT EXISTS library_contribution_callback_tokens (
+    token_hash TEXT PRIMARY KEY,
+    contribution_id TEXT NOT NULL
+        REFERENCES library_contribution_drafts(id) ON DELETE CASCADE,
+    requested_by_user_id TEXT NOT NULL
+        REFERENCES auth_users(id) ON DELETE CASCADE,
+    expires_at REAL NOT NULL,
+    consumed_at REAL,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS library_contribution_verification_jobs (
+    id TEXT PRIMARY KEY,
+    contribution_id TEXT NOT NULL
+        REFERENCES library_contribution_drafts(id) ON DELETE CASCADE,
+    state TEXT NOT NULL CHECK(state IN (
+        'queued', 'running', 'succeeded', 'needs_review', 'failed', 'cancelled'
+    )),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    not_before REAL NOT NULL DEFAULT 0,
+    requested_by_user_id TEXT REFERENCES auth_users(id) ON DELETE SET NULL,
+    last_failure_code TEXT,
+    lease_owner TEXT,
+    lease_expires_at REAL,
+    heartbeat_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    terminal_at REAL,
+    row_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(row_revision BETWEEN 1 AND 9223372036854775807),
+    event_revision INTEGER NOT NULL DEFAULT 0
+        CHECK(event_revision BETWEEN 0 AND 9223372036854775807)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_source_artist_unique
+ON local_entity_source_links(local_artist_id, provider, external_entity_type, external_id)
+WHERE local_artist_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_source_album_unique
+ON local_entity_source_links(local_album_id, provider, external_entity_type, external_id)
+WHERE local_album_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_source_track_unique
+ON local_entity_source_links(local_track_id, provider, external_entity_type, external_id)
+WHERE local_track_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_entity_source_provider
+ON local_entity_source_links(provider, external_entity_type, external_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contribution_active_album
+ON library_contribution_drafts(local_album_id)
+WHERE state NOT IN ('linked', 'cancelled', 'stale');
+CREATE INDEX IF NOT EXISTS idx_contribution_album_updated
+ON library_contribution_drafts(local_album_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contribution_callback_expiry
+ON library_contribution_callback_tokens(expires_at, consumed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contribution_job_active
+ON library_contribution_verification_jobs(contribution_id)
+WHERE state IN ('queued', 'running');
+CREATE INDEX IF NOT EXISTS idx_contribution_job_claim
+ON library_contribution_verification_jobs(state, not_before, created_at);
+CREATE INDEX IF NOT EXISTS idx_contribution_job_lease
+ON library_contribution_verification_jobs(state, lease_expires_at);
+
 CREATE INDEX IF NOT EXISTS idx_local_artists_folded ON local_artists(folded_name, kind);
 CREATE INDEX IF NOT EXISTS idx_local_artists_normalized ON local_artists(normalized_name, kind);
 CREATE INDEX IF NOT EXISTS idx_local_artists_retired ON local_artists(retired_into_artist_id);
@@ -992,6 +1106,7 @@ CREATE INDEX IF NOT EXISTS idx_local_tracks_search ON local_tracks(title_folded,
 CREATE INDEX IF NOT EXISTS idx_local_tracks_path_hash ON local_tracks(path_hash);
 CREATE INDEX IF NOT EXISTS idx_local_album_identity_rg ON local_album_external_identities(release_group_mbid);
 CREATE INDEX IF NOT EXISTS idx_local_album_identity_rg_lower ON local_album_external_identities(lower(release_group_mbid));
+CREATE INDEX IF NOT EXISTS idx_local_album_identity_release_lower ON local_album_external_identities(lower(release_mbid));
 CREATE INDEX IF NOT EXISTS idx_local_artist_identity_provider_lower ON local_artist_external_identities(lower(provider_artist_id));
 CREATE INDEX IF NOT EXISTS idx_local_track_identity_recording ON local_track_external_identities(recording_mbid);
 CREATE INDEX IF NOT EXISTS idx_album_alias_target ON local_album_aliases(local_album_id);

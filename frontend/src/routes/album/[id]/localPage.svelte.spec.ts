@@ -10,7 +10,9 @@ const h = vi.hoisted(() => ({
 
 vi.mock('$app/state', () => ({ page: { params: { id: 'local-album-1' } } }));
 vi.mock('$app/navigation', () => ({ goto: (...args: unknown[]) => h.goto(...args) }));
-vi.mock('$lib/stores/authStore.svelte', () => ({ authStore: { isAdmin: false } }));
+vi.mock('$lib/stores/authStore.svelte', () => ({
+	authStore: { isAdmin: false, isTrusted: false, user: { id: 'user-1' } }
+}));
 vi.mock('$lib/stores/player.svelte', () => ({
 	playerStore: { playQueue: (...args: unknown[]) => h.playQueue(...args) }
 }));
@@ -21,7 +23,9 @@ const album: LibraryAlbumDetail = {
 	artist_name: 'Local Artist',
 	artist_id: 'local-artist-1',
 	musicbrainz_release_group_id: null,
+	musicbrainz_release_id: null,
 	musicbrainz_artist_id: null,
+	album_identity_state: 'local_only',
 	track_count: 1,
 	total_duration_seconds: 181,
 	total_size_bytes: 1024,
@@ -36,7 +40,9 @@ const album: LibraryAlbumDetail = {
 	input_revision: 'input-2',
 	identification_status: 'local_metadata',
 	review_id: null,
-	review_revision: null
+	review_revision: null,
+	contribution_id: null,
+	contribution_state: null
 };
 
 const track: NativeTrackListItem = {
@@ -84,6 +90,14 @@ vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 	})
 }));
 
+vi.mock('$lib/queries/albums/EditionQueries.svelte', () => ({
+	getAlbumEditionsQuery: () => ({ data: undefined, isLoading: false, isError: false })
+}));
+
+vi.mock('$lib/queries/libraryContributions/LibraryContributionMutations.svelte', () => ({
+	createLibraryContributionMutation: () => ({ isPending: false, mutate: vi.fn() })
+}));
+
 import LocalAlbumPage from './LocalAlbumPage.svelte';
 
 beforeEach(() => {
@@ -91,17 +105,22 @@ beforeEach(() => {
 });
 
 describe('local-only album page', () => {
-	it('plays stable local tracks and explains why alternate editions are unavailable', async () => {
+	it('plays stable local tracks and presents local identity separately', async () => {
 		render(LocalAlbumPage, {
 			props: { albumId: album.id }
 		} as unknown as Parameters<typeof render>[1]);
 
 		await expect.element(page.getByRole('heading', { name: 'Local Only Album' })).toBeVisible();
-		await expect.element(page.getByText('Local metadata', { exact: true })).toBeVisible();
-		const alternateEditions = page.getByRole('button', { name: 'Browse alternate editions' });
-		await expect.element(alternateEditions).toBeDisabled();
+		await expect.element(page.getByText('Local-only', { exact: true })).toBeVisible();
 		await expect
-			.element(page.getByText('Identify this album before searching for alternate editions.'))
+			.element(
+				page.getByText(
+					'This album is in your DroppedNeedle library, but no MusicBrainz release is linked yet.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(page.getByText('Link a MusicBrainz release group to compare editions.'))
 			.toBeVisible();
 
 		await page.getByRole('button', { name: 'Play', exact: true }).click();

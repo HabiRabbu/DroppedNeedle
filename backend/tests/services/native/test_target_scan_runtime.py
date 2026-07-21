@@ -29,6 +29,7 @@ from services.native.library_scan_supervisor import (
     supervise_target_scans,
 )
 from services.native.target_application_runtime import (
+    run_library_contribution_verification_worker,
     run_target_identification_worker,
     run_target_operation_worker,
 )
@@ -274,6 +275,35 @@ async def test_target_operation_worker_recovers_and_dispatches_each_iteration(
     assert supervisor.recover.await_count == 2
     assert supervisor.run_once.await_count == 2
     supervisor.run_once.assert_awaited_with("test-worker")
+
+
+@pytest.mark.asyncio
+async def test_contribution_verification_worker_refreshes_provider_each_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workers = [AsyncMock(), AsyncMock()]
+    calls = 0
+
+    def getter():
+        nonlocal calls
+        worker = workers[min(calls, 1)]
+        calls += 1
+        return worker
+
+    async def stop_after_two(_seconds: float) -> None:
+        if calls == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        "services.native.target_application_runtime.asyncio.sleep", stop_after_two
+    )
+    await run_library_contribution_verification_worker(getter, worker_id="test-worker")
+
+    assert calls == 2
+    workers[0].recover.assert_awaited_once()
+    workers[0].run_once.assert_awaited_once_with("test-worker")
+    workers[1].recover.assert_awaited_once()
+    workers[1].run_once.assert_awaited_once_with("test-worker")
 
 
 @pytest.mark.asyncio

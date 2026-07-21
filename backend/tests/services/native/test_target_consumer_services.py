@@ -257,6 +257,90 @@ async def test_target_stats_count_local_only_albums(target_services) -> None:
 
 
 @pytest.mark.asyncio
+async def test_target_identity_states_remain_separate_from_review_status(
+    target_services,
+) -> None:
+    store, _view, _favorites, _history, _root = target_services
+    service = TargetNativeLibraryService(store)
+
+    albums, _ = await service.albums(
+        limit=10, offset=0, sort="name", search=None, file_format=None
+    )
+    artists, _ = await service.artists(
+        limit=10, offset=0, search=None, sort_order="asc"
+    )
+
+    identified = next(album for album in albums if album.id == IDENTIFIED_ALBUM_ID)
+    local_only = next(album for album in albums if album.id == LOCAL_ALBUM_ID)
+    identified_artist = next(
+        artist for artist in artists if artist.id == IDENTIFIED_ARTIST_ID
+    )
+    local_artist = next(artist for artist in artists if artist.id == LOCAL_ARTIST_ID)
+
+    assert identified.album_identity_state == "release_group_linked"
+    assert identified.musicbrainz_release_id is None
+    assert local_only.album_identity_state == "local_only"
+    assert identified_artist.artist_identity_state == "musicbrainz_linked"
+    assert local_artist.artist_identity_state == "local_only"
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE local_album_external_identities SET release_mbid = ? "
+            "WHERE local_album_id = ?",
+            ("70000000-0000-4000-8000-000000000001", IDENTIFIED_ALBUM_ID),
+        )
+        connection.execute(
+            "INSERT INTO library_identification_reviews "
+            "(id, local_album_id, state, reason_code, input_revision, created_at, updated_at) "
+            "VALUES ('review-identified', ?, 'needs_review', 'TEST_REVIEW', "
+            "'review-input-1', 4, 4)",
+            (IDENTIFIED_ALBUM_ID,),
+        )
+        connection.execute(
+            "INSERT INTO library_identification_reviews "
+            "(id, local_album_id, state, reason_code, input_revision, created_at, updated_at) "
+            "VALUES ('review-local', ?, 'needs_review', 'TEST_REVIEW', "
+            "'review-input-2', 4, 4)",
+            (LOCAL_ALBUM_ID,),
+        )
+
+    linked_detail = await service.album_detail(IDENTIFIED_ALBUM_ID)
+    local_detail = await service.album_detail(LOCAL_ALBUM_ID)
+
+    assert linked_detail is not None
+    assert linked_detail.album_identity_state == "release_linked"
+    assert linked_detail.musicbrainz_release_id == (
+        "70000000-0000-4000-8000-000000000001"
+    )
+    assert linked_detail.identification_status == "manual_identity_needs_review"
+    assert local_detail is not None
+    assert local_detail.album_identity_state == "local_only"
+    assert local_detail.identification_status == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_artist_album_projection_includes_active_contribution_state(
+    target_services,
+) -> None:
+    store, _view, _favorites, _history, _root = target_services
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO library_contribution_drafts "
+            "(id, local_album_id, state, album_row_revision, input_revision, "
+            "local_snapshot_json, resolved_draft_json, source_selection_json, "
+            "created_at, updated_at) VALUES "
+            "('contribution-1', ?, 'draft', 1, 'input-1', '{}', '{}', '{}', 4, 4)",
+            (LOCAL_ALBUM_ID,),
+        )
+
+    albums = await TargetNativeLibraryService(store).artist_albums(LOCAL_ARTIST_ID)
+    local_only = next(album for album in albums if album.id == LOCAL_ALBUM_ID)
+
+    assert local_only.contribution_id == "contribution-1"
+    assert local_only.contribution_state == "draft"
+
+
+@pytest.mark.asyncio
 async def test_identified_album_is_cover_available_without_stored_url(
     target_services,
 ) -> None:
@@ -475,6 +559,7 @@ async def test_shared_provider_identities_aggregate_active_local_copies(
             (duplicate_track_id, RECORDING_MBID),
         )
     repository = TargetLibraryRepository(store)
+    service = TargetNativeLibraryService(store)
 
     assert {
         row["id"]
@@ -509,6 +594,13 @@ async def test_shared_provider_identities_aggregate_active_local_copies(
         "release-1",
         "release-2",
     }
+    assert await service.canonical_id("album", RELEASE_GROUP_MBID) is None
+    assert {album.id for album in await service.album_copies(RELEASE_GROUP_MBID)} == {
+        IDENTIFIED_ALBUM_ID,
+        duplicate_album_id,
+    }
+    assert await service.canonical_id("album", "release-1") == IDENTIFIED_ALBUM_ID
+    assert await service.canonical_id("album", "release-2") == duplicate_album_id
 
     await store.mark_target_tracks_missing(
         [IDENTIFIED_TRACK_ID],
@@ -1612,13 +1704,15 @@ async def test_target_artist_browse_sorts_by_aggregate_album_count(
 
 
 @pytest.mark.asyncio
-async def test_album_status_resolves_provider_identity_without_alias(
+async def test_album_status_resolves_unique_provider_identity_without_alias(
     target_services,
 ) -> None:
     store, _view, _favorites, _history, _root = target_services
     service = TargetNativeLibraryService(store)
 
-    assert await service.canonical_id("album", RELEASE_GROUP_MBID) is None
+    assert (
+        await service.canonical_id("album", RELEASE_GROUP_MBID) == IDENTIFIED_ALBUM_ID
+    )
 
     status = await service.album_status(
         RELEASE_GROUP_MBID,
@@ -1695,6 +1789,7 @@ async def test_target_native_contract_separates_local_and_provider_ids_and_redir
     detail = client.get(f"/library/albums/{LOCAL_ALBUM_ID}").json()
     artist = client.get(f"/library/artists/{LOCAL_ARTIST_ID}").json()
     artist_albums = client.get(f"/library/artists/{LOCAL_ARTIST_ID}/albums").json()
+    copies = client.get(f"/library/albums/{RELEASE_GROUP_MBID}/copies").json()
     resolved = client.post(
         "/library/resolve-tracks",
         json={
@@ -1713,14 +1808,23 @@ async def test_target_native_contract_separates_local_and_provider_ids_and_redir
     detail_redirect = client.get(
         f"/library/albums/{RELEASE_GROUP_MBID}", follow_redirects=False
     )
+    artist_redirect = client.get(
+        f"/library/artists/{ARTIST_MBID}", follow_redirects=False
+    )
 
     assert identified["musicbrainz_release_group_id"] == RELEASE_GROUP_MBID
+    assert identified["musicbrainz_release_id"] is None
+    assert identified["album_identity_state"] == "release_group_linked"
     assert local_only["musicbrainz_release_group_id"] is None
+    assert local_only["album_identity_state"] == "local_only"
     assert local_only["musicbrainz_artist_id"] is None
     assert detail["id"] == LOCAL_ALBUM_ID
     assert detail["musicbrainz_release_group_id"] is None
     assert artist["id"] == LOCAL_ARTIST_ID
+    assert artist["artist_identity_state"] == "local_only"
     assert artist_albums["items"][0]["id"] == LOCAL_ALBUM_ID
+    assert copies["total"] == 1
+    assert copies["items"][0]["id"] == IDENTIFIED_ALBUM_ID
     assert resolved["items"][0]["track_source_id"] == LOCAL_TRACK_ID
     assert resolved["items"][0]["stream_url"].endswith(LOCAL_TRACK_ID)
     assert provider_ids == {
@@ -1734,6 +1838,10 @@ async def test_target_native_contract_separates_local_and_provider_ids_and_redir
     assert detail_redirect.status_code == 308
     assert detail_redirect.headers["location"].endswith(
         f"/library/albums/{IDENTIFIED_ALBUM_ID}"
+    )
+    assert artist_redirect.status_code == 308
+    assert artist_redirect.headers["location"].endswith(
+        f"/library/artists/{IDENTIFIED_ARTIST_ID}"
     )
 
 
@@ -2017,3 +2125,40 @@ async def test_isolated_target_compat_routes_browse_play_and_write_stable_refere
     )
     await asyncio.gather(*target.scrobble_service._plugin_tasks)
     assert plugin_host.dispatch_scrobble.await_count == plugin_calls + 1
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO library_identification_reviews "
+            "(id, local_album_id, state, reason_code, input_revision, created_at, updated_at) "
+            "VALUES ('missing-final-track-review', ?, 'needs_review', "
+            "'TEST_STALE_MEDIA', 'stale-input', 10, 10)",
+            (LOCAL_ALBUM_ID,),
+        )
+    await store.mark_target_tracks_missing(
+        [LOCAL_TRACK_ID],
+        actor_user_id="user-1",
+        reason_code="TEST_STALE_MEDIA",
+        missing_at=11,
+    )
+
+    native_albums, _ = await target.view.get_albums(page_size=20)
+    native_artists, _ = await target.view.get_artists(limit=20)
+    subsonic_after = client.get(
+        "/subsonic/rest/getAlbumList2",
+        params={**query, "type": "alphabeticalByName", "size": 20},
+    ).json()["subsonic-response"]["albumList2"]["album"]
+    jellyfin_after = client.get(
+        "/jellyfin/Items",
+        params={"IncludeItemTypes": "MusicAlbum"},
+        headers=jellyfin_headers,
+    ).json()["Items"]
+
+    assert LOCAL_ALBUM_ID not in {album.rg_mbid for album in native_albums}
+    assert LOCAL_ARTIST_ID not in {artist.artist_mbid for artist in native_artists}
+    assert all(item["name"] != "Local Only" for item in subsonic_after)
+    assert all(item["Name"] != "Local Only" for item in jellyfin_after)
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute(
+            "SELECT state FROM library_identification_reviews WHERE id = ?",
+            ("missing-final-track-review",),
+        ).fetchone() == ("needs_review",)

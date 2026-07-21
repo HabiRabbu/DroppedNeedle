@@ -356,6 +356,75 @@ async def test_reconcile_resolves_review_when_its_album_disappears(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_stales_open_contribution_and_cancels_verification(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    await store.request_scan_run(
+        ScanRequest(
+            kind="incremental",
+            trigger="manual",
+            policy_revision="policy-1",
+            scopes=[
+                ScanScope(
+                    root_id="root",
+                    relative_path=".",
+                    effective_policy="automatic",
+                    policy_revision="policy-1",
+                )
+            ],
+        ),
+        run_id="missing-contribution-scan",
+        requested_at=2,
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE library_scan_run_scopes SET discovery_state = 'completed' "
+            "WHERE run_id = 'missing-contribution-scan'"
+        )
+        connection.execute(
+            "INSERT INTO library_contribution_drafts "
+            "(id, local_album_id, state, album_row_revision, input_revision, "
+            "local_snapshot_json, resolved_draft_json, source_selection_json, "
+            "seed_snapshot_json, created_at, updated_at) VALUES "
+            "('contribution-1', 'album-1', 'verifying', 1, 'input-1', "
+            "'{\"schema_version\":1}', '{\"schema_version\":1}', "
+            "'{\"schema_version\":1}', '{\"schema_version\":1}', 2, 2)"
+        )
+        connection.execute(
+            "INSERT INTO library_contribution_callback_tokens "
+            "(token_hash, contribution_id, requested_by_user_id, expires_at, created_at) "
+            "VALUES ('callback-1', 'contribution-1', 'admin', 100, 2)"
+        )
+        connection.execute(
+            "INSERT INTO library_contribution_verification_jobs "
+            "(id, contribution_id, state, not_before, created_at, updated_at) "
+            "VALUES ('job-1', 'contribution-1', 'queued', 2, 2, 2)"
+        )
+
+    result = await store.reconcile_scan_scope_batch(
+        "missing-contribution-scan", "root", ".", now=3, limit=100
+    )
+
+    assert result["missing"] == 1
+    with sqlite3.connect(db_path) as connection:
+        contribution = connection.execute(
+            "SELECT state, seed_snapshot_json FROM library_contribution_drafts "
+            "WHERE id = 'contribution-1'"
+        ).fetchone()
+        job = connection.execute(
+            "SELECT state FROM library_contribution_verification_jobs WHERE id = 'job-1'"
+        ).fetchone()
+        token = connection.execute(
+            "SELECT consumed_at FROM library_contribution_callback_tokens "
+            "WHERE token_hash = 'callback-1'"
+        ).fetchone()
+    assert contribution == ("stale", None)
+    assert job == ("cancelled",)
+    assert token == (None,)
+
+
+@pytest.mark.asyncio
 async def test_review_cursor_filters_and_detail_are_bounded(
     store: NativeLibraryStore,
 ) -> None:

@@ -1496,6 +1496,10 @@ export type AlbumSort = 'recent' | 'title' | 'artist';
 
 export type TrackSort = 'recent' | 'title' | 'artist' | 'album';
 
+export type AlbumIdentityState = 'local_only' | 'release_group_linked' | 'release_linked';
+
+export type ArtistIdentityState = 'local_only' | 'musicbrainz_linked';
+
 export interface TargetNativeTrack {
 	id: string;
 	title: string;
@@ -1541,7 +1545,9 @@ export interface LibraryAlbumSummary {
 	artist_name: string;
 	artist_id: string;
 	musicbrainz_release_group_id: string | null;
+	musicbrainz_release_id: string | null;
 	musicbrainz_artist_id: string | null;
+	album_identity_state: AlbumIdentityState;
 	track_count: number;
 	total_duration_seconds: number;
 	total_size_bytes: number;
@@ -1552,6 +1558,8 @@ export interface LibraryAlbumSummary {
 	date_added: number | null;
 	sort_name: string | null;
 	original_release_date: string | null;
+	contribution_id: string | null;
+	contribution_state: ContributionState | null;
 }
 
 export interface LibraryAlbumDetail extends LibraryAlbumSummary {
@@ -1567,6 +1575,266 @@ export interface LibraryAlbumDetail extends LibraryAlbumSummary {
 	review_revision: number | null;
 }
 
+export type ContributionState =
+	| 'draft'
+	| 'ready'
+	| 'seeded'
+	| 'verifying'
+	| 'linked'
+	| 'needs_review'
+	| 'stale'
+	| 'cancelled';
+
+export type ContributionNextAction =
+	| 'edit_draft'
+	| 'refresh_discogs'
+	| 'run_duplicate_check'
+	| 'attach_existing'
+	| 'seed_musicbrainz'
+	| 'retry_verification'
+	| 'rebuild'
+	| 'cancel';
+
+export type ContributionFieldSource = 'local' | 'discogs' | 'entered_here';
+
+export interface ReleaseTextField {
+	value: string | null;
+	source: ContributionFieldSource;
+}
+
+export interface ReleaseTrackSnapshot {
+	local_track_id: string;
+	disc_number: number;
+	track_number: number;
+	title: string;
+	artist_name: string | null;
+	duration_seconds: number | null;
+	duration_reliable: boolean;
+}
+
+export interface ReleaseMediumSnapshot {
+	position: number;
+	title: string | null;
+	tracks: ReleaseTrackSnapshot[];
+}
+
+export interface LocalReleaseSnapshot {
+	schema_version: number;
+	local_album_id: string;
+	local_artist_id: string;
+	album_row_revision: number;
+	input_revision: string;
+	title: string;
+	album_artist_name: string;
+	artist_kind: string;
+	musicbrainz_artist_id: string | null;
+	musicbrainz_release_group_id: string | null;
+	musicbrainz_release_id: string | null;
+	release_date: string | null;
+	year: number | null;
+	is_compilation: boolean;
+	captured_at: number;
+	media: ReleaseMediumSnapshot[];
+}
+
+export interface ReleaseTrackDraft {
+	local_track_id: string;
+	disc_number: number;
+	track_number: number;
+	title: ReleaseTextField;
+	artist_name: ReleaseTextField;
+	duration_seconds: number | null;
+}
+
+export interface ReleaseMediumDraft {
+	position: number;
+	title: ReleaseTextField;
+	format: ReleaseTextField;
+	tracks: ReleaseTrackDraft[];
+}
+
+export interface ReleaseDraft {
+	schema_version: number;
+	title: ReleaseTextField;
+	artist_credit: ReleaseTextField;
+	release_date: ReleaseTextField;
+	country: ReleaseTextField;
+	label: ReleaseTextField;
+	catalogue_number: ReleaseTextField;
+	barcode: ReleaseTextField;
+	packaging: ReleaseTextField;
+	media: ReleaseMediumDraft[];
+}
+
+export interface ContributionSourceReference {
+	provider: string;
+	entity_type: string;
+	external_id: string;
+	canonical_url: string;
+	fetched_at: number | null;
+}
+
+export interface ContributionTrackAlignment {
+	local_track_id: string;
+	provider_position: string | null;
+	classification: 'exact' | 'partial' | 'conflicting' | 'unmatched';
+}
+
+export interface ContributionSourceSelection {
+	schema_version: number;
+	sources: ContributionSourceReference[];
+	alignments: ContributionTrackAlignment[];
+}
+
+export interface DiscogsReleaseCandidate {
+	release_id: string;
+	title: string;
+	artist_name: string;
+	canonical_url: string;
+	year: number | null;
+	country: string | null;
+	label: string | null;
+	catalogue_number: string | null;
+	format_summary: string | null;
+	track_count: number | null;
+	master_id: string | null;
+	fetched_at: number;
+}
+
+export interface DiscogsArtistCredit {
+	name: string;
+	credited_name: string | null;
+	join_phrase: string;
+	artist_id: string | null;
+	canonical_url: string | null;
+}
+
+export interface DiscogsLabel {
+	name: string;
+	catalogue_number: string | null;
+	label_id: string | null;
+	canonical_url: string | null;
+}
+
+export interface DiscogsIdentifier {
+	type: string;
+	value: string;
+	description: string | null;
+}
+
+export interface DiscogsFormat {
+	name: string;
+	quantity: number | null;
+	descriptions: string[];
+	text: string | null;
+}
+
+export interface DiscogsTrack {
+	source_position: string | null;
+	number: number | null;
+	title: string;
+	duration_seconds: number | null;
+	heading: boolean;
+	artists: DiscogsArtistCredit[];
+}
+
+export interface DiscogsMedium {
+	position: number;
+	title: string | null;
+	format: string | null;
+	tracks: DiscogsTrack[];
+}
+
+export interface DiscogsRelease {
+	release_id: string;
+	master_id: string | null;
+	canonical_release_url: string;
+	canonical_master_url: string | null;
+	title: string;
+	artist_name: string;
+	artists: DiscogsArtistCredit[];
+	released_date: string | null;
+	year: number | null;
+	country: string | null;
+	labels: DiscogsLabel[];
+	identifiers: DiscogsIdentifier[];
+	barcode: string | null;
+	formats: DiscogsFormat[];
+	media: DiscogsMedium[];
+	source_fetched_at: number;
+}
+
+export interface DiscogsSourceView {
+	release: DiscogsRelease | null;
+	expired: boolean;
+	expires_at: number | null;
+}
+
+export interface ContributionDuplicateCandidate {
+	release_mbid: string | null;
+	release_group_mbid: string | null;
+	title: string;
+	artist_name: string;
+	evidence_kind: 'exact_discogs_url' | 'release_group' | 'barcode' | 'similar';
+	exact: boolean;
+	differences: string[];
+}
+
+export interface ContributionDuplicateResult {
+	schema_version: number;
+	checked_at: number;
+	input_revision: string;
+	candidates: ContributionDuplicateCandidate[];
+	different_edition_confirmed: boolean;
+}
+
+export interface MusicBrainzSeedField {
+	name: string;
+	value: string;
+}
+
+export interface MusicBrainzSeed {
+	action_url: string;
+	method: 'POST';
+	fields: MusicBrainzSeedField[];
+	contribution_revision: number;
+	expires_at: number;
+}
+
+export interface ContributionValidationIssue {
+	code: string;
+	field: string;
+	message: string;
+}
+
+export interface LibraryContribution {
+	id: string;
+	local_album_id: string;
+	created_by_user_id: string | null;
+	updated_by_user_id: string | null;
+	state: ContributionState;
+	album_row_revision: number;
+	input_revision: string;
+	local_snapshot: LocalReleaseSnapshot;
+	draft: ReleaseDraft;
+	source_selection: ContributionSourceSelection;
+	provider_snapshot_expires_at: number | null;
+	discogs_source: DiscogsSourceView | null;
+	duplicate_result: ContributionDuplicateResult | null;
+	duplicate_checked_at: number | null;
+	result_release_mbid: string | null;
+	result_source: 'callback' | 'manual' | null;
+	result_received_at: number | null;
+	seeded_at: number | null;
+	terminal_at: number | null;
+	created_at: number;
+	updated_at: number;
+	row_revision: number;
+	input_is_current: boolean;
+	validation: ContributionValidationIssue[];
+	next_actions: ContributionNextAction[];
+}
+
 export interface NativeAlbumsResponse {
 	items: LibraryAlbumSummary[];
 	total: number;
@@ -1578,6 +1846,7 @@ export interface LibraryArtistSummary {
 	id: string;
 	name: string;
 	musicbrainz_artist_id: string | null;
+	artist_identity_state: ArtistIdentityState;
 	album_count: number;
 	track_count: number;
 	date_added: number | null;

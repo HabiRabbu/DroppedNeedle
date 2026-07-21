@@ -13,6 +13,9 @@ from services.native.album_identification_service import AlbumIdentificationServ
 from services.native.identification_queue_service import IdentificationQueueService
 from services.native.library_operation_supervisor import LibraryOperationSupervisor
 from services.native.background_workload_gate import BackgroundWorkloadGate
+from services.native.library_contribution_verification_worker import (
+    LibraryContributionVerificationWorker,
+)
 
 logger = logging.getLogger(__name__)
 WORKER_INTERVAL_SECONDS = 1.0
@@ -86,6 +89,29 @@ async def run_target_operation_worker(
             break
 
 
+async def run_library_contribution_verification_worker(
+    worker_getter: Callable[[], LibraryContributionVerificationWorker],
+    *,
+    worker_id: str | None = None,
+) -> None:
+    owner = worker_id or _worker_id("library-contribution-verification")
+    while True:
+        try:
+            worker = worker_getter()
+            await worker.recover()
+            await worker.run_once(owner)
+        except asyncio.CancelledError:
+            break
+        except Exception:  # noqa: BLE001 - a durable worker must survive one failed item
+            logger.exception(
+                "Library contribution verification worker iteration failed"
+            )
+        try:
+            await asyncio.sleep(WORKER_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            break
+
+
 def start_target_identification_worker(
     queue_getter: Callable[[], IdentificationQueueService],
     service_getter: Callable[[], AlbumIdentificationService],
@@ -107,6 +133,18 @@ def start_target_operation_worker(
 ) -> asyncio.Task[None]:
     name = "target-library-operation-worker"
     task = asyncio.create_task(run_target_operation_worker(supervisor_getter))
+    TaskRegistry.get_instance().register(name, task)
+    task.add_done_callback(lambda item: _log_worker_error(item, name=name))
+    return task
+
+
+def start_library_contribution_verification_worker(
+    worker_getter: Callable[[], LibraryContributionVerificationWorker],
+) -> asyncio.Task[None]:
+    name = "library-contribution-verification-worker"
+    task = asyncio.create_task(
+        run_library_contribution_verification_worker(worker_getter)
+    )
     TaskRegistry.get_instance().register(name, task)
     task.add_done_callback(lambda item: _log_worker_error(item, name=name))
     return task

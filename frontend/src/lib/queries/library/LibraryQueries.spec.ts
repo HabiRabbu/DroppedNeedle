@@ -10,11 +10,16 @@ vi.mock('$lib/api/client', () => ({
 	api: { global: { get: vi.fn(), post: vi.fn() } }
 }));
 
+vi.mock('../QueryClient', () => ({
+	setQueryDataWithPersister: vi.fn().mockResolvedValue(undefined)
+}));
+
 import { api } from '$lib/api/client';
 import {
 	getLibraryAlbumsQueryOptions,
 	getLibraryStatsQueryOptions,
 	getLibraryAlbumStatusQueryOptions,
+	getLibraryAlbumCopiesQuery,
 	getLibraryScanScheduleQuery,
 	getLibraryMembershipQueryOptions
 } from './LibraryQueries.svelte';
@@ -97,6 +102,12 @@ describe('library query endpoints', () => {
 	it('album status query hits the combined /status endpoint', async () => {
 		await callQueryFn(getLibraryAlbumStatusQueryOptions('rg-1'));
 		expect(mockGet.mock.calls[0][0]).toBe('/api/v1/library/albums/rg-1/status');
+	});
+
+	it('album copies query uses the provider or local identifier', async () => {
+		const opts = getLibraryAlbumCopiesQuery(() => 'release-1') as unknown;
+		await callQueryFn(opts);
+		expect(mockGet.mock.calls[0][0]).toBe('/api/v1/library/albums/release-1/copies');
 	});
 
 	it('scan schedule query hits the schedule endpoint', async () => {

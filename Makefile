@@ -93,6 +93,18 @@ NPM    ?= pnpm
 	backend-test-peer-review-fixes \
 	backend-test-feedback-fixes \
 	frontend-test-feedback-fixes \
+	backend-test-local-only-mbsub-phase1 \
+	frontend-test-local-only-mbsub-phase1 \
+	backend-test-local-only-mbsub-phase2 \
+	frontend-test-local-only-mbsub-phase2 \
+	backend-test-local-only-mbsub-phase3 \
+	frontend-test-local-only-mbsub-phase3 \
+	backend-test-local-only-mbsub-phase4 \
+	frontend-test-local-only-mbsub-phase4 \
+	backend-test-local-only-mbsub-phase5 \
+	frontend-test-local-only-mbsub-phase5 \
+	backend-test-local-only-mbsub-phase6 \
+	frontend-test-local-only-mbsub-phase6 \
 	feedback-fixes-benchmark \
 	feedback-fixes-root-mapping \
 	feedback-fixes-migration-rehearsal \
@@ -524,6 +536,57 @@ backend-test-feedback-fixes: $(BACKEND_VENV_STAMP) ## Feedback Fixes focused bac
 		tests/security/test_auth_on_every_endpoint.py \
 		tests/services/test_library_scanner.py::test_album_match_claims_unmapped_files_under_the_album -v
 
+backend-test-local-only-mbsub-phase1: $(BACKEND_VENV_STAMP) ## Local-only catalog Phase 1 backend tests
+	$(PYTEST) tests/routes/test_target_library_routes.py \
+		tests/services/native/test_target_consumer_services.py \
+		tests/infrastructure/test_native_library_store.py \
+		tests/compat/test_subsonic_browsing.py \
+		tests/compat/test_jellyfin_browsing.py \
+		tests/security/test_auth_on_every_endpoint.py -v
+
+backend-test-local-only-mbsub-phase2: $(BACKEND_VENV_STAMP) ## Local-only contribution Phase 2 backend tests
+	$(PYTEST) tests/infrastructure/test_library_contribution_store.py \
+		tests/services/native/test_library_contribution_service.py \
+		tests/routes/test_library_contribution_routes.py \
+		tests/routes/test_target_application.py \
+		tests/security/test_auth_on_every_endpoint.py -v
+
+backend-test-local-only-mbsub-phase3: $(BACKEND_VENV_STAMP) ## Discogs contribution Phase 3 backend tests
+	$(PYTEST) tests/repositories/test_discogs_repository.py \
+		tests/services/native/test_library_contribution_discogs.py \
+		tests/services/native/test_library_contribution_service.py \
+		tests/infrastructure/test_library_contribution_store.py \
+		tests/routes/test_library_contribution_routes.py \
+		tests/security/test_auth_on_every_endpoint.py -v
+
+backend-test-local-only-mbsub-phase4: $(BACKEND_VENV_STAMP) ## MusicBrainz contribution Phase 4 backend tests
+	$(PYTEST) tests/repositories/test_musicbrainz_contribution_repository.py \
+		tests/services/native/test_library_contribution_musicbrainz.py \
+		tests/services/native/test_library_contribution_service.py \
+		tests/infrastructure/test_library_contribution_store.py \
+		tests/routes/test_library_contribution_routes.py \
+		tests/security/test_auth_on_every_endpoint.py -v
+
+backend-test-local-only-mbsub-phase5: $(BACKEND_VENV_STAMP) ## MusicBrainz callback and verification Phase 5 tests
+	$(PYTEST) tests/services/native/test_library_contribution_musicbrainz.py \
+		tests/services/native/test_library_contribution_verification_worker.py \
+		tests/infrastructure/test_library_contribution_store.py \
+		tests/routes/test_library_contribution_routes.py \
+		tests/routes/test_target_application.py \
+		tests/services/native/test_target_scan_runtime.py \
+		tests/security/test_auth_on_every_endpoint.py -v
+
+backend-test-local-only-mbsub-phase6: $(BACKEND_VENV_STAMP) ## Local-only contribution Phase 6 hardening tests
+	$(PYTEST) tests/services/native/test_target_consumer_services.py \
+		tests/services/native/test_library_contribution_service.py \
+		tests/services/native/test_library_contribution_discogs.py \
+		tests/services/native/test_library_contribution_verification_worker.py \
+		tests/infrastructure/test_library_contribution_store.py \
+		tests/compat/test_subsonic_browsing.py \
+		tests/compat/test_jellyfin_browsing.py \
+		tests/routes/test_library_contribution_routes.py \
+		tests/security/test_auth_on_every_endpoint.py -v
+
 frontend-test-feedback-fixes: ## Feedback Fixes focused frontend tests
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
 		src/lib/queries/__tests__/integration-coverage.spec.ts \
@@ -559,6 +622,61 @@ frontend-test-feedback-fixes: ## Feedback Fixes focused frontend tests
 		src/routes/library/page.svelte.spec.ts \
 		src/routes/library/review/page.svelte.spec.ts \
 		src/routes/library/albums/\[id\]/page.svelte.spec.ts
+
+frontend-test-local-only-mbsub-phase1: ## Local-only catalog Phase 1 frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/library/LibraryQueries.spec.ts \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client \
+		src/lib/components/library/LibraryAlbumCard.svelte.spec.ts \
+		src/lib/components/library/LocalIdentityBadge.svelte.spec.ts \
+		src/routes/album/\[id\]/localPage.svelte.spec.ts \
+		src/routes/album/\[id\]/page.svelte.spec.ts \
+		src/routes/album/\[id\]/routing.svelte.spec.ts \
+		src/routes/artist/\[id\]/routing.svelte.spec.ts \
+		src/routes/library/artists/page.svelte.spec.ts
+
+frontend-test-local-only-mbsub-phase2: ## Local-only contribution Phase 2 frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/libraryContributions/LibraryContributionQueries.spec.ts \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client \
+		src/routes/library/contributions/\[id\]/page.svelte.spec.ts \
+		src/routes/album/\[id\]/localPage.svelte.spec.ts
+
+frontend-test-local-only-mbsub-phase3: ## Discogs contribution Phase 3 frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/libraryContributions \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client \
+		src/routes/library/contributions/\[id\]/page.svelte.spec.ts
+
+frontend-test-local-only-mbsub-phase4: ## MusicBrainz contribution Phase 4 frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/libraryContributions \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client \
+		src/lib/components/library/ContributionMusicBrainzReview.svelte.spec.ts \
+		src/routes/library/contributions/\[id\]/page.svelte.spec.ts
+
+frontend-test-local-only-mbsub-phase5: ## MusicBrainz callback recovery Phase 5 frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/libraryContributions \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client \
+		src/lib/components/library/ContributionMusicBrainzReview.svelte.spec.ts \
+		src/routes/library/contributions/\[id\]/page.svelte.spec.ts
+
+frontend-test-local-only-mbsub-phase6: ## Artist entry and contribution hardening Phase 6 frontend tests
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/libraryContributions \
+		src/lib/queries/library/LibraryQueries.spec.ts \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client \
+		src/routes/artist/\[id\]/localPage.svelte.spec.ts \
+		src/routes/album/\[id\]/localPage.svelte.spec.ts \
+		src/routes/library/contributions/\[id\]/page.svelte.spec.ts \
+		src/lib/components/library/ContributionMusicBrainzReview.svelte.spec.ts
 
 feedback-fixes-benchmark: $(BACKEND_VENV_STAMP) ## Run the non-default Feedback Fixes benchmark harness
 	cd "$(BACKEND_DIR)" && .venv/bin/python -m tests.benchmarks.feedback_fixes_benchmark \

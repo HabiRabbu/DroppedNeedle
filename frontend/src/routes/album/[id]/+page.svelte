@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { getLibraryAlbumDetailQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import {
+		cacheCanonicalLibraryAlbumDetail,
+		getLibraryAlbumDetailQuery
+	} from '$lib/queries/library/LibraryQueries.svelte';
 	import { albumHref } from '$lib/utils/entityRoutes';
 	import LocalAlbumPage from './LocalAlbumPage.svelte';
 	import ProviderAlbumPage from './ProviderAlbumPage.svelte';
@@ -12,17 +15,18 @@
 	let { data }: Props = $props();
 	const localQuery = getLibraryAlbumDetailQuery(() => data.albumId);
 	const localAlbum = $derived(localQuery.data);
-	const isLocalIdentifier = $derived(localAlbum?.id === data.albumId);
-	const providerId = $derived(isLocalIdentifier ? localAlbum?.musicbrainz_release_group_id : null);
+	const canonicalLocalId = $derived(localAlbum?.id ?? null);
+	const shouldRedirect = $derived(canonicalLocalId !== null && canonicalLocalId !== data.albumId);
 
 	$effect(() => {
-		if (providerId) {
-			void goto(albumHref(providerId), { replaceState: true });
+		if (localAlbum && shouldRedirect) {
+			void cacheCanonicalLibraryAlbumDetail(localAlbum);
+			void goto(albumHref(localAlbum.id), { replaceState: true });
 		}
 	});
 </script>
 
-{#if localQuery.isLoading || providerId}
+{#if localQuery.isLoading || shouldRedirect}
 	<div class="w-full max-w-7xl mx-auto px-2 py-4 sm:px-4 sm:py-8 lg:px-8">
 		<div class="grid gap-6 lg:grid-cols-[20rem_1fr]">
 			<div class="skeleton aspect-square w-full rounded-box"></div>
@@ -33,7 +37,7 @@
 			</div>
 		</div>
 	</div>
-{:else if isLocalIdentifier && localAlbum}
+{:else if localAlbum}
 	<LocalAlbumPage albumId={localAlbum.id} />
 {:else}
 	<ProviderAlbumPage {data} />

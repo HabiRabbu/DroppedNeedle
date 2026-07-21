@@ -1,6 +1,7 @@
 <script lang="ts">
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import LibraryFormatBadge from './LibraryFormatBadge.svelte';
+	import LocalIdentityBadge from './LocalIdentityBadge.svelte';
 	import type { LibraryAlbumSummary } from '$lib/types';
 	import { albumHref } from '$lib/utils/entityRoutes';
 
@@ -9,7 +10,7 @@
 	}
 
 	let { album }: Props = $props();
-	let href = $derived(albumHref(album.musicbrainz_release_group_id ?? album.id));
+	let href = $derived(albumHref(album.id));
 </script>
 
 <div
@@ -29,6 +30,14 @@
 			<div class="absolute top-2 right-2 z-10">
 				<LibraryFormatBadge format={album.format} />
 			</div>
+			{#if album.album_identity_state === 'local_only'}
+				<LocalIdentityBadge
+					state={album.album_identity_state}
+					subject="album"
+					compact
+					className="absolute left-2 top-2 z-10"
+				/>
+			{/if}
 		</figure>
 
 		<div class="card-body p-3">

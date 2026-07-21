@@ -4,6 +4,11 @@ from infrastructure.queue.priority_queue import RequestPriority
 from models.search import SearchResult
 from models.artist import ArtistInfo
 from models.album import AlbumInfo
+from models.library_contribution import (
+    MusicBrainzDuplicateFacts,
+    MusicBrainzUrlResolution,
+    MusicBrainzVerifiedRelease,
+)
 
 
 class MusicBrainzRepositoryProtocol(Protocol):
@@ -66,4 +71,32 @@ class MusicBrainzRepositoryProtocol(Protocol):
         release_id: str,
         recording_mbid: str,
     ) -> tuple[int, int] | None:
+        ...
+
+    async def resolve_url(
+        self,
+        resource_url: str,
+        *,
+        includes: tuple[str, ...],
+        priority: RequestPriority,
+        bypass_cache: bool = False,
+    ) -> MusicBrainzUrlResolution:
+        ...
+
+    async def get_release_for_verification(
+        self,
+        release_mbid: str,
+        *,
+        priority: RequestPriority,
+        bypass_cache: bool = False,
+    ) -> MusicBrainzVerifiedRelease | None:
+        ...
+
+    async def search_duplicate_releases(
+        self,
+        facts: MusicBrainzDuplicateFacts,
+        *,
+        priority: RequestPriority,
+        limit: int,
+    ) -> list[MusicBrainzVerifiedRelease]:
         ...

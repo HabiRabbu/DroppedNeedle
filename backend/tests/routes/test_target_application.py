@@ -371,6 +371,7 @@ def test_target_lifecycle_retains_every_nonlegacy_source_task() -> None:
     assert source - replaced <= target
     assert replaced.isdisjoint(target)
     assert {
+        "start_library_contribution_verification_worker",
         "start_target_scan_supervisor",
         "start_target_identification_worker",
         "start_target_operation_worker",
@@ -466,6 +467,11 @@ def test_production_target_lifespan_selects_validation_phase_and_runs_runtime(
     )
     monkeypatch.setattr(
         target_module, "start_target_operation_worker", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        target_module,
+        "start_library_contribution_verification_worker",
+        lambda *a, **k: None,
     )
     monkeypatch.setattr(auth_providers, "get_auth_service", lambda: auth)
     monkeypatch.setattr(auth_providers, "get_auth_store", lambda: auth_store)

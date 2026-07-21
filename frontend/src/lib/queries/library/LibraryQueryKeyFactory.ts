@@ -48,6 +48,8 @@ export const LibraryQueryKeyFactory = {
 	album: (mbid: string) => [...LibraryQueryKeyFactory.all, 'album', mbid] as const,
 	albumDetail: (albumId: string) =>
 		[...LibraryQueryKeyFactory.all, 'album-detail', albumId] as const,
+	albumCopies: (albumId: string) =>
+		[...LibraryQueryKeyFactory.all, 'album-copies', albumId] as const,
 	artistDetail: (artistId: string) =>
 		[...LibraryQueryKeyFactory.all, 'artist-detail', artistId] as const,
 	artistAlbums: (artistId: string) =>

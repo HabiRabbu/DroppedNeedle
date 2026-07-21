@@ -183,7 +183,9 @@ async def get_target_membership(
     body: LibraryMembershipRequest = MsgSpecBody(LibraryMembershipRequest),
 ) -> LibraryMembershipResponse:
     album_ids = list(
-        dict.fromkeys(value.strip().casefold() for value in body.album_ids if value.strip())
+        dict.fromkeys(
+            value.strip().casefold() for value in body.album_ids if value.strip()
+        )
     )
     if len(album_ids) > 500:
         raise ValidationError("Library membership accepts at most 500 album IDs.")
@@ -206,24 +208,46 @@ async def get_target_recently_added(
     return TargetNativeAlbumsResponse(items=items, total=len(items))
 
 
-@router.get("/artists/{artist_id}", response_model=TargetNativeArtist)
+@router.get(
+    "/artists/{artist_id}",
+    response_model=TargetNativeArtist,
+    name="target_artist_detail",
+)
 async def get_target_artist(
+    request: Request,
     artist_id: str,
     _user: CurrentUserDep,
     service: TargetNativeLibraryServiceDep,
-) -> TargetNativeArtist:
+) -> TargetNativeArtist | RedirectResponse:
+    canonical = await service.canonical_id("artist", artist_id)
+    if canonical is not None and canonical != artist_id:
+        return RedirectResponse(
+            request.url_for("target_artist_detail", artist_id=canonical),
+            status_code=308,
+        )
     artist = await service.artist(artist_id)
     if artist is None:
         raise ResourceNotFoundError("Library artist not found.")
     return artist
 
 
-@router.get("/artists/{artist_id}/albums", response_model=TargetNativeAlbumsResponse)
+@router.get(
+    "/artists/{artist_id}/albums",
+    response_model=TargetNativeAlbumsResponse,
+    name="target_artist_albums",
+)
 async def get_target_artist_albums(
+    request: Request,
     artist_id: str,
     _user: CurrentUserDep,
     service: TargetNativeLibraryServiceDep,
-) -> TargetNativeAlbumsResponse:
+) -> TargetNativeAlbumsResponse | RedirectResponse:
+    canonical = await service.canonical_id("artist", artist_id)
+    if canonical is not None and canonical != artist_id:
+        return RedirectResponse(
+            request.url_for("target_artist_albums", artist_id=canonical),
+            status_code=308,
+        )
     items = await service.artist_albums(artist_id)
     return TargetNativeAlbumsResponse(items=items, total=len(items))
 
@@ -249,6 +273,19 @@ async def get_target_album(
     if album is None:
         raise ResourceNotFoundError("Library album not found.")
     return album
+
+
+@router.get(
+    "/albums/{album_id}/copies",
+    response_model=TargetNativeAlbumsResponse,
+)
+async def get_target_album_copies(
+    album_id: str,
+    _user: CurrentUserDep,
+    service: TargetNativeLibraryServiceDep,
+) -> TargetNativeAlbumsResponse:
+    items = await service.album_copies(album_id)
+    return TargetNativeAlbumsResponse(items=items, total=len(items))
 
 
 @router.post("/resolve-tracks", response_model=TrackResolveResponse)

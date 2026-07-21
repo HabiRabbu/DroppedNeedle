@@ -92,6 +92,38 @@ class StaleRevisionError(ConflictError):
     pass
 
 
+class ContributionStateError(ConflictError):
+    error_code = "CONTRIBUTION_STATE_CONFLICT"
+
+
+class ContributionProviderExpiredError(ConflictError):
+    error_code = "CONTRIBUTION_PROVIDER_EXPIRED"
+
+
+class ContributionDuplicateCheckRequiredError(ConflictError):
+    error_code = "CONTRIBUTION_DUPLICATE_CHECK_REQUIRED"
+
+
+class ContributionExactDuplicateError(ConflictError):
+    error_code = "CONTRIBUTION_EXACT_DUPLICATE"
+
+
+class ContributionResultMismatchError(ConflictError):
+    error_code = "CONTRIBUTION_RESULT_MISMATCH"
+
+
+class ContributionDataError(DroppedNeedleException):
+    """A persisted contribution document cannot be decoded safely."""
+
+    pass
+
+
+class DiscogsApiError(ExternalServiceError):
+    """Discogs returned an unusable response for optional contribution metadata."""
+
+    pass
+
+
 class RevisionOverflowError(DroppedNeedleException):
     pass
 

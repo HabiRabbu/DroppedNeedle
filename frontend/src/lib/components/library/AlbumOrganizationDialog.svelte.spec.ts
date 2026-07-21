@@ -10,7 +10,9 @@ const album: LibraryAlbumDetail = {
 	artist_name: 'Local Artist',
 	artist_id: 'artist-1',
 	musicbrainz_release_group_id: 'rg-1',
+	musicbrainz_release_id: null,
 	musicbrainz_artist_id: null,
+	album_identity_state: 'release_group_linked',
 	track_count: 2,
 	total_duration_seconds: 300,
 	total_size_bytes: 1000,
@@ -25,7 +27,9 @@ const album: LibraryAlbumDetail = {
 	input_revision: 'input-5',
 	identification_status: 'identified',
 	review_id: null,
-	review_revision: null
+	review_revision: null,
+	contribution_id: null,
+	contribution_state: null
 };
 
 function track(id: string, number: number): NativeTrackListItem {

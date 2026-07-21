@@ -203,7 +203,7 @@
 						</div>
 						{#each results.artists as artist (artist.id)}
 							<a
-								href={`/artist/${artist.musicbrainz_artist_id ?? artist.id}`}
+								href={`/artist/${artist.id}`}
 								class="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-base-content/5"
 							>
 								<div class="h-10 w-10 shrink-0 overflow-hidden rounded-full">
@@ -237,7 +237,7 @@
 						</div>
 						{#each results.albums as album (album.id)}
 							<a
-								href={`/album/${album.musicbrainz_release_group_id ?? album.id}`}
+								href={`/album/${album.id}`}
 								class="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-base-content/5"
 							>
 								<div class="h-10 w-10 shrink-0 overflow-hidden rounded-md">

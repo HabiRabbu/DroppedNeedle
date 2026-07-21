@@ -404,9 +404,7 @@ class NativeLibraryStore(PersistenceBase):
         if self._invalidator is not None:
             await self._invalidator()
 
-    async def _write_scan(
-        self, operation: Callable[[sqlite3.Connection], _T]
-    ) -> _T:
+    async def _write_scan(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
         def tracked(connection: sqlite3.Connection) -> tuple[_T, bool]:
             before = int(
                 connection.execute(
@@ -922,8 +920,12 @@ class NativeLibraryStore(PersistenceBase):
                 "FROM local_album_external_identities identity "
                 "JOIN local_albums subject ON subject.id = identity.local_album_id "
                 "WHERE identity.provider = 'musicbrainz' "
-                "AND LOWER(identity.release_group_mbid) = LOWER(?) "
-                "AND subject.retired_into_album_id IS NULL"
+                "AND (LOWER(identity.release_group_mbid) = LOWER(?) "
+                "OR LOWER(identity.release_mbid) = LOWER(?)) "
+                "AND subject.retired_into_album_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                "WHERE active_track.local_album_id = subject.id "
+                "AND active_track.availability = 'indexed')"
             )
         elif kind == "artist":
             query = (
@@ -932,7 +934,15 @@ class NativeLibraryStore(PersistenceBase):
                 "JOIN local_artists subject ON subject.id = identity.local_artist_id "
                 "WHERE identity.provider = 'musicbrainz' "
                 "AND LOWER(identity.provider_artist_id) = LOWER(?) "
-                "AND subject.retired_into_artist_id IS NULL"
+                "AND subject.retired_into_artist_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                "WHERE active_track.availability = 'indexed' AND ("
+                "EXISTS (SELECT 1 FROM local_album_artists album_credit "
+                "WHERE album_credit.local_artist_id = subject.id "
+                "AND album_credit.local_album_id = active_track.local_album_id) "
+                "OR EXISTS (SELECT 1 FROM local_track_artists track_credit "
+                "WHERE track_credit.local_artist_id = subject.id "
+                "AND track_credit.local_track_id = active_track.id)))"
             )
         elif kind == "track":
             query = (
@@ -945,8 +955,22 @@ class NativeLibraryStore(PersistenceBase):
             )
         else:
             raise ValueError(f"Unsupported target identifier kind: {kind}")
-        rows = connection.execute(query + " ORDER BY id", (identifier,)).fetchall()
+        parameters = (identifier, identifier) if kind == "album" else (identifier,)
+        rows = connection.execute(query + " ORDER BY id", parameters).fetchall()
         return [str(row["id"]) for row in rows]
+
+    async def resolve_canonical_target_id(
+        self, kind: str, identifier: str
+    ) -> str | None:
+        """Resolve local IDs, aliases, and unambiguous provider identities."""
+
+        def operation(connection: sqlite3.Connection) -> str | None:
+            matches = self._resolve_target_membership_ids(
+                connection, kind=kind, identifier=identifier
+            )
+            return matches[0] if len(matches) == 1 else None
+
+        return await self._read(operation)
 
     @classmethod
     def _resolve_unique_target_subject_id(
@@ -1922,8 +1946,10 @@ class NativeLibraryStore(PersistenceBase):
                 "MAX(t.file_format) AS file_format, MAX(t.album_sort) AS album_sort_name, "
                 "GROUP_CONCAT(DISTINCT NULLIF(t.genre, '')) AS genres, "
                 "ae.release_group_mbid AS provider_release_group_mbid, "
+                "ae.release_mbid AS provider_release_mbid, "
                 "aie.provider_artist_id AS provider_artist_mbid, artwork.cover_url, "
-                "artwork.source AS artwork_source "
+                "artwork.source AS artwork_source, contribution.id AS contribution_id, "
+                "contribution.state AS contribution_state "
                 "FROM local_albums a JOIN local_tracks t ON t.local_album_id = a.id "
                 "LEFT JOIN local_album_external_identities ae "
                 "ON ae.local_album_id = a.id AND ae.provider = 'musicbrainz' "
@@ -1931,6 +1957,9 @@ class NativeLibraryStore(PersistenceBase):
                 "ON aie.local_artist_id = a.album_artist_id "
                 "AND aie.provider = 'musicbrainz' "
                 "LEFT JOIN local_album_artwork artwork ON artwork.local_album_id = a.id "
+                "LEFT JOIN library_contribution_drafts contribution "
+                "ON contribution.local_album_id = a.id "
+                "AND contribution.state NOT IN ('linked','cancelled','stale') "
                 "WHERE "
                 + where
                 + " GROUP BY a.id ORDER BY "
@@ -2218,9 +2247,7 @@ class NativeLibraryStore(PersistenceBase):
                     "AND track.availability='indexed'))",
                     batch,
                 ).fetchall()
-                found.update(
-                    str(row["provider_artist_id"]).casefold() for row in rows
-                )
+                found.update(str(row["provider_artist_id"]).casefold() for row in rows)
             return found
 
         return await self._read(operation)
@@ -5526,7 +5553,9 @@ class NativeLibraryStore(PersistenceBase):
                     (queue_cursor, scan_run_id, root_id, relative_directory),
                 )
                 if updated.rowcount != 1:
-                    raise StaleRevisionError("The grouping context is no longer pending.")
+                    raise StaleRevisionError(
+                        "The grouping context is no longer pending."
+                    )
             return results
 
         if background:
@@ -5861,6 +5890,15 @@ class NativeLibraryStore(PersistenceBase):
                 "WHERE local_album_id = ? AND provider = 'musicbrainz'",
                 (album_id,),
             ).fetchone()
+            artist = connection.execute(
+                "SELECT * FROM local_artists WHERE id = ?",
+                (album["album_artist_id"],),
+            ).fetchone()
+            artist_identity = connection.execute(
+                "SELECT * FROM local_artist_external_identities "
+                "WHERE local_artist_id = ? AND provider = 'musicbrainz'",
+                (album["album_artist_id"],),
+            ).fetchone()
             review = connection.execute(
                 "SELECT * FROM library_identification_reviews WHERE local_album_id = ? "
                 "AND state != 'resolved' ORDER BY updated_at DESC, id DESC LIMIT 1",
@@ -5870,6 +5908,8 @@ class NativeLibraryStore(PersistenceBase):
                 "album": dict(album),
                 "tracks": [dict(track) for track in tracks],
                 "identity": _row(identity),
+                "artist": _row(artist),
+                "artist_identity": _row(artist_identity),
                 "review": _row(review),
             }
 
@@ -7188,7 +7228,9 @@ class NativeLibraryStore(PersistenceBase):
 
         await super()._background_write(operation)
 
-    async def finalize_scan_discovery(self, run_id: str, *, updated_at: float) -> ScanRun:
+    async def finalize_scan_discovery(
+        self, run_id: str, *, updated_at: float
+    ) -> ScanRun:
         def operation(connection: sqlite3.Connection) -> ScanRun:
             total = int(
                 connection.execute(
@@ -7940,9 +7982,7 @@ class NativeLibraryStore(PersistenceBase):
                 same_size = int(row["saved_size"]) == int(row["file_size_bytes"])
                 unchanged = False
                 if kind in {"exact", "unclassified"}:
-                    unchanged = str(row["saved_revision"]) == str(
-                        row["stat_revision"]
-                    )
+                    unchanged = str(row["saved_revision"]) == str(row["stat_revision"])
                 elif kind == "legacy_float":
                     unchanged = same_size and int(
                         float(row["file_mtime"]) * 1_000_000_000
@@ -8024,12 +8064,10 @@ class NativeLibraryStore(PersistenceBase):
                 kind = str(row["stat_revision_kind"])
                 if kind == "legacy_float":
                     legacy_current_ns = int(
-                        (int(row["file_mtime_ns"]) / 1_000_000_000)
-                        * 1_000_000_000
+                        (int(row["file_mtime_ns"]) / 1_000_000_000) * 1_000_000_000
                     )
                     unchanged = (
-                        same_size
-                        and int(row["saved_mtime_ns"]) == legacy_current_ns
+                        same_size and int(row["saved_mtime_ns"]) == legacy_current_ns
                     )
                 elif kind == "legacy_review":
                     unchanged = (
@@ -8127,9 +8165,7 @@ class NativeLibraryStore(PersistenceBase):
             normalized_sort=_normalize_exact(artist.sort_name),
             now=artist.updated_at,
         )
-        album = msgspec.structs.replace(
-            write.album, album_artist_id=resolved_artist_id
-        )
+        album = msgspec.structs.replace(write.album, album_artist_id=resolved_artist_id)
         credit = msgspec.structs.replace(
             write.credit, local_artist_id=resolved_artist_id
         )
@@ -8355,7 +8391,9 @@ class NativeLibraryStore(PersistenceBase):
                     "event_revision = event_revision + 1",
                 ]
             )
-            parameters.extend([updated_at, updated_at, run_id, MAX_REVISION, MAX_REVISION])
+            parameters.extend(
+                [updated_at, updated_at, run_id, MAX_REVISION, MAX_REVISION]
+            )
             updated = connection.execute(
                 f"UPDATE library_scan_runs SET {', '.join(assignments)} WHERE id = ? "
                 "AND row_revision < ? AND event_revision < ? RETURNING *",
@@ -8825,8 +8863,7 @@ class NativeLibraryStore(PersistenceBase):
                 token = (
                     preliminary_key
                     if preliminary_key != "missing"
-                    else effective_merge_target
-                    or f"untagged:{row['local_track_id']}"
+                    else effective_merge_target or f"untagged:{row['local_track_id']}"
                 )
                 assigned.append((row, token))
             connection.executemany(
@@ -8899,8 +8936,8 @@ class NativeLibraryStore(PersistenceBase):
                             kind,
                             normalized,
                             display,
-                    ),
-                )
+                        ),
+                    )
 
             revision_modulus = 1 << 256
             revision_sums: dict[str, list[int]] = {}
@@ -9586,8 +9623,10 @@ class NativeLibraryStore(PersistenceBase):
                         "WHERE local_album_id=? AND position=0",
                         (album_id,),
                     ).fetchone()
-                    if credit is None or credit["local_artist_id"] != artist_id or (
-                        credit["credited_name"] != group["album_artist_name"]
+                    if (
+                        credit is None
+                        or credit["local_artist_id"] != artist_id
+                        or (credit["credited_name"] != group["album_artist_name"])
                     ):
                         connection.execute(
                             "INSERT INTO local_album_artists "
@@ -9839,9 +9878,7 @@ class NativeLibraryStore(PersistenceBase):
                                 )
                             ),
                             "trigger": (
-                                "automatic"
-                                if automatic > 0
-                                else "post_processing"
+                                "automatic" if automatic > 0 else "post_processing"
                             ),
                         }
                     )
@@ -10265,14 +10302,10 @@ class NativeLibraryStore(PersistenceBase):
                             (now, track["id"]),
                         )
                         counts["missing"] += 1
-                elif (
-                    inventory_policy == "excluded"
-                    and (
-                        track["availability"] != "excluded"
-                        or track["applied_policy"] != "excluded"
-                        or track["applied_policy_revision"]
-                        != inventory_revision
-                    )
+                elif inventory_policy == "excluded" and (
+                    track["availability"] != "excluded"
+                    or track["applied_policy"] != "excluded"
+                    or track["applied_policy_revision"] != inventory_revision
                 ):
                     connection.execute(
                         "UPDATE local_tracks SET availability = 'excluded', excluded_at = ?, "
@@ -10287,16 +10320,12 @@ class NativeLibraryStore(PersistenceBase):
                         ),
                     )
                     counts["excluded"] += 1
-                elif (
-                    inventory_policy != "excluded"
-                    and (
-                        track["applied_policy"] != inventory_policy
-                        or track["applied_policy_revision"]
-                        != inventory_revision
-                        or (
-                            track["availability"] != "indexed"
-                            and not bool(track["manual_excluded"])
-                        )
+                elif inventory_policy != "excluded" and (
+                    track["applied_policy"] != inventory_policy
+                    or track["applied_policy_revision"] != inventory_revision
+                    or (
+                        track["availability"] != "indexed"
+                        and not bool(track["manual_excluded"])
                     )
                 ):
                     restored = track["availability"] != "indexed" and not bool(
@@ -10374,6 +10403,29 @@ class NativeLibraryStore(PersistenceBase):
                     "AND track.availability = 'indexed')",
                     (now, now, *album_ids),
                 ).rowcount
+                stale_contributions = connection.execute(
+                    "UPDATE library_contribution_drafts SET state = 'stale', "
+                    "terminal_at = ?, updated_at = ?, seed_snapshot_json = NULL, "
+                    "row_revision = row_revision + 1 WHERE state NOT IN "
+                    "('linked','cancelled','stale') AND row_revision < ? "
+                    f"AND local_album_id IN ({placeholders}) "
+                    "AND NOT EXISTS (SELECT 1 FROM local_tracks track "
+                    "WHERE track.local_album_id = library_contribution_drafts.local_album_id "
+                    "AND track.availability = 'indexed') RETURNING id",
+                    (now, now, MAX_REVISION, *album_ids),
+                ).fetchall()
+                contribution_ids = [str(item["id"]) for item in stale_contributions]
+                if contribution_ids:
+                    contribution_placeholders = ",".join("?" for _ in contribution_ids)
+                    connection.execute(
+                        "UPDATE library_contribution_verification_jobs "
+                        "SET state = 'cancelled', terminal_at = ?, updated_at = ?, "
+                        "lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, "
+                        "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                        "WHERE state IN ('queued','running') AND row_revision < ? "
+                        f"AND contribution_id IN ({contribution_placeholders})",
+                        (now, now, MAX_REVISION, *contribution_ids),
+                    )
             if any(
                 counts[key]
                 for key in ("missing", "excluded", "restored", "reviews_resolved")
@@ -15005,6 +15057,2046 @@ class NativeLibraryStore(PersistenceBase):
             )
 
         return await self._read(operation)
+
+    @staticmethod
+    def _active_album_input(
+        connection: sqlite3.Connection, album_id: str
+    ) -> tuple[sqlite3.Row, list[sqlite3.Row], str] | None:
+        album = connection.execute(
+            "SELECT * FROM local_albums WHERE id = ? AND retired_into_album_id IS NULL",
+            (album_id,),
+        ).fetchone()
+        if album is None:
+            return None
+        tracks = connection.execute(
+            "SELECT * FROM local_tracks WHERE local_album_id = ? "
+            "AND availability = 'indexed' ORDER BY disc_number, track_number, id",
+            (album_id,),
+        ).fetchall()
+        if not tracks:
+            return None
+        return album, list(tracks), _album_input_revision(list(tracks))
+
+    @classmethod
+    def _contribution_row(
+        cls, connection: sqlite3.Connection, contribution_id: str
+    ) -> dict[str, Any] | None:
+        row = connection.execute(
+            "SELECT * FROM library_contribution_drafts WHERE id = ?",
+            (contribution_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        current = cls._active_album_input(connection, str(row["local_album_id"]))
+        if current is None:
+            result = dict(row)
+            result["album_active"] = False
+            result["current_album_row_revision"] = None
+            result["current_input_revision"] = None
+            return result
+        album, _tracks, input_revision = current
+        result = dict(row)
+        result["album_active"] = True
+        result["current_album_row_revision"] = int(album["row_revision"])
+        result["current_input_revision"] = input_revision
+        return result
+
+    async def create_or_get_library_contribution(
+        self,
+        *,
+        local_album_id: str,
+        actor_user_id: str,
+        album_row_revision: int,
+        input_revision: str,
+        local_snapshot_json: str,
+        resolved_draft_json: str,
+        source_selection_json: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            current = self._active_album_input(connection, local_album_id)
+            if current is None:
+                raise ResourceNotFoundError("Library album not found.")
+            album, _tracks, current_input_revision = current
+            if (
+                int(album["row_revision"]) != album_row_revision
+                or current_input_revision != input_revision
+            ):
+                raise StaleRevisionError(
+                    "The album changed before the contribution could be created."
+                )
+            existing = connection.execute(
+                "SELECT id FROM library_contribution_drafts WHERE local_album_id = ? "
+                "AND state NOT IN ('linked','cancelled','stale') "
+                "ORDER BY created_at DESC LIMIT 1",
+                (local_album_id,),
+            ).fetchone()
+            if existing is not None:
+                result = self._contribution_row(connection, str(existing["id"]))
+                if result is None:
+                    raise ResourceNotFoundError("Library contribution not found.")
+                return result
+            contribution_id = str(uuid.uuid4())
+            try:
+                connection.execute(
+                    "INSERT INTO library_contribution_drafts "
+                    "(id, local_album_id, created_by_user_id, updated_by_user_id, state, "
+                    "album_row_revision, input_revision, local_snapshot_json, "
+                    "resolved_draft_json, source_selection_json, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        contribution_id,
+                        local_album_id,
+                        actor_user_id,
+                        actor_user_id,
+                        album_row_revision,
+                        input_revision,
+                        local_snapshot_json,
+                        resolved_draft_json,
+                        source_selection_json,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                existing = connection.execute(
+                    "SELECT id FROM library_contribution_drafts WHERE local_album_id = ? "
+                    "AND state NOT IN ('linked','cancelled','stale') LIMIT 1",
+                    (local_album_id,),
+                ).fetchone()
+                if existing is None:
+                    raise
+                contribution_id = str(existing["id"])
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            return result
+
+        return await self._write(operation)
+
+    async def get_library_contribution(
+        self, contribution_id: str
+    ) -> dict[str, Any] | None:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            return self._contribution_row(connection, contribution_id)
+
+        return await self._read(operation)
+
+    async def get_active_album_contribution(
+        self, local_album_id: str
+    ) -> dict[str, Any] | None:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            row = connection.execute(
+                "SELECT id FROM library_contribution_drafts WHERE local_album_id = ? "
+                "AND state NOT IN ('linked','cancelled','stale') "
+                "ORDER BY created_at DESC LIMIT 1",
+                (local_album_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            contribution = self._contribution_row(connection, str(row["id"]))
+            return (
+                contribution
+                if contribution is not None and contribution["album_active"]
+                else None
+            )
+
+        return await self._read(operation)
+
+    async def update_library_contribution_draft(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        resolved_draft_json: str,
+        state: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = self._contribution_row(connection, contribution_id)
+            if row is None or not row["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if row["state"] not in {"draft", "ready", "needs_review"}:
+                raise ConflictError("This contribution can no longer be edited.")
+            if int(row["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before this edit was saved."
+                )
+            if row["input_revision"] != row["current_input_revision"] or int(
+                row["album_row_revision"]
+            ) != int(row["current_album_row_revision"]):
+                connection.execute(
+                    "UPDATE library_contribution_drafts SET state = 'stale', "
+                    "terminal_at = ?, updated_at = ?, row_revision = row_revision + 1 "
+                    "WHERE id = ? AND row_revision = ? AND row_revision < ?",
+                    (
+                        now,
+                        now,
+                        contribution_id,
+                        expected_row_revision,
+                        MAX_REVISION,
+                    ),
+                )
+                raise StaleRevisionError(
+                    "The local album changed. Rebuild the contribution before editing."
+                )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET resolved_draft_json = ?, state = ?, "
+                "updated_by_user_id = ?, duplicate_result_json = NULL, "
+                "duplicate_checked_at = NULL, duplicate_input_revision = NULL, "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision = ? AND row_revision < ? RETURNING *",
+                (
+                    resolved_draft_json,
+                    state,
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before this edit was saved."
+                )
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            return result
+
+        return await self._write(operation)
+
+    async def rebuild_library_contribution(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        album_row_revision: int,
+        input_revision: str,
+        local_snapshot_json: str,
+        resolved_draft_json: str,
+        source_selection_json: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            existing = connection.execute(
+                "SELECT * FROM library_contribution_drafts WHERE id = ?",
+                (contribution_id,),
+            ).fetchone()
+            if existing is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if int(existing["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before it could be rebuilt."
+                )
+            current = self._active_album_input(
+                connection, str(existing["local_album_id"])
+            )
+            if current is None:
+                raise ResourceNotFoundError("Library album not found.")
+            album, _tracks, current_input_revision = current
+            if (
+                int(album["row_revision"]) != album_row_revision
+                or current_input_revision != input_revision
+            ):
+                raise StaleRevisionError(
+                    "The album changed before the contribution could be rebuilt."
+                )
+            connection.execute(
+                "UPDATE library_contribution_drafts SET state = 'stale', terminal_at = ?, "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision = ?",
+                (now, now, contribution_id, expected_row_revision),
+            )
+            connection.execute(
+                "UPDATE library_contribution_callback_tokens SET consumed_at = ? "
+                "WHERE contribution_id = ? AND consumed_at IS NULL",
+                (now, contribution_id),
+            )
+            connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = 'cancelled', "
+                "terminal_at = ?, updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE contribution_id = ? "
+                "AND state IN ('queued','running')",
+                (now, now, contribution_id),
+            )
+            new_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO library_contribution_drafts "
+                "(id, local_album_id, created_by_user_id, updated_by_user_id, state, "
+                "album_row_revision, input_revision, local_snapshot_json, "
+                "resolved_draft_json, source_selection_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    new_id,
+                    existing["local_album_id"],
+                    actor_user_id,
+                    actor_user_id,
+                    album_row_revision,
+                    input_revision,
+                    local_snapshot_json,
+                    resolved_draft_json,
+                    source_selection_json,
+                    now,
+                    now,
+                ),
+            )
+            result = self._contribution_row(connection, new_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            return result
+
+        return await self._write(operation)
+
+    async def cancel_library_contribution(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = self._contribution_row(connection, contribution_id)
+            if row is None or not row["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if row["state"] in {"linked", "cancelled", "stale"}:
+                raise ConflictError("This contribution is already closed.")
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET state = 'cancelled', "
+                "updated_by_user_id = ?, terminal_at = ?, updated_at = ?, "
+                "seed_snapshot_json = NULL, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision = ? AND row_revision < ? RETURNING id",
+                (
+                    actor_user_id,
+                    now,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before it could be cancelled."
+                )
+            connection.execute(
+                "UPDATE library_contribution_callback_tokens SET consumed_at = ? "
+                "WHERE contribution_id = ? AND consumed_at IS NULL",
+                (now, contribution_id),
+            )
+            connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = 'cancelled', "
+                "terminal_at = ?, updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE contribution_id = ? "
+                "AND state IN ('queued','running')",
+                (now, now, contribution_id),
+            )
+            result = dict(
+                connection.execute(
+                    "SELECT * FROM library_contribution_drafts WHERE id = ?",
+                    (contribution_id,),
+                ).fetchone()
+            )
+            result["current_album_row_revision"] = row["current_album_row_revision"]
+            result["current_input_revision"] = row["current_input_revision"]
+            result["album_active"] = row["album_active"]
+            return result
+
+        return await self._write(operation)
+
+    async def mark_library_contribution_stale(
+        self, *, contribution_id: str, expected_row_revision: int, now: float
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = connection.execute(
+                "SELECT * FROM library_contribution_drafts WHERE id = ?",
+                (contribution_id,),
+            ).fetchone()
+            if row is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if str(row["state"]) not in {
+                "linked",
+                "cancelled",
+                "stale",
+            }:
+                updated = connection.execute(
+                    "UPDATE library_contribution_drafts SET state = 'stale', "
+                    "terminal_at = ?, updated_at = ?, seed_snapshot_json = NULL, "
+                    "row_revision = row_revision + 1 WHERE id = ? AND row_revision = ? "
+                    "AND row_revision < ?",
+                    (
+                        now,
+                        now,
+                        contribution_id,
+                        expected_row_revision,
+                        MAX_REVISION,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    if int(row["row_revision"]) >= MAX_REVISION:
+                        raise RevisionOverflowError(
+                            "The contribution revision cannot be increased."
+                        )
+                    raise StaleRevisionError(
+                        "The contribution changed before it could be marked stale."
+                    )
+                connection.execute(
+                    "UPDATE library_contribution_verification_jobs SET state = 'cancelled', "
+                    "terminal_at = ?, updated_at = ?, row_revision = row_revision + 1, "
+                    "event_revision = event_revision + 1 WHERE contribution_id = ? "
+                    "AND state IN ('queued','running')",
+                    (now, now, contribution_id),
+                )
+            result = dict(
+                connection.execute(
+                    "SELECT * FROM library_contribution_drafts WHERE id = ?",
+                    (contribution_id,),
+                ).fetchone()
+            )
+            current = self._active_album_input(
+                connection, str(result["local_album_id"])
+            )
+            result["album_active"] = current is not None
+            result["current_album_row_revision"] = (
+                int(current[0]["row_revision"]) if current is not None else None
+            )
+            result["current_input_revision"] = (
+                current[2] if current is not None else None
+            )
+            return result
+
+        return await self._write(operation)
+
+    async def upsert_local_entity_source_link(
+        self,
+        *,
+        local_artist_id: str | None,
+        local_album_id: str | None,
+        local_track_id: str | None,
+        provider: str,
+        external_entity_type: str,
+        external_id: str,
+        canonical_url: str,
+        decision_source: str,
+        selected_by_user_id: str | None,
+        verified_at: float,
+        now: float,
+    ) -> dict[str, Any]:
+        subjects = [local_artist_id, local_album_id, local_track_id]
+        if sum(subject is not None for subject in subjects) != 1:
+            raise ValidationError("A source link requires exactly one local subject.")
+
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            columns = (
+                ("local_artist_id", local_artist_id)
+                if local_artist_id is not None
+                else (
+                    ("local_album_id", local_album_id)
+                    if local_album_id is not None
+                    else ("local_track_id", local_track_id)
+                )
+            )
+            subject_column, subject_id = columns
+            existing = connection.execute(
+                f"SELECT * FROM local_entity_source_links WHERE {subject_column} = ? "
+                "AND provider = ? AND external_entity_type = ? AND external_id = ?",
+                (subject_id, provider, external_entity_type, external_id),
+            ).fetchone()
+            if existing is not None:
+                updated = connection.execute(
+                    "UPDATE local_entity_source_links SET canonical_url = ?, "
+                    "decision_source = ?, selected_by_user_id = ?, verified_at = ?, "
+                    "updated_at = ?, row_revision = row_revision + 1 WHERE id = ? "
+                    "AND row_revision < ? RETURNING *",
+                    (
+                        canonical_url,
+                        decision_source,
+                        selected_by_user_id,
+                        verified_at,
+                        now,
+                        existing["id"],
+                        MAX_REVISION,
+                    ),
+                ).fetchone()
+                if updated is None:
+                    raise RevisionOverflowError(
+                        "The source-link revision cannot be increased."
+                    )
+                return dict(updated)
+            link_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO local_entity_source_links "
+                "(id, local_artist_id, local_album_id, local_track_id, provider, "
+                "external_entity_type, external_id, canonical_url, decision_source, "
+                "selected_by_user_id, verified_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    link_id,
+                    local_artist_id,
+                    local_album_id,
+                    local_track_id,
+                    provider,
+                    external_entity_type,
+                    external_id,
+                    canonical_url,
+                    decision_source,
+                    selected_by_user_id,
+                    verified_at,
+                    now,
+                    now,
+                ),
+            )
+            return dict(
+                connection.execute(
+                    "SELECT * FROM local_entity_source_links WHERE id = ?", (link_id,)
+                ).fetchone()
+            )
+
+        return await self._write(operation)
+
+    async def remove_local_album_source_link(
+        self,
+        *,
+        local_album_id: str,
+        provider: str,
+        external_entity_type: str,
+        external_id: str,
+    ) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            result = connection.execute(
+                "DELETE FROM local_entity_source_links WHERE local_album_id = ? "
+                "AND provider = ? AND external_entity_type = ? AND external_id = ?",
+                (local_album_id, provider, external_entity_type, external_id),
+            )
+            return result.rowcount > 0
+
+        return await self._write(operation)
+
+    async def select_discogs_source_for_contribution(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        release_id: str,
+        canonical_url: str,
+        source_selection_json: str,
+        provider_snapshot_expires_at: float,
+        verified_at: float,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = self._contribution_row(connection, contribution_id)
+            if row is None or not row["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if row["state"] not in {"draft", "ready", "needs_review"}:
+                raise ConflictError("This contribution can no longer be edited.")
+            if int(row["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before the source was selected."
+                )
+            if row["input_revision"] != row["current_input_revision"]:
+                raise StaleRevisionError(
+                    "The local album changed. Rebuild the contribution first."
+                )
+            album_id = str(row["local_album_id"])
+            connection.execute(
+                "DELETE FROM local_entity_source_links WHERE local_album_id = ? "
+                "AND provider = 'discogs' AND external_entity_type = 'release' "
+                "AND external_id <> ?",
+                (album_id, release_id),
+            )
+            existing = connection.execute(
+                "SELECT id, row_revision FROM local_entity_source_links "
+                "WHERE local_album_id = ? AND provider = 'discogs' "
+                "AND external_entity_type = 'release' AND external_id = ?",
+                (album_id, release_id),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO local_entity_source_links "
+                    "(id, local_album_id, provider, external_entity_type, external_id, "
+                    "canonical_url, decision_source, selected_by_user_id, verified_at, "
+                    "created_at, updated_at) VALUES (?, ?, 'discogs', 'release', ?, ?, "
+                    "'curator_selected', ?, ?, ?, ?)",
+                    (
+                        str(uuid.uuid4()),
+                        album_id,
+                        release_id,
+                        canonical_url,
+                        actor_user_id,
+                        verified_at,
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                if int(existing["row_revision"]) >= MAX_REVISION:
+                    raise RevisionOverflowError(
+                        "The source-link revision cannot be increased."
+                    )
+                connection.execute(
+                    "UPDATE local_entity_source_links SET canonical_url = ?, "
+                    "selected_by_user_id = ?, verified_at = ?, updated_at = ?, "
+                    "row_revision = row_revision + 1 WHERE id = ?",
+                    (
+                        canonical_url,
+                        actor_user_id,
+                        verified_at,
+                        now,
+                        existing["id"],
+                    ),
+                )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET source_selection_json = ?, "
+                "provider_snapshot_expires_at = ?, updated_by_user_id = ?, "
+                "duplicate_result_json = NULL, duplicate_checked_at = NULL, "
+                "duplicate_input_revision = NULL, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE id = ? AND row_revision = ? "
+                "AND row_revision < ? RETURNING id",
+                (
+                    source_selection_json,
+                    provider_snapshot_expires_at,
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before the source was selected."
+                )
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            return result
+
+        return await self._write(operation)
+
+    async def remove_discogs_source_from_contribution(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        source_selection_json: str,
+        resolved_draft_json: str,
+        state: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = self._contribution_row(connection, contribution_id)
+            if row is None or not row["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if row["state"] not in {"draft", "ready", "needs_review"}:
+                raise ConflictError("This contribution can no longer be edited.")
+            if int(row["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before the source was removed."
+                )
+            connection.execute(
+                "DELETE FROM local_entity_source_links WHERE local_album_id = ? "
+                "AND provider = 'discogs' AND external_entity_type = 'release'",
+                (row["local_album_id"],),
+            )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET source_selection_json = ?, "
+                "resolved_draft_json = ?, provider_snapshot_expires_at = NULL, "
+                "state = ?, updated_by_user_id = ?, duplicate_result_json = NULL, "
+                "duplicate_checked_at = NULL, duplicate_input_revision = NULL, "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision = ? AND row_revision < ? RETURNING id",
+                (
+                    source_selection_json,
+                    resolved_draft_json,
+                    state,
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before the source was removed."
+                )
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            return result
+
+        return await self._write(operation)
+
+    async def issue_library_contribution_callback_token(
+        self,
+        *,
+        token_hash: str,
+        contribution_id: str,
+        requested_by_user_id: str,
+        expires_at: float,
+        now: float,
+    ) -> None:
+        def operation(connection: sqlite3.Connection) -> None:
+            contribution = self._contribution_row(connection, contribution_id)
+            if contribution is None or not contribution["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if contribution["state"] not in {"ready", "seeded"}:
+                raise ConflictError("This contribution is not ready for MusicBrainz.")
+            connection.execute(
+                "INSERT INTO library_contribution_callback_tokens "
+                "(token_hash, contribution_id, requested_by_user_id, expires_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    token_hash,
+                    contribution_id,
+                    requested_by_user_id,
+                    expires_at,
+                    now,
+                ),
+            )
+
+        await self._write(operation)
+
+    async def record_library_contribution_duplicate_result(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        duplicate_result_json: str,
+        duplicate_input_revision: str,
+        state: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = self._contribution_row(connection, contribution_id)
+            if row is None or not row["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if row["state"] not in {"ready", "needs_review"}:
+                raise ConflictError("Complete the contribution draft first.")
+            if int(row["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before duplicate results were saved."
+                )
+            if (
+                row["input_revision"] != row["current_input_revision"]
+                or duplicate_input_revision != row["input_revision"]
+            ):
+                raise StaleRevisionError(
+                    "The local album changed before duplicate results were saved."
+                )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET duplicate_result_json = ?, "
+                "duplicate_checked_at = ?, duplicate_input_revision = ?, state = ?, "
+                "updated_by_user_id = ?, updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision = ? AND row_revision < ? RETURNING id",
+                (
+                    duplicate_result_json,
+                    now,
+                    duplicate_input_revision,
+                    state,
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before duplicate results were saved."
+                )
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            return result
+
+        return await self._write(operation)
+
+    async def prepare_library_contribution_seed(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        token_hash: str,
+        token_expires_at: float,
+        seed_snapshot_json: str,
+        seed_hash: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = self._contribution_row(connection, contribution_id)
+            if row is None or not row["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if (
+                row["state"] not in {"ready", "seeded"}
+                or row["duplicate_result_json"] is None
+            ):
+                raise ConflictError("Run the MusicBrainz duplicate check first.")
+            if int(row["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before the editor could be opened."
+                )
+            if (
+                row["input_revision"] != row["current_input_revision"]
+                or row["duplicate_input_revision"] != row["input_revision"]
+            ):
+                raise StaleRevisionError(
+                    "The local album changed before the editor could be opened."
+                )
+            duplicate = json.loads(str(row["duplicate_result_json"]))
+            if any(
+                bool(candidate.get("exact"))
+                for candidate in duplicate.get("candidates", [])
+            ):
+                raise ConflictError(
+                    "An exact MusicBrainz release already exists for this Discogs source."
+                )
+            connection.execute(
+                "UPDATE library_contribution_callback_tokens SET consumed_at = ? "
+                "WHERE contribution_id = ? AND consumed_at IS NULL",
+                (now, contribution_id),
+            )
+            connection.execute(
+                "INSERT INTO library_contribution_callback_tokens "
+                "(token_hash, contribution_id, requested_by_user_id, expires_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (token_hash, contribution_id, actor_user_id, token_expires_at, now),
+            )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET state = 'seeded', "
+                "seed_snapshot_json = ?, seed_hash = ?, seeded_at = ?, "
+                "updated_by_user_id = ?, updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision = ? AND row_revision < ? RETURNING id",
+                (
+                    seed_snapshot_json,
+                    seed_hash,
+                    now,
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before the editor could be opened."
+                )
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            return result
+
+        return await self._write(operation)
+
+    async def attach_existing_release_for_contribution(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        release_mbid: str,
+        release_group_mbid: str,
+        artist_mbid: str | None,
+        matcher_version: str,
+        attempt: IdentificationAttempt,
+        evidence: list[IdentificationEvidenceRecord],
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            row = self._contribution_row(connection, contribution_id)
+            if row is None or not row["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if row["state"] not in {"ready", "needs_review"}:
+                raise ConflictError("This contribution cannot attach a release now.")
+            if int(row["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before the release could be attached."
+                )
+            if (
+                row["input_revision"] != row["current_input_revision"]
+                or row["duplicate_input_revision"] != row["input_revision"]
+            ):
+                raise StaleRevisionError(
+                    "The local album changed before the release could be attached."
+                )
+            duplicate = json.loads(str(row["duplicate_result_json"] or "{}"))
+            if not any(
+                candidate.get("release_mbid") == release_mbid
+                for candidate in duplicate.get("candidates", [])
+            ):
+                raise ConflictError(
+                    "The release is not in the current duplicate-check result."
+                )
+            selected = next(
+                (
+                    record.evidence
+                    for record in evidence
+                    if record.candidate_key == attempt.selected_candidate_key
+                ),
+                None,
+            )
+            if (
+                selected is None
+                or selected.release_mbid != release_mbid
+                or selected.release_group_mbid != release_group_mbid
+                or selected.artist_mbid != artist_mbid
+                or str(attempt.local_album_id or "") != str(row["local_album_id"])
+            ):
+                raise ConflictError(
+                    "The verified release evidence does not match this contribution."
+                )
+            connection.execute(
+                "INSERT INTO library_identification_attempts "
+                "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
+                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "state, terminal_reason_code, selected_candidate_key, candidate_count, "
+                "degradation_flags_json, started_at, completed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    attempt.id,
+                    attempt.local_album_id,
+                    attempt.local_track_id,
+                    attempt.trigger,
+                    attempt.requested_by_user_id,
+                    attempt.input_tag_revision,
+                    attempt.input_policy_revision,
+                    attempt.input_file_revision,
+                    attempt.matcher_version,
+                    attempt.state,
+                    attempt.terminal_reason_code,
+                    attempt.selected_candidate_key,
+                    attempt.candidate_count,
+                    json.dumps(attempt.degradation_flags, separators=(",", ":")),
+                    attempt.started_at,
+                    attempt.completed_at,
+                ),
+            )
+            self._insert_evidence(connection, evidence)
+            album_id = str(row["local_album_id"])
+            existing_album_identity = connection.execute(
+                "SELECT * FROM local_album_external_identities "
+                "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+                (album_id,),
+            ).fetchone()
+            if existing_album_identity is not None and (
+                existing_album_identity["release_mbid"] != release_mbid
+                or existing_album_identity["release_group_mbid"] != release_group_mbid
+            ):
+                raise ConflictError(
+                    "The local album already has a different MusicBrainz identity."
+                )
+            if existing_album_identity is None:
+                album_revision = self._require_revision_update(
+                    connection,
+                    table="local_albums",
+                    entity_id=album_id,
+                    expected_revision=int(row["current_album_row_revision"]),
+                    assignments="updated_at = ?",
+                    parameters=(now,),
+                )
+                connection.execute(
+                    "INSERT INTO local_album_external_identities "
+                    "(local_album_id, provider, release_group_mbid, release_mbid, "
+                    "decision_source, matcher_version, attempt_id, selected_by_user_id, selected_at) "
+                    "VALUES (?, 'musicbrainz', ?, ?, 'manual', ?, ?, ?, ?)",
+                    (
+                        album_id,
+                        release_group_mbid,
+                        release_mbid,
+                        matcher_version,
+                        attempt.id,
+                        actor_user_id,
+                        now,
+                    ),
+                )
+            else:
+                album_revision = int(row["current_album_row_revision"])
+            album = connection.execute(
+                "SELECT album_artist_id FROM local_albums WHERE id = ?", (album_id,)
+            ).fetchone()
+            for track in selected.track_evidence:
+                if track.classification != "supported" or not track.recording_mbid:
+                    continue
+                connection.execute(
+                    "INSERT INTO local_track_external_identities "
+                    "(local_track_id, provider, recording_mbid, release_mbid, "
+                    "decision_source, attempt_id, selected_at) "
+                    "VALUES (?, 'musicbrainz', ?, ?, 'manual', ?, ?) "
+                    "ON CONFLICT(local_track_id, provider) DO UPDATE SET "
+                    "recording_mbid = excluded.recording_mbid, "
+                    "release_mbid = excluded.release_mbid, "
+                    "decision_source = excluded.decision_source, "
+                    "attempt_id = excluded.attempt_id, selected_at = excluded.selected_at, "
+                    "row_revision = row_revision + 1",
+                    (
+                        track.local_track_id,
+                        track.recording_mbid,
+                        release_mbid,
+                        attempt.id,
+                        now,
+                    ),
+                )
+            if artist_mbid and album is not None:
+                local_artist_id = str(album["album_artist_id"])
+                owner = connection.execute(
+                    "SELECT local_artist_id FROM local_artist_external_identities "
+                    "WHERE provider = 'musicbrainz' AND provider_artist_id = ?",
+                    (artist_mbid,),
+                ).fetchone()
+                existing_artist = connection.execute(
+                    "SELECT provider_artist_id FROM local_artist_external_identities "
+                    "WHERE local_artist_id = ? AND provider = 'musicbrainz'",
+                    (local_artist_id,),
+                ).fetchone()
+                if existing_artist is not None and (
+                    existing_artist["provider_artist_id"] != artist_mbid
+                ):
+                    raise ConflictError(
+                        "The local artist already has a different MusicBrainz identity."
+                    )
+                if (
+                    owner is not None
+                    and str(owner["local_artist_id"]) != local_artist_id
+                ):
+                    left, right = sorted(
+                        (local_artist_id, str(owner["local_artist_id"]))
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO local_artist_merge_candidates "
+                        "(id, left_artist_id, right_artist_id, reason_code, "
+                        "created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                        (
+                            f"provider:{left}:{right}",
+                            left,
+                            right,
+                            "SHARED_PROVIDER_IDENTITY",
+                            now,
+                            now,
+                        ),
+                    )
+                elif existing_artist is None:
+                    artist_row = connection.execute(
+                        "SELECT row_revision FROM local_artists WHERE id = ?",
+                        (local_artist_id,),
+                    ).fetchone()
+                    if artist_row is None:
+                        raise ResourceNotFoundError("Library artist not found.")
+                    self._require_revision_update(
+                        connection,
+                        table="local_artists",
+                        entity_id=local_artist_id,
+                        expected_revision=int(artist_row["row_revision"]),
+                        assignments="updated_at = ?",
+                        parameters=(now,),
+                    )
+                    connection.execute(
+                        "INSERT INTO local_artist_external_identities "
+                        "(local_artist_id, provider, provider_artist_id, decision_source, "
+                        "attempt_id, selected_by_user_id, selected_at) "
+                        "VALUES (?, 'musicbrainz', ?, 'manual', ?, ?, ?)",
+                        (
+                            local_artist_id,
+                            artist_mbid,
+                            attempt.id,
+                            actor_user_id,
+                            now,
+                        ),
+                    )
+            connection.execute(
+                "UPDATE library_identification_reviews SET state = 'resolved', "
+                "attempt_id = ?, updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE local_album_id = ? AND state = 'needs_review'",
+                (attempt.id, now, album_id),
+            )
+            connection.execute(
+                "UPDATE library_contribution_callback_tokens SET consumed_at = ? "
+                "WHERE contribution_id = ? AND consumed_at IS NULL",
+                (now, contribution_id),
+            )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET state = 'linked', "
+                "album_row_revision = ?, "
+                "result_release_mbid = ?, result_source = 'manual', "
+                "result_received_at = ?, terminal_at = ?, updated_by_user_id = ?, "
+                "updated_at = ?, row_revision = row_revision + 1 WHERE id = ? "
+                "AND row_revision = ? AND row_revision < ? RETURNING id",
+                (
+                    album_revision,
+                    release_mbid,
+                    now,
+                    now,
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before the release could be attached."
+                )
+            self._bump_catalog(connection)
+            self._bump_stream(connection, "identification")
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            result["current_album_row_revision"] = album_revision
+            return result
+
+        return await self._write(operation)
+
+    async def consume_library_contribution_callback_token(
+        self,
+        *,
+        token_hash: str,
+        release_mbid: str,
+        now: float,
+    ) -> tuple[str, str | None]:
+        def operation(connection: sqlite3.Connection) -> tuple[str, str | None]:
+            token = connection.execute(
+                "SELECT * FROM library_contribution_callback_tokens "
+                "WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if (
+                token is None
+                or token["consumed_at"] is not None
+                or float(token["expires_at"]) < now
+            ):
+                raise ResourceNotFoundError(
+                    "Contribution callback is invalid or expired."
+                )
+            contribution_id = str(token["contribution_id"])
+            contribution = self._contribution_row(connection, contribution_id)
+            if contribution is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if contribution["state"] not in {"seeded", "verifying", "stale"}:
+                raise ConflictError("This contribution is not waiting for MusicBrainz.")
+            current_mbid = contribution["result_release_mbid"]
+            if current_mbid and str(current_mbid) != release_mbid:
+                raise ConflictError(
+                    "This contribution already has a different MusicBrainz result."
+                )
+            consumed = connection.execute(
+                "UPDATE library_contribution_callback_tokens SET consumed_at = ? "
+                "WHERE token_hash = ? AND consumed_at IS NULL AND expires_at >= ?",
+                (now, token_hash, now),
+            )
+            if consumed.rowcount != 1:
+                raise ResourceNotFoundError(
+                    "Contribution callback is invalid or expired."
+                )
+            connection.execute(
+                "UPDATE library_contribution_callback_tokens SET consumed_at = ? "
+                "WHERE contribution_id = ? AND token_hash != ? AND consumed_at IS NULL",
+                (now, contribution_id, token_hash),
+            )
+            next_state = (
+                "verifying"
+                if contribution["album_active"] and contribution["state"] != "stale"
+                else "stale"
+            )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET state = ?, "
+                "result_release_mbid = ?, result_source = 'callback', "
+                "result_received_at = ?, updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision < ?",
+                (next_state, release_mbid, now, now, contribution_id, MAX_REVISION),
+            )
+            if updated.rowcount != 1:
+                raise RevisionOverflowError(
+                    "The contribution revision cannot be increased."
+                )
+            if next_state == "stale":
+                return contribution_id, None
+            active = connection.execute(
+                "SELECT id FROM library_contribution_verification_jobs "
+                "WHERE contribution_id = ? AND state IN ('queued','running') LIMIT 1",
+                (contribution_id,),
+            ).fetchone()
+            if active is not None:
+                return contribution_id, str(active["id"])
+            job_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO library_contribution_verification_jobs "
+                "(id, contribution_id, state, not_before, requested_by_user_id, "
+                "created_at, updated_at) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+                (
+                    job_id,
+                    contribution_id,
+                    now,
+                    token["requested_by_user_id"],
+                    now,
+                    now,
+                ),
+            )
+            return contribution_id, job_id
+
+        return await self._write(operation)
+
+    async def record_library_contribution_manual_result(
+        self,
+        *,
+        contribution_id: str,
+        release_mbid: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        replace_existing_result: bool,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            contribution = self._contribution_row(connection, contribution_id)
+            if contribution is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if contribution["state"] not in {
+                "seeded",
+                "verifying",
+                "needs_review",
+                "stale",
+            }:
+                raise ConflictError(
+                    "This contribution is not waiting for a MusicBrainz result."
+                )
+            if int(contribution["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before the result was recorded."
+                )
+            current_mbid = contribution["result_release_mbid"]
+            if current_mbid and str(current_mbid) != release_mbid:
+                if not replace_existing_result or contribution["state"] not in {
+                    "needs_review",
+                    "stale",
+                }:
+                    raise ConflictError(
+                        "Confirm replacement of the existing MusicBrainz result."
+                    )
+            connection.execute(
+                "UPDATE library_contribution_callback_tokens SET consumed_at = ? "
+                "WHERE contribution_id = ? AND consumed_at IS NULL",
+                (now, contribution_id),
+            )
+            connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = 'cancelled', "
+                "terminal_at = ?, updated_at = ?, lease_owner = NULL, lease_expires_at = NULL, "
+                "heartbeat_at = NULL, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE contribution_id = ? "
+                "AND state IN ('queued','running') AND row_revision < ?",
+                (now, now, contribution_id, MAX_REVISION),
+            )
+            next_state = (
+                "verifying"
+                if contribution["album_active"] and contribution["state"] != "stale"
+                else "stale"
+            )
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET state = ?, "
+                "result_release_mbid = ?, result_source = 'manual', result_received_at = ?, "
+                "terminal_at = NULL, updated_by_user_id = ?, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE id = ? AND row_revision = ? "
+                "AND row_revision < ? RETURNING id",
+                (
+                    next_state,
+                    release_mbid,
+                    now,
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before the result was recorded."
+                )
+            if next_state == "stale":
+                result = self._contribution_row(connection, contribution_id)
+                if result is None:
+                    raise ResourceNotFoundError("Library contribution not found.")
+                result["verification_job_id"] = None
+                return result
+            job_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO library_contribution_verification_jobs "
+                "(id, contribution_id, state, not_before, requested_by_user_id, "
+                "created_at, updated_at) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+                (job_id, contribution_id, now, actor_user_id, now, now),
+            )
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            result["verification_job_id"] = job_id
+            return result
+
+        return await self._write(operation)
+
+    async def requeue_library_contribution_verification(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        actor_user_id: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            contribution = self._contribution_row(connection, contribution_id)
+            if contribution is None or not contribution["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if contribution["state"] not in {"verifying", "needs_review"}:
+                raise ConflictError("This contribution cannot be verified now.")
+            if not contribution["result_release_mbid"]:
+                raise ConflictError("No MusicBrainz result is ready to verify.")
+            if int(contribution["row_revision"]) != expected_row_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before verification was retried."
+                )
+            active = connection.execute(
+                "SELECT id FROM library_contribution_verification_jobs "
+                "WHERE contribution_id = ? AND state IN ('queued','running') LIMIT 1",
+                (contribution_id,),
+            ).fetchone()
+            if active is None:
+                job_id = str(uuid.uuid4())
+                connection.execute(
+                    "INSERT INTO library_contribution_verification_jobs "
+                    "(id, contribution_id, state, not_before, requested_by_user_id, "
+                    "created_at, updated_at) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+                    (job_id, contribution_id, now, actor_user_id, now, now),
+                )
+            else:
+                job_id = str(active["id"])
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET state = 'verifying', "
+                "terminal_at = NULL, updated_by_user_id = ?, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE id = ? AND row_revision = ? "
+                "AND row_revision < ? RETURNING id",
+                (
+                    actor_user_id,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if updated is None:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_contribution_drafts",
+                    predicate="id = ?",
+                    parameters=(contribution_id,),
+                )
+                raise StaleRevisionError(
+                    "The contribution changed before verification was retried."
+                )
+            result = self._contribution_row(connection, contribution_id)
+            if result is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            result["verification_job_id"] = job_id
+            return result
+
+        return await self._write(operation)
+
+    async def enqueue_library_contribution_verification(
+        self,
+        *,
+        contribution_id: str,
+        requested_by_user_id: str | None,
+        not_before: float,
+        now: float,
+    ) -> str:
+        def operation(connection: sqlite3.Connection) -> str:
+            contribution = self._contribution_row(connection, contribution_id)
+            if contribution is None or not contribution["album_active"]:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if not contribution["result_release_mbid"]:
+                raise ConflictError("No MusicBrainz result is ready to verify.")
+            existing = connection.execute(
+                "SELECT id FROM library_contribution_verification_jobs "
+                "WHERE contribution_id = ? AND state IN ('queued','running') LIMIT 1",
+                (contribution_id,),
+            ).fetchone()
+            if existing is not None:
+                return str(existing["id"])
+            job_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO library_contribution_verification_jobs "
+                "(id, contribution_id, state, not_before, requested_by_user_id, "
+                "created_at, updated_at) VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+                (
+                    job_id,
+                    contribution_id,
+                    not_before,
+                    requested_by_user_id,
+                    now,
+                    now,
+                ),
+            )
+            return job_id
+
+        return await self._write(operation)
+
+    async def claim_library_contribution_verification(
+        self,
+        *,
+        worker_id: str,
+        now: float,
+        lease_seconds: float,
+    ) -> dict[str, Any] | None:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            row = connection.execute(
+                "SELECT * FROM library_contribution_verification_jobs "
+                "WHERE state = 'queued' AND not_before <= ? "
+                "ORDER BY not_before, created_at LIMIT 1",
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+            claimed = connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = 'running', "
+                "attempt_count = attempt_count + 1, lease_owner = ?, lease_expires_at = ?, "
+                "heartbeat_at = ?, updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE id = ? AND state = 'queued' "
+                "AND row_revision = ? AND row_revision < ? RETURNING *",
+                (
+                    worker_id,
+                    now + lease_seconds,
+                    now,
+                    now,
+                    row["id"],
+                    row["row_revision"],
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            return dict(claimed) if claimed is not None else None
+
+        return await self._background_write(operation)
+
+    async def heartbeat_library_contribution_verification(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        expected_row_revision: int,
+        now: float,
+        lease_seconds: float,
+    ) -> int:
+        def operation(connection: sqlite3.Connection) -> int:
+            row = connection.execute(
+                "UPDATE library_contribution_verification_jobs SET heartbeat_at = ?, "
+                "lease_expires_at = ?, updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE id = ? AND state = 'running' "
+                "AND lease_owner = ? AND row_revision = ? AND row_revision < ? "
+                "RETURNING row_revision",
+                (
+                    now,
+                    now + lease_seconds,
+                    now,
+                    job_id,
+                    worker_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if row is None:
+                raise StaleRevisionError("The contribution verification lease changed.")
+            return int(row["row_revision"])
+
+        return await self._background_write(operation)
+
+    async def retry_library_contribution_verification(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        expected_row_revision: int,
+        failure_code: str,
+        not_before: float,
+        now: float,
+    ) -> int:
+        def operation(connection: sqlite3.Connection) -> int:
+            row = connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = 'queued', "
+                "last_failure_code = ?, not_before = ?, lease_owner = NULL, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE id = ? AND state = 'running' AND lease_owner = ? "
+                "AND row_revision = ? AND row_revision < ? RETURNING row_revision",
+                (
+                    failure_code,
+                    not_before,
+                    now,
+                    job_id,
+                    worker_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if row is None:
+                raise StaleRevisionError(
+                    "The contribution verification job changed before retry."
+                )
+            return int(row["row_revision"])
+
+        return await self._background_write(operation)
+
+    async def complete_library_contribution_verification_job(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        expected_row_revision: int,
+        state: str,
+        failure_code: str | None,
+        now: float,
+    ) -> int:
+        if state not in {"succeeded", "needs_review", "failed", "cancelled"}:
+            raise ValidationError("Invalid contribution verification result state.")
+
+        def operation(connection: sqlite3.Connection) -> int:
+            row = connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = ?, "
+                "last_failure_code = ?, lease_owner = NULL, lease_expires_at = NULL, "
+                "terminal_at = ?, updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE id = ? AND state = 'running' "
+                "AND lease_owner = ? AND row_revision = ? AND row_revision < ? "
+                "RETURNING row_revision",
+                (
+                    state,
+                    failure_code,
+                    now,
+                    now,
+                    job_id,
+                    worker_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            ).fetchone()
+            if row is None:
+                raise StaleRevisionError(
+                    "The contribution verification job changed before completion."
+                )
+            return int(row["row_revision"])
+
+        return await self._background_write(operation)
+
+    async def finish_library_contribution_verification(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        expected_job_revision: int,
+        expected_contribution_revision: int,
+        expected_album_revision: int,
+        attempt: IdentificationAttempt,
+        evidence: list[IdentificationEvidenceRecord],
+        outcome: str,
+        failure_code: str | None,
+        now: float,
+    ) -> str:
+        """Persist verification evidence and apply compatible identities atomically."""
+
+        def operation(connection: sqlite3.Connection) -> str:
+            job = connection.execute(
+                "SELECT * FROM library_contribution_verification_jobs WHERE id = ? "
+                "AND state = 'running' AND lease_owner = ? AND row_revision = ?",
+                (job_id, worker_id, expected_job_revision),
+            ).fetchone()
+            if job is None:
+                raise StaleRevisionError(
+                    "The contribution verification job changed before completion."
+                )
+            contribution = self._contribution_row(
+                connection, str(job["contribution_id"])
+            )
+            if contribution is None:
+                raise ResourceNotFoundError("Library contribution not found.")
+            if not contribution["album_active"] or (
+                contribution["input_revision"] != contribution["current_input_revision"]
+                or int(contribution["album_row_revision"])
+                != int(contribution["current_album_row_revision"])
+            ):
+                connection.execute(
+                    "UPDATE library_contribution_drafts SET state = 'stale', terminal_at = ?, "
+                    "updated_at = ?, row_revision = row_revision + 1 WHERE id = ? "
+                    "AND row_revision < ?",
+                    (now, now, contribution["id"], MAX_REVISION),
+                )
+                connection.execute(
+                    "UPDATE library_contribution_verification_jobs SET state = 'cancelled', "
+                    "last_failure_code = 'LOCAL_INPUT_CHANGED', terminal_at = ?, updated_at = ?, "
+                    "lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, "
+                    "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                    "WHERE id = ? AND row_revision < ?",
+                    (now, now, job_id, MAX_REVISION),
+                )
+                return "stale"
+            if int(contribution["row_revision"]) != expected_contribution_revision:
+                raise StaleRevisionError(
+                    "The contribution changed before verification completed."
+                )
+            if contribution["state"] != "verifying":
+                raise ConflictError("This contribution is not being verified.")
+            if str(contribution["local_album_id"]) != str(attempt.local_album_id or ""):
+                raise ConflictError("The verification subject does not match.")
+            album = connection.execute(
+                "SELECT row_revision, album_artist_id FROM local_albums WHERE id = ?",
+                (attempt.local_album_id,),
+            ).fetchone()
+            if album is None:
+                raise ResourceNotFoundError("Library album not found.")
+            if int(album["row_revision"]) != expected_album_revision:
+                raise StaleRevisionError(
+                    "The album changed before verification completed."
+                )
+
+            selected = next(
+                (
+                    record.evidence
+                    for record in evidence
+                    if record.candidate_key == attempt.selected_candidate_key
+                ),
+                None,
+            )
+            final_outcome = outcome
+            final_failure = failure_code
+            existing_album_identity = connection.execute(
+                "SELECT * FROM local_album_external_identities "
+                "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+                (attempt.local_album_id,),
+            ).fetchone()
+            if outcome == "identified" and selected is not None:
+                result_mbid = str(contribution["result_release_mbid"] or "")
+                if selected.release_mbid != result_mbid:
+                    final_outcome = "needs_review"
+                    final_failure = "RETURNED_RELEASE_MISMATCH"
+                elif existing_album_identity is not None and (
+                    existing_album_identity["release_mbid"] != selected.release_mbid
+                    or existing_album_identity["release_group_mbid"]
+                    != selected.release_group_mbid
+                ):
+                    final_outcome = "needs_review"
+                    final_failure = "EXISTING_IDENTITY_CONFLICT"
+                elif selected.artist_mbid:
+                    existing_artist = connection.execute(
+                        "SELECT provider_artist_id FROM local_artist_external_identities "
+                        "WHERE local_artist_id = ? AND provider = 'musicbrainz'",
+                        (album["album_artist_id"],),
+                    ).fetchone()
+                    if existing_artist is not None and (
+                        existing_artist["provider_artist_id"] != selected.artist_mbid
+                    ):
+                        final_outcome = "needs_review"
+                        final_failure = "EXISTING_ARTIST_IDENTITY_CONFLICT"
+            elif outcome == "identified":
+                final_outcome = "needs_review"
+                final_failure = "VERIFICATION_EVIDENCE_MISSING"
+
+            selected_key = (
+                attempt.selected_candidate_key
+                if final_outcome == "identified"
+                else None
+            )
+            connection.execute(
+                "INSERT INTO library_identification_attempts "
+                "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
+                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "state, terminal_reason_code, selected_candidate_key, candidate_count, "
+                "degradation_flags_json, started_at, completed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    attempt.id,
+                    attempt.local_album_id,
+                    attempt.local_track_id,
+                    attempt.trigger,
+                    attempt.requested_by_user_id,
+                    attempt.input_tag_revision,
+                    attempt.input_policy_revision,
+                    attempt.input_file_revision,
+                    attempt.matcher_version,
+                    "identified" if final_outcome == "identified" else "needs_review",
+                    final_failure or attempt.terminal_reason_code,
+                    selected_key,
+                    attempt.candidate_count,
+                    json.dumps(attempt.degradation_flags, separators=(",", ":")),
+                    attempt.started_at,
+                    attempt.completed_at,
+                ),
+            )
+            self._insert_evidence(connection, evidence)
+
+            if final_outcome == "identified" and selected is not None:
+                album_revision = int(album["row_revision"])
+                if existing_album_identity is None:
+                    updated_album = connection.execute(
+                        "UPDATE local_albums SET updated_at = ?, row_revision = row_revision + 1 "
+                        "WHERE id = ? AND row_revision = ? AND row_revision < ? "
+                        "RETURNING row_revision",
+                        (
+                            now,
+                            attempt.local_album_id,
+                            expected_album_revision,
+                            MAX_REVISION,
+                        ),
+                    ).fetchone()
+                    if updated_album is None:
+                        raise StaleRevisionError(
+                            "The album changed before verification completed."
+                        )
+                    album_revision = int(updated_album["row_revision"])
+                    connection.execute(
+                        "INSERT INTO local_album_external_identities "
+                        "(local_album_id, provider, release_group_mbid, release_mbid, "
+                        "decision_source, matcher_version, attempt_id, selected_by_user_id, "
+                        "selected_at) VALUES (?, 'musicbrainz', ?, ?, 'manual', "
+                        "?, ?, ?, ?)",
+                        (
+                            attempt.local_album_id,
+                            selected.release_group_mbid,
+                            selected.release_mbid,
+                            attempt.matcher_version,
+                            attempt.id,
+                            attempt.requested_by_user_id,
+                            now,
+                        ),
+                    )
+                for track in selected.track_evidence:
+                    if track.classification != "supported" or not track.recording_mbid:
+                        continue
+                    connection.execute(
+                        "INSERT INTO local_track_external_identities "
+                        "(local_track_id, provider, recording_mbid, release_mbid, "
+                        "decision_source, attempt_id, selected_at) "
+                        "VALUES (?, 'musicbrainz', ?, ?, 'manual', ?, ?) "
+                        "ON CONFLICT(local_track_id, provider) DO UPDATE SET "
+                        "recording_mbid = excluded.recording_mbid, "
+                        "release_mbid = excluded.release_mbid, "
+                        "decision_source = excluded.decision_source, "
+                        "attempt_id = excluded.attempt_id, selected_at = excluded.selected_at, "
+                        "row_revision = row_revision + 1",
+                        (
+                            track.local_track_id,
+                            track.recording_mbid,
+                            selected.release_mbid,
+                            attempt.id,
+                            now,
+                        ),
+                    )
+                if selected.artist_mbid:
+                    artist_id = str(album["album_artist_id"])
+                    owner = connection.execute(
+                        "SELECT local_artist_id FROM local_artist_external_identities "
+                        "WHERE provider = 'musicbrainz' AND provider_artist_id = ?",
+                        (selected.artist_mbid,),
+                    ).fetchone()
+                    if owner is None or str(owner["local_artist_id"]) == artist_id:
+                        existing_artist = connection.execute(
+                            "SELECT provider_artist_id FROM local_artist_external_identities "
+                            "WHERE local_artist_id = ? AND provider = 'musicbrainz'",
+                            (artist_id,),
+                        ).fetchone()
+                        if existing_artist is None:
+                            artist = connection.execute(
+                                "UPDATE local_artists SET updated_at = ?, "
+                                "row_revision = row_revision + 1 WHERE id = ? "
+                                "AND row_revision < ? RETURNING row_revision",
+                                (now, artist_id, MAX_REVISION),
+                            ).fetchone()
+                            if artist is None:
+                                raise ResourceNotFoundError("Library artist not found.")
+                            connection.execute(
+                                "INSERT INTO local_artist_external_identities "
+                                "(local_artist_id, provider, provider_artist_id, "
+                                "decision_source, attempt_id, selected_by_user_id, selected_at) "
+                                "VALUES (?, 'musicbrainz', ?, 'manual', ?, ?, ?)",
+                                (
+                                    artist_id,
+                                    selected.artist_mbid,
+                                    attempt.id,
+                                    attempt.requested_by_user_id,
+                                    now,
+                                ),
+                            )
+                    else:
+                        left, right = sorted((artist_id, str(owner["local_artist_id"])))
+                        connection.execute(
+                            "INSERT OR IGNORE INTO local_artist_merge_candidates "
+                            "(id, left_artist_id, right_artist_id, reason_code, "
+                            "created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                            (
+                                f"provider:{left}:{right}",
+                                left,
+                                right,
+                                "SHARED_PROVIDER_IDENTITY",
+                                now,
+                                now,
+                            ),
+                        )
+                connection.execute(
+                    "UPDATE library_identification_reviews SET state = 'resolved', "
+                    "attempt_id = ?, updated_at = ?, row_revision = row_revision + 1 "
+                    "WHERE local_album_id = ? AND state = 'needs_review'",
+                    (attempt.id, now, attempt.local_album_id),
+                )
+                contribution_state = "linked"
+                job_state = "succeeded"
+                terminal_at: float | None = now
+                self._bump_catalog(connection)
+            else:
+                album_revision = int(album["row_revision"])
+                active_review = connection.execute(
+                    "SELECT id FROM library_identification_reviews "
+                    "WHERE local_album_id = ? AND input_revision = ? "
+                    "AND state != 'resolved'",
+                    (attempt.local_album_id, contribution["input_revision"]),
+                ).fetchone()
+                if active_review is None:
+                    connection.execute(
+                        "INSERT INTO library_identification_reviews "
+                        "(id, local_album_id, state, reason_code, attempt_id, "
+                        "input_revision, created_at, updated_at) "
+                        "VALUES (?, ?, 'needs_review', ?, ?, ?, ?, ?)",
+                        (
+                            str(uuid.uuid4()),
+                            attempt.local_album_id,
+                            final_failure,
+                            attempt.id,
+                            contribution["input_revision"],
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE library_identification_reviews SET reason_code = ?, "
+                        "attempt_id = ?, updated_at = ?, row_revision = row_revision + 1 "
+                        "WHERE id = ?",
+                        (final_failure, attempt.id, now, active_review["id"]),
+                    )
+                contribution_state = "needs_review"
+                job_state = "needs_review"
+                terminal_at = None
+
+            updated_contribution = connection.execute(
+                "UPDATE library_contribution_drafts SET state = ?, album_row_revision = ?, "
+                "seed_snapshot_json = NULL, terminal_at = ?, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE id = ? AND row_revision = ? "
+                "AND row_revision < ?",
+                (
+                    contribution_state,
+                    album_revision,
+                    terminal_at,
+                    now,
+                    contribution["id"],
+                    expected_contribution_revision,
+                    MAX_REVISION,
+                ),
+            )
+            if updated_contribution.rowcount != 1:
+                raise StaleRevisionError(
+                    "The contribution changed before verification completed."
+                )
+            updated_job = connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = ?, "
+                "last_failure_code = ?, terminal_at = ?, updated_at = ?, "
+                "lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE id = ? AND state = 'running' AND lease_owner = ? "
+                "AND row_revision = ? AND row_revision < ?",
+                (
+                    job_state,
+                    final_failure,
+                    now,
+                    now,
+                    job_id,
+                    worker_id,
+                    expected_job_revision,
+                    MAX_REVISION,
+                ),
+            )
+            if updated_job.rowcount != 1:
+                raise StaleRevisionError(
+                    "The contribution verification job changed before completion."
+                )
+            self._bump_stream(connection, "identification")
+            return contribution_state
+
+        return await self._write(operation)
+
+    async def recover_library_contribution_verification_leases(
+        self, *, now: float
+    ) -> int:
+        def operation(connection: sqlite3.Connection) -> int:
+            result = connection.execute(
+                "UPDATE library_contribution_verification_jobs SET state = 'queued', "
+                "lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, "
+                "not_before = ?, updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE state = 'running' "
+                "AND lease_expires_at < ? AND row_revision < ?",
+                (now, now, now, MAX_REVISION),
+            )
+            return result.rowcount
+
+        return await self._background_write(operation)
+
+    async def list_library_contributions_for_provider_purge(
+        self, *, now: float, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        bounded = max(1, min(limit, 1_000))
+
+        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = connection.execute(
+                "SELECT id FROM library_contribution_drafts "
+                "WHERE provider_snapshot_expires_at IS NOT NULL "
+                "AND (provider_snapshot_expires_at <= ? "
+                "OR state IN ('linked','cancelled','stale')) "
+                "ORDER BY provider_snapshot_expires_at, id LIMIT ?",
+                (now, bounded),
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for item in rows:
+                contribution = self._contribution_row(connection, str(item["id"]))
+                if contribution is not None:
+                    result.append(contribution)
+            return result
+
+        return await self._read(operation)
+
+    async def purge_library_contribution_provider_data(
+        self,
+        *,
+        contribution_id: str,
+        expected_row_revision: int,
+        resolved_draft_json: str,
+        source_selection_json: str,
+        now: float,
+    ) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            updated = connection.execute(
+                "UPDATE library_contribution_drafts SET resolved_draft_json = ?, "
+                "source_selection_json = ?, provider_snapshot_expires_at = NULL, "
+                "duplicate_result_json = NULL, duplicate_checked_at = NULL, "
+                "duplicate_input_revision = NULL, seed_snapshot_json = NULL, "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND row_revision = ? "
+                "AND provider_snapshot_expires_at IS NOT NULL AND row_revision < ?",
+                (
+                    resolved_draft_json,
+                    source_selection_json,
+                    now,
+                    contribution_id,
+                    expected_row_revision,
+                    MAX_REVISION,
+                ),
+            )
+            return updated.rowcount == 1
+
+        return await self._background_write(operation)
+
+    async def clean_library_contribution_records(
+        self, *, now: float, limit: int = 200
+    ) -> dict[str, int]:
+        bounded = max(1, min(limit, 1_000))
+
+        def operation(connection: sqlite3.Connection) -> dict[str, int]:
+            expired_tokens = connection.execute(
+                "DELETE FROM library_contribution_callback_tokens WHERE token_hash IN ("
+                "SELECT token_hash FROM library_contribution_callback_tokens WHERE "
+                "(consumed_at IS NOT NULL AND consumed_at < ?) OR "
+                "(consumed_at IS NULL AND expires_at < ?) LIMIT ?)",
+                (now - 30 * 86_400, now - 7 * 86_400, bounded),
+            ).rowcount
+            seed_snapshots = connection.execute(
+                "UPDATE library_contribution_drafts SET seed_snapshot_json = NULL, "
+                "updated_at = ?, row_revision = row_revision + 1 WHERE id IN ("
+                "SELECT d.id FROM library_contribution_drafts d WHERE "
+                "d.seed_snapshot_json IS NOT NULL AND ("
+                "d.state IN ('linked','cancelled','stale') OR (d.seeded_at IS NOT NULL "
+                "AND NOT EXISTS (SELECT 1 FROM library_contribution_callback_tokens token "
+                "WHERE token.contribution_id = d.id AND token.consumed_at IS NULL "
+                "AND token.expires_at >= ?))) LIMIT ?) AND row_revision < ?",
+                (now, now, bounded, MAX_REVISION),
+            ).rowcount
+            old_drafts = connection.execute(
+                "DELETE FROM library_contribution_drafts WHERE id IN ("
+                "SELECT id FROM library_contribution_drafts WHERE state IN ('cancelled','stale') "
+                "AND result_release_mbid IS NULL AND terminal_at < ? LIMIT ?)",
+                (now - 90 * 86_400, bounded),
+            ).rowcount
+            old_jobs = connection.execute(
+                "DELETE FROM library_contribution_verification_jobs WHERE id IN ("
+                "SELECT j.id FROM library_contribution_verification_jobs j "
+                "JOIN library_contribution_drafts d ON d.id = j.contribution_id "
+                "WHERE j.state IN ('succeeded','needs_review','failed','cancelled') "
+                "AND j.terminal_at < ? AND d.state IN ('linked','cancelled','stale') LIMIT ?)",
+                (now - 90 * 86_400, bounded),
+            ).rowcount
+            return {
+                "callback_tokens": expired_tokens,
+                "seed_snapshots": seed_snapshots,
+                "drafts": old_drafts,
+                "verification_jobs": old_jobs,
+            }
+
+        return await self._write(operation)
 
     async def explain_query_plan(
         self, sql: str, parameters: tuple[Any, ...] = ()

@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import ArtistCardSkeleton from '$lib/components/ArtistCardSkeleton.svelte';
 	import ArtistImage from '$lib/components/ArtistImage.svelte';
+	import LocalIdentityBadge from '$lib/components/library/LocalIdentityBadge.svelte';
 	import { getLibraryArtistsInfiniteQuery } from '$lib/queries/library/LibraryQueries.svelte';
 	import type { ArtistSort, LibraryArtistSummary } from '$lib/types';
 	import { artistHref } from '$lib/utils/entityRoutes';
@@ -139,11 +140,11 @@
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 			{#each artists as artist (artist.id)}
 				<a
-					href={artistHref(artist.musicbrainz_artist_id ?? artist.id)}
+					href={artistHref(artist.id)}
 					class="card group bg-base-100 shadow-sm transition-all hover:-translate-y-1 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
 					aria-label={`Open ${artist.name}`}
 				>
-					<figure class="aspect-square overflow-hidden p-3">
+					<figure class="relative aspect-square overflow-hidden p-3">
 						<ArtistImage
 							mbid={artist.id}
 							source="local"
@@ -151,6 +152,14 @@
 							size="full"
 							className="h-full w-full transition-transform duration-300 group-hover:scale-105"
 						/>
+						{#if artist.artist_identity_state === 'local_only'}
+							<LocalIdentityBadge
+								state={artist.artist_identity_state}
+								subject="artist"
+								compact
+								className="absolute left-3 top-3 z-10"
+							/>
+						{/if}
 					</figure>
 					<div class="card-body gap-1 p-3 pt-0 text-center">
 						<h2 class="truncate font-semibold">{artist.name}</h2>

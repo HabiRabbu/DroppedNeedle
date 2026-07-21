@@ -26,6 +26,7 @@ import type {
 	NativeTrackPage
 } from '$lib/types';
 import { authStore } from '$lib/stores/authStore.svelte';
+import { setQueryDataWithPersister } from '../QueryClient';
 
 export interface LibraryAlbumsParams {
 	page: number;
@@ -153,6 +154,27 @@ export const getLibraryAlbumDetailQuery = (getAlbumId: Getter<string>) =>
 		};
 	});
 
+export const cacheCanonicalLibraryAlbumDetail = (album: LibraryAlbumDetail) =>
+	setQueryDataWithPersister<LibraryAlbumDetail>(
+		LibraryQueryKeyFactory.albumDetail(album.id),
+		album
+	);
+
+export const getLibraryAlbumCopiesQuery = (
+	getAlbumId: Getter<string>,
+	getEnabled: Getter<boolean> = () => true
+) =>
+	createQuery(() => {
+		const albumId = getAlbumId();
+		return {
+			enabled: getEnabled() && !!albumId,
+			staleTime: CACHE_TTL.LIBRARY_NATIVE,
+			queryKey: LibraryQueryKeyFactory.albumCopies(albumId),
+			queryFn: ({ signal }) =>
+				api.global.get<NativeAlbumsResponse>(API.library.albumCopies(albumId), { signal })
+		};
+	});
+
 export const getLibraryAlbumTracksQuery = (getAlbumId: Getter<string>) =>
 	createQuery(() => {
 		const albumId = getAlbumId();
@@ -176,6 +198,12 @@ export const getLibraryArtistDetailQuery = (getArtistId: Getter<string>) =>
 				api.global.get<LibraryArtistSummary>(API.library.artistDetail(artistId), { signal })
 		};
 	});
+
+export const cacheCanonicalLibraryArtistDetail = (artist: LibraryArtistSummary) =>
+	setQueryDataWithPersister<LibraryArtistSummary>(
+		LibraryQueryKeyFactory.artistDetail(artist.id),
+		artist
+	);
 
 export const getLibraryArtistAlbumsQuery = (getArtistId: Getter<string>) =>
 	createQuery(() => {

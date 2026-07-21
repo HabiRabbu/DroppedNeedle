@@ -19,7 +19,8 @@ const {
 	mockAlbumYouTubeCache,
 	mockAlbumSourceMatchCache,
 	mockDownloadsData,
-	mockLibraryStatusData
+	mockLibraryStatusData,
+	mockLocalCopiesData
 } = vi.hoisted(() => ({
 	mockGoto: vi.fn(),
 	mockPageFetch: vi.fn(),
@@ -31,7 +32,8 @@ const {
 	mockAlbumYouTubeCache: { get: vi.fn(), set: vi.fn() },
 	mockAlbumSourceMatchCache: { get: vi.fn(), set: vi.fn() },
 	mockDownloadsData: { value: undefined as unknown },
-	mockLibraryStatusData: { value: undefined as unknown }
+	mockLibraryStatusData: { value: undefined as unknown },
+	mockLocalCopiesData: { value: { items: [] } as unknown }
 }));
 
 vi.mock('$app/environment', () => ({ browser: true }));
@@ -107,6 +109,12 @@ vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 			return mockLibraryStatusData.value;
 		},
 		refetch: vi.fn()
+	}),
+	getLibraryAlbumCopiesQuery: () => ({
+		get data() {
+			return mockLocalCopiesData.value;
+		},
+		isLoading: false
 	})
 }));
 
@@ -309,6 +317,7 @@ describe('album detail page track rendering', () => {
 		mockHydrateDetailCacheEntry.mockReset();
 		mockDownloadsData.value = undefined;
 		mockLibraryStatusData.value = undefined;
+		mockLocalCopiesData.value = { items: [] };
 		mockHydrateDetailCacheEntry.mockImplementation(({ cache, onHydrate }: HydrateOptions) => {
 			if (cache === mockAlbumBasicCache) {
 				onHydrate({
@@ -539,6 +548,49 @@ describe('album detail page track rendering', () => {
 
 		await expect.element(page.getByRole('button', { name: 'Add to Library' })).toBeVisible();
 		await expect.element(page.getByText('In Library', { exact: true })).not.toBeInTheDocument();
+	});
+
+	it('links every local copy when a provider release is ambiguous', async () => {
+		const copy = (id: string, title: string) => ({
+			id,
+			title,
+			artist_name: 'Grimes',
+			artist_id: 'local-artist-1',
+			musicbrainz_release_group_id: albumId,
+			musicbrainz_release_id: 'release-1',
+			musicbrainz_artist_id: 'artist-1',
+			album_identity_state: 'release_linked',
+			track_count: 4,
+			total_duration_seconds: 736,
+			total_size_bytes: 4,
+			format: 'flac',
+			year: 2012,
+			is_compilation: false,
+			cover_available: false,
+			date_added: 1,
+			sort_name: null,
+			original_release_date: null
+		});
+		mockLocalCopiesData.value = {
+			items: [
+				copy('local-copy-1', 'Visions, original files'),
+				copy('local-copy-2', 'Visions, remaster')
+			]
+		};
+
+		render(AlbumPage, {
+			props: { data: { albumId } }
+		} as Parameters<typeof render<typeof AlbumPage>>[1]);
+
+		await expect
+			.element(page.getByRole('heading', { name: 'Copies in your library' }))
+			.toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'Open Visions, original files' }))
+			.toHaveAttribute('href', '/album/local-copy-1');
+		await expect
+			.element(page.getByRole('link', { name: 'Open Visions, remaster' }))
+			.toHaveAttribute('href', '/album/local-copy-2');
 	});
 
 	it('replaces a release alias URL with the canonical release-group URL', async () => {

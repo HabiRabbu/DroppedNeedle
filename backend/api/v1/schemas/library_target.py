@@ -7,6 +7,7 @@ class TargetNativeArtist(AppStruct):
     id: str
     name: str
     musicbrainz_artist_id: str | None = None
+    artist_identity_state: Literal["local_only", "musicbrainz_linked"] = "local_only"
     album_count: int = 0
     track_count: int = 0
     date_added: float | None = None
@@ -19,7 +20,11 @@ class TargetNativeAlbum(AppStruct):
     artist_name: str
     artist_id: str
     musicbrainz_release_group_id: str | None = None
+    musicbrainz_release_id: str | None = None
     musicbrainz_artist_id: str | None = None
+    album_identity_state: Literal[
+        "local_only", "release_group_linked", "release_linked"
+    ] = "local_only"
     track_count: int = 0
     total_duration_seconds: float = 0
     total_size_bytes: int = 0
@@ -30,6 +35,8 @@ class TargetNativeAlbum(AppStruct):
     date_added: float | None = None
     sort_name: str | None = None
     original_release_date: str | None = None
+    contribution_id: str | None = None
+    contribution_state: str | None = None
 
 
 class TargetNativeAlbumDetail(TargetNativeAlbum):

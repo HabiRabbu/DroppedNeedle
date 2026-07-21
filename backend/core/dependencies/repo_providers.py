@@ -67,6 +67,16 @@ def get_musicbrainz_identification_repository() -> (
 
 
 @singleton
+def get_discogs_repository() -> "DiscogsRepository":
+    from repositories.discogs.discogs_repository import DiscogsRepository
+
+    http_client = HttpClientFactory.get_client(
+        name="discogs-contributions", timeout=15.0
+    )
+    return DiscogsRepository(http_client=http_client, cache=get_cache())
+
+
+@singleton
 def get_wikidata_repository() -> "WikidataRepository":
     from repositories.wikidata_repository import WikidataRepository
 

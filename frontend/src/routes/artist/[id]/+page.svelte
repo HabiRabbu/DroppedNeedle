@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import type { MusicSource } from '$lib/stores/musicSource';
-	import { getLibraryArtistDetailQuery } from '$lib/queries/library/LibraryQueries.svelte';
+	import {
+		cacheCanonicalLibraryArtistDetail,
+		getLibraryArtistDetailQuery
+	} from '$lib/queries/library/LibraryQueries.svelte';
 	import { artistHref } from '$lib/utils/entityRoutes';
 	import LocalArtistPage from './LocalArtistPage.svelte';
 	import ProviderArtistPage from './ProviderArtistPage.svelte';
@@ -13,17 +16,18 @@
 	let { data }: Props = $props();
 	const localQuery = getLibraryArtistDetailQuery(() => data.artistId);
 	const localArtist = $derived(localQuery.data);
-	const isLocalIdentifier = $derived(localArtist?.id === data.artistId);
-	const providerId = $derived(isLocalIdentifier ? localArtist?.musicbrainz_artist_id : null);
+	const canonicalLocalId = $derived(localArtist?.id ?? null);
+	const shouldRedirect = $derived(canonicalLocalId !== null && canonicalLocalId !== data.artistId);
 
 	$effect(() => {
-		if (providerId) {
-			void goto(artistHref(providerId), { replaceState: true });
+		if (localArtist && shouldRedirect) {
+			void cacheCanonicalLibraryArtistDetail(localArtist);
+			void goto(artistHref(localArtist.id), { replaceState: true });
 		}
 	});
 </script>
 
-{#if localQuery.isLoading || providerId}
+{#if localQuery.isLoading || shouldRedirect}
 	<div class="w-full max-w-7xl mx-auto px-2 py-4 sm:px-4 sm:py-8 lg:px-8">
 		<div class="flex items-end gap-6">
 			<div class="skeleton h-48 w-48 rounded-full"></div>
@@ -33,7 +37,7 @@
 			</div>
 		</div>
 	</div>
-{:else if isLocalIdentifier && localArtist}
+{:else if localArtist}
 	<LocalArtistPage artistId={localArtist.id} />
 {:else}
 	<ProviderArtistPage {data} />

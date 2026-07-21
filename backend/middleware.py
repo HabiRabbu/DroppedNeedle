@@ -43,6 +43,8 @@ _PUBLIC_PATHS: frozenset[str] = frozenset({
     # cookie or a bearer-token client then lands on the graceful /profile?spotify=error
     # redirect instead of a raw 401.
     "/api/v1/me/connections/spotify/auth/callback",
+    # MusicBrainz returns with a one-time token; only this exact callback is public.
+    "/api/v1/library/contributions/musicbrainz/callback",
     # OpenAPI spec (single file)
     "/api/v1/openapi.json",
 })

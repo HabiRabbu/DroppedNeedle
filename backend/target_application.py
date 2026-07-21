@@ -47,6 +47,7 @@ from api.v1.routes import (
     lastfm,
     lidarr_import,
     library_operations_target,
+    library_contributions,
     library_policies_target,
     library_scan_target,
     library_target,
@@ -151,6 +152,7 @@ from core.dependencies import (
     init_app_state,
     get_target_album_identification_service,
     get_target_identification_queue,
+    get_library_contribution_verification_worker,
     get_background_workload_gate,
     get_library_policy_resolver,
 )
@@ -201,6 +203,7 @@ from middleware import (
 )
 from services.native.library_scan_supervisor import start_target_scan_supervisor
 from services.native.target_application_runtime import (
+    start_library_contribution_verification_worker,
     start_target_identification_worker,
     start_target_operation_worker,
 )
@@ -285,6 +288,7 @@ def create_isolated_target_application(
         requests.router,
         requests_page.router,
         library_target.router,
+        library_contributions.router,
         library_scan_target.router,
         status.router,
         covers.router,
@@ -373,6 +377,7 @@ def _include_complete_target_routes(app: FastAPI) -> None:
         search.router,
         requests.router,
         library_target.router,
+        library_contributions.router,
         library_scan_target.router,
         status.router,
         covers.router,
@@ -594,6 +599,9 @@ async def production_target_lifespan(app: FastAPI):
             get_background_workload_gate(),
         )
         start_target_operation_worker(get_target_library_operation_supervisor)
+        start_library_contribution_verification_worker(
+            get_library_contribution_verification_worker
+        )
         await start_target_operational_runtime(
             settings=settings,
             preferences=preferences,

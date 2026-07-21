@@ -16,6 +16,9 @@ MB_RECORDING_TO_RG_PREFIX = "mb:recording_to_rg:"
 MB_ARTIST_RELS_PREFIX = "mb:artist_rels:"
 MB_ARTISTS_BY_TAG_PREFIX = "mb_artists_by_tag:"
 MB_RG_BY_TAG_PREFIX = "mb_rg_by_tag:"
+MB_URL_RESOLUTION_PREFIX = "mb:url:resolution:"
+MB_RELEASE_VERIFY_PREFIX = "mb:release:verify:"
+MB_DUPLICATE_SEARCH_PREFIX = "mb:release:duplicate-search:"
 
 LB_PREFIX = "lb_"
 
@@ -71,6 +74,9 @@ PREFERENCES_PREFIX = "preferences:"
 GITHUB_RELEASES_PREFIX = "github:releases:"
 
 AUDIODB_PREFIX = "audiodb_"
+
+DISCOGS_RELEASE_PREFIX = "discogs:release:"
+DISCOGS_SEARCH_PREFIX = "discogs:search:"
 
 GETIT_OPTIONS_PREFIX = "getit:options:"
 GETIT_ARTIST_OPTIONS_PREFIX = "getit:artist_options:"
@@ -139,11 +145,27 @@ def musicbrainz_prefixes() -> list[str]:
         MB_ARTIST_RELS_PREFIX,
         MB_ARTISTS_BY_TAG_PREFIX,
         MB_RG_BY_TAG_PREFIX,
+        MB_URL_RESOLUTION_PREFIX,
+        MB_RELEASE_VERIFY_PREFIX,
+        MB_DUPLICATE_SEARCH_PREFIX,
     ]
 
 
 def listenbrainz_prefixes() -> list[str]:
     return [LB_PREFIX]
+
+
+def discogs_prefixes() -> list[str]:
+    return [DISCOGS_RELEASE_PREFIX, DISCOGS_SEARCH_PREFIX]
+
+
+def discogs_release_key(release_id: str) -> str:
+    return f"{DISCOGS_RELEASE_PREFIX}{release_id}"
+
+
+def discogs_search_key(query: str, limit: int) -> str:
+    normalized = " ".join(query.casefold().split())
+    return f"{DISCOGS_SEARCH_PREFIX}{normalized}:{limit}"
 
 
 def lastfm_prefixes() -> list[str]:

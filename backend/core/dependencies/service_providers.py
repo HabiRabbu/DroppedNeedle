@@ -142,6 +142,39 @@ def get_target_native_library_service() -> "TargetNativeLibraryService":
 
 
 @singleton
+def get_library_contribution_service() -> "LibraryContributionService":
+    from services.native.library_contribution_service import LibraryContributionService
+
+    from .cache_providers import get_cache, get_native_library_store
+    from .repo_providers import get_discogs_repository, get_musicbrainz_repository
+
+    return LibraryContributionService(
+        get_native_library_store(),
+        discogs_repository=get_discogs_repository(),
+        musicbrainz_repository=get_musicbrainz_repository(),
+        cache=get_cache(),
+    )
+
+
+@singleton
+def get_library_contribution_verification_worker() -> (
+    "LibraryContributionVerificationWorker"
+):
+    from services.native.library_contribution_verification_worker import (
+        LibraryContributionVerificationWorker,
+    )
+
+    from .cache_providers import get_native_library_store
+    from .repo_providers import get_musicbrainz_repository
+
+    return LibraryContributionVerificationWorker(
+        get_native_library_store(),
+        get_library_contribution_service(),
+        get_musicbrainz_repository(),
+    )
+
+
+@singleton
 def get_target_local_files_service() -> "LocalFilesService":
     from services.local_files_service import LocalFilesService
 

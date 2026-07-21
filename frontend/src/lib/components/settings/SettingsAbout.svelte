@@ -71,6 +71,13 @@
 		<p class="text-base-content/60 mt-1">App version, updates, and release notes.</p>
 	</div>
 
+	<p
+		class="rounded-box border border-base-content/10 bg-base-200/50 p-4 text-xs text-base-content/60"
+	>
+		This application uses Discogs’ API but is not affiliated with, sponsored or endorsed by Discogs.
+		‘Discogs’ is a trademark of Zink Media, LLC.
+	</p>
+
 	{#if versionQuery.isLoading}
 		<div class="flex justify-center items-center py-20">
 			<span class="loading loading-spinner loading-lg text-primary"></span>

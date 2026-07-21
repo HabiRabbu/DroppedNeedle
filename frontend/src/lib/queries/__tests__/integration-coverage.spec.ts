@@ -67,10 +67,76 @@ const COVERAGE: Array<[string, string, string]> = [
 	['library membership', API.library.membership(), '/api/v1/library/membership'],
 	['recently added albums', API.library.recentlyAdded(), '/api/v1/library/recently-added?limit=20'],
 	['local album detail', API.library.albumDetail('A1'), '/api/v1/library/albums/A1'],
+	['local album copies', API.library.albumCopies('A1'), '/api/v1/library/albums/A1/copies'],
 	['local artist detail', API.library.artistDetail('R1'), '/api/v1/library/artists/R1'],
 	['local artist albums', API.library.artistAlbums('R1'), '/api/v1/library/artists/R1/albums'],
 	['album status', API.library.album('M1'), '/api/v1/library/albums/M1/status'],
 	['album tracks', API.library.albumTracks('M1'), '/api/v1/library/albums/M1/tracks'],
+	[
+		'create library contribution',
+		API.library.createContribution('A1'),
+		'/api/v1/library/albums/A1/contributions'
+	],
+	[
+		'library contribution detail',
+		API.library.contribution('C1'),
+		'/api/v1/library/contributions/C1'
+	],
+	[
+		'update library contribution draft',
+		API.library.contributionDraft('C1'),
+		'/api/v1/library/contributions/C1/draft'
+	],
+	[
+		'rebuild library contribution',
+		API.library.rebuildContribution('C1'),
+		'/api/v1/library/contributions/C1/rebuild'
+	],
+	[
+		'cancel library contribution',
+		API.library.cancelContribution('C1'),
+		'/api/v1/library/contributions/C1/cancel'
+	],
+	[
+		'search Discogs releases',
+		API.library.searchDiscogsReleases('C1'),
+		'/api/v1/library/contributions/C1/discogs/search'
+	],
+	[
+		'select Discogs release',
+		API.library.selectDiscogsRelease('C1'),
+		'/api/v1/library/contributions/C1/discogs/select'
+	],
+	[
+		'remove Discogs release',
+		API.library.removeDiscogsRelease('C1'),
+		'/api/v1/library/contributions/C1/discogs/remove'
+	],
+	[
+		'check MusicBrainz contribution duplicates',
+		API.library.checkContributionDuplicates('C1'),
+		'/api/v1/library/contributions/C1/musicbrainz/duplicates'
+	],
+	[
+		'attach existing MusicBrainz release',
+		API.library.attachContributionRelease('C1'),
+		'/api/v1/library/contributions/C1/musicbrainz/attach'
+	],
+	[
+		'open seeded MusicBrainz editor',
+		API.library.createContributionSeed('C1'),
+		'/api/v1/library/contributions/C1/musicbrainz/seed'
+	],
+	[
+		'record returned MusicBrainz release',
+		API.library.recordContributionResult('C1'),
+		'/api/v1/library/contributions/C1/musicbrainz/result'
+	],
+	[
+		'retry MusicBrainz contribution verification',
+		API.library.retryContributionVerification('C1'),
+		'/api/v1/library/contributions/C1/musicbrainz/verify'
+	],
 	[
 		'cached local album artwork',
 		API.library.cachedAlbumArtwork('A1', 3),

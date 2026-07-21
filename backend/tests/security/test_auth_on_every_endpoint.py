@@ -30,6 +30,7 @@ from api.v1.routes import free_music as free_music_routes
 from api.v1.routes import import_drop as import_drop_routes
 from api.v1.routes import plugins as plugins_routes
 from api.v1.routes import library as library_routes
+from api.v1.routes import library_contributions as library_contribution_routes
 from api.v1.routes import library_operations_target as library_operations_target_routes
 from api.v1.routes import library_policies as library_policy_routes
 from api.v1.routes import library_policies_target as target_library_policy_routes
@@ -64,6 +65,7 @@ from core.dependencies import (
     get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_library_manager,
+    get_library_contribution_service,
     get_library_policy_service,
     get_library_scanner,
     get_library_service,
@@ -168,11 +170,78 @@ _SERVICE_PROVIDERS = (
     get_target_reidentification_service,
     get_library_policy_resolver,
     get_cached_local_artwork_service,
+    get_library_contribution_service,
 )
 
 # (method, path, body-or-None). Path params use dummy values; bodies are valid so
 # body-validation never preempts the auth check with a 422.
 _ADMIN_ENDPOINTS = [
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/contributions",
+        {},
+    ),
+    (
+        "PUT",
+        "/api/v1/library/contributions/contribution-1/draft",
+        {"expected_row_revision": 1, "draft": {}},
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/rebuild",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/cancel",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/discogs/search",
+        {"query": "Album"},
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/discogs/select",
+        {"expected_row_revision": 1, "release_id_or_url": "123"},
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/discogs/remove",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/musicbrainz/duplicates",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/musicbrainz/attach",
+        {
+            "expected_row_revision": 1,
+            "release_mbid": "11111111-1111-4111-8111-111111111111",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/musicbrainz/seed",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "PUT",
+        "/api/v1/library/contributions/contribution-1/musicbrainz/result",
+        {
+            "expected_row_revision": 1,
+            "release_id_or_url": "11111111-1111-4111-8111-111111111111",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/contributions/contribution-1/musicbrainz/verify",
+        {"expected_row_revision": 1},
+    ),
     ("POST", "/api/v1/auth/admin/users/user-1/password-recovery", None),
     # Connect Apps admin oversight: see/revoke every user's app-passwords.
     ("GET", "/api/v1/connect-apps/admin/app-passwords", None),
@@ -482,6 +551,7 @@ _ADMIN_ENDPOINTS = [
 ]
 
 _USER_ENDPOINTS = [
+    ("GET", "/api/v1/library/contributions/contribution-1", None),
     ("GET", "/api/v1/me/navidrome/music-folder-preferences", None),
     (
         "PUT",
@@ -624,6 +694,7 @@ def _client(scenario: str):
         following_routes.router,
         tracks_routes.router,
         target_library_routes.router,
+        library_contribution_routes.router,
         target_library_scan_routes.router,
         library_routes.router,
         library_operations_target_routes.router,
