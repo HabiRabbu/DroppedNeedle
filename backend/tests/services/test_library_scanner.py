@@ -21,7 +21,7 @@ from infrastructure.sse_publisher import SSEPublisher
 from core.exceptions import ResourceNotFoundError, ValidationError
 from models.audio import AudioTag, FingerprintResult
 from services.native.library_manager import LibraryManager
-from services.native.library_scanner import LibraryScanner, _LEDGER_BATCH_SIZE
+from services.native.library_scanner import LibraryScanner, ScanStats, _LEDGER_BATCH_SIZE
 from services.native.musicbrainz_matcher import MatchResult
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "library"
@@ -958,6 +958,32 @@ async def test_get_attributions_for_paths_returns_active_rows(tmp_path):
     assert got[str(p)]["release_group_mbid"] == "rg-x"
     assert got[str(p)]["source"] == "download"
     assert await manager.get_attributions_for_paths([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_prepare_file_skips_surrogate_escaped_name(tmp_path, monkeypatch):
+    # Regression for #230: a filename whose bytes aren't valid UTF-8 comes off the
+    # OS walk as a Path carrying a lone surrogate (e.g. '\udc85'). Binding it to
+    # SQLite raises UnicodeEncodeError and used to abort the whole library scan.
+    # _prepare_file must drop it (counting it errored) BEFORE it touches the
+    # filesystem/DB, so the rest of the library still scans.
+    scanner, _manager, _state, _db = _build(tmp_path)
+    stats = ScanStats()
+    bad = Path("/music/tru\udc85mp.flac")
+
+    # If the guard fails to short-circuit, the path reaches stat()/read_tags() and
+    # then the SQLite bind that raises UnicodeEncodeError - so a called stat() means
+    # the surrogate path leaked past the guard.
+    def _fail_stat(*_a, **_k):
+        raise AssertionError("stat() must not run for an un-encodable path")
+
+    monkeypatch.setattr(Path, "stat", _fail_stat)
+
+    entry = await scanner._prepare_file(bad, {}, stats)
+
+    assert entry is None
+    assert stats.errored == 1
+    assert stats.matched == 0
 
 
 @pytest.mark.asyncio

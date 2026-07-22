@@ -617,6 +617,20 @@ class LibraryScanner:
     ) -> _FileEntry | None:
         """Stat, incremental-skip and tag read for one file; None if skipped or errored."""
         spath = str(path)
+        # A filename whose bytes aren't valid UTF-8 surfaces from the OS walk as a
+        # path with lone surrogate code points (e.g. '\udc85'). SQLite binds TEXT as
+        # UTF-8, so such a path raises UnicodeEncodeError the moment it reaches the
+        # library DB - which aborts the entire scan (issue #230). It can't be stored
+        # or matched, so drop it here (logging the offending name) and carry on.
+        try:
+            spath.encode("utf-8")
+        except UnicodeEncodeError:
+            logger.warning(
+                "Skipping file with un-encodable name: %s",
+                spath.encode("utf-8", "backslashreplace").decode("ascii"),
+            )
+            stats.errored += 1
+            return None
         try:
             stat = path.stat()
             signature = (stat.st_mtime, stat.st_size)
