@@ -626,8 +626,8 @@ class LibraryScanner:
             spath.encode("utf-8")
         except UnicodeEncodeError:
             logger.warning(
-                "Skipping file with un-encodable name: %s",
-                spath.encode("utf-8", "backslashreplace").decode("ascii"),
+                "scanner.skip_file reason=unencodable_name path=%r",
+                spath,
             )
             stats.errored += 1
             return None

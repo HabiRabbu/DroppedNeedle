@@ -6,6 +6,7 @@ the two network boundaries - ``MusicBrainzMatcher`` (Tier 2/3) and
 ``AudioFingerprinter`` (Tier 3) - to drive each tier deterministically.
 """
 
+import logging
 import os
 import shutil
 import threading
@@ -984,6 +985,27 @@ async def test_prepare_file_skips_surrogate_escaped_name(tmp_path, monkeypatch):
     assert entry is None
     assert stats.errored == 1
     assert stats.matched == 0
+
+
+@pytest.mark.asyncio
+async def test_prepare_file_skips_mixed_unicode_surrogate_name(tmp_path, monkeypatch, caplog):
+    scanner, _manager, _state, _db = _build(tmp_path)
+    stats = ScanStats()
+    bad = Path("/music/trué\udc85mp.flac")
+
+    def _fail_stat(*_a, **_k):
+        raise AssertionError("stat() must not run for an un-encodable path")
+
+    monkeypatch.setattr(Path, "stat", _fail_stat)
+
+    with caplog.at_level(logging.WARNING, logger="services.native.library_scanner"):
+        entry = await scanner._prepare_file(bad, {}, stats)
+
+    assert entry is None
+    assert stats.errored == 1
+    assert "scanner.skip_file reason=unencodable_name" in caplog.text
+    assert "trué" in caplog.text
+    assert r"\udc85" in caplog.text
 
 
 @pytest.mark.asyncio
