@@ -59,6 +59,10 @@ const albums = [
 		musicbrainz_release_group_id: 'group-1',
 		musicbrainz_release_id: 'release-1',
 		album_identity_state: 'release_linked'
+	}),
+	album('album-group-linked', 'Release Group Linked Album', {
+		musicbrainz_release_group_id: 'group-2',
+		album_identity_state: 'release_group_linked'
 	})
 ];
 
@@ -105,6 +109,15 @@ describe('local artist MusicBrainz entry points', () => {
 			.toBeVisible();
 		await expect.element(page.getByText('Draft in progress')).toBeVisible();
 		await expect.element(page.getByText('Linked Album', { exact: true })).toBeVisible();
+		await expect
+			.element(page.getByText('Release Group Linked Album', { exact: true }))
+			.toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'Open Release Group Linked Album', exact: true }))
+			.toHaveAttribute('href', '/album/group-2');
+		await expect
+			.element(page.getByRole('link', { name: 'Release Group Linked Album', exact: true }))
+			.not.toBeInTheDocument();
 		await expect.element(page.getByRole('button', { name: 'Start with this album' })).toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Resume' })).toBeVisible();
 	});

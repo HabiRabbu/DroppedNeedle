@@ -15,13 +15,13 @@
 	let { data }: Props = $props();
 	const localQuery = getLibraryAlbumDetailQuery(() => data.albumId);
 	const localAlbum = $derived(localQuery.data);
-	const canonicalLocalId = $derived(localAlbum?.id ?? null);
-	const shouldRedirect = $derived(canonicalLocalId !== null && canonicalLocalId !== data.albumId);
+	const providerAlbumId = $derived(localAlbum?.musicbrainz_release_group_id ?? null);
+	const shouldRedirect = $derived(providerAlbumId !== null && providerAlbumId !== data.albumId);
 
 	$effect(() => {
 		if (localAlbum && shouldRedirect) {
 			void cacheCanonicalLibraryAlbumDetail(localAlbum);
-			void goto(albumHref(localAlbum.id), { replaceState: true });
+			void goto(albumHref(providerAlbumId ?? data.albumId), { replaceState: true });
 		}
 	});
 </script>
@@ -37,7 +37,7 @@
 			</div>
 		</div>
 	</div>
-{:else if localAlbum}
+{:else if localAlbum && !providerAlbumId}
 	<LocalAlbumPage albumId={localAlbum.id} />
 {:else}
 	<ProviderAlbumPage {data} />

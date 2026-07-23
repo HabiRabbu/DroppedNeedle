@@ -24,6 +24,7 @@
 	} from '$lib/queries/library/LibraryQueries.svelte';
 	import { getAlbumEditionsQuery } from '$lib/queries/albums/EditionQueries.svelte';
 	import { createLibraryContributionMutation } from '$lib/queries/libraryContributions/LibraryContributionMutations.svelte';
+	import { artistHref } from '$lib/utils/entityRoutes';
 
 	interface Props {
 		albumId: string;
@@ -115,7 +116,7 @@
 				</div>
 				<h1 class="mt-3 text-3xl font-black tracking-tight sm:text-5xl">{album.title}</h1>
 				<a
-					href={`/artist/${album.artist_id}`}
+					href={artistHref(album.musicbrainz_artist_id ?? album.artist_id)}
 					class="mt-2 inline-block text-lg text-base-content/65 hover:underline"
 					>{album.artist_name || 'Unknown album artist'}</a
 				>
@@ -138,7 +139,7 @@
 					<button class="btn btn-ghost gap-2" disabled={!tracks.length} onclick={() => play(true)}
 						><Shuffle class="h-4 w-4" /> Shuffle</button
 					>
-					{#if authStore.isTrusted && album.album_identity_state !== 'release_linked'}
+					{#if authStore.isTrusted && album.album_identity_state === 'local_only'}
 						<button
 							class="btn btn-ghost gap-2"
 							disabled={contributionMutation.isPending}

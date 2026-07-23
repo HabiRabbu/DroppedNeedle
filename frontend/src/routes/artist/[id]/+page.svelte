@@ -16,13 +16,13 @@
 	let { data }: Props = $props();
 	const localQuery = getLibraryArtistDetailQuery(() => data.artistId);
 	const localArtist = $derived(localQuery.data);
-	const canonicalLocalId = $derived(localArtist?.id ?? null);
-	const shouldRedirect = $derived(canonicalLocalId !== null && canonicalLocalId !== data.artistId);
+	const providerArtistId = $derived(localArtist?.musicbrainz_artist_id ?? null);
+	const shouldRedirect = $derived(providerArtistId !== null && providerArtistId !== data.artistId);
 
 	$effect(() => {
 		if (localArtist && shouldRedirect) {
 			void cacheCanonicalLibraryArtistDetail(localArtist);
-			void goto(artistHref(localArtist.id), { replaceState: true });
+			void goto(artistHref(providerArtistId ?? data.artistId), { replaceState: true });
 		}
 	});
 </script>
@@ -37,7 +37,7 @@
 			</div>
 		</div>
 	</div>
-{:else if localArtist}
+{:else if localArtist && !providerArtistId}
 	<LocalArtistPage artistId={localArtist.id} />
 {:else}
 	<ProviderArtistPage {data} />

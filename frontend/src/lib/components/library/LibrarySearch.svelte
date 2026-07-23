@@ -7,6 +7,7 @@
 	import { buildDiscoveryQueueFromLocal } from '$lib/player/queueHelpers';
 	import { playerStore } from '$lib/stores/player.svelte';
 	import type { NativeTrackListItem } from '$lib/types';
+	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 
 	let term = $state('');
 	let debounced = $state('');
@@ -203,7 +204,7 @@
 						</div>
 						{#each results.artists as artist (artist.id)}
 							<a
-								href={`/artist/${artist.id}`}
+								href={artistHref(artist.musicbrainz_artist_id ?? artist.id)}
 								class="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-base-content/5"
 							>
 								<div class="h-10 w-10 shrink-0 overflow-hidden rounded-full">
@@ -237,7 +238,7 @@
 						</div>
 						{#each results.albums as album (album.id)}
 							<a
-								href={`/album/${album.id}`}
+								href={albumHref(album.musicbrainz_release_group_id ?? album.id)}
 								class="flex items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-base-content/5"
 							>
 								<div class="h-10 w-10 shrink-0 overflow-hidden rounded-md">

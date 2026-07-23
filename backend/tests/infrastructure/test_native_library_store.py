@@ -257,6 +257,324 @@ async def test_schema_repairs_release_alias_stored_as_release_group_id(
 
 
 @pytest.mark.asyncio
+async def test_schema_repairs_relationship_anchored_synthetic_artist_duplicates(
+    store: NativeLibraryStore,
+    db_path: Path,
+) -> None:
+    canonical_id = "artist-canonical"
+    local_id = "artist-local"
+    synthetic_id = "artist-synthetic"
+    unanchored_id = "artist-unanchored"
+    guest_id = "artist-guest"
+    unrelated_id = "artist-unrelated"
+    canonical_mbid = "88d17133-abbc-42db-9526-4e2c1db60336"
+    synthetic_mbid = "d4ee74d98c7a6f053a0ebffd0ed5fccb"
+    unanchored_mbid = "b" * 32
+
+    def membership(
+        artist_id: str,
+        suffix: str,
+        *,
+        embedded_album_artist_mbid: str | None = None,
+    ) -> CatalogMembership:
+        artist = _artist(artist_id, "Shared Artist")
+        album = LocalAlbum(
+            id=f"album-{suffix}",
+            root_id="root-1",
+            grouping_key=f"group-{suffix}",
+            title=f"Album {suffix}",
+            album_artist_id=artist_id,
+            album_artist_name=artist.display_name,
+            created_at=1,
+            updated_at=1,
+        )
+        track = LocalTrack(
+            id=f"track-{suffix}",
+            local_album_id=album.id,
+            root_id="root-1",
+            file_path=f"/music/{suffix}.flac",
+            relative_path=f"{suffix}.flac",
+            path_hash=f"hash-{suffix}",
+            file_size_bytes=100,
+            file_mtime_ns=200,
+            stat_revision=f"stat-{suffix}",
+            title=f"Track {suffix}",
+            artist_name=artist.display_name,
+            album_title=album.title,
+            album_artist_name=artist.display_name,
+            embedded_album_artist_mbid=embedded_album_artist_mbid,
+            file_format="flac",
+            imported_at=1,
+        )
+        return CatalogMembership(
+            album=album,
+            artists=[artist],
+            tracks=[track],
+            track_credits={
+                track.id: [LocalArtistCredit(local_artist_id=artist_id, position=0)]
+            },
+        )
+
+    await store.create_catalog_membership(membership(canonical_id, "canonical"))
+    await store.create_catalog_membership(
+        membership(
+            local_id,
+            "local",
+            embedded_album_artist_mbid=canonical_mbid,
+        )
+    )
+    await store.create_catalog_membership(membership(unrelated_id, "unrelated"))
+    await store.create_catalog_membership(membership(unanchored_id, "unanchored"))
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            "INSERT INTO local_artists "
+            "(id, display_name, folded_name, normalized_name, kind, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'person', 1, 1)",
+            [
+                (synthetic_id, "Shared Artist", "shared artist", "shared artist"),
+                (guest_id, "Guest Credit", "guest credit", "guest credit"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO local_artist_external_identities "
+            "(local_artist_id, provider, provider_artist_id, decision_source, selected_at) "
+            "VALUES (?, 'musicbrainz', ?, 'legacy_import', 1)",
+            [
+                (canonical_id, canonical_mbid),
+                (synthetic_id, synthetic_mbid),
+                (unanchored_id, unanchored_mbid),
+                (guest_id, "a" * 32),
+            ],
+        )
+        connection.execute(
+            "UPDATE local_track_artists SET local_artist_id = ? "
+            "WHERE local_track_id = 'track-canonical'",
+            (synthetic_id,),
+        )
+        connection.execute(
+            "INSERT INTO local_track_artists "
+            "(local_track_id, position, local_artist_id, role) "
+            "VALUES ('track-canonical', 1, ?, 'guest')",
+            (guest_id,),
+        )
+        connection.execute(
+            "INSERT INTO local_artist_aliases VALUES (?, ?, 'legacy_artist', 1)",
+            (synthetic_mbid, synthetic_id),
+        )
+        left, right = sorted((canonical_id, local_id))
+        connection.execute(
+            "INSERT INTO local_artist_merge_candidates "
+            "(id, left_artist_id, right_artist_id, reason_code, created_at, updated_at) "
+            "VALUES ('candidate-1', ?, ?, 'SHARED_PROVIDER_IDENTITY', 1, 1)",
+            (left, right),
+        )
+        connection.execute(
+            "INSERT INTO library_user_favorites VALUES " "('admin', 'artist', ?, 1)",
+            (local_id,),
+        )
+        connection.execute(
+            "INSERT INTO library_play_history "
+            "(id, user_id, local_track_id, local_album_id, local_artist_id, "
+            "track_name, artist_name, played_at) VALUES "
+            "('history-1', 'admin', 'track-local', 'album-local', ?, "
+            "'Track local', 'Shared Artist', '2026-07-23T00:00:00Z')",
+            (local_id,),
+        )
+        connection.execute(
+            "INSERT INTO library_playlists "
+            "(id, name, created_at, updated_at, user_id) "
+            "VALUES ('playlist-1', 'Test', '1', '1', 'admin')"
+        )
+        connection.execute(
+            "INSERT INTO library_playlist_tracks "
+            "(id, playlist_id, position, track_name, artist_name, album_name, "
+            "source_type, created_at, local_artist_id) "
+            "VALUES ('playlist-track-1', 'playlist-1', 0, 'Track local', "
+            "'Shared Artist', 'Album local', 'local', '1', ?)",
+            (local_id,),
+        )
+        connection.execute(
+            "INSERT INTO library_compat_id_map VALUES ('compat-artist', 'artist', ?)",
+            (local_id,),
+        )
+        connection.execute(
+            "INSERT INTO library_migration_provenance "
+            "(source_kind, source_key, target_kind, target_id, source_revision, imported_at) "
+            "VALUES ('native_artist_alias', ?, 'local_artist', ?, 'revision-1', 1)",
+            (synthetic_mbid, synthetic_id),
+        )
+        connection.execute(
+            "INSERT INTO library_scan_runs "
+            "(id, kind, trigger, state, phase, aggregate_scope, queued_at, updated_at) "
+            "VALUES ('scan-1', 'incremental', 'manual', 'reconciling', 'reconciling', "
+            "'root-1', 1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO library_scan_grouping_contexts "
+            "(run_id, root_id, relative_directory) VALUES ('scan-1', 'root-1', '.')"
+        )
+        connection.execute(
+            "INSERT INTO library_scan_grouping_groups "
+            "(run_id, root_id, relative_directory, grouping_token, grouping_key, title, "
+            "album_artist_name, reason_code, local_artist_id) "
+            "VALUES ('scan-1', 'root-1', '.', 'token-1', 'group-1', 'Album local', "
+            "'Shared Artist', 'AUTOMATIC_GROUPING', ?)",
+            (local_id,),
+        )
+        connection.executemany(
+            "INSERT INTO local_entity_source_links "
+            "(id, local_artist_id, provider, external_entity_type, external_id, "
+            "canonical_url, decision_source, verified_at, created_at, updated_at) "
+            "VALUES (?, ?, 'discogs', 'artist', ?, ?, 'manual', 1, 1, 1)",
+            [
+                (
+                    "source-canonical",
+                    canonical_id,
+                    "shared-source",
+                    "https://www.discogs.com/artist/shared-source",
+                ),
+                (
+                    "source-local-duplicate",
+                    local_id,
+                    "shared-source",
+                    "https://www.discogs.com/artist/shared-source",
+                ),
+                (
+                    "source-local-unique",
+                    local_id,
+                    "unique-source",
+                    "https://www.discogs.com/artist/unique-source",
+                ),
+            ],
+        )
+
+    repaired = NativeLibraryStore(db_path, threading.Lock())
+    revision_after_repair = await repaired.get_catalog_revision()
+    NativeLibraryStore(db_path, threading.Lock())
+    listed_artists, listed_total = await repaired.list_target_artists(
+        search="Shared Artist"
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        active_shared = connection.execute(
+            "SELECT id FROM local_artists WHERE normalized_name = 'shared artist' "
+            "AND retired_into_artist_id IS NULL"
+        ).fetchall()
+        retired = dict(
+            connection.execute(
+                "SELECT id, retired_into_artist_id FROM local_artists "
+                "WHERE id IN (?, ?)",
+                (local_id, synthetic_id),
+            ).fetchall()
+        )
+        album_artists = {
+            row[0]
+            for row in connection.execute(
+                "SELECT album_artist_id FROM local_albums "
+                "WHERE id IN ('album-canonical', 'album-local')"
+            )
+        }
+        track_artists = {
+            row[0]
+            for row in connection.execute(
+                "SELECT local_artist_id FROM local_track_artists "
+                "WHERE local_track_id IN ('track-canonical', 'track-local') "
+                "AND role = 'primary'"
+            )
+        }
+        aliases = dict(
+            connection.execute(
+                "SELECT alias, local_artist_id FROM local_artist_aliases "
+                "WHERE alias IN (?, ?, ?)",
+                (synthetic_mbid, synthetic_id, local_id),
+            ).fetchall()
+        )
+        references = (
+            connection.execute(
+                "SELECT item_id FROM library_user_favorites WHERE user_id = 'admin'"
+            ).fetchone()[0],
+            connection.execute(
+                "SELECT local_artist_id FROM library_play_history "
+                "WHERE id = 'history-1'"
+            ).fetchone()[0],
+            connection.execute(
+                "SELECT local_artist_id FROM library_playlist_tracks "
+                "WHERE id = 'playlist-track-1'"
+            ).fetchone()[0],
+            connection.execute(
+                "SELECT internal_id FROM library_compat_id_map "
+                "WHERE jf_id = 'compat-artist'"
+            ).fetchone()[0],
+            connection.execute(
+                "SELECT target_id FROM library_migration_provenance "
+                "WHERE source_key = ?",
+                (synthetic_mbid,),
+            ).fetchone()[0],
+        )
+        guest_identity = connection.execute(
+            "SELECT provider_artist_id FROM local_artist_external_identities "
+            "WHERE local_artist_id = ?",
+            (guest_id,),
+        ).fetchone()
+        unanchored = connection.execute(
+            "SELECT artist.retired_into_artist_id, identity.provider_artist_id "
+            "FROM local_artists artist "
+            "LEFT JOIN local_artist_external_identities identity "
+            "ON identity.local_artist_id = artist.id WHERE artist.id = ?",
+            (unanchored_id,),
+        ).fetchone()
+        candidate_state = connection.execute(
+            "SELECT state FROM local_artist_merge_candidates WHERE id = 'candidate-1'"
+        ).fetchone()[0]
+        actions = connection.execute(
+            "SELECT action_kind FROM library_catalog_actions "
+            "WHERE reason_code = 'LEGACY_SYNTHETIC_ARTIST_IDENTITY' "
+            "ORDER BY action_kind"
+        ).fetchall()
+        grouping_artist = connection.execute(
+            "SELECT local_artist_id FROM library_scan_grouping_groups "
+            "WHERE run_id = 'scan-1' AND grouping_token = 'token-1'"
+        ).fetchone()[0]
+        source_links = connection.execute(
+            "SELECT id, local_artist_id FROM local_entity_source_links ORDER BY id"
+        ).fetchall()
+    assert {row[0] for row in active_shared} == {
+        canonical_id,
+        unrelated_id,
+        unanchored_id,
+    }
+    assert listed_total == 3
+    assert {artist["artist_mbid"] for artist in listed_artists} == {
+        canonical_id,
+        unrelated_id,
+        unanchored_id,
+    }
+    assert retired == {local_id: canonical_id, synthetic_id: canonical_id}
+    assert album_artists == {canonical_id}
+    assert track_artists == {canonical_id}
+    assert aliases == {
+        synthetic_mbid: canonical_id,
+        synthetic_id: canonical_id,
+        local_id: canonical_id,
+    }
+    assert references == (canonical_id,) * 5
+    assert guest_identity is None
+    assert unanchored == (None, None)
+    assert candidate_state == "resolved"
+    assert actions == [
+        ("detach_artist_identity",),
+        ("detach_artist_identity",),
+        ("merge_artist",),
+    ]
+    assert grouping_artist == canonical_id
+    assert source_links == [
+        ("source-canonical", canonical_id),
+        ("source-local-unique", canonical_id),
+    ]
+    assert await repaired.get_catalog_revision() == revision_after_repair
+
+
+@pytest.mark.asyncio
 async def test_schema_is_idempotent_and_contains_complete_target_surface(
     db_path: Path,
 ) -> None:

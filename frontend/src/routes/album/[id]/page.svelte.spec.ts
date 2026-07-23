@@ -550,7 +550,7 @@ describe('album detail page track rendering', () => {
 		await expect.element(page.getByText('In Library', { exact: true })).not.toBeInTheDocument();
 	});
 
-	it('links every local copy when a provider release is ambiguous', async () => {
+	it('keeps every local copy visible on the shared provider route', async () => {
 		const copy = (id: string, title: string) => ({
 			id,
 			title,
@@ -587,10 +587,10 @@ describe('album detail page track rendering', () => {
 			.toBeVisible();
 		await expect
 			.element(page.getByRole('link', { name: 'Open Visions, original files' }))
-			.toHaveAttribute('href', '/album/local-copy-1');
+			.toHaveAttribute('href', `/album/${albumId}`);
 		await expect
 			.element(page.getByRole('link', { name: 'Open Visions, remaster' }))
-			.toHaveAttribute('href', '/album/local-copy-2');
+			.toHaveAttribute('href', `/album/${albumId}`);
 	});
 
 	it('replaces a release alias URL with the canonical release-group URL', async () => {

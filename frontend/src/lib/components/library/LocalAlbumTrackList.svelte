@@ -4,6 +4,7 @@
 	import { buildDiscoveryQueueFromLocal } from '$lib/player/queueHelpers';
 	import { formatDurationSec } from '$lib/utils/formatting';
 	import type { NativeTrackListItem } from '$lib/types';
+	import { artistHref } from '$lib/utils/entityRoutes';
 
 	interface Props {
 		tracks: NativeTrackListItem[];
@@ -28,7 +29,7 @@
 			<div class="min-w-0 flex-1">
 				<p class="truncate font-medium">{track.title}</p>
 				<a
-					href={`/artist/${track.artist_id}`}
+					href={artistHref(track.musicbrainz_artist_id ?? track.artist_id)}
 					class="truncate text-xs text-base-content/55 hover:underline"
 					>{track.artist_name || 'Unknown artist'}</a
 				>

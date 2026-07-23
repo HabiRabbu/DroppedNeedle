@@ -9,8 +9,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Protocol
-from uuid import UUID, uuid5
-from uuid import UUID as UUIDType
+from uuid import UUID as UUIDType, uuid5
 
 import msgspec
 
@@ -19,6 +18,7 @@ from infrastructure.persistence.native_library_store import (
     VARIOUS_ARTISTS_ID,
     NativeLibraryStore,
 )
+from infrastructure.validators import is_valid_mbid
 from models.library_migration import (
     LegacyCatalogImportBundle,
     LegacyCatalogImportPlan,
@@ -91,13 +91,7 @@ def _hash(value: object) -> str:
 
 
 def _valid_mbid(value: object) -> bool:
-    if not isinstance(value, str) or not value:
-        return False
-    try:
-        UUID(value)
-    except ValueError:
-        return False
-    return True
+    return isinstance(value, str) and value == value.strip() and is_valid_mbid(value)
 
 
 def _invalid_release_group_key(value: object) -> str:

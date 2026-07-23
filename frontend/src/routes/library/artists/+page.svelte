@@ -140,7 +140,7 @@
 		<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
 			{#each artists as artist (artist.id)}
 				<a
-					href={artistHref(artist.id)}
+					href={artistHref(artist.musicbrainz_artist_id ?? artist.id)}
 					class="card group bg-base-100 shadow-sm transition-all hover:-translate-y-1 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-primary focus-visible:outline-none"
 					aria-label={`Open ${artist.name}`}
 				>

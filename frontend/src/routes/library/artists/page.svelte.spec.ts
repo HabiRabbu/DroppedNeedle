@@ -52,12 +52,12 @@ vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 
 import ArtistsPage from './+page.svelte';
 
-it('uses local artist routes and marks only local-only cards', async () => {
+it('uses MusicBrainz routes for linked artists and local routes for local-only artists', async () => {
 	render(ArtistsPage);
 
 	await expect
 		.element(page.getByRole('link', { name: 'Open Linked Artist' }))
-		.toHaveAttribute('href', '/artist/local-linked-artist');
+		.toHaveAttribute('href', '/artist/provider-artist-id');
 	await expect
 		.element(page.getByRole('link', { name: 'Open Local Artist' }))
 		.toHaveAttribute('href', '/artist/local-only-artist');

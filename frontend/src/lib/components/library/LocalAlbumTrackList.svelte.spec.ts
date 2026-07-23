@@ -64,4 +64,16 @@ describe('LocalAlbumTrackList', () => {
 			.element(page.getByRole('link', { name: 'South Signal' }))
 			.toHaveAttribute('href', '/artist/artist-south');
 	});
+
+	it('uses the MusicBrainz artist route when the track credit is linked', async () => {
+		const linked = track('track-1', 'Northbound', 'artist-north', 'North Signal');
+		linked.musicbrainz_artist_id = 'provider-north';
+		render(LocalAlbumTrackList, {
+			props: { tracks: [linked] }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await expect
+			.element(page.getByRole('link', { name: 'North Signal' }))
+			.toHaveAttribute('href', '/artist/provider-north');
+	});
 });

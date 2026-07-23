@@ -26,6 +26,7 @@ from core.exceptions import (
 )
 from infrastructure.persistence._database import PersistenceBase
 from infrastructure.persistence.native_library_schema import SCHEMA_SQL
+from infrastructure.validators import is_valid_mbid
 from models.audio import AudioArtistCredit
 from models.identification import (
     CandidateEvidence,
@@ -684,6 +685,184 @@ class NativeLibraryStore(PersistenceBase):
                 )
         return changed
 
+    @classmethod
+    def _repair_legacy_synthetic_artist_identities(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        now: float,
+    ) -> dict[str, int]:
+        """Detach invalid legacy IDs; merge only with a single track-backed survivor."""
+
+        rows = connection.execute(
+            "SELECT a.id, a.normalized_name, a.folded_name, a.kind, "
+            "i.provider_artist_id, i.decision_source "
+            "FROM local_artists a LEFT JOIN local_artist_external_identities i "
+            "ON i.local_artist_id = a.id AND i.provider = 'musicbrainz' "
+            "WHERE a.retired_into_artist_id IS NULL"
+        ).fetchall()
+        rows_by_group: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+        valid_by_group: dict[tuple[str, str, str], list[str]] = {}
+        invalid_legacy_by_group: dict[tuple[str, str, str], list[str]] = {}
+        invalid_provider_by_artist: dict[str, str] = {}
+        for row in rows:
+            key = (
+                str(row["normalized_name"]),
+                str(row["folded_name"]),
+                str(row["kind"]),
+            )
+            rows_by_group.setdefault(key, []).append(row)
+            provider_id = row["provider_artist_id"]
+            if provider_id is None:
+                continue
+            artist_id = str(row["id"])
+            provider_id = str(provider_id)
+            if is_valid_mbid(provider_id):
+                valid_by_group.setdefault(key, []).append(artist_id)
+                continue
+            if row["decision_source"] == "legacy_import":
+                invalid_provider_by_artist[artist_id] = provider_id
+                invalid_legacy_by_group.setdefault(key, []).append(artist_id)
+
+        merges: list[tuple[str, list[str]]] = []
+        retired_ids: set[str] = set()
+        for key, invalid_ids in invalid_legacy_by_group.items():
+            valid_ids = valid_by_group.get(key, [])
+            if len(valid_ids) != 1:
+                continue
+            survivor = valid_ids[0]
+            placeholders = ",".join("?" for _ in invalid_ids)
+            anchored_rows = connection.execute(
+                "SELECT DISTINCT credit.local_artist_id AS artist_id "
+                "FROM local_track_artists credit "
+                "JOIN local_tracks track ON track.id = credit.local_track_id "
+                "JOIN local_albums album ON album.id = track.local_album_id "
+                f"WHERE credit.local_artist_id IN ({placeholders}) "
+                "AND album.album_artist_id = ?",
+                (*invalid_ids, survivor),
+            ).fetchall()
+            anchored_ids = sorted(str(row["artist_id"]) for row in anchored_rows)
+            if not anchored_ids:
+                continue
+            repair_ids = set(anchored_ids)
+            provider_ids = sorted(
+                {
+                    str(row["provider_artist_id"]).casefold()
+                    for row in rows_by_group[key]
+                    if row["provider_artist_id"] is not None
+                    and str(row["id"]) in {survivor, *anchored_ids}
+                }
+            )
+            provider_placeholders = ",".join("?" for _ in provider_ids)
+            for row in rows_by_group[key]:
+                artist_id = str(row["id"])
+                if artist_id == survivor or row["provider_artist_id"] is not None:
+                    continue
+                embedded_match = connection.execute(
+                    "SELECT 1 FROM local_albums album "
+                    "JOIN local_tracks track ON track.local_album_id = album.id "
+                    "WHERE album.album_artist_id = ? "
+                    f"AND lower(trim(track.embedded_album_artist_mbid)) IN ({provider_placeholders}) "
+                    "UNION ALL "
+                    "SELECT 1 FROM local_track_artists credit "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "WHERE credit.local_artist_id = ? "
+                    f"AND lower(trim(track.embedded_artist_mbid)) IN ({provider_placeholders}) "
+                    "LIMIT 1",
+                    (artist_id, *provider_ids, artist_id, *provider_ids),
+                ).fetchone()
+                if embedded_match is not None:
+                    repair_ids.add(artist_id)
+            group_retired = sorted(repair_ids)
+            if not group_retired:
+                continue
+            cls._retire_local_artists_tx(
+                connection,
+                retired_artist_ids=group_retired,
+                surviving_artist_id=survivor,
+                now=now,
+            )
+            merges.append((survivor, group_retired))
+            retired_ids.update(group_retired)
+
+        detached: list[tuple[str, str]] = []
+        for artist_id, provider_id in sorted(invalid_provider_by_artist.items()):
+            if artist_id in retired_ids:
+                continue
+            removed = connection.execute(
+                "DELETE FROM local_artist_external_identities "
+                "WHERE local_artist_id = ? AND provider = 'musicbrainz' "
+                "AND provider_artist_id = ?",
+                (artist_id, provider_id),
+            ).rowcount
+            if not removed:
+                continue
+            updated = connection.execute(
+                "UPDATE local_artists SET updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE id = ? AND retired_into_artist_id IS NULL AND row_revision < ?",
+                (now, artist_id, MAX_REVISION),
+            ).rowcount
+            if updated != 1:
+                raise RevisionOverflowError(
+                    "An artist revision cannot be increased during identity repair."
+                )
+            detached.append((artist_id, provider_id))
+
+        if not merges and not detached:
+            return {"merged_artists": 0, "detached_identities": 0}
+
+        catalog_revision = cls._bump_catalog(connection)
+        for survivor, group_retired in merges:
+            connection.execute(
+                "INSERT OR IGNORE INTO library_catalog_actions "
+                "(id, idempotency_key, actor_user_id, action_kind, local_artist_id, "
+                "before_json, after_json, reason_code, created_at) "
+                "VALUES (?, ?, NULL, 'merge_artist', ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    f"legacy-synthetic-artist-repair:{survivor}",
+                    survivor,
+                    json.dumps({"artist_ids": [survivor, *group_retired]}),
+                    json.dumps(
+                        {
+                            "kind": "merge_artist",
+                            "surviving_artist_id": survivor,
+                            "retired_artist_ids": group_retired,
+                            "catalog_revision": catalog_revision,
+                        },
+                        sort_keys=True,
+                    ),
+                    "LEGACY_SYNTHETIC_ARTIST_IDENTITY",
+                    now,
+                ),
+            )
+        for artist_id, provider_id in detached:
+            connection.execute(
+                "INSERT OR IGNORE INTO library_catalog_actions "
+                "(id, idempotency_key, actor_user_id, action_kind, local_artist_id, "
+                "before_json, after_json, reason_code, created_at) "
+                "VALUES (?, ?, NULL, 'detach_artist_identity', ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    f"legacy-synthetic-artist-detach:{artist_id}",
+                    artist_id,
+                    json.dumps({"provider_artist_id": provider_id}),
+                    json.dumps(
+                        {
+                            "kind": "detach_artist_identity",
+                            "catalog_revision": catalog_revision,
+                        },
+                        sort_keys=True,
+                    ),
+                    "LEGACY_SYNTHETIC_ARTIST_IDENTITY",
+                    now,
+                ),
+            )
+        return {
+            "merged_artists": len(retired_ids),
+            "detached_identities": len(detached),
+        }
+
     @staticmethod
     def _ensure_library_management_operation_kind(
         connection: sqlite3.Connection,
@@ -1058,6 +1237,14 @@ class NativeLibraryStore(PersistenceBase):
                 ],
             )
             self._repair_resolved_release_alias_identities(connection)
+            artist_repairs = self._repair_legacy_synthetic_artist_identities(
+                connection, now=time.time()
+            )
+            if any(artist_repairs.values()):
+                logger.info(
+                    "Repaired legacy synthetic artist identities",
+                    extra=artist_repairs,
+                )
             connection.commit()
         finally:
             connection.close()
@@ -11778,6 +11965,112 @@ class NativeLibraryStore(PersistenceBase):
 
         return await self._write(operation)
 
+    @staticmethod
+    def _retire_local_artists_tx(
+        connection: sqlite3.Connection,
+        *,
+        retired_artist_ids: list[str],
+        surviving_artist_id: str,
+        now: float,
+    ) -> None:
+        for artist_id in retired_artist_ids:
+            connection.execute(
+                "UPDATE local_album_artists SET local_artist_id = ?, row_revision = row_revision + 1 "
+                "WHERE local_artist_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "UPDATE local_track_artists SET local_artist_id = ?, row_revision = row_revision + 1 "
+                "WHERE local_artist_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "UPDATE local_albums SET album_artist_id = ?, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE album_artist_id = ?",
+                (surviving_artist_id, now, artist_id),
+            )
+            connection.execute(
+                "UPDATE library_scan_grouping_groups SET local_artist_id = ? "
+                "WHERE local_artist_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "DELETE FROM local_entity_source_links WHERE local_artist_id = ? "
+                "AND EXISTS (SELECT 1 FROM local_entity_source_links survivor_link "
+                "WHERE survivor_link.local_artist_id = ? "
+                "AND survivor_link.provider = local_entity_source_links.provider "
+                "AND survivor_link.external_entity_type = "
+                "local_entity_source_links.external_entity_type "
+                "AND survivor_link.external_id = local_entity_source_links.external_id)",
+                (artist_id, surviving_artist_id),
+            )
+            connection.execute(
+                "UPDATE local_entity_source_links SET local_artist_id = ?, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE local_artist_id = ?",
+                (surviving_artist_id, now, artist_id),
+            )
+            connection.execute(
+                "DELETE FROM local_artist_external_identities WHERE local_artist_id = ?",
+                (artist_id,),
+            )
+            connection.execute(
+                "UPDATE local_artists SET retired_into_artist_id = ?, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE id = ?",
+                (surviving_artist_id, now, artist_id),
+            )
+            connection.execute(
+                "UPDATE local_artist_aliases SET local_artist_id = ? "
+                "WHERE local_artist_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO local_artist_aliases "
+                "(alias, local_artist_id, kind, created_at) VALUES (?, ?, 'merged_artist', ?)",
+                (artist_id, surviving_artist_id, now),
+            )
+            connection.execute(
+                "UPDATE library_migration_provenance SET target_id = ? "
+                "WHERE target_kind = 'local_artist' AND target_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO library_user_favorites "
+                "(user_id, item_kind, item_id, created_at) "
+                "SELECT user_id, item_kind, ?, created_at FROM library_user_favorites "
+                "WHERE item_kind = 'artist' AND item_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "DELETE FROM library_user_favorites "
+                "WHERE item_kind = 'artist' AND item_id = ?",
+                (artist_id,),
+            )
+            connection.execute(
+                "UPDATE library_play_history SET local_artist_id = ? "
+                "WHERE local_artist_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "UPDATE library_playlist_tracks SET local_artist_id = ? "
+                "WHERE local_artist_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+            connection.execute(
+                "UPDATE library_compat_id_map SET internal_id = ? "
+                "WHERE kind = 'artist' AND internal_id = ?",
+                (surviving_artist_id, artist_id),
+            )
+        if retired_artist_ids:
+            placeholders = ",".join("?" for _ in retired_artist_ids)
+            connection.execute(
+                "UPDATE local_artist_merge_candidates SET state = 'resolved', "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE state = 'open' AND "
+                f"(left_artist_id IN ({placeholders}) "
+                f"OR right_artist_id IN ({placeholders}))",
+                (now, *retired_artist_ids, *retired_artist_ids),
+            )
+
     async def merge_local_artists(
         self,
         *,
@@ -11811,68 +12104,12 @@ class NativeLibraryStore(PersistenceBase):
             retired = [
                 artist_id for artist_id in all_ids if artist_id != surviving_artist_id
             ]
-            for artist_id in retired:
-                connection.execute(
-                    "UPDATE local_album_artists SET local_artist_id = ?, row_revision = row_revision + 1 "
-                    "WHERE local_artist_id = ?",
-                    (surviving_artist_id, artist_id),
-                )
-                connection.execute(
-                    "UPDATE local_track_artists SET local_artist_id = ?, row_revision = row_revision + 1 "
-                    "WHERE local_artist_id = ?",
-                    (surviving_artist_id, artist_id),
-                )
-                connection.execute(
-                    "UPDATE local_albums SET album_artist_id = ?, updated_at = ?, "
-                    "row_revision = row_revision + 1 WHERE album_artist_id = ?",
-                    (surviving_artist_id, now, artist_id),
-                )
-                connection.execute(
-                    "DELETE FROM local_artist_external_identities WHERE local_artist_id = ?",
-                    (artist_id,),
-                )
-                connection.execute(
-                    "UPDATE local_artists SET retired_into_artist_id = ?, updated_at = ?, "
-                    "row_revision = row_revision + 1 WHERE id = ?",
-                    (surviving_artist_id, now, artist_id),
-                )
-                connection.execute(
-                    "INSERT OR IGNORE INTO local_artist_aliases "
-                    "(alias, local_artist_id, kind, created_at) VALUES (?, ?, 'merged_artist', ?)",
-                    (artist_id, surviving_artist_id, now),
-                )
-                connection.execute(
-                    "UPDATE library_migration_provenance SET target_id = ? "
-                    "WHERE target_kind = 'local_artist' AND target_id = ?",
-                    (surviving_artist_id, artist_id),
-                )
-                connection.execute(
-                    "INSERT OR IGNORE INTO library_user_favorites "
-                    "(user_id, item_kind, item_id, created_at) "
-                    "SELECT user_id, item_kind, ?, created_at FROM library_user_favorites "
-                    "WHERE item_kind = 'artist' AND item_id = ?",
-                    (surviving_artist_id, artist_id),
-                )
-                connection.execute(
-                    "DELETE FROM library_user_favorites "
-                    "WHERE item_kind = 'artist' AND item_id = ?",
-                    (artist_id,),
-                )
-                connection.execute(
-                    "UPDATE library_play_history SET local_artist_id = ? "
-                    "WHERE local_artist_id = ?",
-                    (surviving_artist_id, artist_id),
-                )
-                connection.execute(
-                    "UPDATE library_playlist_tracks SET local_artist_id = ? "
-                    "WHERE local_artist_id = ?",
-                    (surviving_artist_id, artist_id),
-                )
-                connection.execute(
-                    "UPDATE library_compat_id_map SET internal_id = ? "
-                    "WHERE kind = 'artist' AND internal_id = ?",
-                    (surviving_artist_id, artist_id),
-                )
+            self._retire_local_artists_tx(
+                connection,
+                retired_artist_ids=retired,
+                surviving_artist_id=surviving_artist_id,
+                now=now,
+            )
             if provider_choice == "detach":
                 connection.execute(
                     "DELETE FROM local_artist_external_identities WHERE local_artist_id = ?",

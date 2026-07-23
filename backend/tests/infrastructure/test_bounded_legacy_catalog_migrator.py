@@ -10,6 +10,7 @@ from infrastructure.persistence.native_library_store import NativeLibraryStore
 from services.native.bounded_legacy_catalog_migrator import (
     BoundedLegacyCatalogMigrator,
 )
+from services.native.legacy_catalog_importer import _valid_mbid
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from tests.infrastructure.test_legacy_catalog_importer import (
     ARTIST_1,
@@ -89,6 +90,14 @@ def _insert_legacy_library_file(
             20.0,
         ),
     )
+
+
+def test_legacy_mbid_validation_requires_canonical_unpadded_value() -> None:
+    canonical = "88d17133-abbc-42db-9526-4e2c1db60336"
+
+    assert _valid_mbid(canonical)
+    assert not _valid_mbid(canonical.replace("-", ""))
+    assert not _valid_mbid(f" {canonical} ")
 
 
 @pytest.mark.asyncio
@@ -589,6 +598,49 @@ async def test_bounded_migration_omits_invalid_optional_recording_identity(
         ).fetchone()
     assert identity is None
     assert review == ("needs_review", "legacy_invalid_recording_id")
+
+
+@pytest.mark.asyncio
+async def test_bounded_migration_does_not_treat_dashless_artist_id_as_mbid(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Music"
+    root.mkdir()
+    database = tmp_path / "library.db"
+    _create_source(database, root)
+    synthetic_artist_id = "d4ee74d98c7a6f053a0ebffd0ed5fccb"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE library_files SET artist_mbid = ? WHERE id = ?",
+            (synthetic_artist_id, TRACK_1),
+        )
+        connection.execute(
+            "DELETE FROM user_favorites WHERE item_kind = 'artist' AND item_id = ?",
+            (ARTIST_1,),
+        )
+    _store, migrator = _migrator(database, root, [])
+
+    outcome = await migrator.migrate("bounded-synthetic-artist", now=100)
+
+    assert outcome.report.state == "applied", outcome.blocker_reason_counts
+    with sqlite3.connect(database) as connection:
+        track_artist = connection.execute(
+            "SELECT artist.id, identity.provider_artist_id "
+            "FROM local_track_artists credit "
+            "JOIN local_artists artist ON artist.id = credit.local_artist_id "
+            "LEFT JOIN local_artist_external_identities identity "
+            "ON identity.local_artist_id = artist.id "
+            "WHERE credit.local_track_id = ? AND credit.position = 0",
+            (TRACK_1,),
+        ).fetchone()
+        synthetic_identity = connection.execute(
+            "SELECT local_artist_id FROM local_artist_external_identities "
+            "WHERE provider_artist_id = ?",
+            (synthetic_artist_id,),
+        ).fetchone()
+    assert track_artist is not None
+    assert track_artist[1] is None
+    assert synthetic_identity is None
 
 
 @pytest.mark.asyncio

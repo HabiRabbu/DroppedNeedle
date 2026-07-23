@@ -59,14 +59,14 @@ describe('LibraryAlbumCard.svelte', () => {
 		await expect.element(page.getByText('12 tracks')).toBeInTheDocument();
 	});
 
-	it('opens linked albums on their canonical local route', async () => {
+	it('opens linked albums on their MusicBrainz route', async () => {
 		renderComponent();
 		await expect
 			.element(page.getByRole('link', { name: 'Open OK Computer' }))
-			.toHaveAttribute('href', '/album/local-album-1');
+			.toHaveAttribute('href', '/album/b1392450-e666-3926-a536-22c65f834433');
 	});
 
-	it('marks local-only albums without changing their canonical route', async () => {
+	it('marks local-only albums and keeps their local route', async () => {
 		renderComponent({
 			musicbrainz_release_group_id: null,
 			album_identity_state: 'local_only'

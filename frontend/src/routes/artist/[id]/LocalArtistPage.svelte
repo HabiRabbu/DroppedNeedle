@@ -23,7 +23,7 @@
 	const artist = $derived(artistQuery.data);
 	const albums = $derived(albumsQuery.data?.items ?? []);
 	const contributionAlbums = $derived(
-		albums.filter((album) => album.album_identity_state !== 'release_linked')
+		albums.filter((album) => album.album_identity_state === 'local_only')
 	);
 	const contributionMutation = createLibraryContributionMutation();
 
