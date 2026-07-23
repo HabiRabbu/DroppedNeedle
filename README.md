@@ -13,7 +13,7 @@
 
 ---
 
-DroppedNeedle is a self-hosted music request and discovery app with a **built-in native library and download engine** (no Lidarr required). Search the full MusicBrainz catalogue, request whole albums or single tracks, and let the engine scan, tag, and organise your library while it drives downloads through your own slskd or Usenet/SABnzbd. Stream from Jellyfin, Navidrome, Plex, or your local files, get recommendations from your listening history, and scrobble to ListenBrainz and Last.fm. Play your library in third-party apps like Symfonium and Finamp over the OpenSubsonic and Jellyfin APIs. It all runs as a single Docker container, configured from the web UI.
+DroppedNeedle is a self-hosted music request and discovery app with a **built-in native library and download engine** (no Lidarr required). Search the full MusicBrainz catalogue, request whole albums or single tracks, and let the engine index your library while it drives downloads through your own slskd or Usenet/SABnzbd. Its optional Library Management system can write tags and organize files after an administrator previews and enables it. Stream from Jellyfin, Navidrome, Plex, or your local files, get recommendations from your listening history, and scrobble to ListenBrainz and Last.fm. Play your library in third-party apps like Symfonium and Finamp over the OpenSubsonic and Jellyfin APIs. It all runs as a single Docker container, configured from the web UI.
 
 ---
 
@@ -121,7 +121,7 @@ Open [http://localhost:8688](http://localhost:8688). On first launch you'll be p
 
 ## Native Engine
 
-DroppedNeedle replaces Lidarr with a built-in library and download engine. It scans your music, identifies each file, tags it with mutagen, and organises it. Requests for whole albums or individual tracks are searched against your own slskd, scored, verified, and moved into the library. There is no Lidarr, no coexistence, and no toggle.
+DroppedNeedle replaces Lidarr with a built-in library and download engine. Library Scanning reads files, identifies them, and updates the catalog without changing the music on disk. Finished downloads are scored, verified, and published into the library through a staged writer. Library Management adds optional Picard-style tag, artwork, naming, and organization rules for existing files and future imports. It remains off until an administrator enables it. Lidarr is not used for library management.
 
 > **The slskd downloads path is required for imports.** DroppedNeedle must be able to see it read-write. A common container mount with the library enables a fast atomic move; separate mounts use a safe copy-and-remove fallback and briefly need space for both copies. See [slskd Setup](#slskd-setup).
 
@@ -193,11 +193,11 @@ Per-file confidence weights title (0.55), artist-from-path (0.20), and duration 
 
 ### Verification, import, and quarantine
 
-`FileProcessor` resolves each finished file in slskd's downloads directory and processes it on its own. For each file it:
+`FileProcessor` resolves finished files in the download client's directory and verifies them before publication. Tags must be readable, duration must be within the manifest tolerance, and an enabled AcoustID check must agree with the expected recording. A wrong duration or fingerprint is a verification failure.
 
-- **Verifies** it: tags must read, the duration must be within tolerance of the manifest's expectation, and when AcoustID verification is enabled the fingerprint's release group must match. A wrong duration or fingerprint is a verification failure.
-- **Imports** a good file: it writes MBID tags, computes the target path from the naming template, and moves the file into the library with an atomic `os.rename` (a cross-mount case falls back to copy-then-remove), then inserts a `library_files` row.
-- **Quarantines** a bad source: a `verify_failed`, `corrupt`, `fingerprint_mismatch`, or `duration_mismatch` failure records a `download_quarantine` row keyed by `(client_id, peer, filename, release_group)`. The scorer then excludes that `(peer, filename)` from every future ranking, so a known-bad source is never re-picked.
+The accepted files for an acquisition unit are prepared together. The shared publisher writes and validates temporary copies, records filesystem intent, obtains the library-root write lease, publishes every destination, and then adopts the files in one SQLite catalog transaction. Source cleanup starts after that commit. A same-filesystem replacement is atomic at the filesystem level; separate mounts require temporary space for a copy. The journal and compensation logic cover failures between filesystem and SQLite work, which cannot form one atomic transaction.
+
+A `verify_failed`, `corrupt`, `fingerprint_mismatch`, or `duration_mismatch` result records a `download_quarantine` row keyed by `(client_id, peer, filename, release_group)`. The scorer excludes that source from later ranking. Local publication failures and unavailable mounts do not quarantine the peer.
 
 Environment faults, such as a missing or unavailable downloads mount, are not quarantined; they are not the source's fault. The file fails with a sanitised "downloads directory not accessible" reason instead.
 
@@ -216,11 +216,11 @@ The default:
 {albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}
 ```
 
-The template applies to downloaded imports only. v1 never renames files discovered by the scanner, and changing the template does not retroactively reorganise the library.
+This template is the fallback for downloaded imports that are not using an active Library Management profile. Library Scanning never renames a file. An administrator can separately preview organization for existing or scan-discovered files through Library Management.
 
 ### Pluggable download client
 
-The engine speaks a `DownloadClientProtocol`, never slskd directly: `client_name`, `is_configured`, `health_check`, `search_album`, `search_track`, `enqueue`, `get_status`, `cancel`, `get_file_path`. Everything client-specific (slskd's `X-API-Key`, search-GUID polling, plain-array enqueue, `(peer, filename)` transfer correlation, Soulseek state-string parsing) lives inside the slskd repository; SABnzbd's API key, NZB enqueue, and history polling live in its own repository. Everything else (library layout, MusicBrainz identification, the atomic move, tag writing, persistence, ownership checks, quarantine, retry, scoring) lives outside both. Adding a new client requires zero changes to `services/native/`, and a protocol conformance test exercises this against the slskd mock plus a second mock client.
+The engine speaks a `DownloadClientProtocol`, never slskd directly: `client_name`, `is_configured`, `health_check`, `search_album`, `search_track`, `enqueue`, `get_status`, `cancel`, `get_file_path`. Everything client-specific (slskd's `X-API-Key`, search-GUID polling, plain-array enqueue, `(peer, filename)` transfer correlation, Soulseek state-string parsing) lives inside the slskd repository; SABnzbd's API key, NZB enqueue, and history polling live in its own repository. Library layout, MusicBrainz identification, staged publication, tag writing, persistence, ownership checks, quarantine, retry, and scoring live outside both. A protocol conformance test exercises the contract against the slskd mock and a second mock client.
 
 ### Cover art
 
@@ -230,7 +230,7 @@ With Lidarr removed, album covers resolve on demand through `AlbumCoverFetcher`:
 
 - Library catalog reads and download status: any authenticated user.
 - User-scoped download tasks and searches: owner or admin, with ownership checked in the service.
-- Scan control, download-client config, quarantine, and tag editing: admin only.
+- Scan control, download-client config, quarantine, and Library Management: admin only.
 - SSE endpoints require auth on subscribe and are ownership-scoped for download streams.
 - API keys are masked on settings reads and never appear in logs. A security test suite enforces the auth matrix, the no-secrets-in-logs guarantee, and key masking.
 
@@ -262,9 +262,31 @@ The page shows whether the downloads path is writable and shares a rename bounda
 
 ### 3. Run a library scan
 
-On **Settings > Library**, click **Scan** (or `POST /api/v1/library/scan/start`). The scan walks your paths, identifies files through the tiered strategy, and populates the library. Progress streams live. Files it cannot confidently identify land in manual review.
+On **Settings > Library**, click **Scan** (or `POST /api/v1/library/scan/start`). The scan walks your paths, reads tags, identifies files through the tiered strategy, and populates the catalog. It does not edit tags or move music files. Progress streams live. Files it cannot confidently identify land in manual review.
 
-### 4. Request and watch
+### 4. Optional: configure Library Management
+
+Library Management is the administrator-only write system for tags, artwork, names, and file locations. It is off by default and separate from Library Scanning.
+
+Open **Settings > Library > Library Management** to review the built-in Picard-style profile or create named profiles of your own. Profiles control managed tag fields, genres, artwork, naming, sidecars, format compatibility, lyrics, ReplayGain, retention, and media-server refresh. Assign a profile to each library root, then choose its automatic triggers independently for acquisitions, drop/free imports, and files found by a scan. Creating or assigning a profile does not enable automatic writes.
+
+Lyrics use LRCLIB and are accepted only when title, artist, album, and duration agree; DroppedNeedle does not guess from ambiguous search results. Plain lyrics have verified mappings for every admitted container when that container's writable tag mode is selected. Synchronized lyrics require an ID3 or ASF representation, so a preview blocks unsupported format choices instead of silently omitting them.
+
+ReplayGain measures perceived loudness and stores recommended track/album playback gain and peak values in tags. It does not re-encode, normalize, or change the audio samples. A profile can preserve existing values, fill only missing values, or replace them with a fresh album-aware analysis; make it required only if an unavailable or invalid analysis should hold the entire import.
+
+The first activation, and any later change that broadens destructive access, requires a current dry run and the typed confirmation `Enable Library Management`. Keep a separate backup of the library before enabling it. DroppedNeedle keeps journals, undo snapshots, first-management baselines, and replaced files in the recycle area, but none of those is a substitute for a backup on another device.
+
+For one-off work, open **Library > Library operations > Library Management**. Select tracks, albums, or roots and create a preview. The preview lists tag, artwork, move, collision, and disk-space effects before Apply becomes available. MusicBrainz release and per-file track mappings must be accepted before DroppedNeedle treats a change as authoritative. Unsupported formats, missing mappings, stale previews, provider failures, and collisions are held for attention instead of being forced through. DroppedNeedle does not automatically overwrite an occupied destination or delete a duplicate source.
+
+Operation controls have distinct meanings:
+
+- **Stop** prevents work that has not started. It does not reverse committed items.
+- **Undo** restores the state immediately before one completed operation, while that snapshot is still current and retained.
+- **Restore baseline** returns managed files to their first-management state. Baselines remain until an administrator previews and confirms a purge.
+
+The control room shows recovery state and any post-commit media-server refresh delivery. A failed external refresh does not roll back files that were already committed.
+
+### 5. Request and watch
 
 Browse or search the MusicBrainz catalogue, open an album, and click **Request**. You can also request a single track from an album's track list. Admin and trusted users' requests start immediately; standard users' requests wait for admin approval. On the **Downloads** page the task moves through `searching -> downloading -> processing -> completed` live over SSE, and on completion the files appear under **Library**.
 
@@ -474,7 +496,7 @@ Follow an artist to watch for new releases, and optionally auto-download them th
 
 ### Library
 
-Browse your native library by artist or album with search, filtering, sorting, and pagination. View recently added albums and library statistics. Resolve unmatched files from the manual-review queue, edit tags, rescan albums, and remove albums directly from the UI. DroppedNeedle deletes the files, cleans up the database rows, and updates album and artist statistics.
+Browse your native library by artist or album with search, filtering, sorting, and pagination. View recently added albums and library statistics. Resolve unmatched files from the manual-review queue, preview tag and organization changes through Library Management, rescan albums, and remove albums directly from the UI. Explicit removal deletes the selected files, updates the catalog, and refreshes album and artist statistics.
 
 Jellyfin, Navidrome, Plex, and local file sources each get their own library view with play, shuffle, and queue actions.
 

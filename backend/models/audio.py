@@ -13,6 +13,16 @@ import msgspec
 from infrastructure.msgspec_fastapi import AppStruct
 
 
+class AudioArtistCredit(AppStruct):
+    """One format-native artist value; no joined scalar is heuristically split."""
+
+    name: str
+    credited_name: str | None = None
+    sort_name: str | None = None
+    musicbrainz_artist_id: str | None = None
+    join_phrase: str = ""
+
+
 class AudioTag(AppStruct):
     """Tag metadata read from (or written to) an audio file.
 
@@ -45,18 +55,23 @@ class AudioTag(AppStruct):
     replaygain_album_gain: float | None = None
     replaygain_track_peak: float | None = None
     replaygain_album_peak: float | None = None
+    genres: list[str] = msgspec.field(default_factory=list)
+    artists: list[AudioArtistCredit] = msgspec.field(default_factory=list)
+    album_artists: list[AudioArtistCredit] = msgspec.field(default_factory=list)
+    musicbrainz_artist_ids: list[str] = msgspec.field(default_factory=list)
+    musicbrainz_album_artist_ids: list[str] = msgspec.field(default_factory=list)
 
 
 class AudioInfo(AppStruct):
     """Technical properties of the audio stream / file on disk."""
 
     duration_seconds: float
-    bitrate: int            # kbps
-    sample_rate: int        # Hz
+    bitrate: int  # kbps
+    sample_rate: int  # Hz
     channels: int
-    file_format: str        # 'flac' | 'mp3' | 'ogg' | 'opus' | 'm4a'
+    file_format: str  # 'flac' | 'mp3' | 'ogg' | 'opus' | 'm4a'
     file_size_bytes: int
-    bit_depth: int | None = None   # None for lossy formats
+    bit_depth: int | None = None  # None for lossy formats
 
 
 class FingerprintResult(AppStruct):

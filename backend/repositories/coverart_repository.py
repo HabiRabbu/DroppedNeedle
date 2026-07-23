@@ -5,16 +5,24 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
-from urllib.parse import urlparse
+from typing import Literal, Optional, TYPE_CHECKING
+from urllib.parse import urlparse, urlunparse
 
 import aiofiles
 import httpx
 import msgspec
 
-from core.exceptions import ExternalServiceError, RateLimitedError, ClientDisconnectedError
+from core.exceptions import (
+    ArtworkProcessingError,
+    ExternalServiceError,
+    RateLimitedError,
+    ClientDisconnectedError,
+)
 from infrastructure.cache.memory_cache import CacheInterface
-from infrastructure.cache.cache_keys import ARTIST_WIKIDATA_PREFIX
+from infrastructure.cache.cache_keys import (
+    ARTIST_WIKIDATA_PREFIX,
+    coverart_management_key,
+)
 from infrastructure.resilience.retry import with_retry, CircuitBreaker, CircuitOpenError
 from infrastructure.resilience.rate_limiter import TokenBucketRateLimiter
 from infrastructure.validators import validate_mbid
@@ -27,6 +35,8 @@ from repositories.coverart_album import AlbumCoverFetcher
 from repositories.coverart_disk_cache import CoverDiskCache
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.integration_result import IntegrationResult
+from models.library_management_artwork import ArtworkCandidate, ArtworkImageType
+from repositories.coverart_management_models import CaaManagementResponse
 
 if TYPE_CHECKING:
     from repositories.musicbrainz_repository import MusicBrainzRepository
@@ -65,20 +75,23 @@ def _sniff_image_content_type(data: bytes) -> Optional[str]:
         return "image/webp"
     return None
 
+
 COVER_ART_ARCHIVE_BASE = "https://coverartarchive.org"
 COVER_NEGATIVE_TTL_SECONDS = 4 * 3600
 COVER_MEMORY_MAX_ENTRIES = 128
 COVER_MEMORY_MAX_BYTES = 16 * 1024 * 1024
+MANAGEMENT_ARTWORK_METADATA_MAX_BYTES = 5 * 1024 * 1024
+MANAGEMENT_ARTWORK_CACHE_TTL_SECONDS = 3600
+
 
 def _default_cache_dir() -> Path:
-      from core.config import get_settings
-      return get_settings().cache_dir / "covers"
+    from core.config import get_settings
+
+    return get_settings().cache_dir / "covers"
+
 
 _coverart_circuit_breaker = CircuitBreaker(
-    failure_threshold=5,
-    success_threshold=2,
-    timeout=60.0,
-    name="coverart"
+    failure_threshold=5, success_threshold=2, timeout=60.0, name="coverart"
 )
 
 _library_cover_circuit_breaker = CircuitBreaker(
@@ -155,7 +168,9 @@ class _CoverMemoryLRU:
             return None
         return entry.content_sha1
 
-    async def set(self, key: str, content: bytes, content_type: str, source: str) -> None:
+    async def set(
+        self, key: str, content: bytes, content_type: str, source: str
+    ) -> None:
         content_size = len(content)
         if content_size <= 0:
             return
@@ -177,7 +192,8 @@ class _CoverMemoryLRU:
             self._total_bytes += content_size
 
             while self._entries and (
-                len(self._entries) > self._max_entries or self._total_bytes > self._max_bytes
+                len(self._entries) > self._max_entries
+                or self._total_bytes > self._max_bytes
             ):
                 _, evicted = self._entries.popitem(last=False)
                 self._total_bytes -= evicted.size_bytes
@@ -194,23 +210,22 @@ def _log_task_error(task: asyncio.Task) -> None:
         logger.error(f"Background task failed: {task.exception()}")
 
 
-
 class CoverArtRepository:
     def __init__(
         self,
         http_client: httpx.AsyncClient,
         cache: CacheInterface,
-        mb_repo: Optional['MusicBrainzRepository'] = None,
-        library_repo: Optional['LibraryRepositoryProtocol'] = None,
-        jellyfin_repo: Optional['JellyfinRepository'] = None,
-        audiodb_service: Optional['AudioDBImageService'] = None,
-        audiodb_browse_queue: Optional['AudioDBBrowseQueue'] = None,
+        mb_repo: Optional["MusicBrainzRepository"] = None,
+        library_repo: Optional["LibraryRepositoryProtocol"] = None,
+        jellyfin_repo: Optional["JellyfinRepository"] = None,
+        audiodb_service: Optional["AudioDBImageService"] = None,
+        audiodb_browse_queue: Optional["AudioDBBrowseQueue"] = None,
         cache_dir: Path = _default_cache_dir(),
         cover_cache_max_size_mb: Optional[int] = None,
         cover_memory_cache_max_entries: int = COVER_MEMORY_MAX_ENTRIES,
         cover_memory_cache_max_bytes: int = COVER_MEMORY_MAX_BYTES,
         cover_non_monitored_ttl_seconds: int = 604800,  # 7 days; non-monitored covers change rarely
-        library_db: Optional['LibraryDB'] = None,
+        library_db: Optional["LibraryDB"] = None,
     ):
         self._client = http_client
         self._cache = cache
@@ -267,14 +282,18 @@ class CoverArtRepository:
         return self._disk_cache
 
     async def delete_covers_for_album(self, album_mbid: str) -> int:
-        identifiers = [(f"rg_{album_mbid}", suffix) for suffix in ("500", "250", "1200", "orig")]
+        identifiers = [
+            (f"rg_{album_mbid}", suffix) for suffix in ("500", "250", "1200", "orig")
+        ]
         count = await self._disk_cache.delete_by_identifiers(identifiers)
         for identifier, suffix in identifiers:
             await self._cover_memory_cache.evict(f"{identifier}:{suffix}")
         return count
 
     async def delete_covers_for_artist(self, artist_mbid: str) -> int:
-        identifiers = [(f"artist_{artist_mbid}_{size}", "img") for size in ("250", "500")]
+        identifiers = [
+            (f"artist_{artist_mbid}_{size}", "img") for size in ("250", "500")
+        ]
         identifiers.append((f"artist_{artist_mbid}", "img"))
         count = await self._disk_cache.delete_by_identifiers(identifiers)
         for identifier, suffix in identifiers:
@@ -294,13 +313,17 @@ class CoverArtRepository:
         identifier: str,
         suffix: str,
     ) -> Optional[tuple[bytes, str, str]]:
-        entry = await self._cover_memory_cache.get(self._memory_cache_key(identifier, suffix))
+        entry = await self._cover_memory_cache.get(
+            self._memory_cache_key(identifier, suffix)
+        )
         if entry is None:
             return None
         return entry.content, entry.content_type, entry.source
 
     async def _memory_get_hash(self, identifier: str, suffix: str) -> Optional[str]:
-        return await self._cover_memory_cache.get_hash(self._memory_cache_key(identifier, suffix))
+        return await self._cover_memory_cache.get_hash(
+            self._memory_cache_key(identifier, suffix)
+        )
 
     async def _memory_set_from_result(
         self,
@@ -321,7 +344,7 @@ class CoverArtRepository:
             content_type,
             source,
         )
-    
+
     @staticmethod
     def _parse_retry_after_seconds(retry_after: Optional[str]) -> Optional[float]:
         if not retry_after:
@@ -354,7 +377,9 @@ class CoverArtRepository:
         return "generic"
 
     @staticmethod
-    def _raise_retryable_status(response: httpx.Response, source: str, url: str) -> None:
+    def _raise_retryable_status(
+        response: httpx.Response, source: str, url: str
+    ) -> None:
         status_code = response.status_code
 
         if status_code == 429:
@@ -392,7 +417,9 @@ class CoverArtRepository:
         circuit_breaker=_coverart_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError, RateLimitedError),
     )
-    async def _http_get_coverart(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
+    async def _http_get_coverart(
+        self, url: str, priority: RequestPriority, **kwargs
+    ) -> httpx.Response:
         await _coverart_rate_limiter.acquire()
         return await self._perform_http_get(url, priority, "coverart", **kwargs)
 
@@ -401,7 +428,9 @@ class CoverArtRepository:
         circuit_breaker=_library_cover_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
     )
-    async def _http_get_library(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
+    async def _http_get_library(
+        self, url: str, priority: RequestPriority, **kwargs
+    ) -> httpx.Response:
         return await self._perform_http_get(url, priority, "library", **kwargs)
 
     @with_retry(
@@ -409,7 +438,9 @@ class CoverArtRepository:
         circuit_breaker=_jellyfin_cover_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
     )
-    async def _http_get_jellyfin(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
+    async def _http_get_jellyfin(
+        self, url: str, priority: RequestPriority, **kwargs
+    ) -> httpx.Response:
         return await self._perform_http_get(url, priority, "jellyfin", **kwargs)
 
     @with_retry(
@@ -417,7 +448,9 @@ class CoverArtRepository:
         circuit_breaker=_wikidata_cover_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
     )
-    async def _http_get_wikidata(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
+    async def _http_get_wikidata(
+        self, url: str, priority: RequestPriority, **kwargs
+    ) -> httpx.Response:
         return await self._perform_http_get(url, priority, "wikidata", **kwargs)
 
     @with_retry(
@@ -425,7 +458,9 @@ class CoverArtRepository:
         circuit_breaker=_wikimedia_cover_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
     )
-    async def _http_get_wikimedia(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
+    async def _http_get_wikimedia(
+        self, url: str, priority: RequestPriority, **kwargs
+    ) -> httpx.Response:
         return await self._perform_http_get(url, priority, "wikimedia", **kwargs)
 
     @with_retry(
@@ -433,7 +468,9 @@ class CoverArtRepository:
         circuit_breaker=_generic_cover_circuit_breaker,
         retriable_exceptions=(httpx.HTTPError, ExternalServiceError),
     )
-    async def _http_get_generic(self, url: str, priority: RequestPriority, **kwargs) -> httpx.Response:
+    async def _http_get_generic(
+        self, url: str, priority: RequestPriority, **kwargs
+    ) -> httpx.Response:
         return await self._perform_http_get(url, priority, "generic", **kwargs)
 
     async def _http_get(
@@ -455,6 +492,229 @@ class CoverArtRepository:
         if request_source == "wikimedia":
             return await self._http_get_wikimedia(url, priority, **kwargs)
         return await self._http_get_generic(url, priority, **kwargs)
+
+    @staticmethod
+    def _management_artwork_url(url: str) -> str:
+        try:
+            parsed = urlparse(url)
+            port = parsed.port
+        except ValueError as error:
+            raise ExternalServiceError(
+                "Cover Art Archive returned an invalid artwork location."
+            ) from error
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname != "coverartarchive.org"
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in (None, 80, 443)
+            or not parsed.path.startswith("/")
+        ):
+            raise ExternalServiceError(
+                "Cover Art Archive returned an invalid artwork location."
+            )
+        return urlunparse(
+            ("https", "coverartarchive.org", parsed.path, "", parsed.query, "")
+        )
+
+    @staticmethod
+    def _management_image_types(
+        values: list[str], *, front: bool, back: bool
+    ) -> tuple[ArtworkImageType, ...]:
+        known: dict[str, ArtworkImageType] = {
+            "front": "front",
+            "back": "back",
+            "booklet": "booklet",
+            "medium": "medium",
+            "tray": "tray",
+            "obi": "obi",
+            "spine": "spine",
+            "track": "track",
+        }
+        raw = [value.strip().casefold() for value in values if value.strip()]
+        if front:
+            raw.insert(0, "front")
+        if back:
+            raw.append("back")
+        normalized: list[ArtworkImageType] = []
+        for value in raw or ["other"]:
+            image_type = known.get(value, "other")
+            if image_type not in normalized:
+                normalized.append(image_type)
+        return tuple(normalized)
+
+    async def list_management_artwork(
+        self,
+        *,
+        entity_kind: Literal["release", "release-group"],
+        mbid: str,
+        download_size: Literal["full", "1200", "500", "250"],
+        priority: RequestPriority,
+    ) -> tuple[ArtworkCandidate, ...]:
+        """List typed CAA images for an exact release or labelled group fallback.
+
+        Provider shape verified on 2026-07-21; see
+        ``coverart_MANAGEMENT_API_NOTES.md``.
+        """
+        mbid = validate_mbid(mbid, entity_kind)
+        cache_key = coverart_management_key(entity_kind, mbid, download_size)
+        cached = await self._cache.get(cache_key)
+        if isinstance(cached, tuple):
+            return cached
+
+        async def load() -> tuple[ArtworkCandidate, ...]:
+            url = f"{COVER_ART_ARCHIVE_BASE}/{entity_kind}/{mbid}"
+            try:
+                (
+                    status_code,
+                    content,
+                    _content_type,
+                ) = await self._stream_management_artwork(
+                    url,
+                    maximum_bytes=MANAGEMENT_ARTWORK_METADATA_MAX_BYTES,
+                    priority=priority,
+                )
+            except (httpx.HTTPError, CircuitOpenError) as error:
+                raise ExternalServiceError(
+                    "Cover Art Archive artwork metadata is temporarily unavailable."
+                ) from error
+            except ArtworkProcessingError as error:
+                raise ExternalServiceError(
+                    "Cover Art Archive artwork metadata exceeded the safety limit."
+                ) from error
+            if status_code == 404:
+                await self._cache.set(
+                    cache_key, (), ttl_seconds=COVER_NEGATIVE_TTL_SECONDS
+                )
+                return ()
+            if status_code != 200:
+                raise ExternalServiceError(
+                    "Cover Art Archive artwork metadata request failed."
+                )
+            try:
+                decoded = msgspec.json.decode(content, type=CaaManagementResponse)
+            except msgspec.DecodeError as error:
+                raise ExternalServiceError(
+                    "Cover Art Archive returned invalid artwork metadata."
+                ) from error
+
+            source = (
+                "cover_art_archive_release"
+                if entity_kind == "release"
+                else "cover_art_archive_release_group"
+            )
+            candidates: list[ArtworkCandidate] = []
+            for image in decoded.images:
+                selected_url = image.image
+                if download_size == "1200":
+                    selected_url = image.thumbnails.size_1200 or selected_url
+                elif download_size == "500":
+                    selected_url = image.thumbnails.size_500 or selected_url
+                elif download_size == "250":
+                    selected_url = image.thumbnails.size_250 or selected_url
+                if not selected_url:
+                    continue
+                candidates.append(
+                    ArtworkCandidate(
+                        candidate_id=(
+                            f"caa:{entity_kind}:{mbid}:{image.id}:{download_size}"
+                        ),
+                        source=source,
+                        locator=self._management_artwork_url(selected_url),
+                        image_types=self._management_image_types(
+                            image.types, front=image.front, back=image.back
+                        ),
+                        approved=image.approved,
+                        primary=image.front,
+                        description=image.comment,
+                        source_entity_mbid=mbid,
+                        source_is_exact_release=entity_kind == "release",
+                    )
+                )
+            result = tuple(candidates)
+            await self._cache.set(
+                cache_key,
+                result,
+                ttl_seconds=MANAGEMENT_ARTWORK_CACHE_TTL_SECONDS,
+            )
+            return result
+
+        return await _deduplicator.dedupe(cache_key, load)
+
+    async def download_management_artwork(
+        self,
+        candidate: ArtworkCandidate,
+        *,
+        maximum_bytes: int,
+        priority: RequestPriority,
+    ) -> tuple[bytes, str | None]:
+        if candidate.source not in {
+            "cover_art_archive_release",
+            "cover_art_archive_release_group",
+        }:
+            raise ValueError("The cover repository only downloads CAA candidates.")
+        if maximum_bytes <= 0:
+            raise ValueError("Artwork byte limit must be positive.")
+        url = self._management_artwork_url(candidate.locator)
+        try:
+            status_code, content, content_type = await self._stream_management_artwork(
+                url, maximum_bytes=maximum_bytes, priority=priority
+            )
+        except (httpx.HTTPError, CircuitOpenError) as error:
+            raise ExternalServiceError(
+                "Cover Art Archive artwork download is temporarily unavailable."
+            ) from error
+        if status_code != 200:
+            raise ExternalServiceError("Cover Art Archive artwork download failed.")
+        if not content:
+            raise ArtworkProcessingError("Artwork download was empty.")
+        return content, content_type
+
+    @with_retry(
+        max_attempts=2,
+        circuit_breaker=_coverart_circuit_breaker,
+        retriable_exceptions=(httpx.HTTPError, ExternalServiceError, RateLimitedError),
+    )
+    async def _stream_management_artwork(
+        self,
+        url: str,
+        *,
+        maximum_bytes: int,
+        priority: RequestPriority,
+    ) -> tuple[int, bytes, str | None]:
+        await _coverart_rate_limiter.acquire()
+        priority_mgr = get_priority_queue()
+        semaphore = await priority_mgr.acquire_slot(priority)
+        async with semaphore:
+            async with self._client.stream("GET", url) as response:
+                self._raise_retryable_status(response, "coverart", url)
+                content_type = response.headers.get("Content-Type")
+                if content_type is not None:
+                    content_type = (
+                        content_type.partition(";")[0].strip().casefold() or None
+                    )
+                if response.status_code != 200:
+                    return response.status_code, b"", content_type
+                declared_length = response.headers.get("Content-Length")
+                if declared_length is not None:
+                    try:
+                        too_large = int(declared_length) > maximum_bytes
+                    except ValueError:
+                        too_large = False
+                    if too_large:
+                        raise ArtworkProcessingError(
+                            "Artwork download exceeds the byte safety limit."
+                        )
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > maximum_bytes:
+                        raise ArtworkProcessingError(
+                            "Artwork download exceeds the byte safety limit."
+                        )
+                    chunks.append(chunk)
+                return response.status_code, b"".join(chunks), content_type
 
     async def get_release_group_cover_etag(
         self,
@@ -524,8 +784,15 @@ class CoverArtRepository:
             return await self._disk_cache.get_content_hash(fallback_path)
 
         return None
-    
-    async def get_artist_image(self, artist_id: str, size: Optional[int] = None, priority: RequestPriority = RequestPriority.IMAGE_FETCH, is_disconnected: DisconnectCallable | None = None, defer_wikidata: bool = False) -> Optional[tuple[bytes, str, str]]:
+
+    async def get_artist_image(
+        self,
+        artist_id: str,
+        size: Optional[int] = None,
+        priority: RequestPriority = RequestPriority.IMAGE_FETCH,
+        is_disconnected: DisconnectCallable | None = None,
+        defer_wikidata: bool = False,
+    ) -> Optional[tuple[bytes, str, str]]:
         try:
             artist_id = validate_mbid(artist_id, "artist")
         except ValueError as e:
@@ -553,7 +820,9 @@ class CoverArtRepository:
                 return cached_memory
 
             fallback_path = self._disk_cache.get_file_path(fallback_identifier, "img")
-            if cached := await self._disk_cache.read(fallback_path, ["source", "wikidata_id"]):
+            if cached := await self._disk_cache.read(
+                fallback_path, ["source", "wikidata_id"]
+            ):
                 source = "wikidata"
                 if cached[2] and isinstance(cached[2], dict):
                     source = cached[2].get("source") or source
@@ -570,15 +839,30 @@ class CoverArtRepository:
         # follower and block for the whole resolve (seen live: a 55s cover request) - exactly the
         # stall deferring exists to avoid. Separate keys keep hot requests fast (they coalesce
         # only with each other) while background/compat full fetches coalesce among themselves.
-        dedupe_key = f"artist:img:{artist_id}:{size}:{'deferred' if defer_wikidata else 'full'}"
+        dedupe_key = (
+            f"artist:img:{artist_id}:{size}:{'deferred' if defer_wikidata else 'full'}"
+        )
         try:
             result = await _deduplicator.dedupe(
                 dedupe_key,
-                lambda: self._artist_fetcher.fetch_artist_image(artist_id, size, file_path, priority=priority, is_disconnected=is_disconnected, include_wikidata=not defer_wikidata)
+                lambda: self._artist_fetcher.fetch_artist_image(
+                    artist_id,
+                    size,
+                    file_path,
+                    priority=priority,
+                    is_disconnected=is_disconnected,
+                    include_wikidata=not defer_wikidata,
+                ),
             )
         except ClientDisconnectedError:
             raise
-        except (TransientImageFetchError, CircuitOpenError, httpx.HTTPError, ExternalServiceError, RateLimitedError) as e:
+        except (
+            TransientImageFetchError,
+            CircuitOpenError,
+            httpx.HTTPError,
+            ExternalServiceError,
+            RateLimitedError,
+        ) as e:
             # Transient failure: fail soft WITHOUT caching a negative (the artist may well have
             # an image; it was just a blip) and without deferring - the next request retries.
             _record_degradation(f"Artist image fetch failed for {artist_id[:8]}: {e}")
@@ -591,12 +875,16 @@ class CoverArtRepository:
             self._spawn_deferred_artist_resolve(artist_id, size)
             return None
         if result is None:
-            await self._disk_cache.write_negative(file_path, ttl_seconds=COVER_NEGATIVE_TTL_SECONDS)
+            await self._disk_cache.write_negative(
+                file_path, ttl_seconds=COVER_NEGATIVE_TTL_SECONDS
+            )
         else:
             await self._memory_set_from_result(identifier, "img", result)
         return result
 
-    def _spawn_deferred_artist_resolve(self, artist_id: str, size: Optional[int]) -> None:
+    def _spawn_deferred_artist_resolve(
+        self, artist_id: str, size: Optional[int]
+    ) -> None:
         """Background full resolve of an artist image (the Wikidata/MusicBrainz chain the hot
         path skipped), deduped so concurrent misses spawn only one resolver. BACKGROUND_SYNC
         yields to live users; the result is banked to the disk cache for the next request."""
@@ -608,7 +896,9 @@ class CoverArtRepository:
         async def _resolve() -> None:
             try:
                 await self.get_artist_image(
-                    artist_id, size, priority=RequestPriority.BACKGROUND_SYNC,
+                    artist_id,
+                    size,
+                    priority=RequestPriority.BACKGROUND_SYNC,
                 )
             finally:
                 self._deferred_artist_inflight.discard(key)
@@ -631,7 +921,7 @@ class CoverArtRepository:
             return None
 
         identifier = f"rg_{release_group_id}"
-        suffix = size or 'orig'
+        suffix = size or "orig"
         file_path = self._disk_cache.get_file_path(identifier, suffix)
 
         if cached_memory := await self._memory_get(identifier, suffix):
@@ -682,10 +972,13 @@ class CoverArtRepository:
         result = await _deduplicator.dedupe(
             dedupe_key,
             lambda: self._album_fetcher.fetch_release_group_cover(
-                release_group_id, size, file_path, priority=priority,
+                release_group_id,
+                size,
+                file_path,
+                priority=priority,
                 is_disconnected=is_disconnected,
                 include_best_release=not defer_best_release,
-            )
+            ),
         )
         if result is None and self._album_fetcher.is_audiodb_album_warming(
             release_group_id
@@ -704,7 +997,9 @@ class CoverArtRepository:
             # turntable placeholder for albums the internet has no cover for.
             result = await self._embedded_album_cover(release_group_id, file_path)
         if result is None:
-            await self._disk_cache.write_negative(file_path, ttl_seconds=COVER_NEGATIVE_TTL_SECONDS)
+            await self._disk_cache.write_negative(
+                file_path, ttl_seconds=COVER_NEGATIVE_TTL_SECONDS
+            )
         else:
             await self._memory_set_from_result(identifier, suffix, result)
         return result
@@ -726,7 +1021,9 @@ class CoverArtRepository:
             return preferred
         return fallback
 
-    def _spawn_deferred_rg_resolve(self, release_group_id: str, size: Optional[str]) -> None:
+    def _spawn_deferred_rg_resolve(
+        self, release_group_id: str, size: Optional[str]
+    ) -> None:
         """Background full resolve of a release-group cover (the CAA best-release fallback the
         hot path skipped), deduped so concurrent misses spawn only one resolver. Runs at
         BACKGROUND_SYNC so it yields to live users and banks the result to the disk cache."""
@@ -738,7 +1035,9 @@ class CoverArtRepository:
         async def _resolve() -> None:
             try:
                 await self.get_release_group_cover(
-                    release_group_id, size, priority=RequestPriority.BACKGROUND_SYNC,
+                    release_group_id,
+                    size,
+                    priority=RequestPriority.BACKGROUND_SYNC,
                 )
             finally:
                 self._deferred_rg_inflight.discard(key)
@@ -780,7 +1079,9 @@ class CoverArtRepository:
         try:
             rows = await self._library_db.get_library_files_for_album(release_group_id)
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"Embedded-cover lookup failed for {release_group_id[:8]}: {e}")
+            logger.debug(
+                f"Embedded-cover lookup failed for {release_group_id[:8]}: {e}"
+            )
             return None
 
         paths = [row["file_path"] for row in rows if row.get("file_path")]
@@ -792,10 +1093,14 @@ class CoverArtRepository:
             return None
 
         content, content_type = extracted
-        await self._disk_cache.write(file_path, content, content_type, {"source": "embedded"})
+        await self._disk_cache.write(
+            file_path, content, content_type, {"source": "embedded"}
+        )
         return content, content_type, "embedded"
 
-    def _extract_first_embedded_cover(self, paths: list[str]) -> Optional[tuple[bytes, str]]:
+    def _extract_first_embedded_cover(
+        self, paths: list[str]
+    ) -> Optional[tuple[bytes, str]]:
         """Synchronous: the first local file holding raster cover art. Runs in a
         worker thread - mutagen reads are blocking."""
         for raw_path in paths:
@@ -829,7 +1134,7 @@ class CoverArtRepository:
             return None
 
         identifier = f"rel_{release_id}"
-        suffix = size or 'orig'
+        suffix = size or "orig"
         file_path = self._disk_cache.get_file_path(identifier, suffix)
 
         if cached_memory := await self._memory_get(identifier, suffix):
@@ -877,14 +1182,22 @@ class CoverArtRepository:
         dedupe_key = f"cover:rel:{release_id}:{size}"
         result = await _deduplicator.dedupe(
             dedupe_key,
-            lambda: self._album_fetcher.fetch_release_cover(release_id, size, file_path, priority=priority, is_disconnected=is_disconnected)
+            lambda: self._album_fetcher.fetch_release_cover(
+                release_id,
+                size,
+                file_path,
+                priority=priority,
+                is_disconnected=is_disconnected,
+            ),
         )
         if result is None and self._album_fetcher.is_audiodb_release_warming(
             release_id
         ):
             return None
         if result is None:
-            await self._disk_cache.write_negative(file_path, ttl_seconds=COVER_NEGATIVE_TTL_SECONDS)
+            await self._disk_cache.write_negative(
+                file_path, ttl_seconds=COVER_NEGATIVE_TTL_SECONDS
+            )
         else:
             await self._memory_set_from_result(identifier, suffix, result)
         return result
@@ -916,46 +1229,50 @@ class CoverArtRepository:
         except ValueError:
             return False
         return self._album_fetcher.is_audiodb_release_warming(release_id)
-    
+
     async def batch_prefetch_covers(
-        self,
-        album_ids: list[str],
-        size: str = "250",
-        max_concurrent: int = 5
+        self, album_ids: list[str], size: str = "250", max_concurrent: int = 5
     ) -> None:
         if not album_ids:
             return
-        
+
         from infrastructure.validators import is_valid_mbid
+
         valid_album_ids = [aid for aid in album_ids if is_valid_mbid(aid)]
         invalid_count = len(album_ids) - len(valid_album_ids)
-        
+
         if not valid_album_ids:
             logger.warning("No valid MBIDs in batch prefetch request")
             return
-        
+
         if invalid_count > 0:
             invalid_rate = (invalid_count / len(album_ids)) * 100
-            logger.warning(f"Filtered out {invalid_count} invalid MBIDs from batch prefetch ({invalid_rate:.1f}%)")
-            
+            logger.warning(
+                f"Filtered out {invalid_count} invalid MBIDs from batch prefetch ({invalid_rate:.1f}%)"
+            )
+
             if invalid_rate > 10.0:
                 logger.error(
                     f"HIGH INVALID MBID RATE: {invalid_count}/{len(album_ids)} "
                     f"({invalid_rate:.1f}%) - This indicates a potential upstream bug!"
                 )
-        
+
         semaphore = asyncio.Semaphore(max_concurrent)
-        
+
         async def fetch_with_limit(album_id: str):
             async with semaphore:
                 try:
                     await self.get_release_group_cover(album_id, size)
                 except Exception:  # noqa: BLE001
                     pass
-        
-        await asyncio.gather(*[fetch_with_limit(aid) for aid in valid_album_ids], return_exceptions=True)
-    
-    async def promote_cover_to_persistent(self, identifier: str, identifier_type: str = "album") -> bool:
+
+        await asyncio.gather(
+            *[fetch_with_limit(aid) for aid in valid_album_ids], return_exceptions=True
+        )
+
+    async def promote_cover_to_persistent(
+        self, identifier: str, identifier_type: str = "album"
+    ) -> bool:
         return await self._disk_cache.promote_to_persistent(identifier, identifier_type)
 
     async def debug_artist_image(self, artist_id: str, debug_info: dict) -> dict:
@@ -964,8 +1281,12 @@ class CoverArtRepository:
 
         debug_info["disk_cache"]["exists_250"] = file_path_250.exists()
         debug_info["disk_cache"]["exists_500"] = file_path_500.exists()
-        debug_info["disk_cache"]["negative_250"] = await self._disk_cache.is_negative(file_path_250)
-        debug_info["disk_cache"]["negative_500"] = await self._disk_cache.is_negative(file_path_500)
+        debug_info["disk_cache"]["negative_250"] = await self._disk_cache.is_negative(
+            file_path_250
+        )
+        debug_info["disk_cache"]["negative_500"] = await self._disk_cache.is_negative(
+            file_path_500
+        )
 
         debug_info["circuit_breakers"] = {
             "coverart": _coverart_circuit_breaker.get_state(),
@@ -977,10 +1298,10 @@ class CoverArtRepository:
         }
 
         for size, file_path in [("250", file_path_250), ("500", file_path_500)]:
-            meta_path = file_path.with_suffix('.meta.json')
+            meta_path = file_path.with_suffix(".meta.json")
             if meta_path.exists():
                 try:
-                    async with aiofiles.open(meta_path, 'r') as f:
+                    async with aiofiles.open(meta_path, "r") as f:
                         debug_info["disk_cache"][f"meta_{size}"] = msgspec.json.decode(
                             (await f.read()).encode("utf-8"),
                             type=dict[str, object],
@@ -1002,7 +1323,9 @@ class CoverArtRepository:
         cached_wikidata = await self._cache.get(cache_key)
         if cached_wikidata is not None:
             debug_info["memory_cache"]["wikidata_url_cached"] = True
-            debug_info["memory_cache"]["cached_value"] = cached_wikidata if cached_wikidata else "(negative cache)"
+            debug_info["memory_cache"]["cached_value"] = (
+                cached_wikidata if cached_wikidata else "(negative cache)"
+            )
 
         if self._mb_repo and not cached_wikidata:
             try:
@@ -1016,9 +1339,15 @@ class CoverArtRepository:
                             if isinstance(url_rel, dict):
                                 typ = url_rel.get("type") or url_rel.get("link_type")
                                 url_obj = url_rel.get("url", {})
-                                target = url_obj.get("resource", "") if isinstance(url_obj, dict) else ""
+                                target = (
+                                    url_obj.get("resource", "")
+                                    if isinstance(url_obj, dict)
+                                    else ""
+                                )
                                 if typ == "wikidata" and target:
-                                    debug_info["musicbrainz"]["has_wikidata_relation"] = True
+                                    debug_info["musicbrainz"][
+                                        "has_wikidata_relation"
+                                    ] = True
                                     debug_info["musicbrainz"]["wikidata_url"] = target
                                     break
             except Exception as e:  # noqa: BLE001

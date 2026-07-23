@@ -15,6 +15,10 @@ from services.native.library_operation_service import (
     LEASE_SECONDS,
     LibraryOperationService,
 )
+from services.native.library_management_worker import LibraryManagementWorker
+from services.native.library_management_notification_service import (
+    LibraryManagementNotificationService,
+)
 
 
 class LibraryOperationSupervisor:
@@ -25,15 +29,22 @@ class LibraryOperationSupervisor:
         repairs: IdentityRepairService,
         reidentification: ExplicitReidentificationWorker,
         workload_gate: BackgroundWorkloadGate | None = None,
+        management: LibraryManagementWorker | None = None,
+        notifications: LibraryManagementNotificationService | None = None,
     ) -> None:
         self._store = store
         self._operations = operations
         self._repairs = repairs
         self._reidentification = reidentification
         self._workload_gate = workload_gate
+        self._management = management
+        self._notifications = notifications
 
     async def recover(self, *, now: float | None = None) -> int:
-        return await self._operations.recover(now=now)
+        recovered = await self._operations.recover(now=now)
+        if self._notifications is not None:
+            recovered += await self._notifications.recover(now=now)
+        return recovered
 
     async def run_once(
         self, worker_id: str, *, now: float | None = None
@@ -43,6 +54,8 @@ class LibraryOperationSupervisor:
         kinds = ["bulk_review_apply", "repair"]
         if self._workload_gate is None or not self._workload_gate.scan_active:
             kinds.insert(0, "explicit_reidentification")
+            if self._management is not None:
+                kinds.insert(0, "library_management")
         for kind in kinds:
             job = await self._store.claim_operation_job(
                 worker_id,
@@ -53,11 +66,20 @@ class LibraryOperationSupervisor:
             if job is not None:
                 break
         if job is None:
+            if self._notifications is not None:
+                operation_id = await self._notifications.run_once(
+                    worker_id, now=timestamp
+                )
+                if operation_id is not None:
+                    return await self._operations.get(operation_id)
             return None
         if job["kind"] == "explicit_reidentification":
             row = await self._reidentification.run_claimed(
                 job, worker_id, now=timestamp
             )
+            return self._operations._response(row)
+        if job["kind"] == "library_management":
+            row = await self._management.run_claimed(job, worker_id)
             return self._operations._response(row)
         if job["kind"] == "bulk_review_apply":
             return await self._operations.run_bulk_claimed(

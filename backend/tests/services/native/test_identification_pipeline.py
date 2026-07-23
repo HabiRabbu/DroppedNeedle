@@ -47,6 +47,7 @@ from services.native.identification_evidence_projector import (
     IdentificationEvidenceProjector,
 )
 from services.native.identification_queue_service import IdentificationQueueService
+from services.native.identification_revisions import album_input_revisions
 from services.native.local_album_grouping_service import LocalAlbumGroupingService
 from services.native.reidentification_service import (
     IdentificationWorkArbiter,
@@ -284,6 +285,7 @@ def _service(
     provider: FakeProvider,
     fingerprinter: FakeFingerprinter,
     invalidate: AsyncMock | None = None,
+    on_identified: AsyncMock | None = None,
 ) -> AlbumIdentificationService:
     queue = IdentificationQueueService(store)
     return AlbumIdentificationService(
@@ -293,6 +295,7 @@ def _service(
         AlbumEvidenceEngine(),
         ConditionalFingerprintService(store, fingerprinter),
         invalidate,
+        on_identified,
     )
 
 
@@ -372,6 +375,28 @@ async def test_local_metadata_embedded_identity_uses_zero_provider_calls_and_att
         "artwork",
         "review",
     } <= invalidated
+
+
+@pytest.mark.asyncio
+async def test_identified_album_schedules_scan_management_after_identity_commit(
+    store: NativeLibraryStore,
+) -> None:
+    await _seed_album(store)
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    expected_policy_revision = album_input_revisions(context["tracks"])[2]
+    callback = AsyncMock()
+    job = await _claimed_job(store)
+
+    outcome = await _service(
+        store,
+        FakeProvider([_candidate()]),
+        FakeFingerprinter(FingerprintResult(status="disabled"), enabled=False),
+        on_identified=callback,
+    ).run_claimed_job(job, "worker", now=3)
+
+    assert outcome == "identified"
+    callback.assert_awaited_once_with("album-1", expected_policy_revision)
 
 
 @pytest.mark.asyncio
@@ -1389,9 +1414,7 @@ async def test_large_ambiguous_continuity_uses_bounded_disk_matcher(
                     LocalArtistCredit(local_artist_id=artist.id, position=0)
                 ],
                 track_credits={
-                    track.id: [
-                        LocalArtistCredit(local_artist_id=artist.id, position=0)
-                    ]
+                    track.id: [LocalArtistCredit(local_artist_id=artist.id, position=0)]
                     for track in tracks
                 },
             )
@@ -1446,6 +1469,7 @@ async def test_flat_grouping_indexes_refreshed_rows_once_and_reuses_artist_resol
     monkeypatch.setattr(
         "services.native.local_album_grouping_service.STAGED_GROUPING_THRESHOLD", 2_000
     )
+
     class CountingRows(list):
         def __init__(self, rows):
             super().__init__(rows)

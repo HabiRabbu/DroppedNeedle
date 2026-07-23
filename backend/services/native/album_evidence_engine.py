@@ -166,6 +166,7 @@ class AlbumEvidenceEngine:
                         candidate_disc_number=candidate_track.disc_number,
                         candidate_track_position=candidate_track.position,
                         recording_mbid=candidate_track.recording_mbid,
+                        release_track_mbid=candidate_track.release_track_mbid,
                     )
                 )
                 continue

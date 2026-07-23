@@ -14,6 +14,7 @@ from infrastructure.cache.cache_keys import (
     mb_album_search_key,
     mb_release_group_key,
     mb_release_key,
+    mb_management_release_key,
     MB_RG_BY_TAG_PREFIX,
     MB_RG_DETAIL_PREFIX,
     MB_RELEASE_DETAIL_PREFIX,
@@ -52,6 +53,7 @@ from repositories.musicbrainz_contribution_models import (
     MbContributionReleaseSearch,
     MbContributionUrl,
 )
+from repositories.musicbrainz_management_models import MbManagementRelease
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +180,7 @@ def _verified_release(
                     track.length / 1000 if track.length is not None else None
                 ),
                 recording_mbid=track.recording.id or None,
+                release_track_mbid=track.id or None,
             )
             for medium in release.media
             for track in medium.tracks
@@ -445,6 +448,59 @@ class MusicBrainzAlbumMixin:
                 release_id, includes, cache_key, priority
             ),
         )
+
+    async def get_canonical_release(
+        self,
+        release_mbid: str,
+        *,
+        includes: tuple[str, ...],
+        preferred_locales: tuple[str, ...] = (),
+        artist_standardization: str = "credited",
+        priority: RequestPriority = RequestPriority.USER_INITIATED,
+        bypass_cache: bool = False,
+    ) -> MbManagementRelease | None:
+        """Fetch the selected edition for authoritative Library Management.
+
+        Locale and artist-standardization inputs are part of the cache identity because
+        downstream canonical projection depends on them, even though MusicBrainz sends
+        all requested alias data in the same response.
+        """
+        normalized_includes = tuple(sorted(set(includes)))
+        cache_key = mb_management_release_key(
+            release_mbid,
+            normalized_includes,
+            preferred_locales,
+            artist_standardization,
+        )
+        if not bypass_cache:
+            cached = await self._cache.get(cache_key)
+            if isinstance(cached, MbManagementRelease):
+                return cached
+            if cached is False:
+                return None
+
+        async def load() -> MbManagementRelease | None:
+            try:
+                result = await mb_api_get(
+                    f"/release/{release_mbid}",
+                    params={"inc": "+".join(normalized_includes)},
+                    priority=priority,
+                    decode_type=MbManagementRelease,
+                )
+            except (httpx.HTTPError, CircuitOpenError, ExternalServiceError) as error:
+                _record_mb_degradation("canonical release fetch unavailable")
+                raise ExternalServiceError(
+                    "MusicBrainz canonical metadata is temporarily unavailable."
+                ) from error
+
+            if not result.id:
+                await self._cache.set(cache_key, False, ttl_seconds=600)
+                return None
+            await self._cache.set(cache_key, result, ttl_seconds=3600)
+            return result
+
+        dedupe_key = f"{cache_key}:fresh" if bypass_cache else cache_key
+        return await mb_deduplicator.dedupe(dedupe_key, load)
 
     async def resolve_url(
         self,

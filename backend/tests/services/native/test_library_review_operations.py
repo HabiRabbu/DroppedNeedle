@@ -24,7 +24,12 @@ from api.v1.schemas.library_policies import (
     LibraryRootSettings,
     TypedLibrarySettings,
 )
-from core.exceptions import ExternalServiceError, StaleRevisionError, ValidationError
+from core.exceptions import (
+    ConflictError,
+    ExternalServiceError,
+    StaleRevisionError,
+    ValidationError,
+)
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.audio import FingerprintResult
 from models.identification import (
@@ -64,6 +69,7 @@ from services.native.explicit_reidentification_worker import (
 )
 from services.native.identification_queue_service import IdentificationQueueService
 from services.native.identity_repair_service import IdentityRepairService
+from services.native.identification_revisions import album_input_revisions
 from services.native.library_diagnostics_service import LibraryDiagnosticsService
 from services.native.library_operation_service import LibraryOperationService
 from services.native.library_operation_supervisor import LibraryOperationSupervisor
@@ -741,7 +747,10 @@ async def test_manual_candidate_override_records_choice_and_attaches_only_suppor
         ],
         updated_at=2,
     )
-    response = await LibraryReviewService(store).accept_candidate(
+    callback = AsyncMock()
+    response = await LibraryReviewService(
+        store, on_identified=callback
+    ).accept_candidate(
         "review-1",
         CandidateAcceptanceRequest(
             expected_review_revision=2,
@@ -763,6 +772,9 @@ async def test_manual_candidate_override_records_choice_and_attaches_only_suppor
         "track-1-1": "recording-supported",
         "track-1-2": None,
     }
+    callback.assert_awaited_once_with(
+        "album-1", album_input_revisions(context["tracks"])[2]
+    )
 
 
 @pytest.mark.asyncio
@@ -969,6 +981,16 @@ async def test_bulk_candidate_preview_finds_and_binds_one_shared_safe_candidate(
         now=12,
     )
     assert operation.expected_work_count == 2
+    callback = AsyncMock()
+    worker = LibraryOperationService(store, on_identified=callback)
+    claimed = await worker.claim("worker", now=13)
+    assert claimed is not None
+    completed = await worker.run_bulk_claimed(claimed, "worker", "admin", now=14)
+    assert completed.succeeded_count == 2
+    assert {call.args[0] for call in callback.await_args_list} == {
+        "album-1",
+        "album-2",
+    }
 
 
 @pytest.mark.asyncio
@@ -1461,8 +1483,6 @@ async def test_operation_pause_resume_stop_contract_is_shared(
     service = ReidentificationService(store)
     context = await store.get_album_identification_context("album-1")
     assert context is not None
-    from services.native.identification_revisions import album_input_revisions
-
     row = await service.create_or_coalesce(
         "album-1",
         "admin",
@@ -1486,6 +1506,53 @@ async def test_operation_pause_resume_stop_contract_is_shared(
         row["id"], "resume", paused["row_revision"], now=5
     )
     assert resumed.state == "queued"
+
+
+@pytest.mark.asyncio
+async def test_operation_control_requests_are_durably_idempotent(
+    store: NativeLibraryStore,
+) -> None:
+    await _seed_album(store, "1")
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    row = await ReidentificationService(store).create_or_coalesce(
+        "album-1",
+        "admin",
+        expected_album_revision=int(context["album"]["row_revision"]),
+        expected_input_revision=":".join(album_input_revisions(context["tracks"])),
+        idempotency_key="control-operation",
+        now=1,
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=2, lease_seconds=60, kind="explicit_reidentification"
+    )
+    assert claimed is not None
+    operations = LibraryOperationService(store)
+    first = await operations.control(
+        row["id"],
+        "pause",
+        claimed["row_revision"],
+        idempotency_key="pause-once",
+        now=3,
+    )
+    repeated = await operations.control(
+        row["id"],
+        "pause",
+        claimed["row_revision"],
+        idempotency_key="pause-once",
+        now=4,
+    )
+
+    assert first.control_request == "pause"
+    assert repeated.row_revision == first.row_revision
+    with pytest.raises(ConflictError, match="another request"):
+        await operations.control(
+            row["id"],
+            "stop",
+            first.row_revision,
+            idempotency_key="pause-once",
+            now=5,
+        )
 
 
 @pytest.mark.asyncio
@@ -1688,10 +1755,12 @@ async def test_explicit_reidentification_exposes_candidates_and_rejects_stale_se
         "worker", now=2, lease_seconds=60, kind="explicit_reidentification"
     )
     assert claimed is not None
+    callback = AsyncMock()
     worker = ExplicitReidentificationWorker(
         store,
         AlbumCandidateService(_IdentificationProvider()),
         AlbumEvidenceEngine(),
+        on_identified=callback,
     )
     ready = await worker.run_claimed(claimed, "worker", now=3)
     snapshot = await store.get_operation_snapshot(created["id"])
@@ -1736,6 +1805,9 @@ async def test_explicit_reidentification_exposes_candidates_and_rejects_stale_se
     assert second_context is not None
     assert second_context["identity"]["decision_source"] == "manual"
     assert second_context["tracks"][0]["recording_mbid"] == "recording-explicit"
+    callback.assert_awaited_once_with(
+        "album-2", album_input_revisions(second_context["tracks"])[2]
+    )
 
 
 @pytest.mark.asyncio

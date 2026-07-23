@@ -34,7 +34,10 @@ class TestReExportCompleteness:
         for mod in (cache_providers, repo_providers, service_providers):
             for name in dir(mod):
                 obj = getattr(mod, name)
-                if name.startswith("get_") and getattr(obj, "__module__", "") == mod.__name__:
+                if (
+                    name.startswith("get_")
+                    and getattr(obj, "__module__", "") == mod.__name__
+                ):
                     assert hasattr(init, name), f"{name} not re-exported from __init__"
 
     def test_init_exports_all_type_aliases(self):
@@ -49,12 +52,15 @@ class TestReExportCompleteness:
         from core.dependencies import (
             init_app_state,
             cleanup_app_state,
+            clear_library_management_provider_graph,
             clear_lastfm_dependent_caches,
             clear_listenbrainz_dependent_caches,
             clear_all_singletons,
         )
+
         assert callable(init_app_state)
         assert callable(cleanup_app_state)
+        assert callable(clear_library_management_provider_graph)
         assert callable(clear_lastfm_dependent_caches)
         assert callable(clear_listenbrainz_dependent_caches)
         assert callable(clear_all_singletons)
@@ -103,10 +109,10 @@ class TestDownloadServiceFreshness:
 
         try:
             for holder in (
-                sp.get_request_service(),          # cancel_task
-                sp.get_requests_page_service(),    # cancel_task
+                sp.get_request_service(),  # cancel_task
+                sp.get_requests_page_service(),  # cancel_task
                 sp.get_discovery_batch_service(),  # purge_album_downloads
-                sp.get_wanted_watcher_service(),   # scout, cancel, retry
+                sp.get_wanted_watcher_service(),  # scout, cancel, retry
             ):
                 assert holder._get_download_service is sp.get_download_service, (
                     f"{type(holder).__name__} captured a DownloadService instance instead of "
@@ -115,7 +121,9 @@ class TestDownloadServiceFreshness:
         finally:
             clear_all_singletons()
 
-    def test_the_dispatcher_holds_the_getter_and_dispatch_holders_hold_the_dispatcher(self):
+    def test_the_dispatcher_holds_the_getter_and_dispatch_holders_hold_the_dispatcher(
+        self,
+    ):
         from core.dependencies import service_providers as sp
         from core.dependencies._registry import clear_all_singletons
 
@@ -130,8 +138,8 @@ class TestDownloadServiceFreshness:
                 sp.get_new_release_service(),
                 sp.get_personal_mix_service(),
             ):
-                assert holder._acquisition is dispatcher, (
-                    f"{type(holder).__name__} is not routing through the shared dispatcher"
-                )
+                assert (
+                    holder._acquisition is dispatcher
+                ), f"{type(holder).__name__} is not routing through the shared dispatcher"
         finally:
             clear_all_singletons()

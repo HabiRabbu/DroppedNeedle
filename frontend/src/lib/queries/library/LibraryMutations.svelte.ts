@@ -15,9 +15,7 @@ import type {
 	LibraryActionResponse,
 	LibraryAlbumStatus,
 	StatusMessageResponse,
-	LibraryScanSchedule,
-	LibraryTrack,
-	TrackTagUpdate
+	LibraryScanSchedule
 } from '$lib/types';
 
 export function removeLibraryAlbum() {
@@ -68,17 +66,6 @@ export function removeLibraryAlbum() {
 				}
 			}
 		}
-	}));
-}
-
-export function updateTrackTags() {
-	return createMutation(() => ({
-		mutationFn: (input: { fileId: string; releaseGroupMbid: string; tags: TrackTagUpdate }) =>
-			api.global.post<LibraryTrack>(API.library.updateTrackTags(input.fileId), input.tags),
-		onSuccess: (_data, input) =>
-			invalidateQueriesWithPersister({
-				queryKey: LibraryQueryKeyFactory.album(input.releaseGroupMbid)
-			})
 	}));
 }
 

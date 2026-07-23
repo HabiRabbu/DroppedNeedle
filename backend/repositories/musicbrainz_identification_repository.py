@@ -104,6 +104,7 @@ class MusicBrainzIdentificationRepository:
                             float(length_ms) / 1000.0 if length_ms else None
                         ),
                         recording_mbid=recording.get("id") or None,
+                        release_track_mbid=track.get("id") or None,
                     )
                 )
         credit = group.get("artist-credit") or []

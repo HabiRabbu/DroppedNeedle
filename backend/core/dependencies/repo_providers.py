@@ -121,6 +121,22 @@ def get_listenbrainz_repository() -> "ListenBrainzRepository":
 
 
 @singleton
+def get_lrclib_repository() -> "LrclibRepository":
+    from repositories.lrclib_repository import LrclibRepository
+
+    advanced = get_preferences_service().get_advanced_settings()
+    client = HttpClientFactory.get_client(
+        name="lrclib",
+        timeout=float(advanced.http_timeout),
+        connect_timeout=float(advanced.http_connect_timeout),
+        max_connections=4,
+        max_keepalive=4,
+        settings=get_settings(),
+    )
+    return LrclibRepository(client, get_cache())
+
+
+@singleton
 def get_jellyfin_repository() -> "JellyfinRepository":
     from repositories.jellyfin_repository import JellyfinRepository
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from collections.abc import Awaitable, Callable
-import json
 
 from api.v1.schemas.library_operations import (
     OperationListResponse,
@@ -15,16 +16,24 @@ from api.v1.schemas.library_operations import (
 )
 from core.exceptions import ResourceNotFoundError, ValidationError
 from infrastructure.persistence.native_library_store import NativeLibraryStore
+from services.native.identification_revisions import album_input_revisions
 
 LEASE_SECONDS = 60.0
 AUTOMATIC_SAFE_EVIDENCE_REASONS = frozenset(
     {"SUPPORTED", "ACCEPTED", "SUPPORTED_EMBEDDED_IDS"}
 )
 
+logger = logging.getLogger(__name__)
+
 
 class LibraryOperationService:
-    def __init__(self, store: NativeLibraryStore) -> None:
+    def __init__(
+        self,
+        store: NativeLibraryStore,
+        on_identified: Callable[[str, str], Awaitable[object]] | None = None,
+    ) -> None:
         self._store = store
+        self._on_identified = on_identified
 
     async def get(self, job_id: str) -> OperationResponse:
         row = await self._store.get_operation_job(job_id)
@@ -130,12 +139,14 @@ class LibraryOperationService:
         control: str,
         expected_row_revision: int,
         *,
+        idempotency_key: str | None = None,
         now: float | None = None,
     ) -> OperationResponse:
         row = await self._store.request_operation_control(
             job_id,
             control=control,
             expected_row_revision=expected_row_revision,
+            idempotency_key=idempotency_key,
             now=time.time() if now is None else now,
         )
         return self._response(row)
@@ -184,7 +195,7 @@ class LibraryOperationService:
                     now=timestamp,
                 )
                 return self._response(done)
-            await self._store.apply_bulk_review_work(
+            result = await self._store.apply_bulk_review_work(
                 str(job["id"]),
                 int(work["ordinal"]),
                 worker_id=worker_id,
@@ -192,8 +203,29 @@ class LibraryOperationService:
                 actor_user_id=actor_user_id,
                 now=timestamp,
             )
+            if (
+                result["state"] == "succeeded"
+                and str(work["action"]).startswith("accept_candidate:")
+                and work["local_album_id"] is not None
+            ):
+                await self._schedule_scan_management(str(work["local_album_id"]))
             if checkpoint is not None:
                 await checkpoint()
+
+    async def _schedule_scan_management(self, local_album_id: str) -> None:
+        if self._on_identified is None:
+            return
+        context = await self._store.get_album_identification_context(local_album_id)
+        if context is None or not context["tracks"]:
+            return
+        policy_revision = album_input_revisions(context["tracks"])[2]
+        try:
+            await self._on_identified(local_album_id, policy_revision)
+        except Exception:  # noqa: BLE001 - the bulk identity is already committed
+            logger.warning(
+                "Automatic scan-discovered management scheduling failed",
+                exc_info=True,
+            )
 
     async def claim(self, worker_id: str, *, now: float | None = None) -> dict | None:
         timestamp = time.time() if now is None else now

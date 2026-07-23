@@ -464,7 +464,7 @@
 				</li>
 				{#if libMeta && expandedRows.has(row.globalIndex)}
 					<li class="list-row p-0">
-						<LibraryTrackRow meta={libMeta} {releaseGroupMbid} />
+						<LibraryTrackRow meta={libMeta} />
 					</li>
 				{/if}
 				{#if heldMeta && heldOpen.has(row.globalIndex)}

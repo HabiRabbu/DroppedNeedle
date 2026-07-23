@@ -221,7 +221,12 @@ async def _control_operation(
     service: LibraryOperationServiceDep,
     body: OperationControlRequest = MsgSpecBody(OperationControlRequest),
 ) -> OperationResponse:
-    return await service.control(job_id, control, body.expected_row_revision)
+    return await service.control(
+        job_id,
+        control,
+        body.expected_row_revision,
+        idempotency_key=body.idempotency_key,
+    )
 
 
 @router.post("/operations/{job_id}/pause", response_model=OperationResponse)

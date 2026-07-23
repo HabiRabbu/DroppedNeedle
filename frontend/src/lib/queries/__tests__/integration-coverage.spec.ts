@@ -145,8 +145,17 @@ const COVERAGE: Array<[string, string, string]> = [
 	['resolve local tracks', API.library.resolveTracks(), '/api/v1/library/resolve-tracks'],
 	// library admin (tags + scan control)
 	['track tags', API.library.trackTags('F1'), '/api/v1/library/tracks/F1/tags'],
-	['update track tags', API.library.updateTrackTags('F1'), '/api/v1/library/tracks/F1'],
 	['remove library track', API.library.removeTrack('F1'), '/api/v1/library/tracks/F1'],
+	[
+		'library management tag editor',
+		API.libraryManagement.tagEditor('F1'),
+		'/api/v1/library/management/tracks/F1/tag-editor'
+	],
+	[
+		'library management tag edit previews',
+		API.libraryManagement.tagEditPreviews(),
+		'/api/v1/library/management/tag-edit-previews'
+	],
 	['remove library album', API.library.removeAlbum('M1'), '/api/v1/library/album/M1'],
 	['rescan album', API.library.rescanAlbum('M1'), '/api/v1/library/albums/M1/rescan'],
 	['scan cancel', API.library.scanCancel(), '/api/v1/library/scan/cancel'],
@@ -156,6 +165,136 @@ const COVERAGE: Array<[string, string, string]> = [
 		'library operations stream',
 		API.library.operationsStream(),
 		'/api/v1/library/operations/stream'
+	],
+	[
+		'library management settings',
+		API.libraryManagement.settings(),
+		'/api/v1/settings/library-management'
+	],
+	[
+		'update library management settings',
+		API.libraryManagement.settings(),
+		'/api/v1/settings/library-management'
+	],
+	[
+		'library management settings impact',
+		API.libraryManagement.impact(),
+		'/api/v1/settings/library-management/impact'
+	],
+	[
+		'validate library management settings',
+		API.libraryManagement.validate(),
+		'/api/v1/settings/library-management/validate'
+	],
+	[
+		'create library management profile',
+		API.libraryManagement.profiles(),
+		'/api/v1/settings/library-management/profiles'
+	],
+	[
+		'library management profile',
+		API.libraryManagement.profile('P1'),
+		'/api/v1/settings/library-management/profiles/P1'
+	],
+	[
+		'update library management profile',
+		API.libraryManagement.profile('P1'),
+		'/api/v1/settings/library-management/profiles/P1'
+	],
+	[
+		'delete library management profile',
+		API.libraryManagement.profile('P1'),
+		'/api/v1/settings/library-management/profiles/P1'
+	],
+	[
+		'copy library management profile',
+		API.libraryManagement.copyProfile('P1'),
+		'/api/v1/settings/library-management/profiles/P1/copy'
+	],
+	[
+		'library management profile preset diff',
+		API.libraryManagement.profilePresetDiff('P1'),
+		'/api/v1/settings/library-management/profiles/P1/preset-diff'
+	],
+	[
+		'create library management activation preview',
+		API.libraryManagement.activationPreviews(),
+		'/api/v1/settings/library-management/activation-previews'
+	],
+	[
+		'library management activation preview status',
+		API.libraryManagement.activationPreview('J1'),
+		'/api/v1/settings/library-management/activation-previews/J1'
+	],
+	[
+		'confirm library management activation',
+		API.libraryManagement.activationConfirmations(),
+		'/api/v1/settings/library-management/activation-confirmations'
+	],
+	[
+		'create library management preview',
+		API.libraryManagement.previews(),
+		'/api/v1/library/management/previews'
+	],
+	[
+		'create library management baseline restore preview',
+		API.libraryManagement.baselineRestorePreviews(),
+		'/api/v1/library/management/baselines/restore-previews'
+	],
+	[
+		'create library management duplicate resolution preview',
+		API.libraryManagement.duplicateResolutionPreviews(),
+		'/api/v1/library/management/duplicate-resolution-previews'
+	],
+	[
+		'preview library management baseline purge impact',
+		API.libraryManagement.baselinePurgeImpact(),
+		'/api/v1/library/management/baselines/purge-impact'
+	],
+	[
+		'purge library management baselines',
+		API.libraryManagement.purgeBaselines(),
+		'/api/v1/library/management/baselines/purge'
+	],
+	[
+		'library management preview detail',
+		API.libraryManagement.preview('J1'),
+		'/api/v1/library/management/previews/J1'
+	],
+	[
+		'library management preview items',
+		API.libraryManagement.previewItems('J1'),
+		'/api/v1/library/management/previews/J1/items'
+	],
+	[
+		'apply library management preview',
+		API.libraryManagement.applyPreview('J1'),
+		'/api/v1/library/management/previews/J1/apply'
+	],
+	[
+		'library management operation history',
+		API.libraryManagement.operations(),
+		'/api/v1/library/management/operations'
+	],
+	[
+		'library management operation detail',
+		API.libraryManagement.operation('J1'),
+		'/api/v1/library/management/operations/J1'
+	],
+	[
+		'library management undo preview creation',
+		API.libraryManagement.undoPreview('J1'),
+		'/api/v1/library/management/operations/J1/undo-preview'
+	],
+	[
+		'library management operation results',
+		API.libraryManagement.operationResults('J1'),
+		'/api/v1/library/management/operations/J1/results'
+	],
+	[
+		'library management recovery diagnostics',
+		API.libraryManagement.recoveryDiagnostics(),
+		'/api/v1/library/management/recovery/diagnostics'
 	],
 	[
 		'pause identification',
@@ -504,6 +643,45 @@ describe('native engine: backend routes have a frontend API surface', () => {
 
 	it.each(PREFIX_COVERAGE)('%s -> starts with %s', (_label, actual, expectedPrefix) => {
 		expect(actual.startsWith(expectedPrefix)).toBe(true);
+	});
+
+	it('encodes the bounded management preview cursor and filters', () => {
+		expect(
+			API.libraryManagement.previewItems('job/1', {
+				afterOrdinal: 9,
+				limit: 25,
+				eligibility: 'warning',
+				reasonCode: 'OPTIONAL ENRICHMENT',
+				rootId: 'root/1',
+				artistId: 'artist/1',
+				albumId: 'album/1',
+				audioFormat: 'flac',
+				collisionClass: 'normalized_path_collision',
+				hasPreservedValue: true,
+				hasRepresentationLoss: true,
+				changeKind: 'tags'
+			})
+		).toBe(
+			'/api/v1/library/management/previews/job%2F1/items?after_ordinal=9&limit=25&eligibility=warning&reason_code=OPTIONAL+ENRICHMENT&root_id=root%2F1&artist_id=artist%2F1&album_id=album%2F1&audio_format=flac&collision_class=normalized_path_collision&has_preserved_value=true&has_representation_loss=true&change_kind=tags'
+		);
+	});
+
+	it('encodes management history filters and opaque cursors', () => {
+		expect(
+			API.libraryManagement.operations({
+				limit: 20,
+				cursor: 'opaque cursor',
+				origin: 'manual',
+				profileId: 'profile/1',
+				rootId: 'root/1',
+				state: 'succeeded',
+				mode: 'duplicate_resolution',
+				createdFrom: 10,
+				createdTo: 20
+			})
+		).toBe(
+			'/api/v1/library/management/operations?limit=20&cursor=opaque+cursor&origin=manual&profile_id=profile%2F1&root_id=root%2F1&state=succeeded&mode=duplicate_resolution&created_from=10&created_to=20'
+		);
 	});
 
 	it('exposes a builder for every native endpoint group', () => {

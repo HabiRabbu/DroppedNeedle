@@ -3,6 +3,7 @@ import { load as settingsLoad } from './settings/+layout';
 import { load as reviewLoad } from './library/review/+page';
 import { load as unmatchedLoad } from './library/unmatched/+page';
 import { load as legacyLibrarySettingsLoad } from './settings/library/+page';
+import { load as libraryManagementLoad } from './library/management/+layout';
 
 const admin = { id: 'admin-1', role: 'admin' };
 const regular = { id: 'user-1', role: 'user' };
@@ -42,6 +43,7 @@ describe('role-gated loads', () => {
 		['Settings', settingsLoad, '/'],
 		['Library Review', reviewLoad, '/library'],
 		['Unmatched Library', unmatchedLoad, '/library'],
+		['Library Management', libraryManagementLoad, '/library'],
 		['legacy library settings', legacyLibrarySettingsLoad, '/']
 	])('redirects a regular user from %s after hydration', async (_name, load, location) => {
 		const hydration = delayedParent(regular);

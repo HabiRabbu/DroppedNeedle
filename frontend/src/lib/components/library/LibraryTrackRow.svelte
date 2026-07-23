@@ -8,10 +8,9 @@
 
 	interface Props {
 		meta: LibraryFileMeta;
-		releaseGroupMbid: string;
 	}
 
-	let { meta, releaseGroupMbid }: Props = $props();
+	let { meta }: Props = $props();
 
 	let editing = $state(false);
 </script>
@@ -66,5 +65,5 @@
 </div>
 
 {#if authStore.isAdmin}
-	<TagEditor track={meta} {releaseGroupMbid} bind:open={editing} />
+	<TagEditor track={meta} bind:open={editing} />
 {/if}

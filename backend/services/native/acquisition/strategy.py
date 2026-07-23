@@ -93,7 +93,12 @@ class SourceStrategy(Protocol):
         ...
 
     async def maybe_blocklist_on_failure(
-        self, task, status, *, completed: bool, enumerated_any: bool  # noqa: ANN001
+        self,
+        task,
+        status,
+        *,
+        completed: bool,
+        enumerated_any: bool,  # noqa: ANN001
     ) -> None:
         """Blocklist a dead/under-delivering release before failover, the source's way
         (Usenet: age-guarded title+size identity; Soulseek: a no-op - its per-file
@@ -101,13 +106,23 @@ class SourceStrategy(Protocol):
         ...
 
     async def search_and_score(
-        self, task, *, timeout: float, auto: float, manual: float  # noqa: ANN001
+        self,
+        task,
+        *,
+        timeout: float,
+        auto: float,
+        manual: float,  # noqa: ANN001
     ) -> list[ScoredCandidate]:
         """Search this source for ``task`` and return its scored candidates (best first)."""
         ...
 
     async def enqueue(
-        self, task, candidate, *, strict_track_duration: bool, hold_on_wrong_track: bool = False  # noqa: ANN001
+        self,
+        task,
+        candidate,
+        *,
+        strict_track_duration: bool,
+        hold_on_wrong_track: bool = False,  # noqa: ANN001
     ) -> None:
         """Build + persist the crash-recovery manifest, then hand the pick to the client.
         ``hold_on_wrong_track`` (the last-resort track re-pull, D9): a canonical-duration
@@ -115,7 +130,12 @@ class SourceStrategy(Protocol):
         ...
 
     async def import_files(
-        self, task, manifest, *, only_filenames=None, completed: bool = False  # noqa: ANN001
+        self,
+        task,
+        manifest,
+        *,
+        only_filenames=None,
+        completed: bool = False,  # noqa: ANN001
     ) -> "tuple[ProcessResult, int]":
         """Import this task's downloaded files into the library; quarantine only files that
         arrived but failed verification. Returns ``(ProcessResult, audio_files_enumerated)``."""
@@ -130,8 +150,18 @@ class SoulseekStrategy:
     has_local_disk_faults = False  # slskd's only local fault is the downloads mount
 
     def __init__(  # noqa: ANN001
-        self, *, indexer, scorer, track_matcher, client, store, file_processor,
-        staging, manifest_codec, naming_template, library=None,
+        self,
+        *,
+        indexer,
+        scorer,
+        track_matcher,
+        client,
+        store,
+        file_processor,
+        staging,
+        manifest_codec,
+        naming_template,
+        library=None,
     ):
         self._indexer = indexer
         self._scorer = scorer
@@ -160,7 +190,9 @@ class SoulseekStrategy:
         # slskd's only local fault is an unreachable downloads mount (attempt_mount is True here).
         return DOWNLOADS_MOUNT_UNAVAILABLE
 
-    async def maybe_blocklist_on_failure(self, task, status, *, completed, enumerated_any):  # noqa: ANN001, ANN201, ARG002
+    async def maybe_blocklist_on_failure(
+        self, task, status, *, completed, enumerated_any
+    ):  # noqa: ANN001, ANN201, ARG002
         # No-op: a failed slskd peer is quarantined per-file at IMPORT (see import_files);
         # there's no release-level blocklist to apply at failover time.
         return
@@ -169,16 +201,24 @@ class SoulseekStrategy:
         held_tier = await _upgrade_held_tier(self._library, task)
         if task.download_type == "track":
             target = TargetTrack(
-                artist_name=task.artist_name, track_title=task.track_title or "",
-                album_title=task.album_title, duration_seconds=task.track_duration_seconds,
+                artist_name=task.artist_name,
+                track_title=task.track_title or "",
+                album_title=task.album_title,
+                duration_seconds=task.track_duration_seconds,
                 recording_mbid=task.recording_mbid,
             )
             indexer_results = await self._indexer.search_track(
-                task.artist_name, task.track_title or "", task.album_title, timeout=timeout
+                task.artist_name,
+                task.track_title or "",
+                task.album_title,
+                timeout=timeout,
             )
             results = [r.soulseek for r in indexer_results if r.soulseek is not None]
             return await self._track_matcher.rank(
-                target, results, auto_accept_threshold=auto, manual_threshold=manual,
+                target,
+                results,
+                auto_accept_threshold=auto,
+                manual_threshold=manual,
                 held_tier=held_tier,
             )
         # A 1-track release (a single requested as an album) scores per-file via the
@@ -191,34 +231,53 @@ class SoulseekStrategy:
         # is None - MusicBrainz was down at request time).
         if task.track_count == 1 and task.track_title:
             target = TargetTrack(
-                artist_name=task.artist_name, track_title=task.track_title,
-                album_title=task.album_title, duration_seconds=task.track_duration_seconds,
+                artist_name=task.artist_name,
+                track_title=task.track_title,
+                album_title=task.album_title,
+                duration_seconds=task.track_duration_seconds,
                 recording_mbid=task.recording_mbid,
             )
             indexer_results = await self._indexer.search_album(
-                task.artist_name, task.album_title, task.year, task.track_count,
+                task.artist_name,
+                task.album_title,
+                task.year,
+                task.track_count,
                 timeout=timeout,
             )
             results = [r.soulseek for r in indexer_results if r.soulseek is not None]
             return await self._track_matcher.rank(
-                target, results, auto_accept_threshold=auto, manual_threshold=manual,
+                target,
+                results,
+                auto_accept_threshold=auto,
+                manual_threshold=manual,
                 held_tier=held_tier,
             )
         target = TargetAlbum(
-            artist_name=task.artist_name, album_title=task.album_title,
-            year=task.year, track_count=task.track_count,
+            artist_name=task.artist_name,
+            album_title=task.album_title,
+            year=task.year,
+            track_count=task.track_count,
             release_group_mbid=task.release_group_mbid,
         )
         indexer_results = await self._indexer.search_album(
-            task.artist_name, task.album_title, task.year, task.track_count, timeout=timeout
+            task.artist_name,
+            task.album_title,
+            task.year,
+            task.track_count,
+            timeout=timeout,
         )
         results = [r.soulseek for r in indexer_results if r.soulseek is not None]
         return await self._scorer.rank(
-            target, results, auto_accept_threshold=auto, manual_threshold=manual,
+            target,
+            results,
+            auto_accept_threshold=auto,
+            manual_threshold=manual,
             held_tier=held_tier,
         )
 
-    async def enqueue(self, task, candidate, *, strict_track_duration, hold_on_wrong_track=False):  # noqa: ANN001, ANN201
+    async def enqueue(
+        self, task, candidate, *, strict_track_duration, hold_on_wrong_track=False
+    ):  # noqa: ANN001, ANN201
         # For a per-track download - or a 1-track album (a single, whose identity was
         # threaded at request time) - verify the imported file against the CANONICAL
         # track length so a wrong-length recording fails over instead of being imported
@@ -233,12 +292,17 @@ class SoulseekStrategy:
         )
 
         files = [
-            DownloadFileRef(username=candidate.username, filename=f.filename, size=f.size)
+            DownloadFileRef(
+                username=candidate.username, filename=f.filename, size=f.size
+            )
             for f in candidate.files
         ]
         total_size = sum(f.size for f in candidate.files)
         await self._store.update_status(
-            task.id, "downloading", files_total=len(files), total_size_bytes=total_size,
+            task.id,
+            "downloading",
+            files_total=len(files),
+            total_size_bytes=total_size,
             started_at=time.time(),
         )
         # No 'downloading' SSE status here: the UI reads the polled task.status for the
@@ -269,7 +333,9 @@ class SoulseekStrategy:
                 ExpectedFile(
                     filename=f.filename,
                     size=f.size,
-                    duration=task.track_duration_seconds if use_canonical else f.duration,
+                    duration=task.track_duration_seconds
+                    if use_canonical
+                    else f.duration,
                 )
                 for f in candidate.files
             ],
@@ -317,7 +383,9 @@ class SoulseekStrategy:
             },
         )
 
-    async def import_files(self, task, manifest, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201, ARG002
+    async def import_files(
+        self, task, manifest, *, only_filenames=None, completed=False
+    ):  # noqa: ANN001, ANN201, ARG002
         # Per-file import: slskd wrote the exact files we enqueued; verify + place each.
         logger.info(
             "download.processing",
@@ -330,7 +398,9 @@ class SoulseekStrategy:
             if failure.reason in QUARANTINE_REASONS:
                 await self._store.record_quarantine(
                     source="soulseek",
-                    identity=soulseek_identity(task.source_username or "", failure.filename),
+                    identity=soulseek_identity(
+                        task.source_username or "", failure.filename
+                    ),
                     reason=failure.reason,
                     release_group_mbid=task.release_group_mbid,
                 )
@@ -343,7 +413,9 @@ class SoulseekStrategy:
                     },
                 )
         if result.succeeded:
-            await self._store.set_final_path(task.id, str(Path(result.succeeded[0]).parent))
+            await self._store.set_final_path(
+                task.id, str(Path(result.succeeded[0]).parent)
+            )
         return result, len(result.succeeded) + len(result.failed)
 
 
@@ -358,9 +430,23 @@ class UsenetStrategy:
     has_local_disk_faults = True  # SABnzbd reports disk/write/permission errors
 
     def __init__(  # noqa: ANN001
-        self, *, indexer, scorer, client, store, file_processor, import_settle_seconds,
-        staging, manifest_codec, naming_template, album_service,
-        category, priority, post_processing, min_release_age_seconds, library=None,
+        self,
+        *,
+        indexer,
+        scorer,
+        client,
+        store,
+        file_processor,
+        import_settle_seconds,
+        staging,
+        manifest_codec,
+        naming_template,
+        album_service,
+        category,
+        priority,
+        post_processing,
+        min_release_age_seconds,
+        library=None,
     ):
         self._indexer = indexer
         self._scorer = scorer
@@ -385,7 +471,9 @@ class UsenetStrategy:
 
     def candidate_identity(self, candidate) -> str:  # noqa: ANN001
         if candidate.usenet_release is not None:
-            return usenet_identity(candidate.usenet_release.title, candidate.usenet_release.size_bytes)
+            return usenet_identity(
+                candidate.usenet_release.title, candidate.usenet_release.size_bytes
+            )
         return candidate.username
 
     def is_cancelable(self, task, manifest) -> bool:  # noqa: ANN001, ARG002
@@ -399,7 +487,9 @@ class UsenetStrategy:
             else "SABnzbd reported a local disk/write error - will retry when it clears"
         )
 
-    async def maybe_blocklist_on_failure(self, task, status, *, completed, enumerated_any):  # noqa: ANN001, ANN201
+    async def maybe_blocklist_on_failure(
+        self, task, status, *, completed, enumerated_any
+    ):  # noqa: ANN001, ANN201
         """Blocklist a dead/under-delivering Usenet release by its title+size identity before
         failover (D11), mirroring Lidarr's blocklist-on-failed-import. Local faults are already
         filtered out by the caller. A password/encrypted release is a non-retryable skip.
@@ -424,11 +514,18 @@ class UsenetStrategy:
         # release; a missed dead one just costs one retry cycle).
         confirms_underdelivery = completed and enumerated_any
         if not is_password and not confirms_underdelivery:
-            age = (time.time() - release.usenet_date) if release.usenet_date is not None else None
+            age = (
+                (time.time() - release.usenet_date)
+                if release.usenet_date is not None
+                else None
+            )
             if age is None or age < self._min_release_age:
                 logger.info(
                     "download.usenet_propagation_skip",
-                    extra={"task_id": task.id, "age_seconds": int(age) if age is not None else None},
+                    extra={
+                        "task_id": task.id,
+                        "age_seconds": int(age) if age is not None else None,
+                    },
                 )
                 return  # too young / undated - let the auto-retry try it again later
         # Honest reason: a Completed job whose files didn't satisfy the tracklist (a wrong or
@@ -459,21 +556,32 @@ class UsenetStrategy:
         # RECORDING's held tier - _upgrade_held_tier scopes by download_type.
         held_tier = await _upgrade_held_tier(self._library, task)
         target = TargetAlbum(
-            artist_name=task.artist_name, album_title=task.album_title,
-            year=task.year, track_count=task.track_count,
+            artist_name=task.artist_name,
+            album_title=task.album_title,
+            year=task.year,
+            track_count=task.track_count,
             release_group_mbid=task.release_group_mbid,
         )
         indexer_results = await self._indexer.search_album(
-            task.artist_name, task.album_title, task.year, task.track_count, timeout=timeout
+            task.artist_name,
+            task.album_title,
+            task.year,
+            task.track_count,
+            timeout=timeout,
         )
         releases = [r.usenet for r in indexer_results if r.usenet is not None]
         return await self._scorer.rank(
-            target, releases, auto_accept_threshold=auto,
-            manual_threshold=manual, track_count=task.track_count,
+            target,
+            releases,
+            auto_accept_threshold=auto,
+            manual_threshold=manual,
+            track_count=task.track_count,
             held_tier=held_tier,
         )
 
-    async def enqueue(self, task, candidate, *, strict_track_duration, hold_on_wrong_track=False):  # noqa: ANN001, ANN201, ARG002
+    async def enqueue(
+        self, task, candidate, *, strict_track_duration, hold_on_wrong_track=False
+    ):  # noqa: ANN001, ANN201, ARG002
         # Hand the chosen album NZB to SABnzbd. The manifest carries the expected MB
         # tracklist (not pre-known filenames) - the folder import matches the unpacked files
         # to it (D18). For a per-track grab (D4) the tracklist is the single track.
@@ -496,8 +604,11 @@ class UsenetStrategy:
         # mount. The index makes each attempt individually addressable + cleanable.
         job_name = f"droppedneedle-{task.id}-{task.candidate_index or 0}"
         await self._store.update_status(
-            task.id, "downloading", files_total=len(expected_tracks),
-            total_size_bytes=release.size_bytes, started_at=time.time(),
+            task.id,
+            "downloading",
+            files_total=len(expected_tracks),
+            total_size_bytes=release.size_bytes,
+            started_at=time.time(),
         )
         manifest = DownloadManifest(
             task_id=task.id,
@@ -551,7 +662,9 @@ class UsenetStrategy:
             },
         )
 
-    async def import_files(self, task, manifest, *, only_filenames=None, completed=False):  # noqa: ANN001, ANN201, ARG002
+    async def import_files(
+        self, task, manifest, *, only_filenames=None, completed=False
+    ):  # noqa: ANN001, ANN201, ARG002
         # Folder-based import (D18): enumerate the unpacked job folder and match the files
         # to the expected MB tracklist by tags/duration. A Usenet dead release is blocklisted
         # by identity in the failover loop (it can be a zero-file Failed that never reaches here).
@@ -572,14 +685,20 @@ class UsenetStrategy:
             # HEALTHY mount with an empty folder is a bad/garbage release -> fall through to the
             # empty import so the caller blocklists it.
             if not await self._client.downloads_mount_healthy():
-                logger.warning("download.usenet_mount_unhealthy", extra={"task_id": task.id})
+                logger.warning(
+                    "download.usenet_mount_unhealthy", extra={"task_id": task.id}
+                )
                 return ProcessResult(
                     succeeded=[],
-                    failed=[FileFailure(filename="", reason=DOWNLOADS_MOUNT_UNAVAILABLE)],
+                    failed=[
+                        FileFailure(filename="", reason=DOWNLOADS_MOUNT_UNAVAILABLE)
+                    ],
                 ), enumerated
         result = await self._file_processor.process_downloaded_folder(manifest, files)
         if result.succeeded:
-            await self._store.set_final_path(task.id, str(Path(result.succeeded[0]).parent))
+            await self._store.set_final_path(
+                task.id, str(Path(result.succeeded[0]).parent)
+            )
         return result, enumerated
 
     async def _expected_tracks(self, task):  # noqa: ANN001, ANN201
@@ -599,9 +718,13 @@ class UsenetStrategy:
         if self._album_service is None or not task.release_group_mbid:
             return []
         try:
-            info = await self._album_service.get_album_tracks_info(task.release_group_mbid)
+            info = await self._album_service.get_album_tracks_info(
+                task.release_group_mbid
+            )
         except Exception:  # noqa: BLE001 - tracklist resolution must not crash the task
-            logger.warning("Could not resolve MB tracklist for %s", task.release_group_mbid)
+            logger.warning(
+                "Could not resolve MB tracklist for %s", task.release_group_mbid
+            )
             return []
         return [
             ExpectedTrack(
@@ -610,6 +733,7 @@ class UsenetStrategy:
                 duration_seconds=(track.length / 1000.0) if track.length else None,
                 recording_mbid=track.recording_id,
                 title=track.title,
+                release_track_mbid=getattr(track, "release_track_id", None),
             )
             for track in info.tracks
         ]

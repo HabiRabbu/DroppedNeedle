@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AlertTriangle, CheckCircle2 } from 'lucide-svelte';
+	import { AlertTriangle, CheckCircle2, ScanSearch } from 'lucide-svelte';
 	import { getTargetLibrarySettingsQuery } from '$lib/queries/library/LibraryPolicyQueries.svelte';
 	import {
 		previewLibraryPolicyApply,
@@ -15,6 +15,7 @@
 	import LibraryRootPolicyEditor from '$lib/components/library/LibraryRootPolicyEditor.svelte';
 	import LibraryNamingPreview from '$lib/components/library/LibraryNamingPreview.svelte';
 	import LibraryScanScheduleControl from '$lib/components/library/LibraryScanScheduleControl.svelte';
+	import SettingsLibraryManagement from '$lib/components/settings/SettingsLibraryManagement.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { toastStore } from '$lib/stores/toast';
 	import type {
@@ -173,7 +174,7 @@
 	<div>
 		<h2 class="text-xl font-bold">Library</h2>
 		<p class="text-sm text-base-content/60">
-			Manage library roots, identification policies, file naming, and scanning.
+			Choose how DroppedNeedle observes your library and, separately, whether it may change it.
 		</p>
 	</div>
 
@@ -185,6 +186,17 @@
 	{:else if settingsQuery.isError}
 		<div class="alert alert-error">Could not load library settings.</div>
 	{:else}
+		<header class="library-scanning-header">
+			<div class="library-scanning-mark"><ScanSearch class="h-6 w-6" /></div>
+			<div>
+				<p class="library-scanning-kicker">Read-only catalog work</p>
+				<h2 class="font-display text-xl font-semibold">Scanning &amp; identification</h2>
+				<p class="mt-1 text-sm text-base-content/65">
+					Reads files and updates DroppedNeedle. It does not change your music files.
+				</p>
+			</div>
+		</header>
+
 		{#if !hasKey}
 			<div class="alert alert-warning">
 				<AlertTriangle class="h-5 w-5" /><span class="text-sm"
@@ -226,9 +238,11 @@
 				<div class="divider my-0"></div>
 
 				<section class="space-y-2">
-					<h3 class="font-semibold">Naming template</h3>
+					<h3 class="font-semibold">Legacy import naming template</h3>
 					<p class="text-xs text-base-content/60">
-						Applies to downloaded imports only. Variables: {'{albumartist} {album} {year} {disc} {track} {title} {ext}'}.
+						Fallback for downloaded imports that Library Management does not handle. Once management
+						is enabled, its assigned profile controls managed paths. Variables:
+						{'{albumartist} {album} {year} {disc} {track} {title} {ext}'}.
 					</p>
 					<input
 						class="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -344,6 +358,10 @@
 				</section>
 			</div>
 		</section>
+
+		{#if authStore.isAdmin}
+			<SettingsLibraryManagement {roots} policyRevision={currentSettings?.policy_revision ?? ''} />
+		{/if}
 	{/if}
 </div>
 

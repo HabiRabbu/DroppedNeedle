@@ -35,9 +35,14 @@ from services.native.library_manager import LibraryManager
 from services.native.naming import NamingTemplateEngine
 from services.native.track_matcher import TrackMatcher
 from services.request_service import RequestService
-from tests.helpers import make_builtin_dispatcher
+from tests.helpers import make_builtin_dispatcher, make_test_import_publisher
 
-FIXTURE_FLAC = Path(__file__).resolve().parent.parent / "fixtures" / "library" / "flac_full_01.flac"
+FIXTURE_FLAC = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures"
+    / "library"
+    / "flac_full_01.flac"
+)
 _TEMPLATE = "{albumartist}/{album} ({year})/{disc:02d}{track:02d} {title}.{ext}"
 
 
@@ -74,10 +79,14 @@ class _StubIndexer:
     async def health_check(self) -> ServiceStatus:
         return ServiceStatus(status="ok")
 
-    async def search_album(self, artist, album, year=None, track_count=None, *, timeout=30.0):
+    async def search_album(
+        self, artist, album, year=None, track_count=None, *, timeout=30.0
+    ):
         return [IndexerResult(source="soulseek", soulseek=r) for r in self._album]
 
-    async def search_track(self, artist, track, album=None, duration_seconds=None, *, timeout=30.0):
+    async def search_track(
+        self, artist, track, album=None, duration_seconds=None, *, timeout=30.0
+    ):
         return [IndexerResult(source="soulseek", soulseek=r) for r in self._track]
 
 
@@ -107,8 +116,13 @@ class _StubClient:
     async def get_status(self, handle: TaskHandle) -> DownloadTaskStatus:
         n = len(handle.filenames)
         return DownloadTaskStatus(
-            task_id="", status="completed", files_total=n, files_completed=n,
-            bytes_total=0, bytes_downloaded=0, progress_percent=100.0,
+            task_id="",
+            status="completed",
+            files_total=n,
+            files_completed=n,
+            bytes_total=0,
+            bytes_downloaded=0,
+            progress_percent=100.0,
         )
 
     async def cancel(self, handle: TaskHandle) -> bool:
@@ -116,11 +130,11 @@ class _StubClient:
         return True
 
     async def list_completed_files(self, handle: TaskHandle) -> list[Path]:
-        return [
-            self._root / f.replace("\\", "/").lstrip("/") for f in handle.filenames
-        ]
+        return [self._root / f.replace("\\", "/").lstrip("/") for f in handle.filenames]
 
-    async def get_file_path(self, handle: TaskHandle, remote_filename: str, size: int | None = None):
+    async def get_file_path(
+        self, handle: TaskHandle, remote_filename: str, size: int | None = None
+    ):
         return self._root / remote_filename.replace("\\", "/").lstrip("/")
 
     async def diagnose_downloads_mount(self) -> MountDiagnosis:
@@ -155,7 +169,9 @@ def _build(tmp_path: Path, *, album=None, track=None):
     lock = threading.Lock()
     store = DownloadStore(db_path=db_path, write_lock=lock)
     _seed_auth_users(db_path)
-    library_db = LibraryDB(db_path=tmp_path / "library_files.db", write_lock=threading.Lock())
+    library_db = LibraryDB(
+        db_path=tmp_path / "library_files.db", write_lock=threading.Lock()
+    )
     manager = LibraryManager(library_db)
     client = _StubClient(downloads)
     indexer = _StubIndexer(album=album, track=track)
@@ -169,6 +185,9 @@ def _build(tmp_path: Path, *, album=None, track=None):
         slskd_downloads_path=downloads,
         fingerprinter=None,
         verify_downloads=False,
+        library_root_ids=["root-a"],
+        publish_import_bundle=make_test_import_publisher(manager, {"root-a": library}),
+        policy_revision_getter=lambda: "test-policy",
     )
     orch = DownloadOrchestrator(
         client=client,
@@ -191,7 +210,11 @@ def _build(tmp_path: Path, *, album=None, track=None):
 
 @pytest.mark.asyncio
 async def test_full_download_to_library(tmp_path: Path):
-    album = [_place_fixture(tmp_path / "slskd_downloads", "Radiohead - OK Computer/01 Airbag.flac")]
+    album = [
+        _place_fixture(
+            tmp_path / "slskd_downloads", "Radiohead - OK Computer/01 Airbag.flac"
+        )
+    ]
     store, manager, orch, client, library = _build(tmp_path, album=album)
 
     task = await store.create_task(
@@ -221,7 +244,11 @@ async def test_full_download_to_library(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_track_request_to_library(tmp_path: Path):
-    track = [_place_fixture(tmp_path / "slskd_downloads", "Radiohead - OK Computer/Airbag.flac")]
+    track = [
+        _place_fixture(
+            tmp_path / "slskd_downloads", "Radiohead - OK Computer/Airbag.flac"
+        )
+    ]
     store, manager, orch, client, library = _build(tmp_path, track=track)
 
     task = await store.create_task(
@@ -250,24 +277,41 @@ async def test_track_request_to_library(tmp_path: Path):
 async def test_request_links_download_task_id(tmp_path: Path):
     """RequestService auto-approve creates a real download task and links its id to
     request_history. Orchestrator dispatch is stubbed for determinism."""
-    album = [_place_fixture(tmp_path / "slskd_downloads", "Radiohead - OK Computer/01 Airbag.flac")]
+    album = [
+        _place_fixture(
+            tmp_path / "slskd_downloads", "Radiohead - OK Computer/01 Airbag.flac"
+        )
+    ]
     store, manager, _orch, client, _library = _build(tmp_path, album=album)
 
-    history = RequestHistoryStore(db_path=tmp_path / "library.db", write_lock=threading.Lock())
+    history = RequestHistoryStore(
+        db_path=tmp_path / "library.db", write_lock=threading.Lock()
+    )
     no_op_orch = MagicMock()
     no_op_orch.dispatch = MagicMock()
     download_service = DownloadService(
-        client, _StubIndexer(), AlbumPreflightScorer(store, quality_min="low", flac_mp3_only=False),
-        manager, store, SSEPublisher(), no_op_orch,
+        client,
+        _StubIndexer(),
+        AlbumPreflightScorer(store, quality_min="low", flac_mp3_only=False),
+        manager,
+        store,
+        SSEPublisher(),
+        no_op_orch,
     )
     get_ds = lambda: download_service  # noqa: E731
     request_service = RequestService(
-        history, get_download_service=get_ds, acquisition=make_builtin_dispatcher(get_ds)
+        history,
+        get_download_service=get_ds,
+        acquisition=make_builtin_dispatcher(get_ds),
     )
 
     resp = await request_service.request_album(
-        "rg-okc", artist="Radiohead", album="OK Computer", year=1997,
-        user_id="user-a", user_role="admin",
+        "rg-okc",
+        artist="Radiohead",
+        album="OK Computer",
+        year=1997,
+        user_id="user-a",
+        user_role="admin",
     )
     assert resp.success is True
 

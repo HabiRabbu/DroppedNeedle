@@ -44,6 +44,49 @@ class ValidationError(DroppedNeedleException):
     pass
 
 
+class ArtworkProcessingError(ValidationError):
+    """Artwork bytes cannot be admitted or transformed safely."""
+
+    pass
+
+
+class AudioFormatError(ValidationError):
+    """An admitted audio path cannot be represented by a verified adapter."""
+
+    pass
+
+
+class AudioFormatMismatchError(AudioFormatError):
+    pass
+
+
+class UnsupportedAudioFormatError(AudioFormatError):
+    pass
+
+
+class AudioWriteError(AudioFormatError):
+    """A staged audio mutation or validation failed before publication."""
+
+    pass
+
+
+class ScriptValidationError(ValidationError):
+    """A bounded management script failed syntax or runtime validation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        script_name: str,
+        line: int,
+        column: int,
+    ) -> None:
+        self.script_name = script_name
+        self.line = line
+        self.column = column
+        super().__init__(f"{script_name}:{line}:{column}: {message}")
+
+
 class ProviderIdentityRequiredError(ValidationError):
     error_code = "PROVIDER_IDENTITY_REQUIRED"
 
@@ -90,6 +133,14 @@ class ConfigurationError(DroppedNeedleException):
 
 class StaleRevisionError(ConflictError):
     pass
+
+
+class AutomaticManagementHoldError(DroppedNeedleException):
+    """A verified import unit must remain intact until management can be retried."""
+
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class ContributionStateError(ConflictError):
@@ -271,6 +322,12 @@ class SkiddleApiError(ExternalServiceError):
 
     Mapped to HTTP 503 by the registered ``ExternalServiceError`` handler.
     """
+
+    pass
+
+
+class LrclibApiError(ExternalServiceError):
+    """Transport, HTTP, or decode failure from the LRCLIB lyrics service."""
 
     pass
 

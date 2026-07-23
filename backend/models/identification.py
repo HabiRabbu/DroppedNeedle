@@ -28,6 +28,7 @@ class CandidateTrack(AppStruct):
     absolute_position: int = 0
     duration_seconds: float | None = None
     recording_mbid: str | None = None
+    release_track_mbid: str | None = None
 
 
 class AlbumCandidate(AppStruct):
@@ -51,6 +52,7 @@ class TrackEvidence(AppStruct):
     candidate_disc_number: int | None = None
     candidate_track_position: int | None = None
     recording_mbid: str | None = None
+    release_track_mbid: str | None = None
 
 
 class CandidateEvidence(AppStruct):

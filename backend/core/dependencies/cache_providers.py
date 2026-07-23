@@ -13,6 +13,7 @@ from infrastructure.cache.cache_keys import (
     ARTIST_DISCOVERY_PREFIX,
     DISCOVER_QUEUE_ENRICH_PREFIX,
 )
+from infrastructure.library_management_blob_store import LibraryManagementBlobStore
 from infrastructure.persistence import (
     LibraryDB,
     GenreIndex,
@@ -104,6 +105,15 @@ def get_native_library_store() -> NativeLibraryStore:
         write_lock=get_persistence_write_lock(),
         invalidator=invalidate,
         scan_invalidator=invalidate_scan_batch,
+    )
+
+
+@singleton
+def get_library_management_blob_store() -> LibraryManagementBlobStore:
+    settings = get_settings()
+    return LibraryManagementBlobStore(
+        settings.root_app_dir / "library-management" / "blobs",
+        get_native_library_store(),
     )
 
 

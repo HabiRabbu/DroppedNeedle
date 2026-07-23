@@ -1,0 +1,237 @@
+import { page } from '@vitest/browser/context';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render } from 'vitest-browser-svelte';
+
+const h = vi.hoisted(() => ({
+	preview: {} as Record<string, unknown>,
+	items: {} as Record<string, unknown>,
+	apply: vi.fn(),
+	resolve: vi.fn(),
+	goto: vi.fn()
+}));
+
+vi.mock('$app/navigation', () => ({ goto: h.goto }));
+vi.mock('$lib/stores/authStore.svelte', () => ({
+	authStore: { isAdmin: true, user: { id: 'admin-1' } }
+}));
+vi.mock('$lib/queries/library/LibraryPolicyQueries.svelte', () => ({
+	getTargetLibrarySettingsQuery: () => ({
+		data: {
+			policy_revision: 'policy-1',
+			library_roots: [
+				{ id: 'root-1', label: 'Archive', path: '/secret/music', policy: 'automatic', rules: [] }
+			]
+		},
+		isLoading: false,
+		isError: false
+	})
+}));
+vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
+	getLibrarySearchQuery: () => ({ data: { artists: [], albums: [], tracks: [] } })
+}));
+vi.mock('$lib/queries/library-management/LibraryManagementEvents', () => ({
+	createLibraryManagementEvents: () => ({ start: vi.fn(), stop: vi.fn() })
+}));
+vi.mock('$lib/queries/library-management/LibraryManagementQueries.svelte', () => ({
+	getLibraryManagementPreviewQuery: () => h.preview,
+	getLibraryManagementPlanItemsQuery: () => h.items,
+	getLibraryManagementSettingsQuery: () => ({
+		data: { settings_revision: 'settings-1', recycle_bin_path: '' },
+		isLoading: false,
+		isError: false
+	})
+}));
+vi.mock('$lib/queries/library-management/LibraryManagementMutations.svelte', () => ({
+	applyLibraryManagementPreviewMutation: () => ({ mutateAsync: h.apply, isPending: false }),
+	createLibraryManagementDuplicateResolutionMutation: () => ({
+		mutateAsync: h.resolve,
+		isPending: false
+	})
+}));
+
+import LibraryManagementPreviewPage from './LibraryManagementPreviewPage.svelte';
+
+function detail(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		job_id: 'preview-1',
+		state: 'ready',
+		phase: 'ready',
+		mode: 'preview',
+		origin: 'manual',
+		profile_id: 'profile-1',
+		profile_name: 'Picard-style Organizer',
+		profile_revision: 'profile-revision-1',
+		settings_revision: 'settings-1',
+		policy_revision: 'policy-1',
+		catalog_revision: 4,
+		proposed_settings_revision: null,
+		target_root_id: null,
+		selection: { kind: 'tracks', ids: ['track-1'] },
+		summary: {
+			item_count: 2,
+			bundle_count: 1,
+			eligible_count: 1,
+			warning_count: 0,
+			blocked_count: 1,
+			stale_count: 0,
+			no_change_count: 0,
+			tag_change_count: 1,
+			artwork_change_count: 0,
+			path_change_count: 1,
+			sidecar_change_count: 0,
+			estimated_temporary_bytes: 1024,
+			expanded_track_count: 1,
+			reasons: { PATH_COLLISION_DIFFERENT: 1 },
+			roots: { 'root-1': 2 },
+			formats: { flac: 2 },
+			metadata_snapshot_ids: ['snapshot-1']
+		},
+		created_at: 1_800_000_000,
+		updated_at: 1_800_000_000,
+		expires_at: 1_900_000_000,
+		expired: false,
+		stale: false,
+		stale_reasons: [],
+		ready_for_confirmation: true,
+		operation_row_revision: 7,
+		operation_event_revision: 8,
+		terminal_code: null,
+		expected_work_count: 2,
+		completed_count: 2,
+		succeeded_count: 0,
+		failed_count: 0,
+		skipped_count: 0,
+		control_request: 'none',
+		...overrides
+	};
+}
+
+const collisionItem = {
+	ordinal: 0,
+	bundle_ordinal: 0,
+	local_album_id: 'album-1',
+	local_track_id: 'track-1',
+	source_root_id: 'root-1',
+	source_relative_path: 'Incoming/track.flac',
+	destination_root_id: 'root-1',
+	destination_relative_path: 'Artist/Album/01 Track.flac',
+	eligibility: 'blocked',
+	reason_code: 'PATH_COLLISION_DIFFERENT',
+	estimated_temporary_bytes: 1024,
+	desired_document: {
+		fields: [
+			{ name: 'title', value: 'Track' },
+			{ name: 'artist', value: ['Artist'] },
+			{ name: 'album', value: 'Album' }
+		]
+	},
+	artwork_choices: [],
+	diff: {
+		requires_write: true,
+		tags_changed: true,
+		path_changed: true,
+		field_mutations: [
+			{
+				name: 'title',
+				operation: 'set',
+				before: 'Old title',
+				after: 'Track',
+				representation_loss: null
+			}
+		]
+	},
+	capability: { audio_format: 'flac', adapter: 'mutagen.flac', blockers: [], warnings: [] },
+	collisions: [
+		{
+			classification: 'same_path_different_content',
+			existing_root_id: 'root-1',
+			existing_relative_path: 'Artist/Album/01 Track.flac'
+		}
+	]
+};
+
+beforeEach(() => {
+	vi.clearAllMocks();
+	sessionStorage.clear();
+	h.preview = { data: detail(), isLoading: false, isError: false };
+	h.items = {
+		data: { pages: [{ items: [collisionItem], has_more: false, next_after_ordinal: null }] },
+		isLoading: false,
+		isError: false,
+		hasNextPage: false,
+		isFetchingNextPage: false,
+		fetchNextPage: vi.fn()
+	};
+	h.apply.mockResolvedValue({ id: 'preview-1' });
+});
+
+describe('LibraryManagementPreviewPage', () => {
+	it('shows exact diffs and requires the private token plus typed apply confirmation', async () => {
+		sessionStorage.setItem(
+			'droppedneedle:library-management:preview-token:preview-1',
+			'private-token'
+		);
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await expect.element(page.getByText('Read-only plan · no files changed')).toBeVisible();
+		await expect.element(page.getByText('/secret/music')).not.toBeInTheDocument();
+		await page.getByText('Inspect exact diff').click();
+		await expect.element(page.getByText('Old title')).toBeVisible();
+		await expect.element(page.getByText('Track', { exact: true }).first()).toBeVisible();
+
+		await page.getByRole('button', { name: /Write tags and organize 1 files/ }).click();
+		await expect
+			.element(page.getByRole('heading', { name: 'Apply this exact preview?' }))
+			.toHaveFocus();
+		await expect.element(page.getByRole('button', { name: 'Apply exact preview' })).toBeDisabled();
+		await page
+			.getByRole('textbox', { name: /APPLY LIBRARY MANAGEMENT/ })
+			.fill('APPLY LIBRARY MANAGEMENT');
+		await page.getByRole('button', { name: 'Apply exact preview' }).click();
+
+		expect(h.apply).toHaveBeenCalledWith({
+			jobId: 'preview-1',
+			request: expect.objectContaining({
+				preview_token: 'private-token',
+				expected_operation_row_revision: 7,
+				confirmation: true
+			})
+		});
+		expect(h.goto).toHaveBeenCalledWith('/library/management/operations/preview-1');
+	});
+
+	it('never preselects a collision action and disables recycling without a configured path', async () => {
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+		await page.getByText('Inspect exact diff').click();
+		await page.getByRole('button', { name: 'Choose resolution...' }).click();
+
+		await expect
+			.element(page.getByRole('heading', { name: 'Choose a collision resolution' }))
+			.toHaveFocus();
+		await expect.element(page.getByRole('radio', { name: /Keep existing/ })).not.toBeChecked();
+		await expect
+			.element(page.getByRole('radio', { name: /Keep incoming at an alternate/ }))
+			.not.toBeChecked();
+		await expect.element(page.getByRole('radio', { name: /Recycle existing/ })).toBeDisabled();
+		await expect
+			.element(page.getByRole('button', { name: 'Generate resolution preview' }))
+			.toBeDisabled();
+	});
+
+	it('makes stale and expired plans impossible to apply', async () => {
+		h.preview = {
+			data: detail({ stale: true, expired: true, ready_for_confirmation: false }),
+			isLoading: false,
+			isError: false
+		};
+		sessionStorage.setItem(
+			'droppedneedle:library-management:preview-token:preview-1',
+			'private-token'
+		);
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+		await expect.element(page.getByText('This preview cannot be applied.')).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: /Write tags and organize/ }))
+			.toBeDisabled();
+	});
+});

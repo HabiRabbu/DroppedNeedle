@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -32,7 +33,10 @@ from services.native.identification_queue_service import IdentificationQueueServ
 from services.native.identification_revisions import album_input_revisions
 
 CacheInvalidator = Callable[[set[str]], Awaitable[None]]
+PostIdentificationCallback = Callable[[str, str], Awaitable[object]]
 MAX_NEW_FINGERPRINTS_PER_ATTEMPT = 2
+
+logger = logging.getLogger(__name__)
 
 
 def _valid_mbid(value: str | None) -> bool:
@@ -160,6 +164,7 @@ class AlbumIdentificationService:
         evidence_engine: AlbumEvidenceEngine,
         fingerprints: ConditionalFingerprintService,
         invalidate: CacheInvalidator | None = None,
+        on_identified: PostIdentificationCallback | None = None,
     ) -> None:
         self._store = store
         self._queue = queue
@@ -167,6 +172,7 @@ class AlbumIdentificationService:
         self._evidence_engine = evidence_engine
         self._fingerprints = fingerprints
         self._invalidate = invalidate
+        self._on_identified = on_identified
 
     async def run_claimed_job(
         self,
@@ -365,6 +371,16 @@ class AlbumIdentificationService:
                     else None
                 ),
             )
+            if decision.outcome == "identified" and self._on_identified is not None:
+                try:
+                    await self._on_identified(
+                        str(job["local_album_id"]), policy_revision
+                    )
+                except Exception:  # noqa: BLE001 - identification is already committed
+                    logger.warning(
+                        "Automatic scan-discovered management scheduling failed",
+                        exc_info=True,
+                    )
             if self._invalidate is not None:
                 await self._invalidate(
                     {

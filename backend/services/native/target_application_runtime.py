@@ -12,6 +12,9 @@ from core.task_registry import TaskRegistry
 from services.native.album_identification_service import AlbumIdentificationService
 from services.native.identification_queue_service import IdentificationQueueService
 from services.native.library_operation_supervisor import LibraryOperationSupervisor
+from services.native.library_management_recovery_service import (
+    LibraryManagementRecoveryService,
+)
 from services.native.background_workload_gate import BackgroundWorkloadGate
 from services.native.library_contribution_verification_worker import (
     LibraryContributionVerificationWorker,
@@ -70,6 +73,7 @@ async def run_target_identification_worker(
 
 async def run_target_operation_worker(
     supervisor_getter: Callable[[], LibraryOperationSupervisor],
+    recovery_getter: Callable[[], LibraryManagementRecoveryService] | None = None,
     *,
     worker_id: str | None = None,
 ) -> None:
@@ -78,6 +82,8 @@ async def run_target_operation_worker(
         try:
             supervisor = supervisor_getter()
             await supervisor.recover()
+            if recovery_getter is not None:
+                await recovery_getter().recover_once()
             await supervisor.run_once(owner)
         except asyncio.CancelledError:
             break
@@ -130,9 +136,12 @@ def start_target_identification_worker(
 
 def start_target_operation_worker(
     supervisor_getter: Callable[[], LibraryOperationSupervisor],
+    recovery_getter: Callable[[], LibraryManagementRecoveryService] | None = None,
 ) -> asyncio.Task[None]:
     name = "target-library-operation-worker"
-    task = asyncio.create_task(run_target_operation_worker(supervisor_getter))
+    task = asyncio.create_task(
+        run_target_operation_worker(supervisor_getter, recovery_getter)
+    )
     TaskRegistry.get_instance().register(name, task)
     task.add_done_callback(lambda item: _log_worker_error(item, name=name))
     return task

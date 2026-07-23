@@ -27,6 +27,7 @@ class MbContributionRecording(msgspec.Struct):
 
 
 class MbContributionTrack(msgspec.Struct):
+    id: str = ""
     title: str = ""
     position: int = 0
     number: str = ""

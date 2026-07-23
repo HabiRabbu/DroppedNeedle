@@ -50,6 +50,9 @@ from models.audio import AudioInfo, AudioTag
 from models.identification import CandidateEvidence, TrackEvidence
 from models.library_work import ScanRequest, ScanScope
 from services.native.library_indexer import INDEX_BATCH_SIZE, LibraryIndexer
+from services.native.library_filesystem_coordinator import (
+    LibraryFilesystemCoordinator,
+)
 from services.native.library_inventory_scanner import (
     INVENTORY_BATCH_SIZE,
     INVENTORY_QUEUE_SIZE,
@@ -475,13 +478,24 @@ async def benchmark_target_scan(
             walk_calls += 1
             return os.walk(*args, **kwargs)
 
+        filesystem = LibraryFilesystemCoordinator()
         coordinator = LibraryScanCoordinator(
             store,
-            LibraryInventoryScanner(store, directory_walker=counted_walk),
-            LibraryIndexer(store, reader, _MeasuredGroupingService(store)),
-            LibraryReconciler(store),
+            LibraryInventoryScanner(
+                store,
+                directory_walker=counted_walk,
+                filesystem_coordinator=filesystem,
+            ),
+            LibraryIndexer(
+                store,
+                reader,
+                _MeasuredGroupingService(store),
+                filesystem_coordinator=filesystem,
+            ),
+            LibraryReconciler(store, filesystem),
             lambda: resolver,
             events,
+            filesystem_coordinator=filesystem,
         )
 
         playback_probe = await AuthenticatedHTTPPlaybackProbe(
@@ -584,9 +598,7 @@ async def benchmark_target_scan(
                 "grouping_write_transactions": store.grouping_transactions
                 - grouping_before,
                 "files_per_write_transaction": (
-                    count / scan_write_transactions
-                    if scan_write_transactions
-                    else None
+                    count / scan_write_transactions if scan_write_transactions else None
                 ),
                 "sse_events": len(scenario_events),
                 "sse_counter_events": len(counter_times),
@@ -698,6 +710,7 @@ async def benchmark_target_scan(
         return {
             "file_count": count,
             "layout": layout,
+            "management_mode": "disabled_with_filesystem_coordination",
             "filesystem_latency": {
                 "kind": "simulated" if stat_delay_seconds else "native",
                 "stat_delay_seconds": stat_delay_seconds,
@@ -835,9 +848,7 @@ async def benchmark_migration_handoff_scan() -> dict[str, object]:
     """Run the immediate verification scan against the database migration produced."""
 
     fixture_path = (
-        Path(__file__).parents[1]
-        / "infrastructure"
-        / "test_legacy_catalog_importer.py"
+        Path(__file__).parents[1] / "infrastructure" / "test_legacy_catalog_importer.py"
     )
     spec = importlib.util.spec_from_file_location(
         "feedback_fixes_scan_handoff_fixture", fixture_path
@@ -886,7 +897,10 @@ async def benchmark_migration_handoff_scan() -> dict[str, object]:
             TypedLibrarySettings(
                 library_roots=[
                     LibraryRootSettings(
-                        id="root-1", path=str(root), label="Migrated", policy="automatic"
+                        id="root-1",
+                        path=str(root),
+                        label="Migrated",
+                        policy="automatic",
                     )
                 ]
             )
@@ -1010,8 +1024,7 @@ async def benchmark_scan_control_latency() -> dict[str, object]:
                 "request_seconds": request_seconds,
                 "request_to_checkpoint_seconds": checkpoint_seconds,
                 "passed": completed is not None
-                and completed.state
-                == ("paused" if control == "pause" else "cancelled")
+                and completed.state == ("paused" if control == "pause" else "cancelled")
                 and acknowledged_in_time
                 and checkpointed_in_time,
             }
@@ -1391,10 +1404,8 @@ def _evaluate_gates(report: dict[str, object]) -> list[dict[str, object]]:
                 "unchanged": full["unchanged"]["write_transactions"]
                 / full["file_count"],
             },
-            full["first_local_index"]["write_transactions"] / full["file_count"]
-            < 0.03
-            and full["unchanged"]["write_transactions"] / full["file_count"]
-            < 0.02,
+            full["first_local_index"]["write_transactions"] / full["file_count"] < 0.03
+            and full["unchanged"]["write_transactions"] / full["file_count"] < 0.02,
         ),
         _gate(
             "migration-immediate-scan",
@@ -1460,9 +1471,7 @@ def _evaluate_gates(report: dict[str, object]) -> list[dict[str, object]]:
             {
                 "p95_seconds": auth_me_p95,
                 "samples": full["auth_me_samples"],
-                "backend": full["playback_http_evidence"][
-                    "authentication_backend"
-                ],
+                "backend": full["playback_http_evidence"]["authentication_backend"],
             },
             auth_me_p95 <= 0.5 and int(full["auth_me_samples"]) > 0,
         ),

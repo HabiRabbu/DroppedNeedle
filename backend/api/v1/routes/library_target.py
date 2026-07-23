@@ -21,7 +21,6 @@ from api.v1.schemas.library import (
     LibraryMembershipResponse,
     TrackResolveRequest,
     TrackResolveResponse,
-    TrackTagUpdateRequest,
 )
 from api.v1.schemas.library_scan_target import LegacyScanShimResponse
 from core.exceptions import ResourceNotFoundError, ValidationError
@@ -397,34 +396,6 @@ async def get_target_track_tags(
     writer: TargetCatalogWriterServiceDep,
 ) -> AudioTag:
     return await writer.read_tags(track_id)
-
-
-@router.post("/tracks/{track_id}", response_model=TargetNativeTrack)
-async def update_target_track_tags(
-    track_id: str,
-    admin: CurrentAdminDep,
-    writer: TargetCatalogWriterServiceDep,
-    body: TrackTagUpdateRequest = MsgSpecBody(TrackTagUpdateRequest),
-) -> TargetNativeTrack:
-    return await writer.update_tags(
-        track_id,
-        AudioTag(
-            title=body.title,
-            artist=body.artist,
-            album=body.album,
-            track_number=body.track_number,
-            album_artist=body.album_artist,
-            disc_number=body.disc_number,
-            year=body.year,
-            genre=body.genre,
-            musicbrainz_release_group_id=body.musicbrainz_release_group_id,
-            musicbrainz_release_id=body.musicbrainz_release_id,
-            musicbrainz_recording_id=body.musicbrainz_recording_id,
-            musicbrainz_artist_id=body.musicbrainz_artist_id,
-            musicbrainz_album_artist_id=body.musicbrainz_album_artist_id,
-        ),
-        actor_user_id=admin.id,
-    )
 
 
 @router.post(

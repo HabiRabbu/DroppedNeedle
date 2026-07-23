@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+import hashlib
 from typing import Protocol
 
 import msgspec
@@ -27,7 +28,8 @@ async def activity_events(
         while True:
             revisions = await source.stream_revisions()
             if revisions != previous:
-                event_id = f"activity:{max(revisions.values(), default=0)}"
+                revision_key = msgspec.json.encode(sorted(revisions.items()))
+                event_id = f"activity:{hashlib.sha256(revision_key).hexdigest()[:16]}"
                 payload = msgspec.json.encode(
                     {"id": event_id, "revisions": revisions}
                 ).decode()

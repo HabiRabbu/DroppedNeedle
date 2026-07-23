@@ -194,6 +194,20 @@ describe('api client', () => {
 			);
 			expect(data).toEqual({ success: true, artist_removed: true });
 		});
+
+		it('supports an explicit JSON body for revision-guarded deletes', async () => {
+			mockPageFetch.mockResolvedValue(jsonResponse({ deleted: true }));
+			await api.delete('/api/v1/items/1', {
+				body: { expected_revision: 'revision-1' }
+			});
+			expect(mockPageFetch).toHaveBeenCalledWith(
+				'/api/v1/items/1',
+				expect.objectContaining({
+					method: 'DELETE',
+					body: JSON.stringify({ expected_revision: 'revision-1' })
+				})
+			);
+		});
 	});
 
 	describe('api.head', () => {

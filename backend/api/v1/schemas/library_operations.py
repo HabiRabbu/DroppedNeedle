@@ -223,6 +223,7 @@ class OperationListResponse(AppStruct):
 
 class OperationControlRequest(AppStruct):
     expected_row_revision: int
+    idempotency_key: str | None = None
 
 
 class ReidentificationRequest(AppStruct):

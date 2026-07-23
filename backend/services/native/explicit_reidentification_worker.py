@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from core.exceptions import ExternalServiceError
@@ -28,6 +30,8 @@ from services.native.conditional_fingerprint_service import (
 from services.native.identification_revisions import album_input_revisions
 from services.native.library_operation_service import LibraryOperationService
 
+logger = logging.getLogger(__name__)
+
 
 class ExplicitReidentificationWorker:
     def __init__(
@@ -37,12 +41,14 @@ class ExplicitReidentificationWorker:
         evidence: AlbumEvidenceEngine,
         fingerprints: ConditionalFingerprintService | None = None,
         workload_gate: BackgroundWorkloadGate | None = None,
+        on_identified: Callable[[str, str], Awaitable[object]] | None = None,
     ) -> None:
         self._store = store
         self._candidates = candidates
         self._evidence = evidence
         self._fingerprints = fingerprints
         self._workload_gate = workload_gate
+        self._on_identified = on_identified
 
     async def run_claimed(
         self,
@@ -261,7 +267,7 @@ class ExplicitReidentificationWorker:
         actor_user_id: str,
         now: float | None = None,
     ) -> dict:
-        return await self._store.accept_reidentification_candidate(
+        result = await self._store.accept_reidentification_candidate(
             job_id,
             expected_job_revision=expected_job_revision,
             candidate_key=candidate_key,
@@ -269,6 +275,27 @@ class ExplicitReidentificationWorker:
             actor_user_id=actor_user_id,
             now=time.time() if now is None else now,
         )
+        if result["state"] == "succeeded":
+            snapshot = await self._store.get_operation_snapshot(job_id)
+            if snapshot is not None and snapshot["snapshot"] is not None:
+                local_album_id = str(snapshot["snapshot"]["local_album_id"])
+                await self._schedule_scan_management(local_album_id)
+        return result
+
+    async def _schedule_scan_management(self, local_album_id: str) -> None:
+        if self._on_identified is None:
+            return
+        context = await self._store.get_album_identification_context(local_album_id)
+        if context is None or not context["tracks"]:
+            return
+        input_policy_revision = album_input_revisions(context["tracks"])[2]
+        try:
+            await self._on_identified(local_album_id, input_policy_revision)
+        except Exception:  # noqa: BLE001 - candidate acceptance is already committed
+            logger.warning(
+                "Automatic scan-discovered management scheduling failed",
+                exc_info=True,
+            )
 
     @staticmethod
     def response(row: dict):

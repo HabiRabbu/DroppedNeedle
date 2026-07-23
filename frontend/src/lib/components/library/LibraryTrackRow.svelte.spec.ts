@@ -36,7 +36,7 @@ const meta: LibraryFileMeta = {
 
 function renderComponent() {
 	return render(LibraryTrackRow, {
-		props: { meta, releaseGroupMbid: 'rg-ok' }
+		props: { meta }
 	} as Parameters<typeof render<typeof LibraryTrackRow>>[1]);
 }
 

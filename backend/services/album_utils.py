@@ -45,7 +45,9 @@ def extract_artist_info(release_group: dict) -> tuple[str, str]:
         first_artist = artist_credit[0]
         if isinstance(first_artist, dict):
             artist_obj = first_artist.get("artist", {})
-            artist_name = first_artist.get("name") or artist_obj.get("name", "Unknown Artist")
+            artist_name = first_artist.get("name") or artist_obj.get(
+                "name", "Unknown Artist"
+            )
             artist_id = artist_obj.get("id", "")
     return artist_name, artist_id
 
@@ -75,13 +77,16 @@ def extract_tracks(release_data: dict) -> tuple[list[Track], int]:
                     title=recording.get("title") or track.get("title", "Unknown"),
                     length=int(length_ms) if length_ms else None,
                     recording_id=recording.get("id"),
+                    release_track_id=track.get("id"),
                 )
             )
     return tracks, total_length
 
 
 def extract_label(release_data: dict) -> Optional[str]:
-    label_info_list = release_data.get("label-info") or release_data.get("label-info-list", [])
+    label_info_list = release_data.get("label-info") or release_data.get(
+        "label-info-list", []
+    )
     if label_info_list:
         label_obj = label_info_list[0].get("label")
         if label_obj:
@@ -94,7 +99,7 @@ def build_album_basic_info(
     release_group_id: str,
     artist_name: str,
     artist_id: str,
-    in_library: bool
+    in_library: bool,
 ) -> dict:
     return {
         "title": release_group.get("title", "Unknown Album"),
@@ -111,7 +116,9 @@ def build_album_basic_info(
     }
 
 
-def mb_to_basic_info(release_group: dict, release_group_id: str, in_library: bool, is_requested: bool) -> dict:
+def mb_to_basic_info(
+    release_group: dict, release_group_id: str, in_library: bool, is_requested: bool
+) -> dict:
     artist_name, artist_id = extract_artist_info(release_group)
     return {
         "title": release_group.get("title", "Unknown Album"),

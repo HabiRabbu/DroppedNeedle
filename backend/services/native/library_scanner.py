@@ -146,47 +146,6 @@ class LibraryScanner:
             raise ValidationError("Could not read the audio file") from exc
         return tag
 
-    async def update_track_tags(self, file_id: str, new_tag: "AudioTag") -> "LibraryTrack":
-        """Write an admin's edited tags to the file and refresh its DB row.
-
-        Preserves the row's provenance (``source``/``confidence``) and its
-        compilation flag (not an editable field). Returns the refreshed track."""
-        row = await self._library.get_file_row_by_id(file_id)
-        if row is None:
-            raise ResourceNotFoundError("Library file not found")
-        if not new_tag.musicbrainz_release_group_id:
-            raise ValidationError("A release group MBID is required")
-        path = Path(row["file_path"])
-        if not path.exists():
-            raise ValidationError("The audio file is no longer present on disk")
-        tag_to_write = msgspec.structs.replace(
-            new_tag, compilation=bool(row.get("is_compilation"))
-        )
-        try:
-            await asyncio.to_thread(self._tagger.write_mb_tags, path, tag_to_write)
-            tag, info = await asyncio.to_thread(self._tagger.read_tags, path)
-        except Exception as exc:  # noqa: BLE001 - surface as a 400, never a 500
-            logger.warning("Tag write/read failed for %s: %s", path, exc)
-            raise ValidationError("Could not write tags to the audio file") from exc
-        await self._library.upsert_file(
-            path,
-            tag,
-            info,
-            # If the re-read tag dropped the RG, fall back to the validated
-            # request value so a round-trip quirk can't raise a raw 500.
-            release_group_mbid=(
-                tag.musicbrainz_release_group_id or new_tag.musicbrainz_release_group_id
-            ),
-            release_mbid=tag.musicbrainz_release_id,
-            recording_mbid=tag.musicbrainz_recording_id,
-            confidence=float(row.get("confidence") or 1.0),
-            source=str(row.get("source") or "scan"),
-        )
-        updated = await self._library.get_track_by_id(file_id)
-        if updated is None:  # pragma: no cover - upsert just wrote this row
-            raise ResourceNotFoundError("Library file not found")
-        return updated
-
     async def resolve_unmatched(
         self, review_id: int, resolution: str, mbid: str | None = None
     ) -> None:
@@ -226,7 +185,9 @@ class LibraryScanner:
         # The chosen MBID may be an AcoustID recording id (what the scanner stores
         # as a candidate) or a release-group id pasted by the admin. Resolve
         # recording->release-group when possible; otherwise treat it as the RG.
-        release_group = await self._mb_matcher.resolve_recording_to_release_group(chosen)
+        release_group = await self._mb_matcher.resolve_recording_to_release_group(
+            chosen
+        )
         recording_mbid = chosen if release_group else None
         if not release_group:
             release_group = chosen
@@ -260,7 +221,9 @@ class LibraryScanner:
                 failed.append({"review_id": review_id, "error": str(exc)})
             except Exception as exc:  # noqa: BLE001 - one bad file must not abort the batch
                 logger.warning("Batch resolve failed for review %s: %s", review_id, exc)
-                failed.append({"review_id": review_id, "error": "Could not import this file"})
+                failed.append(
+                    {"review_id": review_id, "error": "Could not import this file"}
+                )
         return {"resolved": resolved, "failed": failed}
 
     async def _import_unmatched_to_album(
@@ -318,7 +281,8 @@ class LibraryScanner:
                     or release_group_mbid
                 ),
                 release_mbid=tag.musicbrainz_release_id or row.get("release_mbid"),
-                recording_mbid=tag.musicbrainz_recording_id or row.get("recording_mbid"),
+                recording_mbid=tag.musicbrainz_recording_id
+                or row.get("recording_mbid"),
                 confidence=float(row.get("confidence") or 1.0),
                 source=str(row.get("source") or "scan"),
             )
@@ -354,14 +318,20 @@ class LibraryScanner:
                 entries: list[_FileEntry] = []
                 for path in paths:
                     try:
-                        tag, info = await asyncio.to_thread(self._tagger.read_tags, path)
+                        tag, info = await asyncio.to_thread(
+                            self._tagger.read_tags, path
+                        )
                         mtime = path.stat().st_mtime
                     except Exception as exc:  # noqa: BLE001 - a bad file must not abort the re-id
                         logger.warning("Re-identify: cannot read %s: %s", path, exc)
                         continue
                     entries.append(
-                        _FileEntry(path=path, tag=self._enrich_tag_from_path(path, tag),
-                                   info=info, mtime=mtime)
+                        _FileEntry(
+                            path=path,
+                            tag=self._enrich_tag_from_path(path, tag),
+                            info=info,
+                            mtime=mtime,
+                        )
                     )
                 if entries:
                     await self._identify_entries(entries, stats, force=True)
@@ -371,7 +341,10 @@ class LibraryScanner:
                 await self._library.delete_album_row(release_group_mbid)
             logger.info(
                 "reidentify.album",
-                extra={"release_group_mbid": release_group_mbid, "matched": stats.matched},
+                extra={
+                    "release_group_mbid": release_group_mbid,
+                    "matched": stats.matched,
+                },
             )
             return stats.matched
         finally:
@@ -553,7 +526,9 @@ class LibraryScanner:
             try:
                 pending = await self._library.get_release_groups_needing_artist()
             except Exception as exc:  # noqa: BLE001 - never let this fail a scan
-                logger.warning("Could not list release groups needing an artist: %s", exc)
+                logger.warning(
+                    "Could not list release groups needing an artist: %s", exc
+                )
                 return True
             if not pending:
                 await self._emit_finalizing(0, total)
@@ -563,7 +538,10 @@ class LibraryScanner:
                 if self._cancel.is_set():
                     return True
                 try:
-                    mbid, name = await self._album_identifier.resolve_release_group_artist(rg)
+                    (
+                        mbid,
+                        name,
+                    ) = await self._album_identifier.resolve_release_group_artist(rg)
                     if mbid and name:
                         await self._library.set_album_artist(rg, mbid, name)
                         resolved.add(rg)
@@ -582,7 +560,8 @@ class LibraryScanner:
                 break
             logger.info(
                 "Artist reconcile made no progress (MusicBrainz unreachable?); "
-                "waiting %.0fs for the circuit breaker before retrying", _ARTIST_BREAKER_WAIT_S
+                "waiting %.0fs for the circuit breaker before retrying",
+                _ARTIST_BREAKER_WAIT_S,
             )
             await asyncio.sleep(_ARTIST_BREAKER_WAIT_S)
         try:
@@ -592,7 +571,8 @@ class LibraryScanner:
         if remaining:
             logger.warning(
                 "Artist reconcile left %d release group(s) unresolved (MusicBrainz "
-                "unreachable); will retry on the next scan", len(remaining)
+                "unreachable); will retry on the next scan",
+                len(remaining),
             )
         return not remaining
 
@@ -687,7 +667,9 @@ class LibraryScanner:
                 )
             except Exception as exc:  # noqa: BLE001 - album match falls back to per-file
                 logger.warning(
-                    "Album identification failed for %s: %s", entries[0].path.parent, exc
+                    "Album identification failed for %s: %s",
+                    entries[0].path.parent,
+                    exc,
                 )
                 match = None
             if match is not None and match.accepted:
@@ -725,7 +707,9 @@ class LibraryScanner:
                     )
             except Exception as exc:  # noqa: BLE001 - the hard path must never kill a scan
                 logger.warning(
-                    "Fingerprint album match failed for %s: %s", entries[0].path.parent, exc
+                    "Fingerprint album match failed for %s: %s",
+                    entries[0].path.parent,
+                    exc,
                 )
 
         # Per-file fallback for anything not claimed as part of an album. Reuse any
@@ -944,7 +928,9 @@ class LibraryScanner:
                     and (fp.score or 0.0) >= _FINGERPRINT_SCORE_THRESHOLD
                     and fp.recording_id
                 ):
-                    local = msgspec.structs.replace(local, recording_mbid=fp.recording_id)
+                    local = msgspec.structs.replace(
+                        local, recording_mbid=fp.recording_id
+                    )
                     rg = await self._mb_matcher.resolve_recording_to_release_group(
                         fp.recording_id
                     )
@@ -958,7 +944,11 @@ class LibraryScanner:
 
     # Maps the tiered identifier's verdict to a named log event. Per-file events
     # are DEBUG (a 10k scan emits one per file); lifecycle events stay INFO.
-    _TIER_MATCH_EVENTS = {1: "scan.tier1_match", 2: "scan.tier2_match", 3: "scan.tier3_match"}
+    _TIER_MATCH_EVENTS = {
+        1: "scan.tier1_match",
+        2: "scan.tier2_match",
+        3: "scan.tier3_match",
+    }
 
     async def _identify_and_persist(
         self,
@@ -1036,7 +1026,7 @@ class LibraryScanner:
         parsed = parse_names_from_path(path)
         disc_number = tag.disc_number
         if disc_number == 1:
-            m = re.match(r'^(?:cd|dis[ck])\s*0*(\d+)$', path.parent.name, re.IGNORECASE)
+            m = re.match(r"^(?:cd|dis[ck])\s*0*(\d+)$", path.parent.name, re.IGNORECASE)
             if m:
                 disc_number = int(m.group(1))
         return msgspec.structs.replace(
@@ -1087,7 +1077,8 @@ class LibraryScanner:
                         confidence=mb.confidence,
                         release_group_mbid=mb.release_group_mbid,
                         release_mbid=mb.release_mbid,
-                        recording_mbid=mb.recording_mbid or mb.recording_mbids.get(tag.track_number),
+                        recording_mbid=mb.recording_mbid
+                        or mb.recording_mbids.get(tag.track_number),
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Text match failed for %s: %s", path, exc)
@@ -1119,11 +1110,15 @@ class LibraryScanner:
         ):
             fp_recording = fp.recording_id
             try:
-                release_group = await self._mb_matcher.resolve_recording_to_release_group(
-                    fp.recording_id
+                release_group = (
+                    await self._mb_matcher.resolve_recording_to_release_group(
+                        fp.recording_id
+                    )
                 )
             except Exception as exc:  # noqa: BLE001 - Tier 3 fails open to manual review
-                logger.warning("Recording->release-group resolve failed for %s: %s", path, exc)
+                logger.warning(
+                    "Recording->release-group resolve failed for %s: %s", path, exc
+                )
                 release_group = None
             if release_group:
                 return TieredMatchResult(
@@ -1152,7 +1147,9 @@ class LibraryScanner:
                 batch, processed=processed, matched=stats.matched, failed=stats.errored
             )
 
-    async def _emit_progress(self, processed: int, total: int, stats: ScanStats) -> None:
+    async def _emit_progress(
+        self, processed: int, total: int, stats: ScanStats
+    ) -> None:
         await self._events.publish(
             _SCAN_CHANNEL,
             "progress",

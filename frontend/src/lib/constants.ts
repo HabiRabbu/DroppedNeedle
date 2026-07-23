@@ -236,7 +236,6 @@ export const API = {
 		scanSchedule: () => '/api/v1/settings/library/schedule',
 		rescanAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/rescan`,
 		reidentifyAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/reidentify`,
-		updateTrackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}`,
 		trackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}/tags`,
 		removeTrack: (fileId: string) => `/api/v1/library/tracks/${fileId}`,
 		scanCancel: () => '/api/v1/library/scan/cancel',
@@ -359,6 +358,105 @@ export const API = {
 		removePath: (path: string) => `/api/v1/settings/library/paths?path=${encodeURIComponent(path)}`,
 		removeAlbum: (mbid: string) => `/api/v1/library/album/${mbid}`,
 		resolveTracks: () => '/api/v1/library/resolve-tracks'
+	},
+	libraryManagement: {
+		settings: () => '/api/v1/settings/library-management',
+		impact: () => '/api/v1/settings/library-management/impact',
+		validate: () => '/api/v1/settings/library-management/validate',
+		profiles: () => '/api/v1/settings/library-management/profiles',
+		profile: (profileId: string) =>
+			`/api/v1/settings/library-management/profiles/${encodeURIComponent(profileId)}`,
+		copyProfile: (profileId: string) =>
+			`/api/v1/settings/library-management/profiles/${encodeURIComponent(profileId)}/copy`,
+		profilePresetDiff: (profileId: string) =>
+			`/api/v1/settings/library-management/profiles/${encodeURIComponent(profileId)}/preset-diff`,
+		activationPreviews: () => '/api/v1/settings/library-management/activation-previews',
+		activationPreview: (jobId: string) =>
+			`/api/v1/settings/library-management/activation-previews/${encodeURIComponent(jobId)}`,
+		activationConfirmations: () => '/api/v1/settings/library-management/activation-confirmations',
+		previews: () => '/api/v1/library/management/previews',
+		tagEditor: (trackId: string) =>
+			`/api/v1/library/management/tracks/${encodeURIComponent(trackId)}/tag-editor`,
+		tagEditPreviews: () => '/api/v1/library/management/tag-edit-previews',
+		baselineRestorePreviews: () => '/api/v1/library/management/baselines/restore-previews',
+		duplicateResolutionPreviews: () => '/api/v1/library/management/duplicate-resolution-previews',
+		baselinePurgeImpact: () => '/api/v1/library/management/baselines/purge-impact',
+		purgeBaselines: () => '/api/v1/library/management/baselines/purge',
+		recoveryDiagnostics: () => '/api/v1/library/management/recovery/diagnostics',
+		preview: (jobId: string) => `/api/v1/library/management/previews/${encodeURIComponent(jobId)}`,
+		applyPreview: (jobId: string) =>
+			`/api/v1/library/management/previews/${encodeURIComponent(jobId)}/apply`,
+		operations: (
+			params: {
+				limit?: number;
+				cursor?: string;
+				origin?: string;
+				profileId?: string;
+				rootId?: string;
+				state?: string;
+				mode?: string;
+				createdFrom?: number;
+				createdTo?: number;
+			} = {}
+		) => {
+			const query = new URLSearchParams();
+			if (params.limit !== undefined) query.set('limit', String(params.limit));
+			if (params.cursor) query.set('cursor', params.cursor);
+			if (params.origin) query.set('origin', params.origin);
+			if (params.profileId) query.set('profile_id', params.profileId);
+			if (params.rootId) query.set('root_id', params.rootId);
+			if (params.state) query.set('state', params.state);
+			if (params.mode) query.set('mode', params.mode);
+			if (params.createdFrom !== undefined) query.set('created_from', String(params.createdFrom));
+			if (params.createdTo !== undefined) query.set('created_to', String(params.createdTo));
+			const path = '/api/v1/library/management/operations';
+			return `${path}${query.size ? `?${query.toString()}` : ''}`;
+		},
+		operation: (jobId: string) =>
+			`/api/v1/library/management/operations/${encodeURIComponent(jobId)}`,
+		undoPreview: (jobId: string) =>
+			`/api/v1/library/management/operations/${encodeURIComponent(jobId)}/undo-preview`,
+		operationResults: (jobId: string, afterOrdinal?: number, limit?: number) => {
+			const query = new URLSearchParams();
+			if (afterOrdinal !== undefined) query.set('after_ordinal', String(afterOrdinal));
+			if (limit !== undefined) query.set('limit', String(limit));
+			const path = `/api/v1/library/management/operations/${encodeURIComponent(jobId)}/results`;
+			return `${path}${query.size ? `?${query.toString()}` : ''}`;
+		},
+		previewItems: (
+			jobId: string,
+			params: {
+				afterOrdinal?: number;
+				limit?: number;
+				eligibility?: string;
+				reasonCode?: string;
+				rootId?: string;
+				artistId?: string;
+				albumId?: string;
+				audioFormat?: string;
+				collisionClass?: string;
+				hasPreservedValue?: boolean;
+				hasRepresentationLoss?: boolean;
+				changeKind?: string;
+			} = {}
+		) => {
+			const query = new URLSearchParams();
+			if (params.afterOrdinal !== undefined)
+				query.set('after_ordinal', String(params.afterOrdinal));
+			if (params.limit !== undefined) query.set('limit', String(params.limit));
+			if (params.eligibility) query.set('eligibility', params.eligibility);
+			if (params.reasonCode) query.set('reason_code', params.reasonCode);
+			if (params.rootId) query.set('root_id', params.rootId);
+			if (params.artistId) query.set('artist_id', params.artistId);
+			if (params.albumId) query.set('album_id', params.albumId);
+			if (params.audioFormat) query.set('audio_format', params.audioFormat);
+			if (params.collisionClass) query.set('collision_class', params.collisionClass);
+			if (params.hasPreservedValue) query.set('has_preserved_value', 'true');
+			if (params.hasRepresentationLoss) query.set('has_representation_loss', 'true');
+			if (params.changeKind) query.set('change_kind', params.changeKind);
+			const path = `/api/v1/library/management/previews/${encodeURIComponent(jobId)}/items`;
+			return `${path}${query.size ? `?${query.toString()}` : ''}`;
+		}
 	},
 	search: {
 		artists: (query: string) => `/api/v1/search/artists?q=${encodeURIComponent(query)}`,

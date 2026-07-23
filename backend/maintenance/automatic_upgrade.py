@@ -44,6 +44,7 @@ _TARGET_STARTUP_STAGES = frozenset(
         "catalog_validation",
         "admission",
         "data_ratchets",
+        "management_recovery",
         "operational_runtime",
     }
 )
@@ -502,9 +503,7 @@ async def _perform_target_migration() -> dict[str, Any]:
     report = outcome.report
     if outcome.blocker_count:
         blocker_reason_counts = {
-            key: value
-            for key, value in outcome.blocker_reason_counts.items()
-            if value
+            key: value for key, value in outcome.blocker_reason_counts.items() if value
         }
         _write_state(
             get_settings().cache_dir / _FAILURE_EVIDENCE_FILE,
@@ -1099,8 +1098,7 @@ def run_target_supervisor(
                     except (OSError, AutomaticUpgradeError):
                         admission_error = "TargetAdmissionWriteError"
                         admission_state = _read_state(
-                            settings.cache_dir
-                            / f"automatic-upgrade-{UPGRADE_ID}.json"
+                            settings.cache_dir / f"automatic-upgrade-{UPGRADE_ID}.json"
                         )
                         promotion_committed = (
                             admission_state is not None

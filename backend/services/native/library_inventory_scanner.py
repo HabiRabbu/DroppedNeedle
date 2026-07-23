@@ -8,6 +8,7 @@ import threading
 import time
 import logging
 from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 import msgspec
@@ -15,6 +16,10 @@ import msgspec
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.library_work import ScanInventoryItem, ScanRun, ScanScope
 from services.local_files_service import AUDIO_EXTENSIONS
+from services.native.library_filesystem_coordinator import (
+    LibraryFilesystemCoordinator,
+    is_management_artifact,
+)
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.file_revision import revision_from_stat
 
@@ -26,15 +31,22 @@ DirectoryWalker = Callable[..., Iterator[tuple[str, list[str], list[str]]]]
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _uncoordinated_read() -> Iterator[None]:
+    yield
+
+
 class LibraryInventoryScanner:
     def __init__(
         self,
         store: NativeLibraryStore,
         *,
         directory_walker: DirectoryWalker = os.walk,
+        filesystem_coordinator: LibraryFilesystemCoordinator | None = None,
     ) -> None:
         self._store = store
         self._directory_walker = directory_walker
+        self._filesystem = filesystem_coordinator
 
     async def discover(
         self,
@@ -55,11 +67,6 @@ class LibraryInventoryScanner:
                 continue
             if not await checkpoint(run.id, scope.policy_revision):
                 return (await self._store.get_scan_run(run.id))[0]
-            discovery_generation = (
-                await self._store.get_scan_scope_discovery_generation(
-                    run.id, scope.root_id, scope.relative_path
-                )
-            )
             root = root_paths.get(scope.root_id)
             if root is None and scope.root_path is not None:
                 root = Path(scope.root_path)
@@ -99,15 +106,37 @@ class LibraryInventoryScanner:
                     now=current.updated_at,
                     terminal_code="ROOT_UNAVAILABLE",
                 )
-            current, completed = await self._walk_scope(
-                current,
-                scope,
-                root,
-                selected,
-                resolver,
-                checkpoint,
-                discovery_generation,
-            )
+            while True:
+                discovery_generation = (
+                    await self._store.get_scan_scope_discovery_generation(
+                        run.id, scope.root_id, scope.relative_path
+                    )
+                )
+                filesystem_revision = (
+                    self._filesystem.revision(scope.root_id)
+                    if self._filesystem is not None
+                    else None
+                )
+                current, completed = await self._walk_scope(
+                    current,
+                    scope,
+                    root,
+                    selected,
+                    resolver,
+                    checkpoint,
+                    discovery_generation,
+                )
+                if not completed or self._filesystem is None:
+                    break
+                async with self._filesystem.read(scope.root_id):
+                    if self._filesystem.revision(scope.root_id) == filesystem_revision:
+                        self._filesystem.record_scan_revision(run.id, scope.root_id)
+                        break
+                    await self._store.restart_scan_scope_discovery(
+                        run.id, scope.root_id, scope.relative_path
+                    )
+                    current = (await self._store.get_scan_run(run.id))[0]
+                await self._store.cleanup_stale_scan_inventory(run.id)
             if not completed:
                 current = (await self._store.get_scan_run(run.id))[0]
                 if current.state == "discovering":
@@ -151,25 +180,47 @@ class LibraryInventoryScanner:
                 def onerror(error: OSError) -> None:
                     raise error
 
-                for directory, _, filenames in self._directory_walker(
-                    selected, followlinks=False, onerror=onerror
-                ):
+                walker = iter(
+                    self._directory_walker(selected, followlinks=False, onerror=onerror)
+                )
+                while True:
                     if stopped.is_set():
                         break
-                    for filename in filenames:
-                        path = Path(directory) / filename
-                        if path.suffix.casefold() not in AUDIO_EXTENSIONS:
-                            continue
-                        resolved = path.resolve(strict=False)
-                        if not resolved.is_relative_to(root):
-                            continue
+                    lease = (
+                        self._filesystem.read_sync(scope.root_id)
+                        if self._filesystem is not None
+                        else _uncoordinated_read()
+                    )
+                    with lease:
                         try:
-                            item: tuple[Path, os.stat_result] | BaseException = (
-                                resolved,
-                                resolved.stat(),
-                            )
-                        except OSError as exc:
-                            item = exc
+                            directory, subdirectories, filenames = next(walker)
+                        except StopIteration:
+                            break
+                        subdirectories[:] = [
+                            name
+                            for name in subdirectories
+                            if not is_management_artifact(Path(name))
+                        ]
+                        inspected: list[
+                            tuple[Path, os.stat_result] | BaseException
+                        ] = []
+                        for filename in filenames:
+                            path = Path(directory) / filename
+                            if (
+                                path.suffix.casefold() not in AUDIO_EXTENSIONS
+                                or is_management_artifact(path)
+                            ):
+                                continue
+                            resolved = path.resolve(strict=False)
+                            if not resolved.is_relative_to(root):
+                                continue
+                            try:
+                                inspected.append((resolved, resolved.stat()))
+                            except FileNotFoundError:
+                                continue
+                            except OSError as exc:
+                                inspected.append(exc)
+                    for item in inspected:
                         asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
             except (OSError, RuntimeError) as exc:
                 asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
@@ -325,4 +376,6 @@ class LibraryInventoryScanner:
             updated_at=updated_at,
             discovery_generation=discovery_generation,
         )
-        return msgspec.structs.replace(run, row_revision=revision, updated_at=updated_at)
+        return msgspec.structs.replace(
+            run, row_revision=revision, updated_at=updated_at
+        )

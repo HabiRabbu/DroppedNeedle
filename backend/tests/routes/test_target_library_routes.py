@@ -85,11 +85,6 @@ def test_every_target_library_route_rejects_unauthenticated(app: FastAPI) -> Non
         ("DELETE", "/library/album/a", None),
         ("DELETE", "/library/tracks/t", None),
         ("GET", "/library/tracks/t/tags", None),
-        (
-            "POST",
-            "/library/tracks/t",
-            {"title": "T", "artist": "A", "album": "B", "track_number": 1},
-        ),
         ("POST", "/library/albums/a/rescan", None),
     ]
     for method, path, body in requests:
@@ -108,13 +103,6 @@ def test_target_catalog_mutations_reject_regular_users(app: FastAPI) -> None:
     assert client.delete("/library/album/a").status_code == 403
     assert client.delete("/library/tracks/t").status_code == 403
     assert client.get("/library/tracks/t/tags").status_code == 403
-    assert (
-        client.post(
-            "/library/tracks/t",
-            json={"title": "T", "artist": "A", "album": "B", "track_number": 1},
-        ).status_code
-        == 403
-    )
     assert client.post("/library/albums/a/rescan").status_code == 403
 
 
@@ -266,6 +254,5 @@ def test_target_library_route_inventory_is_complete() -> None:
         ("DELETE", "/library/album/{album_id}"),
         ("DELETE", "/library/tracks/{track_id}"),
         ("GET", "/library/tracks/{track_id}/tags"),
-        ("POST", "/library/tracks/{track_id}"),
         ("POST", "/library/albums/{album_id}/rescan"),
     }

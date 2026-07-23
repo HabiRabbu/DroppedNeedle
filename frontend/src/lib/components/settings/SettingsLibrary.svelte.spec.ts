@@ -42,10 +42,18 @@ const h = vi.hoisted(() => ({
 	save: vi.fn(),
 	applyPreview: vi.fn(),
 	requestRun: vi.fn(),
-	toast: vi.fn()
+	toast: vi.fn(),
+	isAdmin: true,
+	managementRender: vi.fn()
 }));
 
-vi.mock('$lib/stores/authStore.svelte', () => ({ authStore: { isAdmin: true } }));
+vi.mock('$lib/stores/authStore.svelte', () => ({
+	authStore: {
+		get isAdmin() {
+			return h.isAdmin;
+		}
+	}
+}));
 vi.mock('$lib/stores/toast', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/queries/library/LibraryPolicyQueries.svelte', () => ({
 	getTargetLibrarySettingsQuery: () => h.settings,
@@ -105,11 +113,19 @@ vi.mock('$lib/queries/downloads/DownloadClientsQueries.svelte', () => ({
 	getDownloadPolicyQuery: () => ({ data: { max_library_size_gb: 0 } }),
 	saveDownloadPolicy: () => ({ mutateAsync: vi.fn(), isPending: false })
 }));
+vi.mock('$lib/components/settings/SettingsLibraryManagement.svelte', () => {
+	const Comp = function () {
+		h.managementRender();
+	};
+	Comp.prototype = {};
+	return { default: Comp };
+});
 
 import SettingsLibrary from './SettingsLibrary.svelte';
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	h.isAdmin = true;
 	h.settings = { data: structuredClone(baseSettings), isLoading: false, isError: false };
 	h.impactResult = {
 		current_policy_revision: 'policy-1',
@@ -137,8 +153,23 @@ beforeEach(() => {
 });
 
 describe('SettingsLibrary target policy UI', () => {
+	it('keeps Library Management hidden from non-administrators', async () => {
+		h.isAdmin = false;
+		render(SettingsLibrary);
+		await expect.element(page.getByText('Scanning & identification')).toBeVisible();
+		expect(h.managementRender).not.toHaveBeenCalled();
+	});
+
 	it('shows root inheritance policy, counts, path, and unavailable state', async () => {
 		render(SettingsLibrary);
+		await expect.element(page.getByText('Scanning & identification')).toBeVisible();
+		await expect
+			.element(
+				page.getByText(
+					'Reads files and updates DroppedNeedle. It does not change your music files.'
+				)
+			)
+			.toBeVisible();
 		await expect.element(page.getByRole('heading', { name: 'Archive' })).toBeVisible();
 		await expect.element(page.getByText('/music/archive')).toBeVisible();
 		await expect.element(page.getByText('Unavailable', { exact: true })).toBeVisible();

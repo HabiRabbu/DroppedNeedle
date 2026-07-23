@@ -50,7 +50,7 @@ WORKDIR /app
 # pinned reproducibly via the pinned python:3.13.5-slim (bookworm) base; apt
 # version-pinning is avoided because Debian drops old versions from the mirror.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl tini gosu libchromaprint-tools ffmpeg \
+    && apt-get install -y --no-install-recommends curl tini gosu libchromaprint-tools ffmpeg loudgain \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-deps /install /usr/local

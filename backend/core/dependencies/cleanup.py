@@ -30,6 +30,7 @@ from .service_providers import (
     get_discover_queue_manager,
     get_lastfm_auth_service,
     get_genre_cover_prewarm_service,
+    get_genre_projection_service,
 )
 from .repo_providers import get_listenbrainz_repository
 
@@ -38,19 +39,89 @@ logger = logging.getLogger(__name__)
 
 def clear_library_policy_dependent_caches() -> None:
     from .service_providers import (
+        get_download_orchestrator,
+        get_download_service,
+        get_drop_import_service,
+        get_file_processor,
+        get_free_music_service,
         get_library_policy_resolver,
         get_target_download_orchestrator,
         get_target_download_service,
+        get_target_drop_import_service,
         get_target_file_processor,
+        get_target_free_music_service,
         get_target_import_library_service,
     )
 
     for provider in (
         get_library_policy_resolver,
+        get_file_processor,
         get_target_import_library_service,
         get_target_file_processor,
+        get_download_orchestrator,
+        get_target_download_orchestrator,
+        get_download_service,
+        get_target_download_service,
+        get_drop_import_service,
+        get_target_drop_import_service,
+        get_free_music_service,
+        get_target_free_music_service,
+    ):
+        provider.cache_clear()
+
+
+def clear_library_management_provider_graph() -> None:
+    from .service_providers import (
+        get_artwork_projection_service,
+        get_automatic_import_management_service,
+        get_automatic_scan_management_service,
+        get_download_orchestrator,
+        get_download_service,
+        get_drop_import_service,
+        get_file_processor,
+        get_free_music_service,
+        get_library_management_planner,
+        get_library_management_preview_service,
+        get_library_management_worker,
+        get_target_album_identification_service,
         get_target_download_orchestrator,
         get_target_download_service,
+        get_target_drop_import_service,
+        get_target_explicit_reidentification_worker,
+        get_target_file_processor,
+        get_target_free_music_service,
+        get_target_import_library_service,
+        get_target_library_operation_service,
+        get_target_library_operation_supervisor,
+        get_target_library_review_service,
+        get_target_status_service,
+    )
+
+    for provider in (
+        get_download_service,
+        get_target_download_service,
+        get_download_orchestrator,
+        get_target_download_orchestrator,
+        get_drop_import_service,
+        get_target_drop_import_service,
+        get_free_music_service,
+        get_target_free_music_service,
+        get_file_processor,
+        get_target_file_processor,
+        get_target_status_service,
+        get_target_import_library_service,
+        get_target_library_operation_supervisor,
+        get_target_album_identification_service,
+        get_target_library_review_service,
+        get_target_library_operation_service,
+        get_target_explicit_reidentification_worker,
+        get_library_management_worker,
+        get_library_management_preview_service,
+        get_automatic_scan_management_service,
+        get_automatic_import_management_service,
+        get_library_management_planner,
+        get_artwork_projection_service,
+        get_genre_projection_service,
     ):
         provider.cache_clear()
 
@@ -74,7 +145,9 @@ def clear_lastfm_dependent_caches() -> None:
     get_discover_queue_manager.cache_clear()
     get_target_discover_queue_manager.cache_clear()
     get_lastfm_auth_service.cache_clear()
+    get_genre_projection_service.cache_clear()
     get_target_wrapped_service.cache_clear()
+    clear_library_management_provider_graph()
 
 
 def clear_listenbrainz_dependent_caches() -> None:
@@ -95,6 +168,8 @@ def clear_listenbrainz_dependent_caches() -> None:
     get_discover_queue_manager.cache_clear()
     get_target_discover_queue_manager.cache_clear()
     get_target_wrapped_service.cache_clear()
+    get_genre_projection_service.cache_clear()
+    clear_library_management_provider_graph()
 
 
 async def init_app_state(app) -> None:

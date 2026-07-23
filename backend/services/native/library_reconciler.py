@@ -7,13 +7,19 @@ from collections.abc import Awaitable, Callable
 
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.library_work import ScanScope
+from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
 
 RECONCILIATION_BATCH_SIZE = 256
 
 
 class LibraryReconciler:
-    def __init__(self, store: NativeLibraryStore) -> None:
+    def __init__(
+        self,
+        store: NativeLibraryStore,
+        filesystem_coordinator: LibraryFilesystemCoordinator | None = None,
+    ) -> None:
         self._store = store
+        self._filesystem = filesystem_coordinator
 
     async def reconcile(
         self,
@@ -34,13 +40,27 @@ class LibraryReconciler:
                     run_id, scope.policy_revision
                 ):
                     return totals
-                result = await self._store.reconcile_scan_scope_batch(
-                    run_id,
-                    scope.root_id,
-                    scope.relative_path,
-                    now=time.time(),
-                    limit=RECONCILIATION_BATCH_SIZE,
-                )
+                if self._filesystem is None:
+                    result = await self._store.reconcile_scan_scope_batch(
+                        run_id,
+                        scope.root_id,
+                        scope.relative_path,
+                        now=time.time(),
+                        limit=RECONCILIATION_BATCH_SIZE,
+                    )
+                else:
+                    async with self._filesystem.read(scope.root_id):
+                        allow_missing = self._filesystem.scan_revision(
+                            run_id, scope.root_id
+                        ) == self._filesystem.revision(scope.root_id)
+                        result = await self._store.reconcile_scan_scope_batch(
+                            run_id,
+                            scope.root_id,
+                            scope.relative_path,
+                            now=time.time(),
+                            limit=RECONCILIATION_BATCH_SIZE,
+                            allow_missing=allow_missing,
+                        )
                 for key in totals:
                     totals[key] += int(result[key])
                 if result["done"]:

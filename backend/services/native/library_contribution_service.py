@@ -1218,6 +1218,7 @@ class LibraryContributionService:
                     absolute_position=index + 1,
                     duration_seconds=track.duration_seconds,
                     recording_mbid=track.recording_mbid,
+                    release_track_mbid=track.release_track_mbid,
                 )
                 for index, track in enumerate(verified.tracks)
             ],

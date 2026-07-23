@@ -324,6 +324,7 @@ class SettingsService:
     async def on_coverart_settings_changed(self) -> None:
         from core.dependencies import (
             get_coverart_repository,
+            clear_library_management_provider_graph,
             get_target_consumer_composition,
             get_target_compat_services,
             get_target_coverart_repository,
@@ -345,6 +346,7 @@ class SettingsService:
         get_target_wrapped_service.cache_clear()
         get_target_discover_service.cache_clear()
         get_target_discover_queue_manager.cache_clear()
+        clear_library_management_provider_graph()
         logger.info("Coverart settings change: singleton reset")
 
     async def verify_navidrome(

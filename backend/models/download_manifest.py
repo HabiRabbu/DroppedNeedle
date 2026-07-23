@@ -39,6 +39,7 @@ class ExpectedTrack(AppStruct):
     duration_seconds: float | None = None
     recording_mbid: str | None = None
     title: str | None = None
+    release_track_mbid: str | None = None
 
 
 class DownloadManifest(AppStruct):

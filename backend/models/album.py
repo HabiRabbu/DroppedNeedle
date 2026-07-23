@@ -7,6 +7,7 @@ class Track(AppStruct):
     disc_number: int = 1
     length: int | None = None
     recording_id: str | None = None
+    release_track_id: str | None = None
 
 
 class AlbumInfo(AppStruct):

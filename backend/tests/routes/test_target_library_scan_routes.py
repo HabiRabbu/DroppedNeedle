@@ -475,4 +475,5 @@ async def test_activity_stream_coalesces_revisions_and_sends_bounded_heartbeats(
     assert '"scan":1' in first
     assert heartbeat == ": keepalive\n\n"
     assert '"identification":4' in changed
+    assert first.splitlines()[0] != changed.splitlines()[0]
     assert delays == [2.0] * 16

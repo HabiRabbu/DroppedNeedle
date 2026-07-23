@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -8,10 +9,15 @@ import msgspec
 from core.exceptions import (
     ConfigurationError,
     ExternalServiceError,
+    RateLimitedError,
     ResourceNotFoundError,
     TokenNotAuthorizedError,
 )
-from infrastructure.cache.cache_keys import LFM_PREFIX
+from infrastructure.cache.cache_keys import (
+    LFM_PREFIX,
+    lastfm_management_album_genres_key,
+    lastfm_management_artist_genres_key,
+)
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.resilience.rate_limiter import TokenBucketRateLimiter
 from infrastructure.resilience.retry import CircuitBreaker, with_retry
@@ -42,16 +48,21 @@ from repositories.lastfm_models import (
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.integration_result import IntegrationResult
 from infrastructure.service_health import report_breaker_health
+from infrastructure.http.deduplication import RequestDeduplicator
+from models.library_management_genres import GenreCandidate
+from repositories.lastfm_management_models import LastFmManagementTopTagsResponse
 
 logger = logging.getLogger(__name__)
 
 _SOURCE = "lastfm"
+_management_deduplicator = RequestDeduplicator()
 
 
 def _record_degradation(msg: str) -> None:
     ctx = try_get_degradation_context()
     if ctx is not None:
         ctx.record(IntegrationResult.error(source=_SOURCE, msg=msg))
+
 
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 
@@ -72,14 +83,20 @@ _lastfm_rate_limiter = TokenBucketRateLimiter(rate=5.0, capacity=10)
 
 LASTFM_ERROR_MAP: dict[int, tuple[type[Exception], str]] = {
     2: (ExternalServiceError, "Invalid service - This service does not exist"),
-    3: (ExternalServiceError, "Invalid method - No method with that name in this package"),
+    3: (
+        ExternalServiceError,
+        "Invalid method - No method with that name in this package",
+    ),
     4: (ConfigurationError, "Authentication failed - invalid API key or shared secret"),
     6: (ResourceNotFoundError, "Not found"),
     9: (ConfigurationError, "Session key expired - please re-authorize with Last.fm"),
     10: (ConfigurationError, "Invalid API key - check your Last.fm API key"),
     11: (ExternalServiceError, "Last.fm service is temporarily offline"),
     14: (TokenNotAuthorizedError, "Token not yet authorized"),
-    17: (ConfigurationError, "Authentication required - re-authorize Last.fm or make your listening history public"),
+    17: (
+        ConfigurationError,
+        "Authentication required - re-authorize Last.fm or make your listening history public",
+    ),
     26: (ConfigurationError, "API key has been suspended - contact Last.fm support"),
     29: (ExternalServiceError, "Rate limit exceeded"),
 }
@@ -119,7 +136,9 @@ class LastFmRepository:
     def _can_sign(self) -> bool:
         return bool(self._shared_secret) and bool(self._session_key)
 
-    def configure(self, api_key: str, shared_secret: str, session_key: str = "") -> None:
+    def configure(
+        self, api_key: str, shared_secret: str, session_key: str = ""
+    ) -> None:
         self._api_key = api_key
         self._shared_secret = shared_secret
         self._session_key = session_key
@@ -129,7 +148,9 @@ class LastFmRepository:
         _lastfm_circuit_breaker.reset()
 
     def _build_api_sig(self, params: dict[str, str]) -> str:
-        filtered = {k: v for k, v in sorted(params.items()) if k not in ("format", "callback")}
+        filtered = {
+            k: v for k, v in sorted(params.items()) if k not in ("format", "callback")
+        }
         sig_string = "".join(f"{k}{v}" for k, v in filtered.items())
         sig_string += self._shared_secret
         return hashlib.md5(sig_string.encode("utf-8")).hexdigest()
@@ -140,6 +161,11 @@ class LastFmRepository:
 
         if error_code is None:
             return
+
+        if error_code == 29:
+            raise RateLimitedError(
+                f"Rate limit exceeded: {error_message}", retry_after_seconds=1.0
+            )
 
         mapped = LASTFM_ERROR_MAP.get(error_code)
         if mapped:
@@ -178,7 +204,9 @@ class LastFmRepository:
 
         if signed:
             if not self._shared_secret:
-                raise ConfigurationError("Last.fm shared secret is required for signed requests")
+                raise ConfigurationError(
+                    "Last.fm shared secret is required for signed requests"
+                )
             if self._session_key and "sk" not in request_params:
                 request_params["sk"] = self._session_key
             request_params["api_sig"] = self._build_api_sig(request_params)
@@ -260,6 +288,97 @@ class LastFmRepository:
         except ExternalServiceError as e:
             return False, f"Session validation failed: {e.message}"
 
+    async def get_album_top_genres(
+        self, *, artist_name: str, album_title: str
+    ) -> tuple[GenreCandidate, ...]:
+        """Return weighted album tags from the live-verified Last.fm surface.
+
+        Verified against production on 2026-07-22; see
+        ``lastfm_MANAGEMENT_API_NOTES.md``.
+        """
+        key = lastfm_management_album_genres_key(artist_name, album_title)
+        cached = await self._cache.get(key)
+        if isinstance(cached, tuple):
+            return cached
+        try:
+            result = await _management_deduplicator.dedupe(
+                key,
+                lambda: self._request(
+                    "album.getTopTags",
+                    params={
+                        "artist": artist_name,
+                        "album": album_title,
+                        "autocorrect": "0",
+                    },
+                ),
+            )
+        except ResourceNotFoundError:
+            result = None
+        if result is None:
+            candidates: tuple[GenreCandidate, ...] = ()
+            await self._cache.set(key, candidates, ttl_seconds=LASTFM_ENTITY_CACHE_TTL)
+            return candidates
+        candidates = self._management_genre_candidates(result, "album")
+        await self._cache.set(key, candidates, ttl_seconds=LASTFM_ENTITY_CACHE_TTL)
+        return candidates
+
+    async def get_artist_top_genres(
+        self, *, artist_name: str
+    ) -> tuple[GenreCandidate, ...]:
+        """Return weighted artist tags from the live-verified Last.fm surface."""
+        key = lastfm_management_artist_genres_key(artist_name)
+        cached = await self._cache.get(key)
+        if isinstance(cached, tuple):
+            return cached
+        try:
+            result = await _management_deduplicator.dedupe(
+                key,
+                lambda: self._request(
+                    "artist.getTopTags",
+                    params={"artist": artist_name, "autocorrect": "0"},
+                ),
+            )
+        except ResourceNotFoundError:
+            result = None
+        if result is None:
+            candidates = ()
+            await self._cache.set(key, candidates, ttl_seconds=LASTFM_ENTITY_CACHE_TTL)
+            return candidates
+        candidates = self._management_genre_candidates(result, "artist")
+        await self._cache.set(key, candidates, ttl_seconds=LASTFM_ENTITY_CACHE_TTL)
+        return candidates
+
+    @staticmethod
+    def _management_genre_candidates(
+        result: dict[str, Any], provider_entity: str
+    ) -> tuple[GenreCandidate, ...]:
+        try:
+            decoded = msgspec.convert(result, type=LastFmManagementTopTagsResponse)
+        except (msgspec.ValidationError, TypeError, ValueError) as error:
+            _record_degradation("Last.fm returned invalid weighted tag metadata")
+            raise ExternalServiceError(
+                "Last.fm returned invalid weighted tag metadata."
+            ) from error
+
+        revision_material = "|".join(
+            f"{value.name}:{value.count}" for value in decoded.top_tags.tags
+        )
+        revision = hashlib.sha256(revision_material.encode()).hexdigest()
+        fetched_at = time.time()
+        return tuple(
+            GenreCandidate(
+                display_name=value.name,
+                folded_name=" ".join(value.name.split()).casefold(),
+                provider="lastfm",
+                provider_entity=provider_entity,
+                weight=value.count,
+                fetched_at=fetched_at,
+                source_document_revision=revision,
+            )
+            for value in decoded.top_tags.tags
+            if value.name.strip()
+        )
+
     async def update_now_playing(
         self,
         artist: str,
@@ -311,7 +430,6 @@ class LastFmRepository:
         )
         return True
 
-
     async def get_user_top_artists(
         self, username: str, period: str = "overall", limit: int = 50
     ) -> list[LastFmArtist]:
@@ -348,8 +466,7 @@ class LastFmRepository:
             signed=self._can_sign,
         )
         albums = [
-            parse_top_album(item)
-            for item in data.get("topalbums", {}).get("album", [])
+            parse_top_album(item) for item in data.get("topalbums", {}).get("album", [])
         ]
         await self._cache.set(cache_key, albums, ttl_seconds=LASTFM_USER_CACHE_TTL)
         return albums
@@ -369,8 +486,7 @@ class LastFmRepository:
             signed=self._can_sign,
         )
         tracks = [
-            parse_top_track(item)
-            for item in data.get("toptracks", {}).get("track", [])
+            parse_top_track(item) for item in data.get("toptracks", {}).get("track", [])
         ]
         await self._cache.set(cache_key, tracks, ttl_seconds=LASTFM_USER_CACHE_TTL)
         return tracks
@@ -413,9 +529,7 @@ class LastFmRepository:
         await self._cache.set(cache_key, tracks, ttl_seconds=LASTFM_USER_CACHE_TTL)
         return tracks
 
-    async def get_user_weekly_artist_chart(
-        self, username: str
-    ) -> list[LastFmArtist]:
+    async def get_user_weekly_artist_chart(self, username: str) -> list[LastFmArtist]:
         cache_key = f"{LFM_PREFIX}user_weekly_artists:{username}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
@@ -432,9 +546,7 @@ class LastFmRepository:
         await self._cache.set(cache_key, artists, ttl_seconds=LASTFM_USER_CACHE_TTL)
         return artists
 
-    async def get_user_weekly_album_chart(
-        self, username: str
-    ) -> list[LastFmAlbum]:
+    async def get_user_weekly_album_chart(self, username: str) -> list[LastFmAlbum]:
         cache_key = f"{LFM_PREFIX}user_weekly_albums:{username}"
         cached = await self._cache.get(cache_key)
         if cached is not None:
@@ -451,7 +563,6 @@ class LastFmRepository:
         await self._cache.set(cache_key, albums, ttl_seconds=LASTFM_USER_CACHE_TTL)
         return albums
 
-
     async def get_artist_top_tracks(
         self, artist: str, mbid: str | None = None, limit: int = 10
     ) -> list[LastFmTrack]:
@@ -467,8 +578,7 @@ class LastFmRepository:
             params["artist"] = artist
         data = await self._request("artist.getTopTracks", params=params)
         tracks = [
-            parse_top_track(item)
-            for item in data.get("toptracks", {}).get("track", [])
+            parse_top_track(item) for item in data.get("toptracks", {}).get("track", [])
         ]
         await self._cache.set(cache_key, tracks, ttl_seconds=LASTFM_ENTITY_CACHE_TTL)
         return tracks
@@ -488,8 +598,7 @@ class LastFmRepository:
             params["artist"] = artist
         data = await self._request("artist.getTopAlbums", params=params)
         albums = [
-            parse_top_album(item)
-            for item in data.get("topalbums", {}).get("album", [])
+            parse_top_album(item) for item in data.get("topalbums", {}).get("album", [])
         ]
         await self._cache.set(cache_key, albums, ttl_seconds=LASTFM_ENTITY_CACHE_TTL)
         return albums
@@ -566,7 +675,6 @@ class LastFmRepository:
         await self._cache.set(cache_key, similar, ttl_seconds=LASTFM_ENTITY_CACHE_TTL)
         return similar
 
-
     async def get_global_top_artists(self, limit: int = 50) -> list[LastFmArtist]:
         cache_key = f"{LFM_PREFIX}global_top_artists:{limit}"
         cached = await self._cache.get(cache_key)
@@ -577,8 +685,7 @@ class LastFmRepository:
             params={"limit": str(limit)},
         )
         artists = [
-            parse_top_artist(item)
-            for item in data.get("artists", {}).get("artist", [])
+            parse_top_artist(item) for item in data.get("artists", {}).get("artist", [])
         ]
         await self._cache.set(cache_key, artists, ttl_seconds=LASTFM_GLOBAL_CACHE_TTL)
         return artists
@@ -593,8 +700,7 @@ class LastFmRepository:
             params={"limit": str(limit)},
         )
         tracks = [
-            parse_top_track(item)
-            for item in data.get("toptracks", {}).get("track", [])
+            parse_top_track(item) for item in data.get("toptracks", {}).get("track", [])
         ]
         await self._cache.set(cache_key, tracks, ttl_seconds=LASTFM_GLOBAL_CACHE_TTL)
         return tracks

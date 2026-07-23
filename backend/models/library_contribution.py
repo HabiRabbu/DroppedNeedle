@@ -238,6 +238,7 @@ class MusicBrainzVerifiedTrack(AppStruct):
     disc_number: int
     duration_seconds: float | None = None
     recording_mbid: str | None = None
+    release_track_mbid: str | None = None
 
 
 class MusicBrainzVerifiedRelease(AppStruct):

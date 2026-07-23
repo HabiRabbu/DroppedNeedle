@@ -31,6 +31,7 @@ from api.v1.routes import import_drop as import_drop_routes
 from api.v1.routes import plugins as plugins_routes
 from api.v1.routes import library as library_routes
 from api.v1.routes import library_contributions as library_contribution_routes
+from api.v1.routes import library_management as library_management_routes
 from api.v1.routes import library_operations_target as library_operations_target_routes
 from api.v1.routes import library_policies as library_policy_routes
 from api.v1.routes import library_policies_target as target_library_policy_routes
@@ -65,6 +66,8 @@ from core.dependencies import (
     get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_library_manager,
+    get_library_management_preview_service,
+    get_library_management_profile_service,
     get_library_contribution_service,
     get_library_policy_service,
     get_library_scanner,
@@ -128,6 +131,8 @@ _SERVICE_PROVIDERS = (
     get_jellyfin_user_auth_service,
     get_lastfm_auth_service,
     get_library_manager,
+    get_library_management_preview_service,
+    get_library_management_profile_service,
     get_library_policy_service,
     get_target_library_policy_service,
     get_library_scanner,
@@ -260,6 +265,104 @@ _ADMIN_ENDPOINTS = [
     ("GET", "/api/v1/settings/library/path-mapping", None),
     ("GET", "/api/v1/settings/library", None),
     ("PUT", "/api/v1/settings/library", {"library_roots": []}),
+    ("GET", "/api/v1/settings/library-management", None),
+    (
+        "PUT",
+        "/api/v1/settings/library-management",
+        {"settings": {}, "expected_settings_revision": "settings"},
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/impact",
+        {"settings": {}, "expected_settings_revision": "settings"},
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/validate",
+        {"settings": {}, "expected_settings_revision": "settings"},
+    ),
+    (
+        "GET",
+        "/api/v1/settings/library-management/profiles/profile-1",
+        None,
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/profiles",
+        {"name": "Profile", "expected_settings_revision": "settings"},
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/profiles/profile-1/copy",
+        {"name": "Profile copy", "expected_settings_revision": "settings"},
+    ),
+    (
+        "PUT",
+        "/api/v1/settings/library-management/profiles/profile-1",
+        {
+            "profile": {"id": "profile-1", "name": "Profile"},
+            "expected_settings_revision": "settings",
+        },
+    ),
+    (
+        "DELETE",
+        "/api/v1/settings/library-management/profiles/profile-1",
+        {"expected_settings_revision": "settings"},
+    ),
+    (
+        "GET",
+        "/api/v1/settings/library-management/profiles/profile-1/preset-diff",
+        None,
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/activation-previews",
+        {
+            "root_id": "root-1",
+            "settings": {},
+            "expected_settings_revision": "settings",
+            "expected_policy_revision": "policy",
+        },
+    ),
+    (
+        "GET",
+        "/api/v1/settings/library-management/activation-previews/job-1",
+        None,
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/activation-confirmations",
+        {
+            "settings": {},
+            "proofs": [],
+            "expected_settings_revision": "settings",
+            "confirmation": True,
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/management/previews",
+        {
+            "selection": {"kind": "tracks", "ids": ["track-1"]},
+            "profile_id": "profile-1",
+            "expected_settings_revision": "settings",
+            "expected_policy_revision": "policy",
+        },
+    ),
+    ("GET", "/api/v1/library/management/tracks/track-1/tag-editor", None),
+    (
+        "POST",
+        "/api/v1/library/management/tag-edit-previews",
+        {
+            "local_track_id": "track-1",
+            "mode": "write_once",
+            "expected_settings_revision": "settings",
+            "expected_policy_revision": "policy",
+            "fields": [{"field_name": "title", "value": "Title"}],
+        },
+    ),
+    ("GET", "/api/v1/library/management/previews/job-1", None),
+    ("GET", "/api/v1/library/management/previews/job-1/items", None),
     (
         "POST",
         "/api/v1/settings/library/policy-apply-preview",
@@ -278,11 +381,6 @@ _ADMIN_ENDPOINTS = [
     ("DELETE", "/api/v1/downloads/quarantine/1", None),
     ("POST", "/api/v1/downloads/task-1/reimport", None),
     ("GET", "/api/v1/library/tracks/file-1/tags", None),
-    (
-        "POST",
-        "/api/v1/library/tracks/file-1",
-        {"title": "t", "artist": "a", "album": "al", "track_number": 1},
-    ),
     ("POST", "/api/v1/library/albums/rg-1/rescan", None),
     # Spotify app credentials + home settings (admin-gated at the /settings router level).
     ("GET", "/api/v1/settings/spotify", None),
@@ -699,6 +797,7 @@ def _client(scenario: str):
         library_routes.router,
         library_operations_target_routes.router,
         target_library_policy_routes.router,
+        library_management_routes.router,
         library_policy_routes.router,
         me_routes.router,
         navidrome_preferences_routes.router,

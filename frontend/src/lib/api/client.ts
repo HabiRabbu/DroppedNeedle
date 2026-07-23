@@ -57,6 +57,10 @@ interface RequestOptions extends Omit<RequestInit, 'method' | 'body'> {
 	timeoutMs?: number;
 }
 
+interface DeleteRequestOptions extends RequestOptions {
+	body?: unknown;
+}
+
 async function handleResponse<T = void>(res: Response): Promise<T> {
 	if (!res.ok) {
 		// Session expired mid-use: hard redirect so layout re-initialises cleanly
@@ -108,7 +112,7 @@ interface ApiClient {
 	post<T = unknown>(url: string, body?: unknown, opts?: RequestOptions): Promise<T>;
 	put<T = unknown>(url: string, body?: unknown, opts?: RequestOptions): Promise<T>;
 	patch<T = unknown>(url: string, body?: unknown, opts?: RequestOptions): Promise<T>;
-	delete<T = void>(url: string, opts?: RequestOptions): Promise<T>;
+	delete<T = void>(url: string, opts?: DeleteRequestOptions): Promise<T>;
 	head(url: string, opts?: RequestOptions): Promise<Response>;
 	upload<T = unknown>(url: string, body: FormData, opts?: RequestOptions): Promise<T>;
 }
@@ -185,8 +189,10 @@ function createClient(fetchFn: FetchFn): ApiClient {
 			request<T>('PUT', url, body, opts),
 		patch: <T = unknown>(url: string, body?: unknown, opts?: RequestOptions) =>
 			request<T>('PATCH', url, body, opts),
-		delete: <T = void>(url: string, opts?: RequestOptions) =>
-			request<T>('DELETE', url, undefined, opts),
+		delete: <T = void>(url: string, opts?: DeleteRequestOptions) => {
+			const { body, ...requestOptions } = opts ?? {};
+			return request<T>('DELETE', url, body, requestOptions);
+		},
 		head: (url: string, opts?: RequestOptions) =>
 			request<Response>('HEAD', url, undefined, { ...opts, raw: true }),
 		upload: <T = unknown>(url: string, body: FormData, opts?: RequestOptions) =>

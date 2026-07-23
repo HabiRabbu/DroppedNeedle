@@ -818,6 +818,16 @@ async def test_target_genre_and_radio_pool_use_target_membership_only(
             (IDENTIFIED_TRACK_ID, LOCAL_TRACK_ID),
         )
         connection.execute(
+            "DELETE FROM local_track_genres WHERE local_track_id IN (?, ?)",
+            (IDENTIFIED_TRACK_ID, LOCAL_TRACK_ID),
+        )
+        connection.executemany(
+            "INSERT INTO local_track_genres "
+            "(local_track_id, position, name, folded_name, source) "
+            "VALUES (?, 0, 'Ambient', 'ambient', 'local')",
+            [(IDENTIFIED_TRACK_ID,), (LOCAL_TRACK_ID,)],
+        )
+        connection.execute(
             "INSERT INTO artist_genres VALUES (?, ?, ?)",
             (ARTIST_MBID.lower(), ARTIST_MBID, '["Latin"]'),
         )
@@ -1350,7 +1360,7 @@ async def test_spotify_and_personal_mix_write_only_target_playlists(
 
 
 @pytest.mark.asyncio
-async def test_target_tag_and_removal_writers_audit_without_deleting_stable_rows(
+async def test_target_removal_writer_audits_without_deleting_stable_rows(
     target_services, tmp_path: Path
 ) -> None:
     store, _view, _favorites, _history, root = target_services
@@ -1376,11 +1386,6 @@ async def test_target_tag_and_removal_writers_audit_without_deleting_stable_rows
     membership.tracks[0].file_format = info.file_format
     membership.tracks[0].duration_seconds = info.duration_seconds
     await store.create_catalog_membership(membership)
-    with sqlite3.connect(store.db_path) as connection:
-        connection.execute(
-            "UPDATE local_tracks SET stat_revision_kind = 'legacy_float' WHERE id = ?",
-            (track_id,),
-        )
     preferences = SimpleNamespace(
         get_typed_library_settings=lambda: SimpleNamespace(
             library_roots=[SimpleNamespace(path=str(root))]
@@ -1391,32 +1396,6 @@ async def test_target_tag_and_removal_writers_audit_without_deleting_stable_rows
     )
     library_service = TargetNativeLibraryService(store)
     writer = TargetCatalogWriterService(store, local_files, library_service)
-    before_revision = await store.get_catalog_revision()
-
-    updated = await writer.update_tags(
-        track_id,
-        AudioTag(
-            title="Edited locally",
-            artist="Local artist",
-            album="Local album",
-            album_artist="Local artist",
-            track_number=4,
-            genre="Ambient",
-        ),
-        actor_user_id="user-1",
-    )
-
-    assert updated.id == track_id
-    assert updated.title == "Edited locally"
-    assert updated.musicbrainz_recording_id is None
-    assert AudioTagger().read_tags(path)[0].title == "Edited locally"
-    assert await store.get_catalog_revision() > before_revision
-    with sqlite3.connect(store.db_path) as connection:
-        stat_revision_kind = connection.execute(
-            "SELECT stat_revision_kind FROM local_tracks WHERE id = ?", (track_id,)
-        ).fetchone()[0]
-    assert stat_revision_kind == "exact"
-
     removed = await writer.remove_track(
         track_id, actor_user_id="user-1", delete_file=True
     )
@@ -1432,10 +1411,7 @@ async def test_target_tag_and_removal_writers_audit_without_deleting_stable_rows
             "WHERE local_track_id = ? ORDER BY created_at",
             (track_id,),
         ).fetchall()
-    assert actions == [
-        ("update_track_tags", "EXPLICIT_TAG_EDIT"),
-        ("remove_track", "FILE_DELETED"),
-    ]
+    assert actions == [("remove_track", "FILE_DELETED")]
 
 
 @pytest.mark.asyncio

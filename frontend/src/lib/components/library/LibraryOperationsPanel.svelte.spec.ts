@@ -146,6 +146,11 @@ vi.mock('$lib/queries/library/LibraryRepairMutations.svelte', () => ({
 	createLibraryRepair: () => ({ mutateAsync: vi.fn(), isPending: false }),
 	applyLibraryRepair: () => ({ mutateAsync: vi.fn(), isPending: false })
 }));
+vi.mock('./LibraryManagementControlRoom.svelte', () => {
+	const Comp = function () {};
+	Comp.prototype = {};
+	return { default: Comp };
+});
 
 import LibraryOperationsPanel from './LibraryOperationsPanel.svelte';
 
@@ -253,6 +258,7 @@ describe('LibraryOperationsPanel', () => {
 		await page.getByText('Root progress and phase details').click();
 		await expect.element(page.getByText('Main library · automatic')).toBeVisible();
 		await expect.element(page.getByText('12', { exact: true })).toBeVisible();
+		await expect.element(page.getByText(/Scanning and identification read files/)).toBeVisible();
 	});
 
 	it('shows identification as idle while foreground repair keeps the panel expanded', async () => {

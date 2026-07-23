@@ -7,6 +7,7 @@ httpx[h2]==0.28.1
 msgspec==0.20.0
 mutagen>=1.47,<2
 packaging>=24.0
+pillow==12.3.0
 pydantic==2.12.0
 pydantic-core==2.41.1
 pydantic-settings==2.3.0

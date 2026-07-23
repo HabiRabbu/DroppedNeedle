@@ -1,22 +1,45 @@
 import asyncio
+import hashlib
 import httpx
+import time
 from typing import Any, Awaitable, Callable
 
 import msgspec
-from core.exceptions import ExternalServiceError, RateLimitedError, ServiceDisabledUpstreamError
-from infrastructure.cache.cache_keys import LB_PREFIX
+from core.exceptions import (
+    ExternalServiceError,
+    RateLimitedError,
+    ServiceDisabledUpstreamError,
+)
+from infrastructure.cache.cache_keys import (
+    LB_PREFIX,
+    listenbrainz_management_genres_key,
+)
 from infrastructure.cache.memory_cache import CacheInterface
 from infrastructure.resilience.retry import with_retry, CircuitBreaker
 from infrastructure.resilience.rate_limiter import TokenBucketRateLimiter
 from repositories.listenbrainz_models import (
-    ListenBrainzArtist, ListenBrainzReleaseGroup, ListenBrainzRecording,
-    ListenBrainzListen, ListenBrainzGenreActivity, ListenBrainzSimilarArtist,
+    ListenBrainzArtist,
+    ListenBrainzReleaseGroup,
+    ListenBrainzRecording,
+    ListenBrainzListen,
+    ListenBrainzGenreActivity,
+    ListenBrainzSimilarArtist,
     ListenBrainzFeedbackRecording,
-    ListenBrainzRecommendationTrack, ListenBrainzRecommendationPlaylist,
+    ListenBrainzRecommendationTrack,
+    ListenBrainzRecommendationPlaylist,
     ALLOWED_STATS_RANGE,
-    parse_artist, parse_release_group, parse_recording, parse_listen,
-    parse_artist_recording, parse_feedback_recording, parse_similar_artist,
+    parse_artist,
+    parse_release_group,
+    parse_recording,
+    parse_listen,
+    parse_artist_recording,
+    parse_feedback_recording,
+    parse_similar_artist,
     parse_recommendation_track,
+)
+from models.library_management_genres import GenreCandidate
+from repositories.listenbrainz_management_models import (
+    LbManagementReleaseGroupMetadata,
 )
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.http.deduplication import RequestDeduplicator
@@ -43,6 +66,7 @@ def _parse_retry_after(response: httpx.Response) -> float:
             except (TypeError, ValueError):
                 continue
     return 2.0
+
 
 # LB popularity outages last hours; a short TTL would expire during any idle gap (no calls
 # to re-mark it) and the NEXT build would wrongly take the dead LB path. Keep the flag alive
@@ -96,16 +120,15 @@ def _is_upstream_policy_block(response: httpx.Response) -> bool:
     text = response.text
     if response.status_code == 500 and "currently disabled" in text:
         return True
-    if response.status_code == 401 and ("provide an Auth token" in text or "AI scrapers" in text):
+    if response.status_code == 401 and (
+        "provide an Auth token" in text or "AI scrapers" in text
+    ):
         return True
     return False
 
 
 _listenbrainz_circuit_breaker = CircuitBreaker(
-    failure_threshold=10,
-    success_threshold=2,
-    timeout=60.0,
-    name="listenbrainz"
+    failure_threshold=10, success_threshold=2, timeout=60.0, name="listenbrainz"
 )
 
 _listenbrainz_rate_limiter = TokenBucketRateLimiter(rate=5.0, capacity=10)
@@ -151,7 +174,11 @@ class ListenBrainzRepository:
         self._user_token = user_token
 
     async def _ensure_read_token(self) -> None:
-        if self._user_token or self._fallback_token_provider is None or self._fallback_resolved:
+        if (
+            self._user_token
+            or self._fallback_token_provider is None
+            or self._fallback_resolved
+        ):
             return
         self._fallback_resolved = True
         try:
@@ -160,11 +187,11 @@ class ListenBrainzRepository:
             token = None
         if token:
             self._user_token = token
-    
+
     @staticmethod
     def reset_circuit_breaker() -> None:
         _listenbrainz_circuit_breaker.reset()
-    
+
     def _get_headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
@@ -173,7 +200,7 @@ class ListenBrainzRepository:
         if self._user_token:
             headers["Authorization"] = f"Token {self._user_token}"
         return headers
-    
+
     @with_retry(
         max_attempts=3,
         base_delay=1.0,
@@ -198,7 +225,9 @@ class ListenBrainzRepository:
             await self._ensure_read_token()
 
         if require_auth and not self._user_token:
-            raise ExternalServiceError("ListenBrainz user token required for this request")
+            raise ExternalServiceError(
+                "ListenBrainz user token required for this request"
+            )
 
         await _listenbrainz_rate_limiter.acquire()
 
@@ -241,7 +270,7 @@ class ListenBrainzRepository:
                         )
                     raise ExternalServiceError(
                         f"ListenBrainz {method} failed ({response.status_code})",
-                        response.text
+                        response.text,
                     )
 
                 # a 200 from a popularity endpoint means LB popularity recovered - heal now
@@ -252,33 +281,36 @@ class ListenBrainzRepository:
                 try:
                     return _decode_json_response(response)
                 except (msgspec.DecodeError, ValueError, TypeError):
-                    _record_degradation(f"ListenBrainz returned invalid JSON for {method} {endpoint}")
+                    _record_degradation(
+                        f"ListenBrainz returned invalid JSON for {method} {endpoint}"
+                    )
                     return None
 
             except httpx.HTTPError as e:
                 raise ExternalServiceError(f"ListenBrainz request failed: {str(e)}")
-    
+
     async def _get(
         self,
         endpoint: str,
         params: dict[str, Any] | None = None,
-        require_auth: bool = False
+        require_auth: bool = False,
     ) -> Any:
-        return await self._request("GET", endpoint, params=params, require_auth=require_auth)
-    
+        return await self._request(
+            "GET", endpoint, params=params, require_auth=require_auth
+        )
+
     async def _post(
-        self,
-        endpoint: str,
-        data: dict[str, Any],
-        require_auth: bool = False
+        self, endpoint: str, data: dict[str, Any], require_auth: bool = False
     ) -> Any:
-        return await self._request("POST", endpoint, json_data=data, require_auth=require_auth)
-    
+        return await self._request(
+            "POST", endpoint, json_data=data, require_auth=require_auth
+        )
+
     async def validate_username(self, username: str | None = None) -> tuple[bool, str]:
         user = username or self._username
         if not user:
             return False, "No username provided"
-        
+
         try:
             url = f"{self._base_url}/1/user/{user}/listen-count"
             response = await self._client.request(
@@ -287,13 +319,13 @@ class ListenBrainzRepository:
                 headers=self._get_headers(),
                 timeout=10.0,
             )
-            
+
             if response.status_code == 404:
                 return False, f"User '{user}' not found"
-            
+
             if response.status_code != 200:
                 return False, f"Validation failed (HTTP {response.status_code})"
-            
+
             result = _decode_json_response(response)
             if result and "payload" in result:
                 count = result.get("payload", {}).get("count", 0)
@@ -305,11 +337,11 @@ class ListenBrainzRepository:
             return False, "Could not connect to ListenBrainz"
         except Exception as e:  # noqa: BLE001
             return False, f"Validation failed: {str(e)}"
-    
+
     async def validate_token(self) -> tuple[bool, str]:
         if not self._user_token:
             return False, "No token provided"
-        
+
         try:
             url = f"{self._base_url}/1/validate-token"
             headers = self._get_headers()
@@ -319,10 +351,10 @@ class ListenBrainzRepository:
                 headers=headers,
                 timeout=10.0,
             )
-            
+
             if response.status_code != 200:
                 return False, "Token invalid or expired"
-            
+
             result = _decode_json_response(response)
             if result and result.get("valid"):
                 username = result.get("user_name", self._username)
@@ -334,28 +366,30 @@ class ListenBrainzRepository:
             return False, "Could not connect to ListenBrainz"
         except Exception as e:  # noqa: BLE001
             return False, f"Validation failed: {str(e)}"
-    
+
     async def get_user_listens(
         self,
         username: str | None = None,
         count: int = 25,
         max_ts: int | None = None,
-        min_ts: int | None = None
+        min_ts: int | None = None,
     ) -> list[ListenBrainzListen]:
         user = username or self._username
         if not user:
             return []
-        
+
         params: dict[str, Any] = {"count": min(count, 100)}
         if max_ts:
             params["max_ts"] = max_ts
         if min_ts:
             params["min_ts"] = min_ts
-        
+
         result = await self._get(f"/1/user/{user}/listens", params=params)
         if not result:
             return []
-        return [parse_listen(item) for item in result.get("payload", {}).get("listens", [])]
+        return [
+            parse_listen(item) for item in result.get("payload", {}).get("listens", [])
+        ]
 
     async def get_user_loved_recordings(
         self,
@@ -387,7 +421,9 @@ class ListenBrainzRepository:
         if isinstance(payload, dict):
             feedback_raw = payload.get("feedback") or payload.get("recordings") or []
             if isinstance(feedback_raw, list):
-                feedback_items = [item for item in feedback_raw if isinstance(item, dict)]
+                feedback_items = [
+                    item for item in feedback_raw if isinstance(item, dict)
+                ]
             else:
                 feedback_items = []
         elif isinstance(payload, list):
@@ -399,189 +435,193 @@ class ListenBrainzRepository:
         if loved_recordings:
             await self._cache.set(cache_key, loved_recordings, ttl_seconds=300)
         return loved_recordings
-    
+
     async def get_user_top_artists(
         self,
         username: str | None = None,
         range_: str = "this_month",
         count: int = 25,
-        offset: int = 0
+        offset: int = 0,
     ) -> list[ListenBrainzArtist]:
         user = username or self._username
         if not user:
             return []
-        
+
         if range_ not in ALLOWED_STATS_RANGE:
             range_ = "this_month"
-        
+
         cache_key = f"{LB_PREFIX}user_artists:{user}:{range_}:{count}:{offset}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
-        
+
         params = {"count": min(count, 100), "offset": offset, "range": range_}
         result = await self._get(f"/1/stats/user/{user}/artists", params=params)
         if not result:
             return []
-        artists = [parse_artist(item) for item in result.get("payload", {}).get("artists", [])]
+        artists = [
+            parse_artist(item) for item in result.get("payload", {}).get("artists", [])
+        ]
         if artists:
             await self._cache.set(cache_key, artists, ttl_seconds=300)
         return artists
-    
+
     async def get_user_top_release_groups(
         self,
         username: str | None = None,
         range_: str = "this_month",
         count: int = 25,
-        offset: int = 0
+        offset: int = 0,
     ) -> list[ListenBrainzReleaseGroup]:
         user = username or self._username
         if not user:
             return []
-        
+
         if range_ not in ALLOWED_STATS_RANGE:
             range_ = "this_month"
-        
+
         cache_key = f"{LB_PREFIX}user_release_groups:{user}:{range_}:{count}:{offset}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
-        
+
         params = {"count": min(count, 100), "offset": offset, "range": range_}
         result = await self._get(f"/1/stats/user/{user}/release-groups", params=params)
         if not result:
             return []
-        groups = [parse_release_group(item) for item in result.get("payload", {}).get("release_groups", [])]
+        groups = [
+            parse_release_group(item)
+            for item in result.get("payload", {}).get("release_groups", [])
+        ]
         if groups:
             await self._cache.set(cache_key, groups, ttl_seconds=300)
         return groups
-    
+
     async def get_user_top_recordings(
         self,
         username: str | None = None,
         range_: str = "this_month",
         count: int = 25,
-        offset: int = 0
+        offset: int = 0,
     ) -> list[ListenBrainzRecording]:
         user = username or self._username
         if not user:
             return []
-        
+
         if range_ not in ALLOWED_STATS_RANGE:
             range_ = "this_month"
-        
+
         params = {"count": min(count, 100), "offset": offset, "range": range_}
         result = await self._get(f"/1/stats/user/{user}/recordings", params=params)
         if not result:
             return []
-        return [parse_recording(item) for item in result.get("payload", {}).get("recordings", [])]
-    
+        return [
+            parse_recording(item)
+            for item in result.get("payload", {}).get("recordings", [])
+        ]
+
     async def get_user_genre_activity(
-        self,
-        username: str | None = None
+        self, username: str | None = None
     ) -> list[ListenBrainzGenreActivity]:
         user = username or self._username
         if not user:
             return []
-        
+
         cache_key = f"{LB_PREFIX}user_genres:{user}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
-        
+
         result = await self._get(f"/1/stats/user/{user}/genre-activity")
-        
+
         if not result:
             return []
-        
+
         genre_counts: dict[str, int] = {}
         for item in result.get("result", []):
             genre = item.get("genre", "Unknown")
             count = item.get("listen_count", 0)
             genre_counts[genre] = genre_counts.get(genre, 0) + count
-        
+
         genres = [
             ListenBrainzGenreActivity(genre=g, listen_count=c)
             for g, c in sorted(genre_counts.items(), key=lambda x: -x[1])
         ]
-        
+
         if genres:
             await self._cache.set(cache_key, genres, ttl_seconds=300)
         return genres
-    
+
     async def get_sitewide_top_artists(
-        self,
-        range_: str = "week",
-        count: int = 25,
-        offset: int = 0
+        self, range_: str = "week", count: int = 25, offset: int = 0
     ) -> list[ListenBrainzArtist]:
         if range_ not in ALLOWED_STATS_RANGE:
             range_ = "week"
-        
+
         cache_key = f"{LB_PREFIX}sitewide_artists:{range_}:{count}:{offset}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
-        
+
         params = {"count": min(count, 100), "offset": offset, "range": range_}
         result = await self._get("/1/stats/sitewide/artists", params=params)
         if not result:
             return []
-        artists = [parse_artist(item) for item in result.get("payload", {}).get("artists", [])]
+        artists = [
+            parse_artist(item) for item in result.get("payload", {}).get("artists", [])
+        ]
         if artists:
             await self._cache.set(cache_key, artists, ttl_seconds=3600)
         return artists
-    
+
     async def get_sitewide_top_release_groups(
-        self,
-        range_: str = "week",
-        count: int = 25,
-        offset: int = 0
+        self, range_: str = "week", count: int = 25, offset: int = 0
     ) -> list[ListenBrainzReleaseGroup]:
         if range_ not in ALLOWED_STATS_RANGE:
             range_ = "week"
-        
+
         cache_key = f"{LB_PREFIX}sitewide_release_groups:{range_}:{count}:{offset}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
-        
+
         params = {"count": min(count, 100), "offset": offset, "range": range_}
         result = await self._get("/1/stats/sitewide/release-groups", params=params)
         if not result:
             return []
-        groups = [parse_release_group(item) for item in result.get("payload", {}).get("release_groups", [])]
+        groups = [
+            parse_release_group(item)
+            for item in result.get("payload", {}).get("release_groups", [])
+        ]
         if groups:
             await self._cache.set(cache_key, groups, ttl_seconds=3600)
         return groups
-    
+
     async def get_sitewide_top_recordings(
-        self,
-        range_: str = "week",
-        count: int = 25,
-        offset: int = 0
+        self, range_: str = "week", count: int = 25, offset: int = 0
     ) -> list[ListenBrainzRecording]:
         if range_ not in ALLOWED_STATS_RANGE:
             range_ = "week"
-        
+
         cache_key = f"{LB_PREFIX}sitewide_recordings:{range_}:{count}:{offset}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
-        
+
         params = {"count": min(count, 100), "offset": offset, "range": range_}
         result = await self._get("/1/stats/sitewide/recordings", params=params)
         if not result:
             return []
-        recordings = [parse_recording(item) for item in result.get("payload", {}).get("recordings", [])]
+        recordings = [
+            parse_recording(item)
+            for item in result.get("payload", {}).get("recordings", [])
+        ]
         if recordings:
             await self._cache.set(cache_key, recordings, ttl_seconds=3600)
         return recordings
-    
+
     async def get_artist_top_recordings(
-        self,
-        artist_mbid: str,
-        count: int = 10
+        self, artist_mbid: str, count: int = 10
     ) -> list[ListenBrainzRecording]:
         cache_key = f"{LB_PREFIX}artist_recordings:{artist_mbid}:{count}"
         cached = await self._cache.get(cache_key)
@@ -593,8 +633,10 @@ class ListenBrainzRepository:
         if lb_popularity_degraded():
             _record_degradation("ListenBrainz popularity is temporarily unavailable")
             return []
-        
-        result = await self._get(f"/1/popularity/top-recordings-for-artist/{artist_mbid}")
+
+        result = await self._get(
+            f"/1/popularity/top-recordings-for-artist/{artist_mbid}"
+        )
         if not result:
             return []
         recordings = [parse_artist_recording(item) for item in result[:count]]
@@ -628,7 +670,7 @@ class ListenBrainzRepository:
 
         pending.sort()
         for start in range(0, len(pending), 50):
-            batch = pending[start:start + 50]
+            batch = pending[start : start + 50]
             dedupe_key = "listenbrainz:recording-metadata:" + ",".join(batch)
             result = await _metadata_deduplicator.dedupe(
                 dedupe_key,
@@ -638,20 +680,22 @@ class ListenBrainzRepository:
                 ),
             )
             if not isinstance(result, dict):
-                _record_degradation(
-                    "ListenBrainz returned no recording metadata"
-                )
+                _record_degradation("ListenBrainz returned no recording metadata")
                 continue
             payload = result
             for mbid in batch:
                 metadata = payload.get(mbid)
-                release = metadata.get("release") if isinstance(metadata, dict) else None
+                release = (
+                    metadata.get("release") if isinstance(metadata, dict) else None
+                )
                 release_group_mbid = (
                     release.get("release_group_mbid")
                     if isinstance(release, dict)
                     else None
                 )
-                cache_value = release_group_mbid if isinstance(release_group_mbid, str) else ""
+                cache_value = (
+                    release_group_mbid if isinstance(release_group_mbid, str) else ""
+                )
                 await self._cache.set(
                     f"{LB_PREFIX}recording_release_group:{mbid}",
                     cache_value,
@@ -661,53 +705,144 @@ class ListenBrainzRepository:
                     resolved[mbid] = cache_value
 
         return resolved
-    
+
+    async def get_release_group_genres_batch(
+        self, release_group_mbids: list[str]
+    ) -> dict[str, tuple[GenreCandidate, ...]]:
+        """Fetch live-verified GET-only release-group genre metadata.
+
+        Verified against production on 2026-07-21; see
+        ``listenbrainz_MANAGEMENT_API_NOTES.md``. The local 25-ID ceiling bounds
+        request URLs and response work and is not an asserted upstream limit.
+        """
+        unique_mbids = list(
+            dict.fromkeys(
+                value.strip() for value in release_group_mbids if value.strip()
+            )
+        )
+        if len(unique_mbids) > 500:
+            raise ValueError("ListenBrainz genre lookup accepts at most 500 IDs.")
+        resolved: dict[str, tuple[GenreCandidate, ...]] = {}
+        pending: list[str] = []
+        for mbid in unique_mbids:
+            cache_key = listenbrainz_management_genres_key(mbid)
+            cached = await self._cache.get(cache_key)
+            if isinstance(cached, tuple):
+                resolved[mbid] = cached
+            else:
+                pending.append(mbid)
+
+        pending.sort()
+        for start in range(0, len(pending), 25):
+            batch = pending[start : start + 25]
+            dedupe_key = "listenbrainz:management:release-group-genres:" + ",".join(
+                batch
+            )
+            result = await _metadata_deduplicator.dedupe(
+                dedupe_key,
+                lambda batch=batch: self._get(
+                    "/1/metadata/release_group/",
+                    params={
+                        "release_group_mbids": ",".join(batch),
+                        "inc": "artist tag release",
+                    },
+                ),
+            )
+            if result is None:
+                raise ExternalServiceError(
+                    "ListenBrainz returned no release-group metadata."
+                )
+            try:
+                decoded = msgspec.convert(
+                    result,
+                    type=dict[str, LbManagementReleaseGroupMetadata],
+                )
+            except (msgspec.ValidationError, TypeError, ValueError) as error:
+                _record_degradation(
+                    "ListenBrainz returned invalid release-group metadata"
+                )
+                raise ExternalServiceError(
+                    "ListenBrainz returned invalid release-group metadata."
+                ) from error
+
+            fetched_at = time.time()
+            for mbid in batch:
+                metadata = decoded.get(mbid)
+                tagged_values = (
+                    tuple(
+                        ("release_group", value) for value in metadata.tag.release_group
+                    )
+                    + tuple(("artist", value) for value in metadata.tag.artist)
+                    if metadata is not None
+                    else ()
+                )
+                revision_material = "|".join(
+                    f"{value.tag}:{value.count}:{value.genre_mbid or ''}"
+                    for _entity, value in tagged_values
+                )
+                revision = hashlib.sha256(revision_material.encode()).hexdigest()
+                candidates = tuple(
+                    GenreCandidate(
+                        display_name=value.tag,
+                        folded_name=" ".join(value.tag.split()).casefold(),
+                        provider="listenbrainz",
+                        provider_entity=entity,
+                        genre_mbid=value.genre_mbid,
+                        count=value.count,
+                        curated=bool(value.genre_mbid),
+                        fetched_at=fetched_at,
+                        source_document_revision=revision,
+                    )
+                    for entity, value in tagged_values
+                    if value.tag
+                )
+                resolved[mbid] = candidates
+                await self._cache.set(
+                    listenbrainz_management_genres_key(mbid),
+                    candidates,
+                    ttl_seconds=3600,
+                )
+        return resolved
+
     async def get_similar_users(
-        self,
-        username: str | None = None
+        self, username: str | None = None
     ) -> list[dict[str, Any]]:
         user = username or self._username
         if not user:
             return []
-        
+
         result = await self._get(f"/1/user/{user}/similar-users")
-        
+
         if not result:
             return []
-        
+
         return result.get("payload", [])
-    
+
     async def get_user_fresh_releases(
-        self,
-        username: str | None = None,
-        past: bool = True,
-        future: bool = False
+        self, username: str | None = None, past: bool = True, future: bool = False
     ) -> list[dict[str, Any]]:
         user = username or self._username
         if not user:
             return []
-        
+
         cache_key = f"{LB_PREFIX}fresh_releases:{user}:{past}:{future}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
-        
+
         params = {"past": str(past).lower(), "future": str(future).lower()}
         result = await self._get(f"/1/user/{user}/fresh_releases", params=params)
-        
+
         if not result:
             return []
-        
+
         releases = result.get("payload", {}).get("releases", [])
         if releases:
             await self._cache.set(cache_key, releases, ttl_seconds=3600)
         return releases
 
     async def get_similar_artists(
-        self,
-        artist_mbid: str,
-        max_similar: int = 15,
-        mode: str = "easy"
+        self, artist_mbid: str, max_similar: int = 15, mode: str = "easy"
     ) -> list[ListenBrainzSimilarArtist]:
         cache_key = f"{LB_PREFIX}similar_artists:{artist_mbid}:{max_similar}:{mode}"
         cached = await self._cache.get(cache_key)
@@ -739,9 +874,7 @@ class ListenBrainzRepository:
         return similar_artists
 
     async def get_artist_top_release_groups(
-        self,
-        artist_mbid: str,
-        count: int = 10
+        self, artist_mbid: str, count: int = 10
     ) -> list[ListenBrainzReleaseGroup]:
         cache_key = f"{LB_PREFIX}artist_release_groups:{artist_mbid}:{count}"
         cached = await self._cache.get(cache_key)
@@ -752,32 +885,35 @@ class ListenBrainzRepository:
             _record_degradation("ListenBrainz popularity is temporarily unavailable")
             return []
 
-        result = await self._get(f"/1/popularity/top-release-groups-for-artist/{artist_mbid}")
+        result = await self._get(
+            f"/1/popularity/top-release-groups-for-artist/{artist_mbid}"
+        )
         if not result or not isinstance(result, list):
             return []
 
         release_groups = []
         for item in result[:count]:
             rg = item.get("release_group", {})
-            release_groups.append(ListenBrainzReleaseGroup(
-                release_group_name=rg.get("name", "Unknown"),
-                artist_name=item.get("artist", {}).get("name", "Unknown"),
-                listen_count=item.get("total_listen_count", 0),
-                release_group_mbid=item.get("release_group_mbid"),
-                caa_release_mbid=rg.get("caa_release_mbid"),
-                caa_id=rg.get("caa_id"),
-            ))
+            release_groups.append(
+                ListenBrainzReleaseGroup(
+                    release_group_name=rg.get("name", "Unknown"),
+                    artist_name=item.get("artist", {}).get("name", "Unknown"),
+                    listen_count=item.get("total_listen_count", 0),
+                    release_group_mbid=item.get("release_group_mbid"),
+                    caa_release_mbid=rg.get("caa_release_mbid"),
+                    caa_id=rg.get("caa_id"),
+                )
+            )
 
         if release_groups:
             await self._cache.set(cache_key, release_groups, ttl_seconds=3600)
         return release_groups
 
     async def get_release_group_popularity_batch(
-        self,
-        release_group_mbids: list[str]
+        self, release_group_mbids: list[str]
     ) -> dict[str, int]:
         """Get listen counts for multiple release groups in a single call.
-        
+
         Returns a dict mapping mbid -> total_listen_count.
         """
         if not release_group_mbids:
@@ -788,8 +924,7 @@ class ListenBrainzRepository:
             return {}
 
         result = await self._post(
-            "/1/popularity/release-group",
-            {"release_group_mbids": release_group_mbids}
+            "/1/popularity/release-group", {"release_group_mbids": release_group_mbids}
         )
         if not result or not isinstance(result, list):
             return {}
@@ -889,13 +1024,15 @@ class ListenBrainzRepository:
             mb_ext = ext.get("https://musicbrainz.org/doc/jspf#playlist", {})
             algo = mb_ext.get("additional_metadata", {}).get("algorithm_metadata", {})
 
-            playlists.append({
-                "playlist_id": playlist_id,
-                "identifier": identifier,
-                "title": pl.get("title", ""),
-                "date": pl.get("date", ""),
-                "source_patch": algo.get("source_patch", ""),
-            })
+            playlists.append(
+                {
+                    "playlist_id": playlist_id,
+                    "identifier": identifier,
+                    "title": pl.get("title", ""),
+                    "date": pl.get("date", ""),
+                    "source_patch": algo.get("source_patch", ""),
+                }
+            )
 
         if playlists:
             await self._cache.set(cache_key, playlists, ttl_seconds=21600)

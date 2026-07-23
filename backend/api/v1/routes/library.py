@@ -20,7 +20,6 @@ from api.v1.schemas.library import (
     NativeLibraryStatsResponse,
     LibraryAlbumStatusResponse,
     LibraryTrackResponse,
-    TrackTagUpdateRequest,
 )
 from core.dependencies import (
     get_album_service,
@@ -169,7 +168,9 @@ async def get_library_membership(
     library_service: LibraryService = Depends(get_library_service),
 ) -> LibraryMembershipResponse:
     album_ids = list(
-        dict.fromkeys(value.strip().casefold() for value in body.album_ids if value.strip())
+        dict.fromkeys(
+            value.strip().casefold() for value in body.album_ids if value.strip()
+        )
     )
     if len(album_ids) > 500:
         raise ValidationError("Library membership accepts at most 500 album IDs.")
@@ -285,31 +286,6 @@ async def get_track_tags(
     scanner: LibraryScanner = Depends(get_library_scanner),
 ):
     return await scanner.read_track_tags(file_id)
-
-
-@router.post("/tracks/{file_id}", response_model=LibraryTrackResponse)
-async def update_track_tags(
-    file_id: str,
-    current_user: CurrentAdminDep,
-    body: TrackTagUpdateRequest = MsgSpecBody(TrackTagUpdateRequest),
-    scanner: LibraryScanner = Depends(get_library_scanner),
-):
-    new_tag = AudioTag(
-        title=body.title,
-        artist=body.artist,
-        album=body.album,
-        track_number=body.track_number,
-        album_artist=body.album_artist,
-        disc_number=body.disc_number,
-        year=body.year,
-        genre=body.genre,
-        musicbrainz_release_group_id=body.musicbrainz_release_group_id,
-        musicbrainz_release_id=body.musicbrainz_release_id,
-        musicbrainz_recording_id=body.musicbrainz_recording_id,
-        musicbrainz_artist_id=body.musicbrainz_artist_id,
-        musicbrainz_album_artist_id=body.musicbrainz_album_artist_id,
-    )
-    return await scanner.update_track_tags(file_id, new_tag)
 
 
 def _log_rescan_exception(task: asyncio.Task) -> None:

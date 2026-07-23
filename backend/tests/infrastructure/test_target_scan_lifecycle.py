@@ -16,6 +16,9 @@ from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.audio import AudioInfo, AudioTag
 from models.library_work import ScanRequest, ScanRun, ScanScope, ScanState
 from services.native.library_indexer import INDEX_BATCH_SIZE, LibraryIndexer
+from services.native.library_filesystem_coordinator import (
+    LibraryFilesystemCoordinator,
+)
 from services.native.library_inventory_scanner import (
     DirectoryWalker,
     INVENTORY_BATCH_SIZE,
@@ -729,6 +732,107 @@ async def test_scan_transaction_ratios_and_tag_read_gates(
     assert changed is not None and changed.state == "completed"
     assert len(reader.calls) == file_count + 1
     assert await target_store.get_catalog_revision() == catalog_revision
+
+
+@pytest.mark.asyncio
+async def test_scan_ignores_reserved_management_artifacts(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    (root / "track-1.flac").write_bytes(b"audio")
+    (root / ".droppedneedle-management-job-track-2.flac").write_bytes(b"temp")
+    hidden = root / ".droppedneedle-management-job"
+    hidden.mkdir()
+    (hidden / "track-3.flac").write_bytes(b"backup")
+    resolver = _resolver(root)
+    filesystem = LibraryFilesystemCoordinator()
+    reader = _TagReader()
+    coordinator = LibraryScanCoordinator(
+        target_store,
+        LibraryInventoryScanner(target_store, filesystem_coordinator=filesystem),
+        LibraryIndexer(target_store, reader, filesystem_coordinator=filesystem),
+        LibraryReconciler(target_store, filesystem),
+        lambda: resolver,
+    )
+
+    await coordinator.request_run(_request(resolver))
+    completed = await coordinator.run_once({"root-a": root})
+
+    assert completed is not None and completed.state == "completed"
+    assert [path.name for path in reader.calls] == ["track-1.flac"]
+    assert len(await target_store.search_local_tracks("Track")) == 1
+
+
+@pytest.mark.asyncio
+async def test_publication_after_discovery_cannot_mark_new_catalog_path_missing(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    source = root / "track-1.flac"
+    source.write_bytes(b"audio")
+    resolver = _resolver(root)
+    filesystem = LibraryFilesystemCoordinator()
+    coordinator = LibraryScanCoordinator(
+        target_store,
+        LibraryInventoryScanner(target_store, filesystem_coordinator=filesystem),
+        LibraryIndexer(target_store, _TagReader(), filesystem_coordinator=filesystem),
+        LibraryReconciler(target_store, filesystem),
+        lambda: resolver,
+    )
+    await coordinator.request_run(_request(resolver))
+    first = await coordinator.run_once({"root-a": root})
+    assert first is not None and first.state == "completed"
+    track = (await target_store.search_local_tracks("Track"))[0]
+
+    requested = await coordinator.request_run(_request(resolver))
+    run = await target_store.claim_next_scan_run(now=20)
+    assert run is not None and run.id == requested.run_id
+    _, scopes, _ = await target_store.get_scan_run(run.id)
+
+    async def continue_work(_run_id: str, _revision: str) -> bool:
+        return True
+
+    run = await coordinator._inventory.discover(
+        run, scopes, {"root-a": root}, resolver, continue_work
+    )
+    destination = root / "renamed-track-1.flac"
+    async with filesystem.write("root-a"):
+        source.rename(destination)
+        stat = destination.stat()
+        with sqlite3.connect(tmp_path / "target.db") as connection:
+            connection.execute(
+                "UPDATE local_tracks SET file_path=?, relative_path=?, "
+                "file_size_bytes=?, file_mtime_ns=? WHERE id=?",
+                (
+                    str(destination),
+                    destination.name,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    track["id"],
+                ),
+            )
+
+    run = await target_store.transition_scan_run(
+        run.id,
+        expected_state="discovering",
+        expected_revision=run.row_revision,
+        new_state="indexing",
+        now=21,
+    )
+    run = await target_store.transition_scan_run(
+        run.id,
+        expected_state="indexing",
+        expected_revision=run.row_revision,
+        new_state="reconciling",
+        now=22,
+    )
+    await coordinator._reconciler.reconcile(run.id, scopes, continue_work)
+
+    moved = await target_store.get_target_track_by_path(str(destination))
+    assert moved is not None
+    assert moved["availability"] == "indexed"
 
 
 @pytest.mark.asyncio

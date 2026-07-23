@@ -5,9 +5,10 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import msgspec
@@ -43,6 +44,8 @@ AUTOMATIC_SAFE_EVIDENCE_REASONS = frozenset(
 REVIEW_STATES = frozenset({"needs_review", "keep_tagged", "excluded", "resolved"})
 REVIEW_POLICIES = frozenset({"automatic", "local_metadata", "excluded"})
 ACTIVE_JOB_STATES = frozenset({"queued", "running", "paused"})
+
+logger = logging.getLogger(__name__)
 
 
 def _encode_cursor(sort: str, value: object, row_id: str) -> str:
@@ -103,9 +106,11 @@ class LibraryReviewService:
         self,
         store: NativeLibraryStore,
         resolver_getter: Callable[[], LibraryPolicyResolver] | None = None,
+        on_identified: Callable[[str, str], Awaitable[object]] | None = None,
     ) -> None:
         self._store = store
         self._resolver_getter = resolver_getter
+        self._on_identified = on_identified
 
     def _resolve_selection_filter(
         self, normalized_filter: dict[str, str]
@@ -471,6 +476,8 @@ class LibraryReviewService:
             now=time.time() if now is None else now,
         )
         review = result["review"]
+        if review["local_album_id"] is not None:
+            await self._schedule_scan_management(str(review["local_album_id"]))
         return ReviewActionResponse(
             review_id=review_id,
             state=str(review["state"]),
@@ -478,6 +485,21 @@ class LibraryReviewService:
             catalog_revision=int(result["catalog_revision"]),
             action_id=str(result["action_id"]),
         )
+
+    async def _schedule_scan_management(self, local_album_id: str) -> None:
+        if self._on_identified is None:
+            return
+        context = await self._store.get_album_identification_context(local_album_id)
+        if context is None or not context["tracks"]:
+            return
+        policy_revision = album_input_revisions(context["tracks"])[2]
+        try:
+            await self._on_identified(local_album_id, policy_revision)
+        except Exception:  # noqa: BLE001 - the identity decision is already committed
+            logger.warning(
+                "Automatic scan-discovered management scheduling failed",
+                exc_info=True,
+            )
 
     async def preview_bulk(
         self, request: BulkReviewPreviewRequest, *, now: float | None = None

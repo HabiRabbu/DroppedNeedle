@@ -78,6 +78,7 @@ class MBTrack(AppStruct):
     absolute_position: int
     length_ms: int | None = None
     recording_mbid: str | None = None
+    release_track_mbid: str | None = None
 
 
 class _ReleaseMeta(AppStruct):
@@ -515,11 +516,15 @@ class AlbumIdentifier:
                 continue
             if fallback_id is None:
                 fallback_id = rel_id
-            count = sum(int(m.get("track-count") or 0) for m in (rel.get("media") or []))
+            count = sum(
+                int(m.get("track-count") or 0) for m in (rel.get("media") or [])
+            )
             if count <= 0:
                 continue
             official = 0 if rel.get("status") == "Official" else 1
-            scored.append((abs(count - target_count), official, rel.get("date") or "9999", rel_id))
+            scored.append(
+                (abs(count - target_count), official, rel.get("date") or "9999", rel_id)
+            )
         if scored:
             scored.sort()
             release_id = scored[0][3]
@@ -530,7 +535,9 @@ class AlbumIdentifier:
 
         try:
             release = await self._mb_repo.get_release_by_id(
-                release_id, includes=["recordings"], priority=RequestPriority.BACKGROUND_SYNC
+                release_id,
+                includes=["recordings"],
+                priority=RequestPriority.BACKGROUND_SYNC,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Release fetch failed for %s: %s", release_id, exc)
@@ -576,6 +583,7 @@ def _build_mb_tracks(release: dict) -> list[MBTrack]:
                     absolute_position=absolute,
                     length_ms=track.get("length") or recording.get("length"),
                     recording_mbid=recording.get("id"),
+                    release_track_mbid=track.get("id"),
                 )
             )
     return tracks

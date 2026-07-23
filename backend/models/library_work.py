@@ -7,7 +7,13 @@ from typing import Literal
 import msgspec
 
 from infrastructure.msgspec_fastapi import AppStruct
-from models.local_catalog import LocalAlbum, LocalArtist, LocalArtistCredit, LocalTrack
+from models.local_catalog import (
+    LocalAlbum,
+    LocalArtist,
+    LocalArtistCredit,
+    LocalTrack,
+    LocalTrackGenre,
+)
 
 
 class IdentificationJob(AppStruct):
@@ -128,7 +134,9 @@ class ScanControlResult(AppStruct):
 
 class OperationJob(AppStruct):
     id: str
-    kind: Literal["bulk_review_apply", "repair", "explicit_reidentification"]
+    kind: Literal[
+        "bulk_review_apply", "repair", "explicit_reidentification", "library_management"
+    ]
     requested_by_user_id: str | None = None
     state: str = "queued"
     input_catalog_revision: int | None = None
@@ -186,6 +194,10 @@ class ScannedTrackWrite(msgspec.Struct):
     relative_path: str
     comparison_result: Literal["new", "changed"]
     grouping_context: str
+    artists: list[LocalArtist] = msgspec.field(default_factory=list)
+    album_credits: list[LocalArtistCredit] = msgspec.field(default_factory=list)
+    track_credits: list[LocalArtistCredit] = msgspec.field(default_factory=list)
+    genres: list[LocalTrackGenre] = msgspec.field(default_factory=list)
 
 
 class MigrationProvenance(AppStruct):

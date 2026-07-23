@@ -46,6 +46,7 @@ from api.v1.routes import (
     jellyfin_library,
     lastfm,
     lidarr_import,
+    library_management,
     library_operations_target,
     library_contributions,
     library_policies_target,
@@ -155,6 +156,7 @@ from core.dependencies import (
     get_library_contribution_verification_worker,
     get_background_workload_gate,
     get_library_policy_resolver,
+    get_library_management_recovery_service,
 )
 from core.config import get_settings
 from core.exception_handlers import (
@@ -293,6 +295,7 @@ def create_isolated_target_application(
         status.router,
         covers.router,
         library_policies_target.router,
+        library_management.router,
         home.router,
         discover.router,
         library_operations_target.router,
@@ -390,6 +393,7 @@ def _include_complete_target_routes(app: FastAPI) -> None:
     v1.include_router(albums.router, dependencies=[Depends(_require_provider_album_id)])
     for router in (
         library_policies_target.router,
+        library_management.router,
         home.router,
         wrapped.router,
         discovery_batches.router,
@@ -553,6 +557,18 @@ async def production_target_lifespan(app: FastAPI):
             cache_dir=settings.cache_dir,
         )
         logger.info("target_startup.data_ratchets_completed")
+    async with target_startup_progress(settings, "management_recovery"):
+        await get_target_library_operation_supervisor().recover()
+        recovery = await get_library_management_recovery_service().recover_startup()
+        logger.info(
+            "target_startup.management_recovery_completed examined=%s recovered=%s "
+            "rolled_back=%s needs_attention=%s skipped=%s",
+            recovery.examined_bundles,
+            recovery.recovered_bundles,
+            recovery.rolled_back_bundles,
+            recovery.needs_attention_bundles,
+            recovery.skipped_bundles,
+        )
     async with target_startup_progress(settings, "operational_runtime"):
         settings.instance_id = preferences.get_instance_id()
         cache_instance = get_cache()
@@ -598,7 +614,10 @@ async def production_target_lifespan(app: FastAPI):
             get_target_album_identification_service,
             get_background_workload_gate(),
         )
-        start_target_operation_worker(get_target_library_operation_supervisor)
+        start_target_operation_worker(
+            get_target_library_operation_supervisor,
+            get_library_management_recovery_service,
+        )
         start_library_contribution_verification_worker(
             get_library_contribution_verification_worker
         )

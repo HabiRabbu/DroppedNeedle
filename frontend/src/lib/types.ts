@@ -170,6 +170,7 @@ export type Track = {
 	title: string;
 	length?: number | null;
 	recording_id?: string | null;
+	release_track_id?: string | null;
 };
 
 export type AlbumBasicInfo = {
@@ -1987,22 +1988,6 @@ export interface LibraryScanSchedule {
 	last_scan_success: boolean;
 	/** Server timezone label for the daily-time caption; present on reads only. */
 	server_timezone?: string;
-}
-
-export interface TrackTagUpdate {
-	title: string;
-	artist: string;
-	album: string;
-	track_number: number;
-	album_artist: string | null;
-	disc_number: number;
-	year: number | null;
-	genre: string | null;
-	musicbrainz_release_group_id: string | null;
-	musicbrainz_release_id: string | null;
-	musicbrainz_recording_id: string | null;
-	musicbrainz_artist_id: string | null;
-	musicbrainz_album_artist_id: string | null;
 }
 
 export interface LibraryActionResponse {

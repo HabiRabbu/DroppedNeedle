@@ -33,6 +33,7 @@
 	import LibraryWorkDialog from './LibraryWorkDialog.svelte';
 	import LibraryRunHistory from './LibraryRunHistory.svelte';
 	import LibraryRepairPanel from './LibraryRepairPanel.svelte';
+	import LibraryManagementControlRoom from './LibraryManagementControlRoom.svelte';
 
 	const activityQuery = getLibraryActivityQuery(() => authStore.user?.id);
 	const runsQuery = getCurrentLibraryRunsQuery(() => authStore.isAdmin);
@@ -193,6 +194,10 @@
 			<h2 id="library-operations-title" class="font-display text-2xl font-bold">
 				Library operations
 			</h2>
+			<p class="mt-1 max-w-2xl text-sm text-base-content/55">
+				Scanning and identification read files and update DroppedNeedle. They do not change your
+				music files. Library Management is the separate write system below.
+			</p>
 		</div>
 		<p class="text-sm text-base-content/55">
 			{#if scheduleQuery.data?.scan_frequency === 'daily'}Next scan: {scheduleQuery.data
@@ -515,6 +520,8 @@
 			>
 		</div>
 	{/if}
+
+	<LibraryManagementControlRoom />
 
 	<div id="recent-runs"><LibraryRunHistory /></div>
 	<LibraryRepairPanel />

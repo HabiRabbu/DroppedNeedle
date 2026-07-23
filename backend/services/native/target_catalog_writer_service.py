@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
-
-import msgspec
 
 from core.exceptions import ExternalServiceError, ResourceNotFoundError, ValidationError
 from infrastructure.audio.tagger import AudioTagger
@@ -18,7 +15,6 @@ from models.audio import AudioTag
 from services.local_files_service import LocalFilesService
 from services.native.target_native_library_service import TargetNativeLibraryService
 from services.native.recycle_bin import recycle
-from services.native.file_revision import revision_from_stat
 
 
 class TargetCatalogWriterService:
@@ -43,45 +39,6 @@ class TargetCatalogWriterService:
         except (OSError, ValueError) as error:
             raise ValidationError("Could not read the audio file.") from error
         return tag
-
-    async def update_tags(
-        self,
-        track_id: str,
-        tag: AudioTag,
-        *,
-        actor_user_id: str,
-    ):
-        row = await self._store.get_target_track(track_id)
-        if row is None or row["availability"] != "indexed":
-            raise ResourceNotFoundError("Library track not found.")
-        path = await self._validated_path(track_id)
-        tag_to_write = msgspec.structs.replace(
-            tag, compilation=bool(row.get("is_compilation"))
-        )
-        try:
-            await asyncio.to_thread(self._tagger.write_mb_tags, path, tag_to_write)
-            persisted_tag, info = await asyncio.to_thread(self._tagger.read_tags, path)
-            stat = await asyncio.to_thread(path.stat)
-        except (OSError, ValueError) as error:
-            raise ValidationError("Could not write tags to the audio file.") from error
-        await self._store.update_target_track_tags(
-            track_id,
-            tag=persisted_tag,
-            info=info,
-            file_size_bytes=stat.st_size,
-            file_mtime_ns=stat.st_mtime_ns,
-            stat_revision=revision_from_stat(stat),
-            tag_revision=hashlib.sha256(msgspec.json.encode(persisted_tag)).hexdigest(),
-            actor_user_id=actor_user_id,
-            updated_at=time.time(),
-        )
-        updated = await self._store.get_target_track(track_id)
-        if updated is None:
-            raise ResourceNotFoundError("Library track not found.")
-        projected = await self._library.track(track_id)
-        if projected is None:
-            raise ResourceNotFoundError("Library track not found.")
-        return projected
 
     async def remove_track(
         self,

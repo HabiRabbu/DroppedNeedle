@@ -23,6 +23,7 @@ LASTFM_DEPENDENT_FACTORIES = [
     "get_target_discover_service",
     "get_target_discover_queue_manager",
     "get_lastfm_auth_service",
+    "get_genre_projection_service",
     "get_target_wrapped_service",
 ]
 

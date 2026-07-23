@@ -11,16 +11,16 @@ pick) or discards.
 
 Boundaries:
 - Only the user's own files ever enter here (an upload); nothing is fetched.
-- Identified files import download-style: album identity is stamped on the
-  file (``write_album_identity``), the move is atomic and cross-mount safe,
-  and the library row carries ``source='drop'``.
+- Identified files are submitted as one durable staged bundle. The shared publisher
+  stamps the minimal album identity, publishes atomically per file, and commits the
+  complete catalog unit with ``source='drop'``.
 - Duplicate policy (owner-signed): a file whose album position is already
   covered imports only when strictly better quality (the old file goes to the
   recycle bin, download-upgrade semantics); otherwise it is skipped.
 """
 
 import asyncio
-import errno
+import hashlib
 import logging
 import os
 import re
@@ -33,14 +33,23 @@ from typing import TYPE_CHECKING, Awaitable, Callable, NamedTuple
 
 import msgspec
 
-from core.exceptions import ResourceNotFoundError, ValidationError
+from core.exceptions import (
+    AutomaticManagementHoldError,
+    ResourceNotFoundError,
+    ValidationError,
+)
 from models.drop_import import DropImportItem, DropImportJob, ItemStatus, JobStatus
+from models.library_management import (
+    LibraryManagementImportBundle,
+    LibraryManagementImportFile,
+    LibraryManagementImportResult,
+)
 from services.native.album_matcher import LocalTrack, MBTrack, score_release
 from services.native.file_processor import row_covers_track
 from services.native.library_manager import _AUDIO_SUFFIXES
 from services.native.naming import NamingTemplateEngine
 from services.native.quality_tiers import tier_for, tier_rank
-from services.native.recycle_bin import recycle, resolve_bin_path
+from services.native.recycle_bin import resolve_bin_path
 
 if TYPE_CHECKING:
     from infrastructure.audio.fingerprinter import AudioFingerprinter
@@ -93,6 +102,20 @@ class _OrganiseResult(NamedTuple):
     bonus: int
 
 
+class _PlannedDropImport(NamedTuple):
+    entry: _Entry
+    target: Path
+    tag: "AudioTag"
+    recording_mbid: str | None
+    release_track_mbid: str | None
+    medium_position: int | None
+    release_track_position: int | None
+    authoritative_mapping: bool
+    confidence: float
+    replacement: dict | None
+    bonus: bool
+
+
 def _strip_stage_prefix(stem: str) -> str:
     """Drop the NNN_ collision prefix create_job adds to staged uploads."""
     return re.sub(r"^\d{3}_", "", stem) or stem
@@ -122,6 +145,14 @@ class DropImportService:
         sse_publisher: "SSEPublisher",
         on_import: OnImport,
         staging_root: Path,
+        publish_import_bundle: (
+            Callable[
+                [LibraryManagementImportBundle],
+                Awaitable[LibraryManagementImportResult],
+            ]
+            | None
+        ) = None,
+        policy_revision_getter: Callable[[], str] | None = None,
     ) -> None:
         self._store = store
         self._tagger = tagger
@@ -136,6 +167,8 @@ class DropImportService:
         self._sse = sse_publisher
         self._on_import = on_import
         self._staging_root = staging_root
+        self._publish_import_bundle = publish_import_bundle
+        self._policy_revision_getter = policy_revision_getter
         self._tasks: dict[str, asyncio.Task] = {}
 
     # -- public API --
@@ -225,7 +258,25 @@ class DropImportService:
 
         # the user's explicit choice is authoritative: full confidence, so the
         # scanner's sticky-anchor guard protects it from later re-attribution
-        result = await self._organise(entries, ident, confidence_override=1.0)
+        try:
+            result = await self._organise(
+                entries,
+                ident,
+                confidence_override=1.0,
+                idempotency_key=f"drop:{job.id}:{item.id}:manual",
+            )
+        except AutomaticManagementHoldError as hold:
+            await self._store.update_item(
+                item.id,
+                status=ItemStatus.NEEDS_REVIEW,
+                detail=(
+                    f"Library Management still holds this album ({hold.reason_code}). "
+                    "Fix the profile or provider, then retry."
+                ),
+            )
+            refreshed = await self._store.get_item(item.id)
+            assert refreshed is not None
+            return refreshed
         await self._finish_item(job, item.id, ident, result, unreadable, staged=entries)
         await self._publish_job(job)
         refreshed = await self._store.get_item(item.id)
@@ -492,7 +543,22 @@ class DropImportService:
             )
             return
 
-        result = await self._organise(entries, ident)
+        try:
+            result = await self._organise(
+                entries,
+                ident,
+                idempotency_key=f"drop:{job.id}:{item_id}:identified",
+            )
+        except AutomaticManagementHoldError as hold:
+            await self._store.update_item(
+                item_id,
+                status=ItemStatus.NEEDS_REVIEW,
+                detail=(
+                    f"Library Management held this album ({hold.reason_code}). "
+                    "Fix the profile or provider, then retry the match."
+                ),
+            )
+            return
         await self._finish_item(job, item_id, ident, result, unreadable, staged=entries)
 
     async def _finish_item(
@@ -698,6 +764,8 @@ class DropImportService:
         entries: list[_Entry],
         ident: _Identified,
         confidence_override: float | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> _OrganiseResult:
         root = self._require_library_root()
         lib = self._prefs.get_typed_library_settings_raw()
@@ -710,32 +778,127 @@ class DropImportService:
         )
         track_by_recording = {t.recording_mbid: t for t in tracks if t.recording_mbid}
 
-        imported = upgraded = skipped = bonus = 0
+        if self._publish_import_bundle is None or self._policy_revision_getter is None:
+            raise RuntimeError("The shared drop import publisher is not configured.")
+        if idempotency_key is None:
+            raise RuntimeError("A shared drop import needs a durable source ID.")
+        return await self._organise_shared(
+            entries,
+            ident,
+            root,
+            template,
+            confidence,
+            track_by_recording,
+            idempotency_key=idempotency_key,
+        )
+
+    async def _organise_shared(
+        self,
+        entries: list[_Entry],
+        ident: _Identified,
+        root: Path,
+        template: str,
+        confidence: float,
+        track_by_recording: dict[str, MBTrack],
+        *,
+        idempotency_key: str,
+    ) -> _OrganiseResult:
+        publisher = self._publish_import_bundle
+        revision_getter = self._policy_revision_getter
+        if publisher is None or revision_getter is None:
+            raise RuntimeError("The shared drop import publisher is not configured.")
+        meta, match = ident.meta, ident.match
+        planned: list[_PlannedDropImport] = []
+        skipped = 0
         for entry in entries:
             recording = match.assignments.get(str(entry.path))
             track = track_by_recording.get(recording) if recording else None
-            if track is not None:
-                outcome = await self._import_mapped(
+            value = (
+                await self._plan_shared_mapped(
                     entry, meta, track, root, template, confidence
                 )
-                if outcome == "imported":
-                    imported += 1
-                elif outcome == "upgraded":
-                    imported += 1
-                    upgraded += 1
-                else:
-                    skipped += 1
+                if track is not None
+                else self._plan_shared_bonus(entry, meta, root, template)
+            )
+            if value is None:
+                skipped += 1
             else:
-                if await self._import_bonus(entry, meta, root, template):
-                    imported += 1
-                    bonus += 1
-                else:
-                    skipped += 1
+                planned.append(value)
+        if not planned:
+            return _OrganiseResult(imported=0, upgraded=0, skipped=skipped, bonus=0)
+
+        settings = self._prefs.get_typed_library_settings_raw()
+        roots = {
+            Path(value.path).resolve(strict=False): value.id
+            for value in settings.library_roots
+        }
+        root_id = roots.get(root.resolve(strict=False))
+        if root_id is None:
+            raise RuntimeError("Import target does not resolve to one library root.")
+        policy = self._prefs.get_download_policy()
+        recycle_bin = resolve_bin_path(
+            policy.recycle_bin_path, [value.path for value in settings.library_roots]
+        )
+        requests: list[LibraryManagementImportFile] = []
+        for ordinal, value in enumerate(planned):
+            replacement_track_id = replacement_root_id = replacement_relative = None
+            recycle_bin_path = None
+            if value.replacement is not None:
+                if recycle_bin is None:
+                    raise RuntimeError("An import replacement requires a recycle bin.")
+                replacement_track_id = str(value.replacement["id"])
+                replacement_root_id = str(value.replacement["root_id"])
+                replacement_relative = str(value.replacement["relative_path"])
+                recycle_bin_path = str(recycle_bin)
+            requests.append(
+                LibraryManagementImportFile(
+                    ordinal=ordinal,
+                    input_path=str(value.entry.path),
+                    destination_root_id=root_id,
+                    destination_relative_path=value.target.relative_to(root).as_posix(),
+                    tag=value.tag,
+                    info=value.entry.info,
+                    release_group_mbid=meta.release_group_mbid,
+                    release_mbid=meta.release_mbid,
+                    recording_mbid=value.recording_mbid,
+                    release_track_mbid=value.release_track_mbid,
+                    medium_position=value.medium_position,
+                    release_track_position=value.release_track_position,
+                    authoritative_mapping=value.authoritative_mapping,
+                    confidence=value.confidence,
+                    source=_SOURCE,
+                    source_path=str(value.entry.path),
+                    replacement_local_track_id=replacement_track_id,
+                    replacement_root_id=replacement_root_id,
+                    replacement_relative_path=replacement_relative,
+                    recycle_bin_path=recycle_bin_path,
+                )
+            )
+        digest = hashlib.sha256(
+            "\n".join(
+                f"{value.entry.path.resolve(strict=False)}\0"
+                f"{value.target.resolve(strict=False)}"
+                for value in planned
+            ).encode()
+        ).hexdigest()
+        await publisher(
+            LibraryManagementImportBundle(
+                idempotency_key=(
+                    f"{idempotency_key}:{meta.release_group_mbid}:{digest}"
+                ),
+                origin="drop_import",
+                policy_revision=revision_getter(),
+                files=tuple(requests),
+            )
+        )
         return _OrganiseResult(
-            imported=imported, upgraded=upgraded, skipped=skipped, bonus=bonus
+            imported=len(planned),
+            upgraded=sum(value.replacement is not None for value in planned),
+            skipped=skipped,
+            bonus=sum(value.bonus for value in planned),
         )
 
-    async def _import_mapped(
+    async def _plan_shared_mapped(
         self,
         entry: _Entry,
         meta,  # noqa: ANN001 - album_matcher._ReleaseMeta
@@ -743,101 +906,79 @@ class DropImportService:
         root: Path,
         template: str,
         confidence: float,
-    ) -> str:
-        """Import one file mapped to an MB track. Returns 'imported', 'upgraded'
-        or 'skipped'."""
+    ) -> _PlannedDropImport | None:
         target_tag = self._target_tag(meta, track, entry.tag)
-        upgrading = False
+        replacement = None
         present = await self._library.get_file_at_position(
             meta.release_group_mbid,
             target_tag.disc_number or 1,
             target_tag.track_number,
         )
-        if present is not None:
-            covers = row_covers_track(
-                present,
-                recording_mbid=track.recording_mbid,
-                title=track.title,
-                duration_seconds=entry.info.duration_seconds,
+        if present is not None and row_covers_track(
+            present,
+            recording_mbid=track.recording_mbid,
+            title=track.title,
+            duration_seconds=entry.info.duration_seconds,
+        ):
+            new_rank = tier_rank(tier_for(entry.info.file_format, entry.info.bitrate))
+            old_rank = tier_rank(
+                tier_for(present.get("file_format") or "", present.get("bit_rate"))
             )
-            if covers:
-                new_rank = tier_rank(
-                    tier_for(entry.info.file_format, entry.info.bitrate)
-                )
-                old_rank = tier_rank(
-                    tier_for(present.get("file_format") or "", present.get("bit_rate"))
-                )
-                if new_rank <= old_rank:
-                    return "skipped"
-                old_path = Path(present["file_path"])
-                policy = self._prefs.get_download_policy()
-                bin_path = resolve_bin_path(
-                    policy.recycle_bin_path,
-                    [
-                        root.path
-                        for root in self._prefs.get_typed_library_settings_raw().library_roots
-                    ],
-                )
-                try:
-                    if bin_path is not None and old_path.exists():
-                        await asyncio.to_thread(recycle, old_path, bin_path)
-                    await self._library.soft_delete_file(str(old_path))
-                except OSError:
-                    logger.warning(
-                        "Could not recycle %s; keeping both copies", old_path
-                    )
-                upgrading = True
-            # a non-covering occupant is a squatter from an earlier wrong grab -
-            # import alongside, keep it for review (the download importer's D5 rule)
-
+            settings = self._prefs.get_typed_library_settings_raw()
+            recycle_bin = resolve_bin_path(
+                self._prefs.get_download_policy().recycle_bin_path,
+                [value.path for value in settings.library_roots],
+            )
+            if new_rank <= old_rank or recycle_bin is None:
+                return None
+            replacement = present
         target = root / self._naming.format_path(
             template, target_tag, entry.info.file_format
         )
-        if target.exists() and not upgrading:
-            return "skipped"
-        await asyncio.to_thread(self._move_into_library, entry.path, target, target_tag)
-        await self._library.upsert_file(
-            target,
-            target_tag,
-            entry.info,
-            release_group_mbid=meta.release_group_mbid,
-            release_mbid=meta.release_mbid,
+        if target.exists() and (
+            replacement is None or Path(replacement["file_path"]) != target
+        ):
+            return None
+        return _PlannedDropImport(
+            entry=entry,
+            target=target,
+            tag=target_tag,
             recording_mbid=track.recording_mbid,
+            release_track_mbid=track.release_track_mbid,
+            medium_position=track.disc,
+            release_track_position=track.position,
+            authoritative_mapping=True,
             confidence=confidence,
-            source=_SOURCE,
-            source_path=str(entry.path),
+            replacement=replacement,
+            bonus=False,
         )
-        return "upgraded" if upgrading else "imported"
 
-    async def _import_bonus(
+    def _plan_shared_bonus(
         self,
         entry: _Entry,
         meta,  # noqa: ANN001 - album_matcher._ReleaseMeta
         root: Path,
         template: str,
-    ) -> bool:
-        """A file the release's tracklist doesn't cover (bonus track, alternate
-        take): keep it with the album under its own tags, no recording claim -
-        the scanner's unmapped-album-member semantics."""
+    ) -> _PlannedDropImport | None:
         target_tag = self._target_tag(meta, None, entry.tag)
         target = root / self._naming.format_path(
             template, target_tag, entry.info.file_format
         )
         if target.exists():
-            return False
-        await asyncio.to_thread(self._move_into_library, entry.path, target, target_tag)
-        await self._library.upsert_file(
-            target,
-            target_tag,
-            entry.info,
-            release_group_mbid=meta.release_group_mbid,
-            release_mbid=meta.release_mbid,
+            return None
+        return _PlannedDropImport(
+            entry=entry,
+            target=target,
+            tag=target_tag,
             recording_mbid=None,
+            release_track_mbid=None,
+            medium_position=None,
+            release_track_position=None,
+            authoritative_mapping=False,
             confidence=_UNMAPPED_CONFIDENCE,
-            source=_SOURCE,
-            source_path=str(entry.path),
+            replacement=None,
+            bonus=True,
         )
-        return True
 
     @staticmethod
     def _target_tag(
@@ -857,6 +998,7 @@ class DropImportService:
             disc_number=(track.disc if track else file_tag.disc_number) or 1,
             year=meta.year or file_tag.year,
             genre=file_tag.genre,
+            genres=list(file_tag.genres),
             musicbrainz_release_group_id=meta.release_group_mbid,
             musicbrainz_release_id=meta.release_mbid,
             musicbrainz_recording_id=(
@@ -868,38 +1010,6 @@ class DropImportService:
             acoustid_id=file_tag.acoustid_id,
             compilation=file_tag.compilation or meta.is_various,
         )
-
-    def _move_into_library(self, source: Path, target_path: Path, target_tag) -> None:  # noqa: ANN001
-        """Stage-then-publish move, cross-mount safe (the download importer's
-        pattern): rename the source onto the library mount when possible, else
-        copy; stamp album identity on the staged copy, never the original; and
-        publish with an atomic ``os.replace``. A failure restores the source."""
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target_path.parent / f".{target_path.stem}.{uuid.uuid4().hex[:8]}.part"
-        consumed_source = False
-        try:
-            try:
-                os.replace(source, tmp)  # same mount: atomic, no copy
-                consumed_source = True
-            except OSError as exc:
-                if exc.errno != errno.EXDEV:
-                    raise
-                shutil.copyfile(source, tmp)
-                try:
-                    shutil.copystat(source, tmp)
-                except OSError:
-                    pass  # some filesystems reject metadata even for the owner
-            self._tagger.write_album_identity(tmp, target_tag)
-            os.replace(tmp, target_path)
-        except BaseException:
-            if consumed_source:
-                try:
-                    os.replace(tmp, source)
-                except OSError:
-                    logger.warning("Could not restore staged source %s", source)
-            else:
-                tmp.unlink(missing_ok=True)
-            raise
 
     # -- post-import hooks --
 

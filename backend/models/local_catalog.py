@@ -10,9 +10,7 @@ from infrastructure.msgspec_fastapi import AppStruct
 
 ArtistKind = Literal["person", "group", "various_artists", "unknown"]
 Availability = Literal["indexed", "excluded", "missing"]
-StatRevisionKind = Literal[
-    "exact", "legacy_float", "legacy_review", "unclassified"
-]
+StatRevisionKind = Literal["exact", "legacy_float", "legacy_review", "unclassified"]
 IdentificationDecisionSource = Literal[
     "embedded", "automatic", "manual", "legacy_import"
 ]
@@ -35,6 +33,18 @@ class LocalArtistCredit(AppStruct):
     position: int
     role: str = "primary"
     credited_name: str | None = None
+    join_phrase: str = ""
+
+
+class LocalTrackGenre(AppStruct):
+    local_track_id: str
+    position: int
+    name: str
+    folded_name: str
+    source: Literal["local", "musicbrainz", "listenbrainz", "lastfm", "override"]
+    genre_mbid: str | None = None
+    weight: int | None = None
+    source_document_revision: str | None = None
 
 
 class LocalAlbum(AppStruct):
@@ -144,6 +154,9 @@ class LocalTrackExternalIdentity(AppStruct):
     local_track_id: str
     recording_mbid: str
     release_mbid: str | None = None
+    release_track_mbid: str | None = None
+    medium_position: int | None = None
+    release_track_position: int | None = None
     decision_source: IdentificationDecisionSource = "automatic"
     attempt_id: str | None = None
     selected_at: float = 0.0
@@ -182,3 +195,4 @@ class CatalogMembership(AppStruct):
     track_credits: dict[str, list[LocalArtistCredit]] = msgspec.field(
         default_factory=dict
     )
+    track_genres: dict[str, list[LocalTrackGenre]] = msgspec.field(default_factory=dict)

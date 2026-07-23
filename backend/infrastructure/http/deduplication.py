@@ -31,11 +31,7 @@ class RequestDeduplicator:
         """Clear all pending deduplication entries (e.g. after endpoint change)."""
         self._pending.clear()
 
-    async def dedupe(
-        self,
-        key: str,
-        coro_factory: Callable[[], Awaitable[T]]
-    ) -> T:
+    async def dedupe(self, key: str, coro_factory: Callable[[], Awaitable[T]]) -> T:
         retries = 0
         while True:
             async with self._lock:
@@ -66,6 +62,10 @@ class RequestDeduplicator:
                 except BaseException as exc:
                     if not future.done():
                         future.set_exception(exc)
+                        # The leader re-raises directly. Mark the exception retrieved so
+                        # a request with no followers does not emit "Future exception was
+                        # never retrieved"; followers can still await and receive it.
+                        future.exception()
                     raise
                 finally:
                     if not future.done():
@@ -105,11 +105,14 @@ def deduplicate(key_func: Callable[..., str]):
         async def get_artist(self, artist_id: str) -> Artist:
             ...
     """
+
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         @wraps(func)
         async def wrapper(*args, **kwargs) -> T:
             key = key_func(*args, **kwargs)
             dedup = get_deduplicator()
             return await dedup.dedupe(key, lambda: func(*args, **kwargs))
+
         return wrapper
+
     return decorator

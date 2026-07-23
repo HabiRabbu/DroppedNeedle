@@ -19,6 +19,7 @@ from models.library_work import (
     ScanScope,
 )
 from services.native.library_indexer import LibraryIndexer
+from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
 from services.native.library_inventory_scanner import LibraryInventoryScanner
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.library_reconciler import LibraryReconciler
@@ -41,6 +42,7 @@ class LibraryScanCoordinator:
         *,
         clock: Callable[[], float] = time.time,
         workload_gate: BackgroundWorkloadGate | None = None,
+        filesystem_coordinator: LibraryFilesystemCoordinator | None = None,
     ) -> None:
         self._store = store
         self._inventory = inventory
@@ -50,6 +52,7 @@ class LibraryScanCoordinator:
         self._events = events
         self._clock = clock
         self._workload_gate = workload_gate
+        self._filesystem = filesystem_coordinator
         self._last_progress_log: dict[str, float] = {}
         self._pending_control_run_ids: set[str] = set()
 
@@ -61,8 +64,10 @@ class LibraryScanCoordinator:
         counters = run.counters
         total = int(counters.get("total_count", 0))
         inspected = int(counters.get("inspected_count", 0))
-        percentage = 100.0 if run.state == "completed" else (
-            inspected * 100.0 / total if total else 0.0
+        percentage = (
+            100.0
+            if run.state == "completed"
+            else (inspected * 100.0 / total if total else 0.0)
         )
         elapsed = max(0.0, now - (run.started_at or now))
         throughput = inspected / elapsed if elapsed else 0.0
@@ -157,6 +162,8 @@ class LibraryScanCoordinator:
             await self._events.publish(run, event="scan.transition")
         if run.terminal_at is not None:
             await self._store.flush_scan_invalidation(terminal=True)
+            if self._filesystem is not None:
+                self._filesystem.forget_scan(run.id)
         self._log_progress(run, f"control_{control}", force=True)
         return ScanControlResult(
             run_id=run.id,
@@ -199,6 +206,8 @@ class LibraryScanCoordinator:
                 settled, "pause" if settled.state == "paused" else "stop", force=True
             )
             self._pending_control_run_ids.discard(settled.id)
+            if settled.state == "cancelled" and self._filesystem is not None:
+                self._filesystem.forget_scan(settled.id)
             return settled
 
     async def checkpoint(self, run_id: str, frozen_policy_revision: str) -> bool:
@@ -230,6 +239,8 @@ class LibraryScanCoordinator:
                 )
             await self._store.flush_scan_invalidation(terminal=True)
             self._pending_control_run_ids.discard(run.id)
+            if self._filesystem is not None:
+                self._filesystem.forget_scan(run.id)
             return False
         if run.state == "pausing":
             await self._settle_pending_control(run.id)
@@ -271,6 +282,8 @@ class LibraryScanCoordinator:
                 if self._events is not None:
                     await self._events.publish(failed, event="scan.transition")
                 await self._store.flush_scan_invalidation(terminal=True)
+                if self._filesystem is not None:
+                    self._filesystem.forget_scan(failed.id)
             raise
         finally:
             self._pending_control_run_ids.discard(run.id)
@@ -374,4 +387,6 @@ class LibraryScanCoordinator:
         await self._store.flush_scan_invalidation(terminal=True)
         self._log_progress(run, "completion", force=True)
         self._last_progress_log.pop(run.id, None)
+        if self._filesystem is not None:
+            self._filesystem.forget_scan(run.id)
         return run

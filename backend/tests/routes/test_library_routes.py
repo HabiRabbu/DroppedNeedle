@@ -20,7 +20,7 @@ from core.exceptions import ResourceNotFoundError
 from infrastructure.persistence.library_db import LibraryDB
 from middleware import _get_current_admin, _get_current_curator
 from models.audio import AudioInfo, AudioTag
-from services.native.library_manager import LibraryManager, LibraryTrack
+from services.native.library_manager import LibraryManager
 from tests.helpers import (
     build_test_client,
     mock_user,
@@ -284,54 +284,6 @@ async def test_albums_filter_by_format(app, manager):
     body = client.get("/library/albums?format=flac").json()
     assert body["total"] == 1
     assert body["items"][0]["release_group_mbid"] == "rg-ok"
-
-
-# tag-write route wiring; scanner logic covered in test_library_scanner
-
-_VALID_TAG_BODY = {
-    "title": "New Title",
-    "artist": "Radiohead",
-    "album": "OK Computer",
-    "track_number": 1,
-    "musicbrainz_release_group_id": "rg-ok",
-}
-
-
-def test_update_track_tags_returns_updated_track(app):
-    scanner = AsyncMock()
-    scanner.update_track_tags = AsyncMock(
-        return_value=LibraryTrack(track_title="New Title", file_path="/music/a.flac")
-    )
-    app.dependency_overrides[get_library_scanner] = lambda: scanner
-    override_user_auth(app, role="admin")
-    override_admin_auth(app)
-    client = build_test_client(app)
-    resp = client.post("/library/tracks/file-1", json=_VALID_TAG_BODY)
-    assert resp.status_code == 200
-    assert resp.json()["track_title"] == "New Title"
-    scanner.update_track_tags.assert_awaited_once()
-
-
-def test_update_track_tags_unknown_file_returns_404(app):
-    scanner = AsyncMock()
-    scanner.update_track_tags = AsyncMock(side_effect=ResourceNotFoundError("nope"))
-    app.dependency_overrides[get_library_scanner] = lambda: scanner
-    override_user_auth(app, role="admin")
-    override_admin_auth(app)
-    client = build_test_client(app)
-    resp = client.post("/library/tracks/missing", json=_VALID_TAG_BODY)
-    assert resp.status_code == 404
-
-
-def test_update_track_tags_forbidden_for_non_admin(app):
-    def reject_admin():
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    app.dependency_overrides[_get_current_admin] = reject_admin
-    override_user_auth(app, role="user")
-    client = build_test_client(app)
-    resp = client.post("/library/tracks/file-1", json=_VALID_TAG_BODY)
-    assert resp.status_code == 403
 
 
 def test_get_track_tags_returns_tags(app):

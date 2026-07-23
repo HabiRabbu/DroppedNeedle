@@ -259,6 +259,7 @@ async def test_target_operation_worker_recovers_and_dispatches_each_iteration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     supervisor = AsyncMock()
+    recovery = AsyncMock()
     sleeps = 0
 
     async def stop_after_two(_seconds: float) -> None:
@@ -270,9 +271,14 @@ async def test_target_operation_worker_recovers_and_dispatches_each_iteration(
     monkeypatch.setattr(
         "services.native.target_application_runtime.asyncio.sleep", stop_after_two
     )
-    await run_target_operation_worker(lambda: supervisor, worker_id="test-worker")
+    await run_target_operation_worker(
+        lambda: supervisor,
+        lambda: recovery,
+        worker_id="test-worker",
+    )
 
     assert supervisor.recover.await_count == 2
+    assert recovery.recover_once.await_count == 2
     assert supervisor.run_once.await_count == 2
     supervisor.run_once.assert_awaited_with("test-worker")
 

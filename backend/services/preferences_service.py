@@ -53,8 +53,20 @@ from api.v1.schemas.settings import (
 )
 from api.v1.schemas.advanced_settings import AdvancedSettings
 from api.v1.schemas.library_policies import LibraryRootSettings, TypedLibrarySettings
+from api.v1.schemas.library_management import (
+    LibraryManagementSettings,
+    LibraryManagementSettingsResponse,
+    build_initial_library_management_settings,
+    normalize_library_management_settings,
+    settings_revision as library_management_settings_revision,
+    to_library_management_response,
+)
 from core.config import Settings
-from core.exceptions import ConfigurationError, StaleRevisionError
+from core.exceptions import (
+    ConfigurationError,
+    ScriptValidationError,
+    StaleRevisionError,
+)
 from infrastructure.crypto import decrypt, encrypt
 from infrastructure.file_utils import atomic_write_json, read_json
 from infrastructure.serialization import to_jsonable
@@ -1115,6 +1127,75 @@ class PreferencesService:
             naming_template=settings.naming_template,
             acoustid_api_key=settings.acoustid_api_key,
         )
+
+    def _library_management_settings_section(self) -> LibraryManagementSettings:
+        """Return typed management policy, seeding inert presets exactly once."""
+
+        config = self._load_config()
+        data = config.get("library_management")
+        if data:
+            try:
+                parsed = msgspec.convert(data, type=LibraryManagementSettings)
+                normalized = normalize_library_management_settings(parsed)
+            except (
+                msgspec.ValidationError,
+                ScriptValidationError,
+                TypeError,
+                ValueError,
+            ) as e:
+                logger.error("Failed to parse Library Management settings: %s", e)
+                raise ConfigurationError(
+                    "Library Management settings are invalid."
+                ) from e
+            if to_jsonable(normalized) != data:
+                new_config = config.copy()
+                new_config["library_management"] = to_jsonable(normalized)
+                self._save_config(new_config)
+            return normalized
+
+        legacy_template = self._typed_library_settings_section().naming_template
+        migrated = build_initial_library_management_settings(legacy_template)
+        new_config = self._load_config().copy()
+        new_config["library_management"] = to_jsonable(migrated)
+        self._save_config(new_config)
+        return migrated
+
+    def get_library_management_settings(
+        self,
+    ) -> LibraryManagementSettingsResponse:
+        return to_library_management_response(
+            self._library_management_settings_section()
+        )
+
+    def get_library_management_settings_raw(self) -> LibraryManagementSettings:
+        """Server-side typed settings; the section deliberately contains no secrets."""
+
+        stored = self._library_management_settings_section()
+        return msgspec.convert(
+            msgspec.to_builtins(stored), type=LibraryManagementSettings
+        )
+
+    def save_library_management_settings_if_current(
+        self,
+        settings: LibraryManagementSettings,
+        *,
+        expected_settings_revision: str,
+    ) -> LibraryManagementSettingsResponse:
+        """Persist policy with CAS. Saving alone never assigns or starts work."""
+
+        with self._cache_lock:
+            current = self._library_management_settings_section()
+            current_revision = library_management_settings_revision(current)
+            if current_revision != expected_settings_revision:
+                raise StaleRevisionError(
+                    "Library Management settings changed. Refresh this page and try again."
+                )
+            try:
+                normalized = normalize_library_management_settings(settings)
+                self._save_section("library_management", normalized)
+            except (ScriptValidationError, ValueError) as e:
+                raise ConfigurationError(str(e)) from e
+            return to_library_management_response(normalized)
 
     def get_legacy_library_paths(self) -> list[str]:
         """Derived compatibility projection for consumers not switched to roots yet."""
