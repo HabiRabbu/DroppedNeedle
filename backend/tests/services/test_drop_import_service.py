@@ -21,7 +21,7 @@ from infrastructure.persistence.drop_import_store import DropImportStore
 from models.audio import AudioInfo, AudioTag
 from models.drop_import import ItemStatus, JobStatus
 from models.library_management import LibraryManagementImportResult
-from services.native.album_matcher import MBTrack, _ReleaseMeta
+from services.native.album_matcher import AlbumIdentifier, MBTrack, _ReleaseMeta
 from services.native.drop_import_service import DropImportService
 from services.native.naming import NamingTemplateEngine
 
@@ -370,6 +370,83 @@ async def test_zip_drop_imports_album_end_to_end(tmp_path):
     kwargs = library.upsert_file.await_args_list[0].kwargs
     assert kwargs["source"] == "drop"
     assert kwargs["release_group_mbid"] == "rg-1"
+
+
+@pytest.mark.asyncio
+async def test_drop_import_uses_musicbrainz_album_artist_for_tag_and_path(tmp_path):
+    tagger = FakeTagger(
+        {
+            "01 Song One.flac": (_tag("Song One", 1), _info()),
+            "02 Song Two.flac": (_tag("Song Two", 2), _info()),
+        }
+    )
+    repo = AsyncMock()
+
+    async def release_group(_mbid, includes=None, priority=None):
+        detail = {
+            "title": "Test Album",
+            "primary-type": "Album",
+            "secondary-types": [],
+            "artist-credit": [
+                {
+                    "name": "Test Artist",
+                    "artist": {"id": "artist-1", "name": "Test Artist"},
+                }
+            ],
+            "releases": [
+                {
+                    "id": "rel-1",
+                    "status": "Official",
+                    "date": "2020",
+                    "media": [{"track-count": 2}],
+                }
+            ],
+        }
+        if "artist-credits" not in (includes or []):
+            detail.pop("artist-credit")
+        return detail
+
+    repo.get_release_group_by_id = AsyncMock(side_effect=release_group)
+    repo.get_release_by_id = AsyncMock(
+        return_value={
+            "date": "2020",
+            "media": [
+                {
+                    "position": 1,
+                    "tracks": [
+                        {
+                            "title": "Song One",
+                            "position": 1,
+                            "recording": {"id": "rec-1", "title": "Song One"},
+                        },
+                        {
+                            "title": "Song Two",
+                            "position": 2,
+                            "recording": {"id": "rec-2", "title": "Song Two"},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    identifier = AlbumIdentifier(repo)
+    identifier.identify = AsyncMock(return_value=_accepted_match())
+    service, store, library, library_root = _build_service(
+        tmp_path, tagger, identifier=identifier
+    )
+
+    upload = _zip_album(tmp_path / "upload.zip")
+    job = await service.create_job(
+        user_id="user-1", user_name="Harvey", uploads=[("album.zip", upload)]
+    )
+    done = await _wait_job(store, job.id)
+
+    assert done.status == JobStatus.COMPLETED
+    assert (library_root / "Test Artist" / "Test Album (2020)").is_dir()
+    target_tag = library.upsert_file.await_args_list[0].args[1]
+    assert target_tag.album_artist == "Test Artist"
+    assert target_tag.musicbrainz_album_artist_id == "artist-1"
+    assert target_tag.compilation is False
 
 
 @pytest.mark.asyncio

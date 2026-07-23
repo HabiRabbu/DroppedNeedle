@@ -286,6 +286,101 @@ async def test_resolve_release_group_artist_handles_missing_data():
 
 
 @pytest.mark.asyncio
+async def test_release_tracks_requests_artist_credit():
+    async def release_group(_mbid, includes=None, priority=None):
+        detail = _rg_detail("Santana", "Santana", [_release("rel-debut", [9])])
+        if "artist-credits" not in (includes or []):
+            detail.pop("artist-credit")
+        return detail
+
+    repo = AsyncMock()
+    repo.get_release_group_by_id = AsyncMock(side_effect=release_group)
+    repo.get_release_by_id = AsyncMock(return_value=_release_tracks([_SANTANA]))
+
+    picked = await AlbumIdentifier(repo).release_tracks("rg-debut", 9)
+
+    assert picked is not None
+    meta, _tracks = picked
+    assert meta.artist == "Santana"
+    assert meta.artist_mbid == "a1"
+    assert meta.is_various is False
+
+
+@pytest.mark.asyncio
+async def test_creditless_release_group_resolves_artist_without_claiming_various():
+    async def release_group(_mbid, includes=None, priority=None):
+        if includes == ["artist-credits"]:
+            return _rg_detail("Santana", "Santana", [])
+        detail = _rg_detail("Santana", "ignored", [_release("rel-debut", [9])])
+        detail.pop("artist-credit")
+        return detail
+
+    repo = AsyncMock()
+    repo.get_release_group_by_id = AsyncMock(side_effect=release_group)
+    repo.get_release_by_id = AsyncMock(return_value=_release_tracks([_SANTANA]))
+
+    picked = await AlbumIdentifier(repo).release_tracks("rg-debut", 9)
+
+    assert picked is not None
+    meta, _tracks = picked
+    assert meta.artist == "Santana"
+    assert meta.artist_mbid == "a1"
+    assert meta.is_various is False
+
+
+@pytest.mark.asyncio
+async def test_unresolved_artist_credit_is_not_various_artists():
+    detail = _rg_detail("Mystery Album", "ignored", [_release("rel", [1])])
+    detail.pop("artist-credit")
+    repo = AsyncMock()
+    repo.get_release_group_by_id = AsyncMock(return_value=detail)
+    repo.get_release_by_id = AsyncMock(return_value=_release_tracks([["Song"]]))
+
+    picked = await AlbumIdentifier(repo).release_tracks("rg-mystery", 1)
+
+    assert picked is not None
+    meta, _tracks = picked
+    assert meta.artist == ""
+    assert meta.artist_mbid is None
+    assert meta.is_various is False
+
+
+@pytest.mark.asyncio
+async def test_named_artist_unknown_is_not_various_artists():
+    detail = _rg_detail("Unknown Album", "Unknown", [_release("rel", [1])])
+    detail["artist-credit"][0]["artist"]["id"] = "unknown-artist-id"
+    repo = AsyncMock()
+    repo.get_release_group_by_id = AsyncMock(return_value=detail)
+    repo.get_release_by_id = AsyncMock(return_value=_release_tracks([["Song"]]))
+
+    picked = await AlbumIdentifier(repo).release_tracks("rg-unknown", 1)
+
+    assert picked is not None
+    meta, _tracks = picked
+    assert meta.artist == "Unknown"
+    assert meta.artist_mbid == "unknown-artist-id"
+    assert meta.is_various is False
+
+
+@pytest.mark.asyncio
+async def test_release_group_credited_to_various_artists_stays_various():
+    detail = _rg_detail("Compilation", "Various Artists", [_release("rel", [1])])
+    detail["artist-credit"][0]["artist"]["id"] = (
+        "89ad4ac3-39f7-470e-963a-56509c546377"
+    )
+    repo = AsyncMock()
+    repo.get_release_group_by_id = AsyncMock(return_value=detail)
+    repo.get_release_by_id = AsyncMock(return_value=_release_tracks([["Song"]]))
+
+    picked = await AlbumIdentifier(repo).release_tracks("rg-compilation", 1)
+
+    assert picked is not None
+    meta, _tracks = picked
+    assert meta.artist == "Various Artists"
+    assert meta.is_various is True
+
+
+@pytest.mark.asyncio
 async def test_identify_returns_none_for_single_file():
     identifier = AlbumIdentifier(_santana_repo())
     assert await identifier.identify(_locals(["Waiting"])) is None
